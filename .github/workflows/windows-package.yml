@@ -1,0 +1,49 @@
+name: Windows Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  # Unsigned Windows x64 NSIS installer + portable archive, mirroring the
+  # proven desktop-windows CI job, with artifacts uploaded for download.
+  windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.2
+      - run: corepack enable
+      - name: Resolve Yarn cache folder
+        id: yarn-cache
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$env:GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+      - run: yarn install --immutable
+      - run: yarn check
+      - name: Build Windows installer
+        env:
+          DSH_PACKAGE_CHECK_ALREADY_RAN: '1'
+        run: yarn workspace dsh-plugin-desktop dist:win
+      - name: Build Windows portable archive
+        env:
+          DSH_PACKAGE_CHECK_ALREADY_RAN: '1'
+        run: yarn workspace dsh-plugin-desktop dist:win-portable
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-windows-x64
+          path: dsh-plugin-desktop/dist/*.exe
+          if-no-files-found: error
