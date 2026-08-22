@@ -262,20 +262,94 @@ export function readCompanyManifestAsset(assetPath: string): string | undefined 
  * Normalize market install receipts into boot receipt evidence. Only receipt
  * v2 records carry a tree measurement; legacy v1 receipts contribute nothing
  * (matching bundles degrade to manifest-only) and never influence sequences.
+ * The receipt store lives in the user-writable settings document, so every
+ * v2 record is shape-checked before it is trusted: a malformed record — a
+ * missing or non-object tree digest, wrong field types, an out-of-range
+ * sequence — is skipped exactly like a legacy one, because one corrupted
+ * line must never throw through profile composition and refuse the whole
+ * startup (the module contract).
  */
 export function desktopBootReceipts(receipts: readonly MarketInstallReceipt[]): readonly DesktopBootReceipt[] {
   const evidence: DesktopBootReceipt[] = []
   for (const receipt of receipts) {
+    if (record(receipt) === undefined) continue
     if (receipt.receiptVersion !== 2) continue
+    if (typeof receipt.packageName !== 'string' || receipt.packageName.length === 0) continue
+    if (typeof receipt.version !== 'string' || receipt.version.length === 0) continue
+    if (!Number.isSafeInteger(receipt.manifestSequence) || receipt.manifestSequence < 1) continue
+    if (typeof receipt.keyId !== 'string' || receipt.keyId.length === 0) continue
+    const treeDigest = record(receipt.treeDigest)
+    if (treeDigest === undefined || typeof treeDigest.rootDigest !== 'string'
+      || !SHA256_HEX_PATTERN.test(treeDigest.rootDigest)) continue
     evidence.push({
       packageName: receipt.packageName,
       version: receipt.version,
       manifestSequence: receipt.manifestSequence,
       keyId: receipt.keyId,
-      rootDigest: receipt.treeDigest.rootDigest,
+      rootDigest: treeDigest.rootDigest,
     })
   }
   return evidence
+}
+
+/** Settings namespace that owns the community market's persisted document. */
+const MARKET_SETTINGS_NAMESPACE = 'dsh-community-market'
+/** Read bound for the settings document carrying market install receipts. */
+const MAX_MARKET_SETTINGS_BYTES = 8 * 1024 * 1024
+
+/**
+ * Extract the community market's raw install receipts from one parsed
+ * settings document. The document is user-writable, so anything but a
+ * well-formed `installReceipts` array contributes nothing; record-level
+ * shape problems are skipped later by {@link desktopBootReceipts}.
+ */
+export function marketInstallReceiptsFromSettingsDocument(document: unknown): readonly MarketInstallReceipt[] {
+  const receipts = record(record(document)?.[MARKET_SETTINGS_NAMESPACE])?.installReceipts
+  if (!Array.isArray(receipts)) return []
+  return receipts.filter(value => record(value) !== undefined) as MarketInstallReceipt[]
+}
+
+/**
+ * Read normalized boot receipt evidence from the shared settings document
+ * (`<home>/settings.yaml`, the file the market's settings provider owns).
+ * Missing, unreadable, oversized, or malformed documents yield no evidence —
+ * matching bundles then degrade to manifest-only and the sequence ratchet
+ * stays at zero. This reader never throws: receipt reconciliation must not be
+ * able to refuse a startup.
+ */
+export function readDesktopBootReceiptsFromSettings(settingsPath: string): readonly DesktopBootReceipt[] {
+  try {
+    const body = readFileSync(settingsPath)
+    if (body.byteLength > MAX_MARKET_SETTINGS_BYTES) return []
+    const parsed = parseDocument(body.toString('utf8'), { prettyErrors: true })
+    if (parsed.errors.length > 0) return []
+    return desktopBootReceipts(marketInstallReceiptsFromSettingsDocument(parsed.toJS() ?? {}))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Assemble the production inputs for locked boot verification: normalized
+ * install receipts from the shared market settings document, plus the
+ * embedded manifest bytes for content-mode policies. Origin-mode deployments
+ * have no locally cached manifest bytes, so none are injected and boot
+ * verification fails closed for third-party content by design. The sequence
+ * floor is intentionally left to the receipt-derived default inside
+ * {@link verifyDesktopBootBundles}.
+ */
+export function desktopBootVerificationInputsFromSettings(
+  policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
+  settingsDocumentPath: string,
+  moduleUrl: string = import.meta.url,
+): DesktopBootVerificationInputs {
+  const manifestBytes = policy.companyCatalogOrigin !== null
+    ? undefined
+    : readCompanyManifestAsset(companyManifestAssetPath(policy.companyManifestUrl, moduleUrl))
+  return {
+    receipts: readDesktopBootReceiptsFromSettings(settingsDocumentPath),
+    ...(manifestBytes === undefined ? {} : { manifestBytes }),
+  }
 }
 
 type UnknownRecord = Record<string, unknown>

@@ -19,8 +19,11 @@ import {
   desktopBootBundleNames,
   desktopBootLockIntegrity,
   desktopBootReceipts,
+  desktopBootVerificationInputsFromSettings,
+  marketInstallReceiptsFromSettingsDocument,
   readCompanyManifestAsset,
   readDesktopBootLockfile,
+  readDesktopBootReceiptsFromSettings,
   verifyDesktopBootBundles,
   type DesktopBootBundle,
   type DesktopBootReceipt,
@@ -111,6 +114,30 @@ function receiptFor(bundle: DesktopBootBundle, overrides: Partial<DesktopBootRec
     manifestSequence,
     keyId,
     rootDigest: computeDesktopBootTreeRootDigest(bundle.packageDir!),
+    ...overrides,
+  }
+}
+
+/** Full market receipt v2 record as the settings document stores it. */
+function marketV2Receipt(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    receiptId: 'receipt:boot-verification-0001',
+    profileName: 'desktop',
+    packageName,
+    version,
+    integrity: signedIntegrity,
+    bundlePatch: './cordis.patch.yml',
+    sourceRecordId: 'company-catalog',
+    providerId: 'com.deepseek.company-catalog',
+    itemId: `npm:${packageName}@${version}`,
+    displayName: packageName,
+    installedAt: '2026-09-01T00:00:00.000Z',
+    receiptVersion: 2,
+    manifestSequence,
+    keyId,
+    treeDigest: { algorithm: 'sha256', files: [], rootDigest: 'ab'.repeat(32) },
+    resolved: { registryIntegrity: signedIntegrity, treeRootDigest: 'ab'.repeat(32) },
+    decided: { allowedBy: 'signed-company-manifest' },
     ...overrides,
   }
 }
@@ -247,6 +274,48 @@ describe('desktop boot bundle verification', () => {
     expect(receipts).toEqual([{ packageName, version, manifestSequence, keyId, rootDigest }])
     const result = verify(signedManifestText([packageEntry()]), [bundle], { receipts })
     expect(result.allowed.map(entry => entry.evidence)).toEqual(['receipt'])
+  })
+
+  it('skips malformed v2 receipts instead of throwing, degrading only their bundles', () => {
+    const bundle = bundleInput()
+    const peer = bundleInput({ packageName: 'peer-plugin' })
+    // Each malformed shape previously reached `treeDigest.rootDigest` (or a
+    // bogus sequence floor) directly and threw a TypeError through profile
+    // composition; the normalizer must skip them like legacy receipts.
+    const malformedRecords: unknown[] = [
+      marketV2Receipt({ receiptId: 'missing-tree-digest', treeDigest: undefined }),
+      marketV2Receipt({ receiptId: 'tree-digest-not-object', treeDigest: 'sha256' }),
+      marketV2Receipt({ receiptId: 'root-digest-not-hex', treeDigest: { algorithm: 'sha256', files: [], rootDigest: 'zz' } }),
+      marketV2Receipt({ receiptId: 'sequence-not-number', manifestSequence: 'twenty-one' }),
+      marketV2Receipt({ receiptId: 'sequence-below-one', manifestSequence: 0 }),
+      marketV2Receipt({ receiptId: 'blank-key-id', keyId: '' }),
+      marketV2Receipt({ receiptId: 'version-not-string', version: 123 }),
+      'not-a-record',
+    ]
+    const asReceipts = (value: readonly unknown[]): Parameters<typeof desktopBootReceipts>[0] =>
+      value as Parameters<typeof desktopBootReceipts>[0]
+    expect(() => desktopBootReceipts(asReceipts(malformedRecords))).not.toThrow()
+    expect(desktopBootReceipts(asReceipts(malformedRecords))).toEqual([])
+
+    // A usable peer receipt survives the same store untouched: its bundle
+    // keeps receipt evidence while the malformed one degrades to manifest-only.
+    const peerRaw = marketV2Receipt({
+      packageName: peer.packageName,
+      itemId: `npm:${peer.packageName}@${version}`,
+      treeDigest: { algorithm: 'sha256', files: [], rootDigest: computeDesktopBootTreeRootDigest(peer.packageDir!) },
+    })
+    const evidence = desktopBootReceipts(asReceipts([...malformedRecords, peerRaw]))
+    expect(evidence).toEqual([receiptFor(peer)])
+    const result = verify(
+      signedManifestText([packageEntry(), packageEntry({ packageName: peer.packageName })]),
+      [bundle, peer],
+      { receipts: evidence },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([
+      { packageName, evidence: 'manifest-only', manifestSequence, keyId },
+      { packageName: peer.packageName, evidence: 'receipt', manifestSequence, keyId },
+    ])
   })
 
   it('rejects a bundle whose installed files differ from the receipt tree', () => {
@@ -439,6 +508,31 @@ describe('profile lockfile reader', () => {
     expect(desktopBootLockIntegrity(lockfile, 'other-package', version)).toBeUndefined()
   })
 
+  it('refuses to load a caret-specifier install that an exact save would have pinned', () => {
+    const manifest = signedManifestText([packageEntry()])
+    const bundle = bundleInput()
+
+    // pnpm's default caret save (`^1.2.3`) leaves no exact pinned record, so
+    // the bundle is refused even though the signed entry matches.
+    const caretPinned = desktopBootLockIntegrity(
+      readDesktopBootLockfile(lockfileFixture({ specifier: `^${version}` }))!,
+      packageName,
+      version,
+    )
+    expect(caretPinned).toBeUndefined()
+    const caret = verify(manifest, [{ ...bundle, lockIntegrity: caretPinned }])
+    expect(caret.allowed).toEqual([])
+    expect(caret.rejected[0]?.reason).toContain('no exact pinned record in the profile lockfile')
+
+    // The exact specifier (`1.2.3`) a `--save-exact` add produces pins the
+    // same signed integrity and loads.
+    const exactPinned = desktopBootLockIntegrity(readDesktopBootLockfile(lockfileFixture())!, packageName, version)
+    expect(exactPinned).toBe(signedIntegrity)
+    const exact = verify(manifest, [{ ...bundle, lockIntegrity: exactPinned }])
+    expect(exact.rejected).toEqual([])
+    expect(exact.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+  })
+
   it('treats missing, corrupt, and unsupported lockfiles as unpinned', () => {
     expect(readDesktopBootLockfile(temporaryDirectory())).toBeUndefined()
 
@@ -513,5 +607,145 @@ describe('company manifest asset reader', () => {
     expect(() => companyManifestAssetPath('a\\b.json', moduleUrl)).toThrow(
       'without NUL or backslash',
     )
+  })
+})
+
+describe('market settings receipt reader', () => {
+  const contentPolicy = { companyCatalogOrigin: null, companyManifestUrl: 'company-market/catalog-manifest.json' }
+
+  function writeSettings(home: string, document: unknown): string {
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, typeof document === 'string' ? document : JSON.stringify(document))
+    return settingsPath
+  }
+
+  it('extracts only a well-formed receipt array from a parsed settings document', () => {
+    expect(marketInstallReceiptsFromSettingsDocument(undefined)).toEqual([])
+    expect(marketInstallReceiptsFromSettingsDocument('text')).toEqual([])
+    expect(marketInstallReceiptsFromSettingsDocument({})).toEqual([])
+    expect(marketInstallReceiptsFromSettingsDocument({ 'dsh-community-market': {} })).toEqual([])
+    expect(marketInstallReceiptsFromSettingsDocument({
+      'dsh-community-market': { installReceipts: 'nope' },
+    })).toEqual([])
+    expect(marketInstallReceiptsFromSettingsDocument({
+      'dsh-community-market': { installReceipts: [marketV2Receipt(), 'junk'] },
+    })).toEqual([marketV2Receipt()])
+  })
+
+  it('normalizes receipts from the settings document and never throws on damaged stores', () => {
+    const home = temporaryDirectory()
+    const settingsPath = writeSettings(home, {
+      'dsh-community-market': {
+        sources: [],
+        installReceipts: [
+          marketV2Receipt({ manifestSequence: 44 }),
+          marketV2Receipt({ receiptId: 'broken', packageName: 7, manifestSequence: 9_999 }),
+        ],
+      },
+    })
+    expect(readDesktopBootReceiptsFromSettings(settingsPath)).toEqual([{
+      packageName,
+      version,
+      manifestSequence: 44,
+      keyId,
+      rootDigest: 'ab'.repeat(32),
+    }])
+
+    expect(readDesktopBootReceiptsFromSettings(join(home, 'missing-settings.yaml'))).toEqual([])
+    writeSettings(home, 'dsh-community-market: [broken\n')
+    expect(readDesktopBootReceiptsFromSettings(join(home, 'settings.yaml'))).toEqual([])
+  })
+
+  it('assembles production inputs: content-mode bytes plus receipts, origin mode stays uncached', () => {
+    const home = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(home, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    const manifest = signedManifestText([packageEntry()])
+    writeFileSync(assetPath, manifest)
+    const settingsPath = writeSettings(home, {
+      'dsh-community-market': { installReceipts: [marketV2Receipt()] },
+    })
+
+    const inputs = desktopBootVerificationInputsFromSettings(contentPolicy, settingsPath, moduleUrl)
+    expect(inputs.manifestBytes).toBe(manifest)
+    expect(inputs.receipts).toEqual([{
+      packageName,
+      version,
+      manifestSequence,
+      keyId,
+      rootDigest: 'ab'.repeat(32),
+    }])
+
+    // Origin-mode deployments have no cached bytes here: boot verification
+    // fails closed for third-party content by design.
+    const originInputs = desktopBootVerificationInputsFromSettings(
+      { companyCatalogOrigin: 'https://market.company.example', companyManifestUrl: 'https://market.company.example/catalog-manifest.json' },
+      settingsPath,
+      moduleUrl,
+    )
+    expect(originInputs.manifestBytes).toBeUndefined()
+    expect(originInputs.receipts).toHaveLength(1)
+
+    // Empty-receipt inputs still decide manifest-only for receiptless bundles;
+    // the sequence floor stays at the default derived inside verification.
+    const emptyHome = join(home, 'empty-home')
+    mkdirSync(emptyHome, { recursive: true })
+    const emptyInputs = desktopBootVerificationInputsFromSettings(
+      contentPolicy,
+      writeSettings(emptyHome, {}),
+      moduleUrl,
+    )
+    expect(emptyInputs.receipts).toEqual([])
+    const decision = verifyDesktopBootBundles(inputs.manifestBytes, [bundleInput()], {
+      trustRoots,
+      ...emptyInputs,
+    })
+    expect(decision.manifestTrusted).toBe(true)
+    expect(decision.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+  })
+})
+
+describe('cross-implementation tree digest parity', () => {
+  /**
+   * The market package's public export face does not re-export the install
+   * tree-digest helper, so — like the existing market integration spec — the
+   * measurement is imported straight from the sibling workspace source.
+   */
+  async function marketTreeDigestModule(): Promise<{
+    computeInstallTreeDigest: (packageDir: string) => Promise<{ rootDigest: string }>
+  }> {
+    // The indirection through a URL keeps the sibling workspace source out of
+    // the desktop typecheck program, matching the market integration spec.
+    const moduleUrl = new URL('../../dsh-community-market/src/install/tree-digest.js', import.meta.url).href
+    return await import(moduleUrl) as never
+  }
+
+  it('measures the same tree with the same root digest as the market install path', async () => {
+    const dir = installedPackage({
+      'package.json': `{"name":"${packageName}","version":"${version}"}\n`,
+      'cordis.patch.yml': '- insert:\n    - id: safe-marker\n      name: dsh-plugin-safe\n',
+      'lib/payload.js': 'export const marker = 1\n',
+      'lib/nested/deep/util.js': 'export const util = 1\n',
+      'assets/data.json': '{"k":1}\n',
+      'assets/empty-dir/.keep': '',
+    })
+    symlinkSync('./assets/data.json', join(dir, 'assets', 'link-to-data'))
+
+    const market = await marketTreeDigestModule()
+    const measured = await market.computeInstallTreeDigest(dir)
+
+    expect(measured.rootDigest).toBe(computeDesktopBootTreeRootDigest(dir))
+  })
+
+  it('keeps both serializations 64 lowercase hex so a rule change on either side turns this red', async () => {
+    const dir = installedPackage({ 'package.json': '{}\n', 'lib/a.js': 'a\n', 'lib/b/c.js': 'c\n' })
+    const market = await marketTreeDigestModule()
+    const marketDigest = (await market.computeInstallTreeDigest(dir)).rootDigest
+    const desktopDigest = computeDesktopBootTreeRootDigest(dir)
+
+    expect(marketDigest).toMatch(/^[0-9a-f]{64}$/u)
+    expect(desktopDigest).toMatch(/^[0-9a-f]{64}$/u)
+    expect(marketDigest).toBe(desktopDigest)
   })
 })

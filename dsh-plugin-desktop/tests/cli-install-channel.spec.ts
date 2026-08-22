@@ -144,6 +144,61 @@ describe('locked plugin-add authorization', () => {
     })
   })
 
+  it('accepts a leading --save-exact but no other flag before the package spec', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+
+    const exact = await authorizeLockedPluginAdd(
+      ['--save-exact', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(exact).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+
+    const otherFlag = await authorizeLockedPluginAdd(
+      ['--save-dev', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(otherFlag.allowed).toBe(false)
+    if (!otherFlag.allowed) {
+      expect(otherFlag.reason).toContain('<exact version>')
+      expect(otherFlag.reason).toContain('company plugin market')
+    }
+
+    const doubled = await authorizeLockedPluginAdd(
+      ['--save-exact', '--save-exact', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(doubled.allowed).toBe(false)
+    if (!doubled.allowed) expect(doubled.reason).toContain('exactly one package argument')
+  })
+
+  it('requires the manifest sequence to exceed the receipts sequence floor', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+
+    const stale = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath, lastSeenSequence: 42 },
+    )
+    expect(stale.allowed).toBe(false)
+    if (!stale.allowed) {
+      expect(stale.reason).toContain('stale-sequence')
+      expect(stale.reason).toContain('does not exceed the last seen sequence 42')
+    }
+
+    const newer = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath, lastSeenSequence: 41 },
+    )
+    expect(newer.allowed).toBe(true)
+  })
+
   it('denies spec counts other than exactly one package argument', async () => {
     const decision = await authorizeLockedPluginAdd([], lockedCatalogPolicy())
 

@@ -70,6 +70,7 @@ import {
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
 import { readDesktopPolicy } from './desktop-policy.ts'
+import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
 import {
@@ -601,6 +602,13 @@ async function start(): Promise<void> {
     const marketUserDataDir = app.getPath('userData')
     const policy = readDesktopPolicy()
     const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
+    // Production wiring for locked boot verification (P2-4): the receipts and
+    // manifest bytes come from the shared market settings document and the
+    // embedded catalog asset; without this the receipt reconciliation and the
+    // sequence ratchet would never run outside tests.
+    const bootVerificationInputs = policy.locked
+      ? desktopBootVerificationInputsFromSettings(policy, join(homeDir, 'settings.yaml'))
+      : undefined
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -619,6 +627,7 @@ async function start(): Promise<void> {
         },
       },
       policy,
+      bootVerificationInputs,
     )
     if (profileCheckpoint === undefined) {
       try {

@@ -1,6 +1,7 @@
 /** Private RunAsNode bootstrap for the packaged DeepSeek Harness CLI. */
 
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import {
@@ -8,7 +9,7 @@ import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
-import { authorizeLockedPluginAdd } from './cli-install-channel.ts'
+import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
 import { readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
@@ -83,6 +84,8 @@ function takeEnvironmentValue(environment: NodeJS.ProcessEnv, expectedName: stri
 interface PluginAddCommand {
   readonly profileName: string
   readonly packageSpecs: readonly string[]
+  /** Index of the `add` command inside the scanned `argv.slice(2)` window. */
+  readonly addIndex: number
 }
 
 /** Resolve the exact profile and package targets mutated by one built-in-terminal plugin-add command. */
@@ -90,6 +93,7 @@ function pluginAddCommand(argv: readonly string[]): PluginAddCommand | undefined
   if (argv[0] !== 'plugin') return undefined
   const forwarded: string[] = []
   let profileName: string | undefined
+  let addIndex: number | undefined
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index]!
     if (argument === '--profile') {
@@ -111,10 +115,49 @@ function pluginAddCommand(argv: readonly string[]): PluginAddCommand | undefined
       continue
     }
     forwarded.push(argument)
+    addIndex ??= index
   }
   if (forwarded[0] !== 'add' || profileName === undefined) return undefined
   assertDesktopProfileName(profileName)
-  return { profileName, packageSpecs: forwarded.slice(1) }
+  return { profileName, packageSpecs: forwarded.slice(1), addIndex: addIndex! }
+}
+
+/** Width in argv tokens of a launcher-owned profile flag, or 0 for any other token. */
+function profileFlagLength(argument: string, hasNext: boolean): number {
+  if (argument === '--profile') return hasNext ? 2 : 0
+  return argument.startsWith('--profile=') ? 1 : 0
+}
+
+/**
+ * Keep an allowed locked plugin add exact in the profile lockfile: pnpm's
+ * default caret save-prefix would write `^<version>`, which boot
+ * verification rejects as a non-exact specifier. The flag is injected before
+ * the first package argument (profile flags may legally sit between `add`
+ * and it), so the package spec stays the positional argument; a user-typed
+ * copy in the same slot wins and is never duplicated.
+ */
+function injectSaveExactFlag(argv: string[], addIndex: number): void {
+  let index = addIndex + 1
+  while (index < argv.length) {
+    const width = profileFlagLength(argv[index]!, index + 1 < argv.length)
+    if (width === 0) break
+    index += width
+  }
+  if (argv[index] === SAVE_EXACT_FLAG) return
+  argv.splice(index, 0, SAVE_EXACT_FLAG)
+}
+
+/** Highest market receipt manifest sequence in the shared settings document, or undefined without receipts. */
+async function lockedPluginAddSequenceFloor(homeDir: string | undefined): Promise<number | undefined> {
+  if (homeDir === undefined) return undefined
+  // Lazy like the channel's market import: ordinary CLI startups stay free of
+  // the market bundle that boot-verification transitively pulls in.
+  const { readDesktopBootReceiptsFromSettings } = await import('./boot-verification.ts')
+  let highest: number | undefined
+  for (const receipt of readDesktopBootReceiptsFromSettings(join(homeDir, 'settings.yaml'))) {
+    if (highest === undefined || receipt.manifestSequence > highest) highest = receipt.manifestSequence
+  }
+  return highest
 }
 
 class CapturedDesktopCliExit {
@@ -203,16 +246,25 @@ export async function runDesktopDshCli(
     if (effectivePolicy.locked) {
       // Signed-catalog channel (P2-5): only a verified, unrevoked, exact
       // `<package>@<version>` entry may proceed; every denial stays here.
+      // The sequence floor rides the receipts ratchet boot verification also
+      // reconciles against (see cli-install-channel.ts for the rationale).
+      const lastSeenSequence = await lockedPluginAddSequenceFloor(homeDir)
       const decision = await authorizeLockedPluginAdd(
         installCommand.packageSpecs,
         effectivePolicy,
-        manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath },
+        {
+          ...(manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath }),
+          ...(lastSeenSequence === undefined ? {} : { lastSeenSequence }),
+        },
       )
       if (!decision.allowed) {
         process.stderr.write(`${decision.reason}\n`)
         process.exitCode = 1
         return
       }
+      // `addIndex` counts inside the `argv.slice(2)` window, so the absolute
+      // argv position of `add` is two further in.
+      injectSaveExactFlag(argv, installCommand.addIndex + 2)
     }
   }
   if (
