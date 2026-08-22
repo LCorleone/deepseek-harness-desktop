@@ -64,8 +64,13 @@ export interface DesktopMarketSnapshot {
   readonly legacyDefaulted: boolean
 }
 
-/** The provider the desktop policy pins while the build is locked. */
-const COMPANY_PROVIDER: DesktopMarketProvider = DESKTOP_MARKET_IDENTITIES.dshMarket.provider
+/**
+ * The provider the desktop policy pins while the build is locked: this
+ * repository's market shell, where the source lock and install target
+ * authority are enforced. The upstream `dshmarket` bundle stays out of locked
+ * builds because its install path is not policy-controlled.
+ */
+const COMPANY_PROVIDER: DesktopMarketProvider = DESKTOP_MARKET_IDENTITIES.community.provider
 
 const DEFAULT_REQUESTED_PROVIDER: DesktopMarketProvider = 'disabled'
 

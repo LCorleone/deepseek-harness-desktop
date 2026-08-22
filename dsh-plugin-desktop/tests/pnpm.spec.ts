@@ -435,7 +435,12 @@ describe('desktop pnpm Host service', () => {
       expect(harness.spawn).not.toHaveBeenCalled()
 
       const operation = await harness.service.installPlugin({
-        pnpmOptions: ['--save-exact', '--reporter=ndjson'],
+        pnpmOptions: [
+          '--save-exact',
+          '--registry=https://registry.npmjs.org/',
+          '--@scope:registry=https://registry.npmjs.org/',
+          '--reporter=ndjson',
+        ],
         invokingDir: '/workspace',
         recovery,
       })
@@ -449,6 +454,8 @@ describe('desktop pnpm Host service', () => {
         selectedBootstrap.activeProfileName,
         'add',
         '--save-exact',
+        '--registry=https://registry.npmjs.org/',
+        '--@scope:registry=https://registry.npmjs.org/',
         '--reporter=ndjson',
         'example-plugin@1.0.0',
       ])

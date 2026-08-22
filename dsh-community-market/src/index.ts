@@ -10,9 +10,13 @@ import { createRestrictedHttpClient } from './network/restricted-http.js'
 import {
   createNpmRegistryVerifier,
   MarketInstallService,
+  rejectAllInstallTargetAuthority,
   type MarketDesktopPnpm,
   type MarketDesktopProfile,
 } from './install/service.js'
+import type { CatalogSourceLockOptions } from './catalog/source-store.js'
+import type { LocalSourceRecord } from './contracts/types.js'
+import { DSHFIND_ADAPTER_ID, DSHFIND_KEY, DSHFIND_PROVIDER_ID } from './adapters/dshfind.js'
 
 export const name = 'community-market'
 export const inject = ['webServer', 'settings']
@@ -26,6 +30,31 @@ interface DesktopActionsCapability {
   requestRestart(): Promise<void>
 }
 
+/**
+ * Narrow view of the desktop-provided deployment policy. The desktop host
+ * provides the full embedded policy before bundle plugins load; this package
+ * never imports the desktop definition and treats a missing capability as an
+ * unlocked standalone deployment.
+ */
+interface DesktopPolicyView {
+  readonly locked: boolean
+}
+
+/**
+ * Phase-1 company source placeholder: the built-in cooperative catalog keeps
+ * browsing available in locked test builds while every install target is
+ * rejected. The signed company catalog adapter (P2) replaces this record.
+ */
+const COMPANY_SOURCE_PLACEHOLDER: LocalSourceRecord = Object.freeze({
+  sourceRecordId: 'company-catalog-placeholder',
+  registrationKind: 'built-in',
+  adapterId: DSHFIND_ADAPTER_ID,
+  providerId: DSHFIND_PROVIDER_ID,
+  builtInProviderKey: DSHFIND_KEY,
+  enabled: true,
+  order: 0,
+})
+
 const npmRegistryHttp = createRestrictedHttpClient({
   // This is a compiled-in official registry hostname, never provider input.
   syntheticProxyHostnames: ['registry.npmjs.org'],
@@ -33,6 +62,11 @@ const npmRegistryHttp = createRestrictedHttpClient({
 
 export function apply(ctx: Context): void {
   const scope = registerMarketSettings(ctx)
+  const policy = ctx.get('desktopPolicy') as DesktopPolicyView | undefined
+  const locked = policy?.locked === true
+  const sourceLock: CatalogSourceLockOptions | undefined = locked
+    ? { locked: true, companySource: COMPANY_SOURCE_PLACEHOLDER }
+    : undefined
   let installService: MarketInstallService | undefined
   let desktopActions: DesktopActionsCapability | undefined
   let desktopPlugins: MarketDesktopPlugins | undefined
@@ -40,7 +74,7 @@ export function apply(ctx: Context): void {
   const desktopActionsProvider = { get: () => desktopActions }
   const desktopPluginsProvider = { get: () => desktopPlugins }
   ctx.effect(
-    () => registerMarketRoutes(ctx, scope, installProvider, desktopActionsProvider, desktopPluginsProvider),
+    () => registerMarketRoutes(ctx, scope, installProvider, desktopActionsProvider, desktopPluginsProvider, sourceLock),
     'community-market: routes',
   )
   ctx.inject(['desktopActions'], (desktopCtx) => {
@@ -73,6 +107,7 @@ export function apply(ctx: Context): void {
         pnpm,
         createNpmRegistryVerifier(npmRegistryHttp),
         {
+          ...(locked ? { installTargetAuthority: rejectAllInstallTargetAuthority } : {}),
           disabledPackageNames: () => {
             const plugins = desktopPlugins
             if (plugins === undefined) {

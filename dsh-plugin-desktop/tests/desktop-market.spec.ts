@@ -204,23 +204,23 @@ describe('Desktop Market explicit selection', () => {
 })
 
 describe('policy-pinned effective provider', () => {
-  it('keeps the company provider effective after a locked write of community-market', async () => {
+  it('keeps the company provider effective after a locked write of dsh-market', async () => {
     const userData = temporaryUserData()
 
-    const selected = await selectDesktopMarketProvider(userData, 'community-market', lockedPolicy())
+    const selected = await selectDesktopMarketProvider(userData, 'dsh-market', lockedPolicy())
 
     expect(selected).toEqual({
-      requested: 'community-market',
-      effective: 'dsh-market',
+      requested: 'dsh-market',
+      effective: 'community-market',
       legacyDefaulted: false,
     })
     const persisted = JSON.parse(
       readFileSync(desktopMarketStatePath(userData), 'utf8'),
     ) as Record<string, unknown>
-    expect(persisted).toEqual({ version: 1, requested: 'community-market', legacyDefaulted: false })
+    expect(persisted).toEqual({ version: 1, requested: 'dsh-market', legacyDefaulted: false })
     expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
-      requested: 'community-market',
-      effective: 'dsh-market',
+      requested: 'dsh-market',
+      effective: 'community-market',
       legacyDefaulted: false,
     })
   })
@@ -236,7 +236,7 @@ describe('policy-pinned effective provider', () => {
     })
     expect(readDesktopMarketState(statePath, lockedPolicy())).toMatchObject({
       requested: 'community-market',
-      effective: 'dsh-market',
+      effective: 'community-market',
     })
   })
 
@@ -252,7 +252,7 @@ describe('policy-pinned effective provider', () => {
 
     expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
       requested: 'disabled',
-      effective: 'dsh-market',
+      effective: 'community-market',
       legacyDefaulted: true,
     })
   })
