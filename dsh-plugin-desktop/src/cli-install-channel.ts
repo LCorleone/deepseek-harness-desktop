@@ -14,14 +14,17 @@
  * read and the ed25519 verification are synchronous local operations without
  * network I/O; the whole gate completes in milliseconds and needs no timeout.
  *
- * Anti-rollback: verification is called without `lastSeenSequence`. The CLI
- * cannot persist cross-process state anywhere a user could not also roll
- * back, and it does not need to: the manifest asset ships inside the
- * application bundle, so its sequence is bound to the installed application
- * version and cannot be rolled back independently of the application itself.
- * Freshness is still enforced through the signed `expiresAt`. (The Market
- * channel keeps its settings-backed sequence store; this terminal gate relies
- * on the packaging layer instead.)
+ * Anti-rollback: the sequence floor comes from the local receipts ratchet —
+ * the caller derives `lastSeenSequence` from the highest manifest sequence
+ * recorded in the market settings install receipts, so an allowed add
+ * requires a strictly newer manifest than any that already allowed an
+ * install on this machine. The manifest asset ships inside the application
+ * bundle, but under a per-user Windows install that bundle directory is
+ * user-writable, so the asset alone is not a rollback boundary; closing that
+ * writable-asset window is deferred to P3. Freshness is still enforced
+ * through the signed `expiresAt`. (The Market channel keeps its own
+ * settings-backed sequence store; this terminal gate rides the receipts
+ * ratchet instead.)
  *
  * Layered integrity: the gate authenticates catalog membership — package,
  * exact version, revocation state, and the manifest signature. The pinned
@@ -44,6 +47,12 @@ const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$
 /** Mirrors `version` in the market's `docs/schemas/company-manifest.schema.json`. */
 const EXACT_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
 const MARKET_GUIDANCE = 'Install plugins from the company plugin market instead.'
+/**
+ * pnpm flag the launcher injects after an allow so the profile lockfile pins
+ * the exact specifier; a user-typed copy directly after `add` is accepted and
+ * never duplicated.
+ */
+export const SAVE_EXACT_FLAG = '--save-exact'
 
 /** One `<package>@<exact version>` plugin-add target. */
 export interface CliPluginAddPackage {
@@ -60,6 +69,13 @@ export type LockedPluginAddDecision =
 export interface LockedPluginAddOptions {
   /** Absolute path of the embedded manifest asset; defaults to the file bundled beside this module. */
   readonly assetPath?: string
+  /**
+   * Highest manifest sequence this machine has already verified through an
+   * install (the receipts ratchet); the manifest must strictly exceed it. A
+   * safe non-negative integer or omitted — anything else fails the upstream
+   * argument validation.
+   */
+  readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
 }
@@ -116,7 +132,7 @@ export function companyManifestAssetPath(moduleUrl: string, companyManifestUrl: 
  * locked plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
- * @param options - test overrides for the asset path and clock.
+ * @param options - the manifest asset path, the receipts sequence floor, and test clock overrides.
  * @returns the allow decision with the resolved targets, or the denial reason.
  */
 export async function authorizeLockedPluginAdd(
@@ -124,10 +140,14 @@ export async function authorizeLockedPluginAdd(
   policy: DesktopPolicy,
   options: LockedPluginAddOptions = {},
 ): Promise<LockedPluginAddDecision> {
-  if (packageSpecs.length !== 1) {
-    return denied(`locked builds accept 'dsh plugin add <package>@<exact version>' with exactly one package argument (got ${String(packageSpecs.length)}). ${MARKET_GUIDANCE}`)
+  // `--save-exact` is the one flag the launcher itself injects after an
+  // allow, so a user-typed copy directly after `add` is accepted and consumed
+  // here; every other flag-looking argument still fails the exact-spec parse.
+  const packageArguments = packageSpecs[0] === SAVE_EXACT_FLAG ? packageSpecs.slice(1) : packageSpecs
+  if (packageArguments.length !== 1) {
+    return denied(`locked builds accept 'dsh plugin add <package>@<exact version>' with exactly one package argument (got ${String(packageArguments.length)}). ${MARKET_GUIDANCE}`)
   }
-  const spec = packageSpecs[0]!
+  const spec = packageArguments[0]!
   const target = parseExactPluginAddSpec(spec)
   if (target === undefined) {
     return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
@@ -149,10 +169,12 @@ export async function authorizeLockedPluginAdd(
     return denied(`company catalog manifest asset ${assetPath} exceeds ${String(MAX_MANIFEST_ASSET_BYTES)} bytes`)
   }
   const { findCompanyManifestPackage, verifyCompanyManifest } = await import('dsh-community-market')
-  // No lastSeenSequence: the embedded asset is versioned with the application,
-  // so rollback protection comes from the packaging layer, not client state.
+  // The sequence floor rides the receipts ratchet (see module docs): a
+  // rolled-back embedded asset cannot re-authorize a terminal add once a
+  // newer manifest has allowed an install on this machine.
   const verification = verifyCompanyManifest(raw, {
     trustRoots: policy.trustRoots,
+    ...(options.lastSeenSequence === undefined ? {} : { lastSeenSequence: options.lastSeenSequence }),
     ...(options.now === undefined ? {} : { now: options.now }),
   })
   if (!verification.ok) {

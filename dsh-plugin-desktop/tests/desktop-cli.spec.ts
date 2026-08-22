@@ -87,6 +87,33 @@ function writeCompanyCatalogAsset(root: string, manifest: Record<string, unknown
   return assetPath
 }
 
+/** Full market receipt v2 fixture as the market settings document stores it. */
+function marketReceipt(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    receiptId: 'receipt:desktop-cli-ratchet-0001',
+    profileName: 'desktop',
+    packageName: 'example-plugin',
+    version: '1.0.0',
+    integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
+    bundlePatch: './cordis.patch.yml',
+    sourceRecordId: 'company-catalog',
+    providerId: 'com.deepseek.company-catalog',
+    itemId: 'npm:example-plugin@1.0.0',
+    displayName: 'Example Plugin',
+    installedAt: '2026-09-01T00:00:00.000Z',
+    receiptVersion: 2,
+    manifestSequence: 42,
+    keyId: catalogKeyId,
+    treeDigest: { algorithm: 'sha256', files: [], rootDigest: 'ab'.repeat(32) },
+    resolved: {
+      registryIntegrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
+      treeRootDigest: 'ab'.repeat(32),
+    },
+    decided: { allowedBy: 'signed-company-manifest' },
+    ...overrides,
+  }
+}
+
 describe('packaged dsh bootstrap', () => {
   it('removes every Windows casing of Electron Node mode', () => {
     const environment = {
@@ -314,12 +341,119 @@ describe('packaged dsh bootstrap', () => {
 
       expect(load).toHaveBeenCalledOnce()
       expect(load).toHaveBeenCalledWith(expect.stringMatching(/@deepseek-ai\/dsh\/lib\/bin\.js$/u))
-      expect(argv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'add', 'example-plugin@1.0.0'])
+      // The allowed add must pin the exact specifier: pnpm's default caret
+      // save-prefix would break boot verification's lockfile check.
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
       expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
         profileName: 'desktop',
         packageName: 'manual-plugin-install',
         phase: 'awaiting-restart',
       })
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a user-typed --save-exact and injects it before an explicitly selected profile flag', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-save-exact-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    try {
+      const typedLoad = vi.fn(async () => undefined)
+      const typedArgv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--save-exact', 'example-plugin@1.0.0']
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, typedLoad,
+        typedArgv, companyLockedPolicy(), assetPath)
+
+      expect(typedLoad).toHaveBeenCalledOnce()
+      expect(typedArgv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
+
+      // Profile flags may legally sit between `add` and the package spec; the
+      // injected flag still lands directly before the positional package.
+      const profiledLoad = vi.fn(async () => undefined)
+      const profiledArgv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--profile', 'web', 'example-plugin@1.0.0']
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, profiledLoad,
+        profiledArgv, companyLockedPolicy(), assetPath)
+
+      expect(profiledLoad).toHaveBeenCalledOnce()
+      expect(profiledArgv.slice(2)).toEqual([
+        'plugin', 'add', '--profile', 'web', '--save-exact', 'example-plugin@1.0.0',
+      ])
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('denies a locked terminal add whose manifest is not newer than the receipts ratchet', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-ratchet-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // The catalog fixture carries sequence 42; a receipt recorded at 42 means
+    // a manifest of that sequence already allowed an install here, so the
+    // terminal gate must refuse to re-authorize adds under it.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': { installReceipts: [marketReceipt({ manifestSequence: 42 })] },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('stale-sequence')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a locked terminal add above the receipts ratchet and ignores unusable receipts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-floor-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // Sequence 41 is below the catalog's 42, and the malformed peer record
+    // contributes nothing, so the add stays allowed.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': {
+        installReceipts: [
+          marketReceipt({ manifestSequence: 41 }),
+          { receiptId: 'broken', receiptVersion: 2, packageName: 7 },
+        ],
+      },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    try {
+      const load = vi.fn(async () => undefined)
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, argv, companyLockedPolicy(), assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
     } finally {
       process.exitCode = originalExitCode
       rmSync(root, { recursive: true, force: true })

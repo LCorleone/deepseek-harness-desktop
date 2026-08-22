@@ -426,6 +426,20 @@ describe('published package surface', () => {
     expect(ready).toBeGreaterThan(markClean)
   })
 
+  it('feeds locked boot verification with production receipts and manifest bytes', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const inputs = main.indexOf('const bootVerificationInputs = policy.locked')
+    const prepare = main.indexOf('const prepared = prepareDesktopProfile(')
+
+    expect(main).toContain(
+      "import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'",
+    )
+    expect(main).toContain("desktopBootVerificationInputsFromSettings(policy, join(homeDir, 'settings.yaml'))")
+    expect(inputs).toBeGreaterThan(0)
+    expect(inputs).toBeLessThan(prepare)
+    expect(main.slice(prepare)).toContain('policy,\n      bootVerificationInputs,\n    )')
+  })
+
   it('claims plugin install recovery before profile composition and gates health in Electron main', () => {
     const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
     const fixedStatePath = main.indexOf("desktopInstallRecoveryStatePath(app.getPath('userData'))")
