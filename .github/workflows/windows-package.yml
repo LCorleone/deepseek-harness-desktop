@@ -10,8 +10,9 @@ env:
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
-  # Unsigned Windows x64 NSIS installer + portable archive, mirroring the
-  # proven desktop-windows CI job, with artifacts uploaded for download.
+  # Unsigned Windows x64 NSIS installer, mirroring the proven
+  # desktop-windows CI job, with a silent-install smoke test and the
+  # Setup.exe artifact uploaded for download.
   windows-package:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -37,10 +38,6 @@ jobs:
       # asserts POSIX-style file URLs and cannot pass on Windows runners.
       - name: Build Windows installer
         run: yarn workspace dsh-plugin-desktop dist:win
-      - name: Build Windows portable archive
-        env:
-          DSH_PACKAGE_CHECK_ALREADY_RAN: '1'
-        run: yarn workspace dsh-plugin-desktop dist:win-portable
       - name: Install smoke test (silent, diagnostic)
         shell: pwsh
         run: |
@@ -69,12 +66,10 @@ jobs:
           Write-Host "silent install OK: $exe ($total files)"
       - name: Print artifact hashes
         shell: pwsh
-        run: Get-FileHash dsh-plugin-desktop/dist/*.exe -Algorithm SHA256 | Format-List
-      - name: Upload Windows packages
+        run: Get-FileHash dsh-plugin-desktop/dist/*-Setup.exe -Algorithm SHA256 | Format-List
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: dsh-desktop-windows-x64
-          path: |
-            dsh-plugin-desktop/dist/*.exe
-            dsh-plugin-desktop/dist/*.zip
+          path: dsh-plugin-desktop/dist/*-Setup.exe
           if-no-files-found: error
