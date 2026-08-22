@@ -128,6 +128,22 @@ export function apply(ctx: Context): void {
 
 export { marketRoutes } from './host/routes.js'
 export { BUILT_IN_PROVIDERS, DefaultCatalogService } from './catalog/service.js'
+export {
+  COMPANY_CATALOG_ADAPTER_ID,
+  COMPANY_CATALOG_BUILT_IN_KEY,
+  COMPANY_CATALOG_CONTENT_FINAL_URL,
+  COMPANY_CATALOG_PROVIDER_ID,
+  CompanyCatalogUntrustedError,
+  createCompanyCatalogProvider,
+  SettingsCompanyManifestSequenceStore,
+  type CompanyCatalogCandidate,
+  type CompanyCatalogProvider,
+  type CompanyCatalogProviderOptions,
+  type CompanyCatalogVerification,
+  type CompanyManifestContentProvider,
+  type CompanyManifestSequenceStore,
+} from './catalog/company-provider.js'
+export type { MarketCompanyManifestRecord } from './catalog/source-store.js'
 export { dsh1024StoreAdapter } from './adapters/dsh-1024store.js'
 export { dshfindAdapter } from './adapters/dshfind.js'
 export type * from './api-types.js'

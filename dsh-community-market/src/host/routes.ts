@@ -83,6 +83,11 @@ const SETTINGS_SCHEMA = z.object({
     expiresAt: z.string(),
     providerRevision: z.string(),
   }).default(undefined as never),
+  companyManifest: z.object({
+    sequence: z.number().step(1),
+    keyId: z.string(),
+    verifiedAt: z.string(),
+  }).default(undefined as never),
 }) as unknown as z<MarketSettingsDocument>
 
 const ROUTE_STATE = '/api/community-market/state'
