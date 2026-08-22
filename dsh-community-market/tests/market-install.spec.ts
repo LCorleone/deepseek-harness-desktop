@@ -16,6 +16,8 @@ import {
   createNpmRegistryVerifier,
   MarketInstallError,
   MarketInstallService,
+  rejectAllInstallTargetAuthority,
+  type InstallTargetCandidate,
   type MarketDesktopPnpm,
   type MarketInstallReceipt,
 } from '../src/install/service.js'
@@ -316,6 +318,138 @@ describe('npm registry verification', () => {
       getJson.mockResolvedValueOnce({ finalUrl: 'https://registry.npmjs.org/x', value })
       await expect(verifier.verify({ packageName, version, repository }, new AbortController().signal))
         .rejects.toBeInstanceOf(MarketInstallError)
+    }
+  })
+})
+
+describe('install target whitelist and registry origin injection', () => {
+  it('fails install previews closed through the verification-failed surface', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      { installTargetAuthority: rejectAllInstallTargetAuthority },
+    )
+    service.observeCatalog(snapshot())
+
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({
+        code: 'verification-failed',
+        message: expect.stringContaining('trusted install whitelist'),
+      })
+    expect(calls).toEqual([])
+    expect(settings.receipts()).toEqual([])
+  })
+
+  it('rechecks the authority before execution and never starts the package manager', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope()
+    const decisions: InstallTargetCandidate[] = []
+    let allowed = true
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      {
+        installTargetAuthority: {
+          canInstall(candidate) {
+            decisions.push(candidate)
+            return { allowed }
+          },
+        },
+      },
+    )
+    service.observeCatalog(snapshot())
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(decisions).toEqual([{ packageName, version, integrity }])
+
+    allowed = false
+    await expect(service.executeInstall(preview.intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'verification-failed' })
+    expect(decisions).toEqual([
+      { packageName, version, integrity },
+      { packageName, version, integrity },
+    ])
+    expect(calls).toEqual([])
+    expect(settings.receipts()).toEqual([])
+    expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({})
+  })
+
+  it('uses the injected registry origin for verification and install flags', async () => {
+    const origin = 'https://registry.company.example'
+    const companyTarball = `${origin}/${packageName}/-/${packageName}-${version}.tgz`
+    const manifest = {
+      name: packageName,
+      version,
+      repository,
+      dist: { integrity, tarball: companyTarball },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }
+    const getJson = vi.fn<(...args: any[]) => Promise<{ finalUrl: string; value: unknown }>>(async () => ({
+      finalUrl: `${origin}/${packageName}/${version}`,
+      value: manifest,
+    }))
+    const verifier = createNpmRegistryVerifier({ getJson } as CatalogHttpClient, { allowedRegistryOrigin: origin })
+    await expect(verifier.verify({ packageName, version, repository }, new AbortController().signal))
+      .resolves.toEqual({ integrity, bundlePatch: './cordis.patch.yml', tarball: companyTarball })
+    expect(getJson).toHaveBeenCalledWith(
+      `${origin}/${packageName}/${version}`,
+      expect.any(AbortSignal),
+      { allowedOrigin: origin },
+    )
+    getJson.mockResolvedValueOnce({
+      finalUrl: `${origin}/${packageName}/${version}`,
+      value: { ...manifest, dist: { integrity, tarball } },
+    })
+    await expect(verifier.verify({ packageName, version, repository }, new AbortController().signal))
+      .rejects.toBeInstanceOf(MarketInstallError)
+
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      verifier,
+      { allowedRegistryOrigin: origin },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await expect(service.executeInstall(preview.intent, new AbortController().signal)).resolves.toMatchObject({
+      receipt: { packageName, version, integrity },
+    })
+    expect(calls[0]).toMatchObject({
+      args: ['add', '--save-exact', `--registry=${origin}/`, `${packageName}@${version}`],
+      dir: profileDir,
+    })
+  })
+
+  it('rejects injected registry origins that are not bare https origins', async () => {
+    const profileDir = await createProfile()
+    for (const allowedRegistryOrigin of [
+      'http://registry.company.example',
+      'https://user:pass@registry.company.example',
+      'https://registry.company.example/npm',
+      'not a url',
+    ]) {
+      expect(() => createNpmRegistryVerifier(
+        { getJson: vi.fn() } as unknown as CatalogHttpClient,
+        { allowedRegistryOrigin },
+      )).toThrow(TypeError)
+      expect(() => new MarketInstallService(
+        memoryScope().scope,
+        () => ({ name: 'web', dir: profileDir }),
+        runner(profileDir, []),
+        { verify: vi.fn(async () => verification) },
+        { allowedRegistryOrigin },
+      )).toThrow(TypeError)
     }
   })
 })

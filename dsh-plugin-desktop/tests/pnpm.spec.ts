@@ -397,6 +397,69 @@ describe('desktop pnpm Host service', () => {
     await harness.dispose()
   })
 
+  it('rejects install options that could redirect the npm registry or configuration', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-options-'))
+    const selectedBootstrap = bootstrap(root)
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      const harness = await createHarness([child], selectedBootstrap)
+      const recovery = {
+        packageName: 'example-plugin',
+        packageVersion: '1.0.0',
+        receiptId: 'receipt:test-install-options-0001',
+      }
+      for (const pnpmOptions of [
+        ['--registry', 'http://evil.example'],
+        ['--registry=http://evil.example'],
+        ['--@scope:registry', 'http://evil.example'],
+        ['--@scope:registry=http://evil.example'],
+        ['--config.x=1'],
+        ['--config.registry=http://evil.example'],
+        ['--userconfig', '/workspace/evil.npmrc'],
+        ['--globalconfig=/workspace/evil.npmrc'],
+        ['--reporter=ndjson', '--registry=http://evil.example'],
+      ]) {
+        await expect(harness.service.installPlugin({
+          pnpmOptions,
+          invokingDir: '/workspace',
+          recovery,
+        })).rejects.toThrow('must not override the npm registry or configuration')
+      }
+      await expect(harness.service.runPluginInstall(
+        ['add', '--save-exact', '--registry=http://evil.example', 'example-plugin@1.0.0'],
+        '/workspace',
+        recovery,
+      )).rejects.toThrow('must not override the npm registry or configuration')
+      expect(harness.spawn).not.toHaveBeenCalled()
+
+      const operation = await harness.service.installPlugin({
+        pnpmOptions: ['--save-exact', '--reporter=ndjson'],
+        invokingDir: '/workspace',
+        recovery,
+      })
+      expect(harness.spawn).toHaveBeenCalledOnce()
+      expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
+        selectedBootstrap.appExecutable,
+        '--expose-internals',
+        selectedBootstrap.dshBootstrapPath,
+        'plugin',
+        '--profile',
+        selectedBootstrap.activeProfileName,
+        'add',
+        '--save-exact',
+        '--reporter=ndjson',
+        'example-plugin@1.0.0',
+      ])
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('validates operation arguments and the plugin invocation directory before spawning', async () => {
     const harness = await createHarness([])
 
