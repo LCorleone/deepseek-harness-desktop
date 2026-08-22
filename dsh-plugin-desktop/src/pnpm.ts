@@ -158,24 +158,31 @@ function validatedArgs(args: readonly string[]): string[] {
 /** Canonical npm registry URL the desktop install path pins; only its exact value passes the audit. */
 const PINNED_NPM_REGISTRY = 'https://registry.npmjs.org/'
 
-/** Audit caller-supplied install flags; registry and npm-configuration redirects are rejected. */
+/** Single rejection message for every install option outside the allow-list. */
+const REJECTED_INSTALL_OPTION_MESSAGE = `${BIN_NAME}: desktop pnpm install options are restricted to --save-exact, --reporter=ndjson, and registry flags pinned to ${PINNED_NPM_REGISTRY}`
+
+function rejectedInstallOption(): Error {
+  return new Error(REJECTED_INSTALL_OPTION_MESSAGE)
+}
+
+/**
+ * Audit caller-supplied install options with an allow-list. Positional items
+ * are rejected so no second install target can ride along, and every flag not
+ * listed here is rejected: directory and workspace flags such as -C, --dir,
+ * --prefix, or --filter would let pnpm resolve a different project-level
+ * .npmrc, and configuration flags would redirect the registry. Registry flags
+ * pass only in the `=` form with the exact pinned value; separated values
+ * stay rejected because the bare flag and its value each fail the list.
+ */
 function auditInstallOptions(options: readonly string[]): void {
   for (const option of options) {
-    if (!option.startsWith('-')) continue
-    const name = option.replace(/^-+/u, '').split('=')[0] ?? ''
-    const value = option.includes('=') ? option.slice(option.indexOf('=') + 1) : undefined
+    if (option === '--save-exact' || option === '--reporter=ndjson') continue
+    if (!option.startsWith('--')) throw rejectedInstallOption()
+    const equals = option.indexOf('=')
+    const name = equals === -1 ? option.slice(2) : option.slice(2, equals)
+    const value = equals === -1 ? undefined : option.slice(equals + 1)
     const isRegistryFlag = name === 'registry' || name.endsWith(':registry')
-    if (
-      (isRegistryFlag && value !== PINNED_NPM_REGISTRY)
-      || (!isRegistryFlag && (
-        name === 'config'
-        || name.startsWith('config.')
-        || name === 'userconfig'
-        || name === 'globalconfig'
-        || name.includes('npmrc')))
-    ) {
-      throw new Error(`${BIN_NAME}: desktop pnpm install options must not override the npm registry or configuration`)
-    }
+    if (!isRegistryFlag || value !== PINNED_NPM_REGISTRY) throw rejectedInstallOption()
   }
 }
 

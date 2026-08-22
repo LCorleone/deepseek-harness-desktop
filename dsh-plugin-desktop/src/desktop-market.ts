@@ -115,6 +115,18 @@ export function desktopMarketSnapshotWithEffective(
   })
 }
 
+/**
+ * Raised when a provider selection is persisted while the policy locks the
+ * build to the company provider. Locked builds keep the user-writable request
+ * free of providers the composition layer would have to reject anyway.
+ */
+export class MarketProviderLockError extends Error {
+  constructor() {
+    super('desktop market provider selection is locked to the company provider by deployment policy')
+    this.name = 'MarketProviderLockError'
+  }
+}
+
 function isProvider(value: unknown): value is DesktopMarketProvider {
   return value === 'disabled' || value === 'community-market' || value === 'dsh-market'
 }
@@ -227,9 +239,10 @@ function assertRealStateDirectory(statePath: string): void {
 
 /**
  * Persist an explicit provider request with a locked, atomic replacement.
- * The persisted value is a request only: writing it never changes the
- * effective provider, which stays the company provider while the policy is
- * locked.
+ * Locked builds accept only the pinned company provider: any other request
+ * throws {@link MarketProviderLockError} without touching the state file, so
+ * the persisted request can never describe a provider the policy disallows.
+ * Writing it never changes the effective provider.
  */
 export async function writeDesktopMarketSelection(
   statePath: string,
@@ -238,6 +251,7 @@ export async function writeDesktopMarketSelection(
 ): Promise<DesktopMarketSnapshot> {
   assertDesktopMarketStatePath(statePath)
   if (!isProvider(provider)) throw new TypeError(`${BIN_NAME}: invalid Desktop Market provider`)
+  if (policy.locked && provider !== COMPANY_PROVIDER) throw new MarketProviderLockError()
   assertRealStateDirectory(statePath)
   const state: DesktopMarketStateV1 = Object.freeze({
     version: 1,
@@ -257,8 +271,9 @@ export async function writeDesktopMarketSelection(
 
 /**
  * Persist an explicit provider request using the fixed Electron user-data
- * path. Writing it never changes the effective provider while the policy is
- * locked.
+ * path. Locked builds reject every provider except the pinned company
+ * provider before any state is written; writing it never changes the
+ * effective provider while the policy is locked.
  */
 export async function selectDesktopMarketProvider(
   userDataDir: string,

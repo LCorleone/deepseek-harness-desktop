@@ -669,10 +669,14 @@ export function prepareDesktopProfile(
   let effectiveMarket: DesktopMarketProvider = 'disabled'
   let marketFailure: string | undefined
   const providerPatches: PatchOptions[] = []
-  if (marketSelection.requested !== 'disabled') {
+  // Compose from the policy-derived `effective` provider, never from the
+  // user-writable request: locked builds pin it to the company provider, so a
+  // persisted dsh-market request cannot activate the untrusted bundle here.
+  // Unlocked snapshots keep `effective === requested` (or fail-safe disabled).
+  if (marketSelection.effective !== 'disabled') {
     if (hasProviderConflict) {
       marketFailure = `${BIN_NAME}: conflicting Market provider Loader identity was removed`
-    } else if (marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider) {
+    } else if (marketSelection.effective === DESKTOP_MARKET_IDENTITIES.community.provider) {
       marketFailure = validateMarketPackage(
         DESKTOP_MARKET_IDENTITIES.community.packageName,
         bareModuleBaseUrl,

@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  MarketProviderLockError,
   assertDesktopMarketStatePath,
   desktopMarketStatePath,
   parseDesktopMarketState,
@@ -204,25 +205,55 @@ describe('Desktop Market explicit selection', () => {
 })
 
 describe('policy-pinned effective provider', () => {
-  it('keeps the company provider effective after a locked write of dsh-market', async () => {
+  it('rejects a locked write of dsh-market without touching the persisted state', async () => {
+    const userData = temporaryUserData()
+    await selectDesktopMarketProvider(userData, 'community-market', lockedPolicy())
+    const statePath = desktopMarketStatePath(userData)
+    const before = readFileSync(statePath, 'utf8')
+
+    await expect(selectDesktopMarketProvider(userData, 'dsh-market', lockedPolicy()))
+      .rejects.toThrowError(MarketProviderLockError)
+    await expect(selectDesktopMarketProvider(userData, 'dsh-market', lockedPolicy()))
+      .rejects.toThrow('locked to the company provider')
+
+    expect(readFileSync(statePath, 'utf8')).toBe(before)
+    expect(readdirSync(join(userData, 'desktop-market'))).toEqual(['state.json'])
+    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
+      requested: 'community-market',
+      effective: 'community-market',
+      legacyDefaulted: false,
+    })
+  })
+
+  it('rejects a locked write of disabled and leaves no state behind', async () => {
     const userData = temporaryUserData()
 
-    const selected = await selectDesktopMarketProvider(userData, 'dsh-market', lockedPolicy())
+    await expect(selectDesktopMarketProvider(userData, 'disabled', lockedPolicy()))
+      .rejects.toThrowError(MarketProviderLockError)
+
+    expect(existsSync(join(userData, 'desktop-market'))).toBe(false)
+    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
+      requested: 'disabled',
+      effective: 'community-market',
+      legacyDefaulted: true,
+    })
+  })
+
+  it('persists the company provider while locked and keeps it effective', async () => {
+    const userData = temporaryUserData()
+
+    const selected = await selectDesktopMarketProvider(userData, 'community-market', lockedPolicy())
 
     expect(selected).toEqual({
-      requested: 'dsh-market',
+      requested: 'community-market',
       effective: 'community-market',
       legacyDefaulted: false,
     })
     const persisted = JSON.parse(
       readFileSync(desktopMarketStatePath(userData), 'utf8'),
     ) as Record<string, unknown>
-    expect(persisted).toEqual({ version: 1, requested: 'dsh-market', legacyDefaulted: false })
-    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
-      requested: 'dsh-market',
-      effective: 'community-market',
-      legacyDefaulted: false,
-    })
+    expect(persisted).toEqual({ version: 1, requested: 'community-market', legacyDefaulted: false })
+    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual(selected)
   })
 
   it('pins the company provider for every request while the same state stays unlocked-effective', async () => {
