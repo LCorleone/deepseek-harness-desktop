@@ -13,8 +13,7 @@ import type { CatalogHttpClient, NormalizedRepositoryIdentity } from '../contrac
 import type { CatalogSnapshot } from '../contracts/index.js'
 import { manualInstallHints } from './manual.js'
 
-const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
-const NPM_REGISTRY = `${NPM_REGISTRY_ORIGIN}/`
+const DEFAULT_NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
 const MAX_MANIFEST_BYTES = 1024 * 1024
 const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024
@@ -166,6 +165,39 @@ export interface MarketNpmPackageVerification {
   readonly tarball: string
 }
 
+/** One npm install target already verified against the allowed registry. */
+export interface InstallTargetCandidate {
+  readonly packageName: string
+  readonly version: string
+  readonly integrity: string
+}
+
+/** Whitelist decision for one verified npm install target. */
+export interface InstallTargetDecision {
+  readonly allowed: boolean
+  readonly reason?: string
+}
+
+/**
+ * Host-owned install whitelist consulted after npm verification and before any
+ * package-manager start. The default allows every verified target; locked
+ * Desktop builds inject a reject-all authority until the signed company
+ * manifest query lands (P2).
+ */
+export interface InstallTargetAuthority {
+  canInstall(candidate: InstallTargetCandidate): InstallTargetDecision
+}
+
+/** Default authority used when no whitelist is injected; every verified target is allowed. */
+export const allowAllInstallTargetAuthority: InstallTargetAuthority = {
+  canInstall: () => ({ allowed: true }),
+}
+
+/** Fail-closed authority active until the signed company manifest query lands (P2). */
+export const rejectAllInstallTargetAuthority: InstallTargetAuthority = {
+  canInstall: () => ({ allowed: false, reason: 'no signed install manifest is trusted yet' }),
+}
+
 export interface MarketInstallServiceOptions {
   readonly now?: () => number
   readonly intentTtlMs?: number
@@ -174,6 +206,10 @@ export interface MarketInstallServiceOptions {
   readonly maxCandidates?: number
   /** Host-owned policy state; Renderer values must never reach this callback. */
   readonly disabledPackageNames?: () => readonly string[]
+  /** Registry origin permitted for verification and install flags; defaults to the official npm registry. */
+  readonly allowedRegistryOrigin?: string
+  /** Host-owned install whitelist; defaults to {@link allowAllInstallTargetAuthority}. */
+  readonly installTargetAuthority?: InstallTargetAuthority
 }
 
 function stableExactVersion(value: unknown): value is string {
@@ -284,11 +320,11 @@ function assertRuntimeCompatibility(manifest: Record<string, unknown>): void {
   }
 }
 
-function officialNpmTarball(value: unknown): value is string {
+function officialNpmTarball(value: unknown, allowedRegistryOrigin: string): value is string {
   if (typeof value !== 'string') return false
   try {
     const url = new URL(value)
-    return url.origin === NPM_REGISTRY_ORIGIN
+    return url.origin === allowedRegistryOrigin
       && url.protocol === 'https:'
       && !url.username
       && !url.password
@@ -299,8 +335,29 @@ function officialNpmTarball(value: unknown): value is string {
   }
 }
 
+/** Validate one bare https origin supplied as the allowed npm registry. */
+function allowedNpmRegistryOrigin(value: string): string {
+  let url: URL
+  try { url = new URL(value) }
+  catch { throw new TypeError('allowed npm registry origin must be a bare https origin') }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.origin !== value) {
+    throw new TypeError('allowed npm registry origin must be a bare https origin')
+  }
+  return url.origin
+}
+
+/** Options for {@link createNpmRegistryVerifier}. */
+export interface MarketNpmRegistryVerifierOptions {
+  /** Registry origin accepted for npm verification; defaults to the official npm registry. */
+  readonly allowedRegistryOrigin?: string
+}
+
 /** Build the exact-version npm registry verifier used by the Host preview and execution paths. */
-export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPackageVerifier {
+export function createNpmRegistryVerifier(
+  http: CatalogHttpClient,
+  options: MarketNpmRegistryVerifierOptions = {},
+): MarketNpmPackageVerifier {
+  const allowedRegistryOrigin = allowedNpmRegistryOrigin(options.allowedRegistryOrigin ?? DEFAULT_NPM_REGISTRY_ORIGIN)
   return {
     async verify(candidate, signal) {
       if (
@@ -310,10 +367,10 @@ export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPac
       ) {
         throw new MarketInstallError('verification-failed', 'The plugin package target is invalid.')
       }
-      const url = `${NPM_REGISTRY_ORIGIN}/${encodeURIComponent(candidate.packageName)}/${encodeURIComponent(candidate.version)}`
+      const url = `${allowedRegistryOrigin}/${encodeURIComponent(candidate.packageName)}/${encodeURIComponent(candidate.version)}`
       let response
       try {
-        response = await http.getJson(url, signal, { allowedOrigin: NPM_REGISTRY_ORIGIN })
+        response = await http.getJson(url, signal, { allowedOrigin: allowedRegistryOrigin })
       } catch {
         throw new MarketInstallError('verification-failed', 'The plugin package could not be verified with npm.')
       }
@@ -322,7 +379,7 @@ export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPac
       catch { throw new MarketInstallError('verification-failed', 'The npm verification response was invalid.') }
       const metadata = response.value
       if (
-        finalOrigin !== NPM_REGISTRY_ORIGIN
+        finalOrigin !== allowedRegistryOrigin
         || metadata === null
         || typeof metadata !== 'object'
         || Array.isArray(metadata)
@@ -368,7 +425,7 @@ export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPac
       const tarball = dist !== null && typeof dist === 'object' && !Array.isArray(dist)
         ? (dist as Record<string, unknown>).tarball
         : undefined
-      if (!sha512Integrity(integrity) || !officialNpmTarball(tarball) || !safeBundlePatch(patch)) {
+      if (!sha512Integrity(integrity) || !officialNpmTarball(tarball, allowedRegistryOrigin) || !safeBundlePatch(patch)) {
         throw new MarketInstallError('verification-failed', 'The npm package is missing a verifiable DSH bundle artifact.')
       }
       return { integrity, bundlePatch: patch, tarball }
@@ -597,6 +654,8 @@ export class MarketInstallService {
   private readonly maxIntents: number
   private readonly maxCandidates: number
   private readonly disabledPackageNames: () => readonly string[]
+  private readonly allowedRegistryOrigin: string
+  private readonly installTargetAuthority: InstallTargetAuthority
   private readonly generation = new AbortController()
   private recoveryReconciliation: Promise<void> | undefined
   private operationActive = false
@@ -615,6 +674,13 @@ export class MarketInstallService {
     this.maxIntents = options.maxIntents ?? MAX_INTENTS
     this.maxCandidates = options.maxCandidates ?? MAX_CANDIDATES
     this.disabledPackageNames = options.disabledPackageNames ?? (() => [])
+    this.allowedRegistryOrigin = allowedNpmRegistryOrigin(
+      options.allowedRegistryOrigin ?? DEFAULT_NPM_REGISTRY_ORIGIN,
+    )
+    this.installTargetAuthority = options.installTargetAuthority ?? allowAllInstallTargetAuthority
+    if (typeof this.installTargetAuthority.canInstall !== 'function') {
+      throw new TypeError('invalid market install target authority')
+    }
     for (const [label, value] of [
       ['intent TTL', this.intentTtlMs],
       ['candidate TTL', this.candidateTtlMs],
@@ -781,6 +847,7 @@ export class MarketInstallService {
     if (this.candidates.get(key) !== candidate) {
       throw new MarketInstallError('not-available', 'The catalog source changed during verification. Refresh it and try again.')
     }
+    this.assertInstallTargetAllowed(candidate, verification)
     const token = this.issueIntent({
       kind: 'install',
       candidate,
@@ -828,6 +895,7 @@ export class MarketInstallService {
       ) {
         throw new MarketInstallError('verification-failed', 'The npm package changed after preview. Preview the install again.')
       }
+      this.assertInstallTargetAllowed(candidate, verification)
       await assertNotInstalled(profile, candidate.packageName)
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
@@ -1187,12 +1255,38 @@ export class MarketInstallService {
     }
   }
 
+  /** Fail closed with the verification surface unless the whitelist allows the verified target. */
+  private assertInstallTargetAllowed(
+    candidate: InstallCandidate,
+    verification: MarketNpmPackageVerification,
+  ): void {
+    let decision: InstallTargetDecision
+    try {
+      decision = this.installTargetAuthority.canInstall({
+        packageName: candidate.packageName,
+        version: candidate.version,
+        integrity: verification.integrity,
+      })
+    } catch (cause) {
+      if (cause instanceof MarketInstallError) throw cause
+      throw new MarketInstallError('verification-failed', 'The trusted install whitelist could not be evaluated.')
+    }
+    if (decision.allowed === true) return
+    throw new MarketInstallError(
+      'verification-failed',
+      decision.reason === undefined
+        ? 'The plugin package is not in the trusted install whitelist.'
+        : `The plugin package is not in the trusted install whitelist: ${decision.reason}`,
+    )
+  }
+
   private installOptions(packageName: string): readonly string[] {
+    const registry = `${this.allowedRegistryOrigin}/`
     const scope = packageName.startsWith('@') ? packageName.split('/', 1)[0] : undefined
     return [
       '--save-exact',
-      `--registry=${NPM_REGISTRY}`,
-      ...(scope === undefined ? [] : [`--${scope}:registry=${NPM_REGISTRY}`]),
+      `--registry=${registry}`,
+      ...(scope === undefined ? [] : [`--${scope}:registry=${registry}`]),
     ]
   }
 

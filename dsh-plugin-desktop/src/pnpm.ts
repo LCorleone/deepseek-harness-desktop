@@ -80,7 +80,7 @@ export interface DesktopPluginInstallRecovery {
 
 /** Complete request for one Desktop-owned, recoverable plugin installation. */
 export interface DesktopPluginInstallRequest {
-  /** pnpm flags after the enforced `add` command and before the exact generated target. */
+  /** pnpm flags after the enforced `add` command and before the exact generated target; registry and npm-configuration flags are rejected. */
   readonly pnpmOptions?: readonly string[]
   /** Absolute caller directory used to anchor relative package specifications. */
   readonly invokingDir: string
@@ -153,6 +153,25 @@ function validatedArgs(args: readonly string[]): string[] {
     throw new Error(`${BIN_NAME}: desktop pnpm arguments must not contain NUL`)
   }
   return [...args]
+}
+
+/** Audit caller-supplied install flags; registry and npm-configuration redirects are rejected. */
+function auditInstallOptions(options: readonly string[]): void {
+  for (const option of options) {
+    if (!option.startsWith('-')) continue
+    const name = option.replace(/^-+/u, '').split('=')[0] ?? ''
+    if (
+      name === 'registry'
+      || name.endsWith(':registry')
+      || name === 'config'
+      || name.startsWith('config.')
+      || name === 'userconfig'
+      || name === 'globalconfig'
+      || name.includes('npmrc')
+    ) {
+      throw new Error(`${BIN_NAME}: desktop pnpm install options must not override the npm registry or configuration`)
+    }
+  }
 }
 
 /** Validate the narrow dsh-market command shape before it crosses the process boundary. */
@@ -351,6 +370,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     if (resolvedOptions.some(argument => argument.includes('\0'))) {
       throw new Error(`${BIN_NAME}: desktop pnpm arguments must not contain NUL`)
     }
+    auditInstallOptions(resolvedOptions)
     assertAbsolutePath('plugin invoking directory', request.invokingDir)
     if (this.closed) throw new Error(`${BIN_NAME}: desktop pnpm generation is closed`)
     if (this.active !== undefined || this.installPreparationActive) {
