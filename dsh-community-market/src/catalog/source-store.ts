@@ -16,10 +16,22 @@ export interface MarketCatalogCache {
   readonly providerRevision?: string
 }
 
+/**
+ * Persisted anti-rollback state of the company manifest chain: the highest
+ * sequence this installation has verified plus the trust-root key that
+ * verified it. Written only after a fully successful P2-1 verification.
+ */
+export interface MarketCompanyManifestRecord {
+  readonly sequence: number
+  readonly keyId: string
+  readonly verifiedAt: string
+}
+
 export interface MarketSettingsDocument {
   readonly sources: readonly LocalSourceRecord[]
   readonly installReceipts?: readonly MarketInstallReceipt[]
   readonly catalogCache?: MarketCatalogCache
+  readonly companyManifest?: MarketCompanyManifestRecord
 }
 
 /**

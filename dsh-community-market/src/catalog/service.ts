@@ -60,6 +60,26 @@ const adapters = new Map<string, CatalogAdapter>([
   [dshfindAdapter.adapterId, dshfindAdapter],
 ])
 
+/**
+ * Merge deployment-injected adapters (e.g. the policy-configured company
+ * manifest provider) over the built-ins. The company provider is never a
+ * compile-time singleton: its manifest source and trust roots come from the
+ * embedding Host, so it reaches the service through this registration point.
+ */
+function createAdapterRegistry(injected?: readonly CatalogAdapter[]): ReadonlyMap<string, CatalogAdapter> {
+  const registry = new Map(adapters)
+  for (const adapter of injected ?? []) {
+    if (adapter === null || typeof adapter !== 'object' || typeof adapter.adapterId !== 'string' || adapter.adapterId.length === 0) {
+      throw new TypeError('injected catalog adapters must be CatalogAdapter objects')
+    }
+    if (registry.has(adapter.adapterId)) {
+      throw new TypeError(`catalog adapter ${adapter.adapterId} is registered twice`)
+    }
+    registry.set(adapter.adapterId, adapter)
+  }
+  return registry
+}
+
 const MAX_CATALOG_ITEMS = 10_000
 const MAX_CATALOG_PAGES = 10_001
 const DEFAULT_CATALOG_SCAN_CACHE_TTL_MS = 5 * 60 * 1000
@@ -247,6 +267,8 @@ export interface CatalogServiceOptions {
   readonly maxConcurrentSources?: number
   readonly catalogScanCacheTtlMs?: number
   readonly adapterHttpClients?: ReadonlyMap<string, CatalogHttpClient>
+  /** Deployment-injected adapters layered over the built-ins; duplicate IDs are rejected. */
+  readonly adapters?: readonly CatalogAdapter[]
   readonly media?: CatalogMediaRegistry
   /** Observe only Host-validated normalized snapshots; used by local capabilities such as install preview. */
   readonly observeSnapshot?: (snapshot: CatalogSnapshot) => void
@@ -347,6 +369,7 @@ export class DefaultCatalogService implements CatalogService {
   private readonly catalogScanCacheTtlMs: number
   private readonly sourceConcurrency: ConcurrencyGate
   private readonly now: () => number
+  private readonly adapters: ReadonlyMap<string, CatalogAdapter>
   private readonly adapterHttpClients: ReadonlyMap<string, CatalogHttpClient>
   private readonly media: CatalogMediaRegistry
   private readonly observeSnapshot: ((snapshot: CatalogSnapshot) => void) | undefined
@@ -378,6 +401,7 @@ export class DefaultCatalogService implements CatalogService {
     }
     this.sourceConcurrency = new ConcurrencyGate(maxConcurrentSources)
     this.now = options.now ?? Date.now
+    this.adapters = createAdapterRegistry(options.adapters)
     this.adapterHttpClients = options.adapterHttpClients ?? new Map()
     this.media = options.media ?? unavailableMedia
     this.observeSnapshot = options.observeSnapshot
@@ -557,7 +581,7 @@ export class DefaultCatalogService implements CatalogService {
         if (this.now() >= cachedAfterWait.expiresAt) this.revokeSourceCursors(source.sourceRecordId)
         this.catalogScanCache.delete(key)
       }
-      const adapter = adapters.get(source.adapterId)
+      const adapter = this.adapters.get(source.adapterId)
       if (adapter === undefined) throw new Error('catalog adapter unavailable')
       const invalidationController = new AbortController()
       const controllers = this.catalogScanControllers.get(key) ?? new Set<AbortController>()
