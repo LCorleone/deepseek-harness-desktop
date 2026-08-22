@@ -41,6 +41,22 @@ jobs:
         env:
           DSH_PACKAGE_CHECK_ALREADY_RAN: '1'
         run: yarn workspace dsh-plugin-desktop dist:win-portable
+      - name: Install smoke test (silent)
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem "dsh-plugin-desktop/dist/*-Setup.exe").FullName
+          Write-Host "Installing $installer"
+          $p = Start-Process -FilePath $installer -ArgumentList "/S" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "silent install exited with $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\DSH Desktop\DSH Desktop.exe"
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -ErrorAction SilentlyContinue | Write-Host
+            throw "installed exe not found: $exe"
+          }
+          Write-Host "silent install OK: $exe"
+      - name: Print artifact hashes
+        shell: pwsh
+        run: Get-FileHash dsh-plugin-desktop/dist/*.exe -Algorithm SHA256 | Format-List
       - name: Upload Windows packages
         uses: actions/upload-artifact@v4
         with:
