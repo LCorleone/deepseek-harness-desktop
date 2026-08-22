@@ -1,0 +1,284 @@
+/**
+ * Company catalog publishing CLI (P2-6).
+ *
+ * Signs the reviewed allowlist into the canonical, ed25519-signed company
+ * manifest consumed by DSH Desktop (schema:
+ * dsh-community-market/docs/schemas/company-manifest.schema.json). Plain
+ * Node script: no build step, no dependencies beyond Node built-ins and the
+ * built dsh-community-market workspace package.
+ *
+ * Signing material comes only from the environment:
+ *   COMPANY_CATALOG_SIGNING_KEY      base64 PKCS#8 DER ed25519 private key
+ *   COMPANY_CATALOG_KEY_ID           keyId written into the signature block
+ *   COMPANY_CATALOG_KEY_FINGERPRINT  optional pinned trust-root fingerprint
+ */
+
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { loadAllowlist, applyRevocation, entryKey, saveAllowlist } from './lib/allowlist.mjs'
+import { generateSigningMaterial, loadSigningKeyFromEnv } from './lib/keys.mjs'
+import { loadMarketLibrary } from './lib/market.mjs'
+import { fetchPackageDist } from './lib/registry.mjs'
+import {
+  expiryFromDays,
+  publishManifest,
+  readLastSequence,
+  resolveSequence,
+  verifyManifestText,
+} from './lib/pipeline.mjs'
+import { runSelftest } from './lib/selftest.mjs'
+
+const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
+
+const USAGE = `Usage: node tools/company-catalog/cli.mjs <command> [options]
+
+Commands:
+  build                        Fetch dist integrity for every allowlist entry from
+                               registry.npmjs.org, assemble, sign, verify, and publish
+                               the manifest (sequence = persisted + 1).
+  revoke <pkg>[@<version>]     Mark allowlist entries revoked:true and reissue the
+                               manifest with a higher sequence (entries are kept).
+  verify [path]                Verify a manifest file end to end
+                               (default: out/catalog-manifest.json).
+  keygen                       Generate an ed25519 key pair and print the pipeline
+                               environment values (private material — handle with care).
+  selftest                     End-to-end smoke test with an ephemeral key; never
+                               publishes, never touches state/ or out/.
+  help                         Show this help.
+
+Options:
+  --allowlist <path>     Allowlist file   (default: tools/company-catalog/allowlist.json)
+  --out <path>           Manifest output  (default: tools/company-catalog/out/catalog-manifest.json)
+  --state-dir <path>     Sequence state   (default: tools/company-catalog/state)
+  --sequence <n>         Explicit sequence; must strictly exceed the persisted one
+  --expires-days <n>     expiresAt horizon in days (default: 90)
+  --force-offline        selftest only: skip the npm registry segment
+
+Signing environment:
+  COMPANY_CATALOG_SIGNING_KEY       base64 PKCS#8 DER ed25519 private key, single line;
+                                    read from the environment only, never from files
+  COMPANY_CATALOG_KEY_ID            keyId embedded in the signature block
+  COMPANY_CATALOG_KEY_FINGERPRINT   optional 64-hex sha256 of the raw public key; a
+                                    mismatch aborts publishing`
+
+const fail = (message) => {
+  console.error(`company-catalog: ${message}`)
+  process.exitCode = 1
+}
+
+/** Minimal hand-rolled parser: `--flag value`, `--flag=value`, positionals. */
+function parseArgs(argv) {
+  const positionals = []
+  const flags = {}
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'expires-days'])
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (!argument.startsWith('--')) {
+      positionals.push(argument)
+      continue
+    }
+    const equals = argument.indexOf('=')
+    const name = (equals === -1 ? argument.slice(2) : argument.slice(2, equals))
+    if (!valueFlags.has(name)) {
+      if (equals !== -1) throw new Error(`--${name} does not take a value`)
+      flags[name] = true
+      continue
+    }
+    const value = equals === -1 ? argv[index + 1] : argument.slice(equals + 1)
+    if (value === undefined) throw new Error(`--${name} requires a value`)
+    if (equals === -1) index += 1
+    flags[name] = value
+  }
+  return { positionals, flags }
+}
+
+const integerFlag = (flags, name) => {
+  const value = flags[name]
+  if (value === undefined) return undefined
+  if (!/^-?[0-9]+$/u.test(value)) throw new Error(`--${name} must be an integer (got '${value}')`)
+  return Number.parseInt(value, 10)
+}
+
+function defaultPaths(flags) {
+  // Explicit paths are cwd-relative (or absolute); defaults live in the tool.
+  const fromCwd = (value) => resolve(process.cwd(), value)
+  return {
+    allowlistPath: flags.allowlist !== undefined ? fromCwd(flags.allowlist) : resolve(TOOL_DIR, 'allowlist.json'),
+    outPath: flags.out !== undefined ? fromCwd(flags.out) : resolve(TOOL_DIR, join('out', 'catalog-manifest.json')),
+    stateDir: flags['state-dir'] !== undefined ? fromCwd(flags['state-dir']) : resolve(TOOL_DIR, 'state'),
+  }
+}
+
+/** Resolve registry dist for every allowlist entry; hard-fails on any error. */
+async function resolveDists(entries) {
+  const dists = new Map()
+  for (const entry of entries) {
+    const dist = await fetchPackageDist(entry.packageName, entry.version)
+    console.log(`registry: ${entryKey(entry)} → ${dist.integrity} (tarball ${dist.tarball})`)
+    dists.set(entryKey(entry), dist)
+  }
+  return dists
+}
+
+/** Shared tail of `build` and `revoke`: publish the current allowlist. */
+async function publishFromAllowlist(flags) {
+  const market = await loadMarketLibrary()
+  const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  const { allowlistPath, outPath, stateDir } = defaultPaths(flags)
+  const entries = loadAllowlist(allowlistPath)
+  const dists = await resolveDists(entries)
+  const lastSequence = readLastSequence(stateDir)
+  const sequence = resolveSequence(integerFlag(flags, 'sequence'), lastSequence)
+  const { manifest, fingerprint } = publishManifest({
+    market,
+    entries,
+    dists,
+    sequence,
+    expiresAt: expiryFromDays(integerFlag(flags, 'expires-days') ?? 90),
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence: lastSequence,
+    outPath,
+    stateDir,
+  })
+  const revoked = manifest.packages.filter((entry) => entry.revoked).length
+  console.log('published company manifest:')
+  console.log(`  sequence:    ${String(manifest.sequence)} (persisted; was ${String(lastSequence)})`)
+  console.log(`  expiresAt:   ${manifest.expiresAt}`)
+  console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked)`)
+  console.log(`  keyId:       ${keyId}`)
+  console.log(`  fingerprint: ${fingerprint}`)
+  console.log(`  manifest:    ${outPath}`)
+  console.log(`  state:       ${resolve(stateDir, 'last-sequence.json')}`)
+}
+
+async function commandBuild(flags) {
+  await publishFromAllowlist(flags)
+}
+
+async function commandRevoke(positionals, flags) {
+  if (positionals.length !== 1) throw new Error("revoke takes exactly one argument: <package>[@<version>]")
+  const spec = positionals[0]
+  const { allowlistPath } = defaultPaths(flags)
+  const entries = loadAllowlist(allowlistPath)
+  const { entries: updated, matches } = applyRevocation(entries, spec)
+  saveAllowlist(allowlistPath, updated)
+  console.log(`allowlist: ${matches.join(', ')} marked revoked:true (entry kept; revocation is a state, not a deletion)`)
+  try {
+    await publishFromAllowlist(flags)
+  } catch (error) {
+    console.error('company-catalog: allowlist updated, but the reissue failed; the revocation stays recorded — run build again once the cause is fixed.')
+    fail(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function commandVerify(positionals, flags) {
+  const market = await loadMarketLibrary()
+  const { outPath, stateDir } = defaultPaths(flags)
+  const path = positionals.length > 0 ? resolve(process.cwd(), positionals[0]) : outPath
+  let text
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch (error) {
+    throw new Error(`cannot read manifest ${path} (${error.code ?? error.message})`)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`manifest ${path} is not valid JSON: ${error.message}`)
+  }
+  const signature = parsed?.signature
+  if (parsed === null || typeof parsed !== 'object' || typeof signature?.keyId !== 'string') {
+    throw new Error(`manifest ${path} carries no readable signature.keyId`)
+  }
+  const pinned = process.env.COMPANY_CATALOG_KEY_FINGERPRINT
+  let fingerprint
+  if (pinned !== undefined) {
+    fingerprint = pinned
+  } else {
+    const publicKey = Buffer.from(signature.publicKey ?? '', 'base64')
+    fingerprint = market.ed25519PublicKeyFingerprint(publicKey)
+    console.log('note: COMPANY_CATALOG_KEY_FINGERPRINT is unset — trusting the key embedded in the file (structural check, not a trust decision)')
+  }
+  // Anti-rollback is a client-side replay concern; an operator checking an
+  // artifact verifies its integrity (canonical bytes, schema, trust root,
+  // signature, expiry) and is told how its sequence relates to the state.
+  const persistedSequence = readLastSequence(stateDir)
+  const verification = verifyManifestText(market, text, { fingerprint, keyId: signature.keyId })
+  if (!verification.ok) {
+    throw new Error(`verification failed (${verification.code}): ${verification.reason}`)
+  }
+  const sequenceRelation = verification.manifest.sequence === persistedSequence
+    ? `matches the persisted sequence ${String(persistedSequence)}`
+    : verification.manifest.sequence > persistedSequence
+      ? `is ahead of the persisted sequence ${String(persistedSequence)} (state is behind this artifact)`
+      : `is below the persisted sequence ${String(persistedSequence)} — clients that saw the newer manifest will reject this artifact as stale-sequence (fine when auditing old artifacts)`
+  console.log(`manifest ${path}: VERIFIED`)
+  console.log(`  keyId:       ${verification.keyId}`)
+  console.log(`  fingerprint: ${verification.fingerprint}`)
+  console.log(`  sequence:    ${String(verification.manifest.sequence)} (${sequenceRelation})`)
+  console.log(`  expiresAt:   ${verification.manifest.expiresAt}`)
+  console.log(`  packages:    ${String(verification.manifest.packages.length)} (${String(verification.manifest.packages.filter((e) => e.revoked).length)} revoked)`)
+}
+
+async function commandKeygen() {
+  const material = generateSigningMaterial()
+  console.log('company catalog signing key (ed25519) — PRIVATE MATERIAL below; store it in a secret manager.')
+  console.log('')
+  console.log(`COMPANY_CATALOG_SIGNING_KEY=${material.signingKey}`)
+  console.log(`COMPANY_CATALOG_KEY_ID=${material.suggestedKeyId}`)
+  console.log(`COMPANY_CATALOG_KEY_FINGERPRINT=${material.fingerprint}`)
+  console.log('')
+  console.log('deployment-policy trust root (dsh-plugin-desktop policy.trustRoots entry):')
+  console.log(`  { "keyId": "${material.suggestedKeyId}", "fingerprint": "${material.fingerprint}" }`)
+  console.log(`raw public key (base64): ${material.publicKey}`)
+  console.log('the private key is only ever passed through the environment; this tool never reads or writes key files.')
+}
+
+async function commandSelftest(flags) {
+  const market = await loadMarketLibrary()
+  const segments = await runSelftest({
+    toolDir: TOOL_DIR,
+    market,
+    forceOffline: flags['force-offline'] === true,
+  })
+  const skipped = segments.filter((segment) => segment.status === 'skip')
+  const summary = skipped.length === 0
+    ? `selftest: PASS — ${String(segments.length)}/${String(segments.length)} segments ok`
+    : `selftest: PASS — ${String(segments.length - skipped.length)}/${String(segments.length)} segments ok, skipped: ${skipped.map((segment) => segment.name).join(', ')}`
+  console.log('')
+  console.log(summary)
+}
+
+async function main() {
+  const [command, ...rest] = process.argv.slice(2)
+  if (command === undefined || command === 'help' || command === '--help' || command === '-h') {
+    console.log(USAGE)
+    return
+  }
+  let flags
+  let positionals
+  try {
+    ;({ positionals, flags } = parseArgs(rest))
+  } catch (error) {
+    fail(error.message)
+    console.error('')
+    console.error(USAGE)
+    return
+  }
+  try {
+    if (command === 'build') await commandBuild(flags)
+    else if (command === 'revoke') await commandRevoke(positionals, flags)
+    else if (command === 'verify') await commandVerify(positionals, flags)
+    else if (command === 'keygen') await commandKeygen()
+    else if (command === 'selftest') await commandSelftest(flags)
+    else fail(`unknown command '${command}'\n\n${USAGE}`)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error))
+  }
+}
+
+await main()

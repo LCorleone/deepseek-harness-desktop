@@ -1,0 +1,153 @@
+/**
+ * The reviewed allowlist: the only human-authored input of the pipeline.
+ * Each entry names an exact npm package version plus the manifest data the
+ * schema (`dsh-community-market/docs/schemas/company-manifest.schema.json`)
+ * requires; the pipeline fetches the tarball integrity from the official
+ * registry at build time, never from this file.
+ *
+ * Field rules mirror the schema so bad entries fail here, at review time,
+ * with the same semantics the market verifier enforces on the manifest.
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs'
+
+/** npm package name grammar accepted by the manifest schema. */
+export const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
+/** Exact stable semver — prerelease and build metadata are not signable. */
+export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
+/** Characters the schema forbids inside bundlePatch (controls and bidi marks). */
+const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
+
+const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
+const ENTRY_FIELDS = ['bundlePatch', 'packageName', 'revoked', 'runtime', 'version']
+
+/** Mirror of the market's safeBundlePatchPath guard plus the schema character class. */
+export function isSafeBundlePatchPath(value) {
+  if (typeof value !== 'string' || value.length === 0 || BUNDLE_PATCH_FORBIDDEN.test(value)) return false
+  if (value.includes('\\')) return false
+  const path = value.startsWith('./') ? value.slice(2) : value
+  return path.length > 0
+    && !path.startsWith('/')
+    && path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes(':'))
+}
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/**
+ * Validate and normalize one allowlist entry. Returns
+ * `{ok: true, value: {packageName, version, bundlePatch, revoked, runtime}}`
+ * or `{ok: false, reason}`. Optional runtime ranges are kept only when
+ * present; their node-semver validity is enforced later by the market
+ * verifier, which owns the semver grammar.
+ */
+export function validateAllowlistEntry(entry, at) {
+  if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
+  const unknown = Object.keys(entry).filter((key) => !ENTRY_FIELDS.includes(key))
+  if (unknown.length > 0) return { ok: false, reason: `${at} has unknown field(s) ${unknown.join(', ')}` }
+
+  const { packageName, version, bundlePatch, runtime } = entry
+  if (typeof packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(packageName)) {
+    return { ok: false, reason: `${at}.packageName must be an npm package name (scoped names allowed, lowercase)` }
+  }
+  if (typeof version !== 'string' || !STABLE_VERSION_PATTERN.test(version)) {
+    return { ok: false, reason: `${at}.version must be an exact stable semver (X.Y.Z, no prerelease or build metadata)` }
+  }
+  if (!isSafeBundlePatchPath(bundlePatch)) {
+    return { ok: false, reason: `${at}.bundlePatch must be a relative path inside the package without dot segments, backslashes, or drive letters` }
+  }
+  const revoked = entry.revoked ?? false
+  if (typeof revoked !== 'boolean') return { ok: false, reason: `${at}.revoked must be a boolean` }
+  if (!isPlainObject(runtime)) return { ok: false, reason: `${at}.runtime must be an object` }
+  const runtimeUnknown = Object.keys(runtime).filter((key) => !RUNTIME_RANGE_FIELDS.includes(key))
+  if (runtimeUnknown.length > 0) {
+    return { ok: false, reason: `${at}.runtime has unknown field(s) ${runtimeUnknown.join(', ')}` }
+  }
+  const normalizedRuntime = {}
+  for (const field of RUNTIME_RANGE_FIELDS) {
+    const range = runtime[field]
+    if (range === undefined) continue
+    if (typeof range !== 'string' || range.length === 0) {
+      return { ok: false, reason: `${at}.runtime.${field} must be a non-empty node-semver range string` }
+    }
+    normalizedRuntime[field] = range
+  }
+  if (typeof normalizedRuntime.dshRuntimeVersion !== 'string') {
+    return { ok: false, reason: `${at}.runtime.dshRuntimeVersion is required` }
+  }
+  return {
+    ok: true,
+    value: { packageName, version, bundlePatch, revoked, runtime: normalizedRuntime },
+  }
+}
+
+/** Stable identity key of an entry across allowlist, dist, and manifest maps. */
+export const entryKey = (entry) => `${entry.packageName}@${entry.version}`
+
+/** Read and validate an allowlist file into normalized entries (unique by package and version). */
+export function loadAllowlist(path) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`allowlist ${path} is not readable JSON: ${error.message}`)
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error(`allowlist ${path} must be a non-empty JSON array of entries`)
+  }
+  const entries = []
+  const seen = new Set()
+  for (const [index, entry] of parsed.entries()) {
+    const result = validateAllowlistEntry(entry, `entry[${index}]`)
+    if (!result.ok) throw new Error(`allowlist ${path}: ${result.reason}`)
+    const identity = entryKey(result.value)
+    if (seen.has(identity)) throw new Error(`allowlist ${path}: duplicate entry ${identity}`)
+    seen.add(identity)
+    entries.push(result.value)
+  }
+  return entries
+}
+
+/** Persist entries back to the allowlist file in the reviewed shape. */
+export function saveAllowlist(path, entries) {
+  writeFileSync(path, `${JSON.stringify(entries, null, 2)}\n`, 'utf8')
+}
+
+/**
+ * Parse a revocation spec: `name`, `name@version`, `@scope/name`, or
+ * `@scope/name@version`. Returns `{packageName, version?}`.
+ */
+export function parseRevocationSpec(spec) {
+  if (typeof spec !== 'string' || spec.length === 0) throw new Error('revocation spec must be <package>[@<version>]')
+  const at = spec.lastIndexOf('@')
+  const packageName = at > 0 ? spec.slice(0, at) : spec
+  const version = at > 0 ? spec.slice(at + 1) : undefined
+  if (!PACKAGE_NAME_PATTERN.test(packageName)) throw new Error(`'${packageName}' is not a valid package name`)
+  if (version !== undefined && !STABLE_VERSION_PATTERN.test(version)) {
+    throw new Error(`'${version}' is not an exact stable version (revocation targets are pinned, not ranged)`)
+  }
+  return { packageName, version }
+}
+
+/**
+ * Mark every matching entry revoked and return the updated copy. Revocation
+ * is a state change, not a deletion: entries stay in the allowlist and in
+ * every reissued manifest for the signed audit trail.
+ */
+export function applyRevocation(entries, spec) {
+  const { packageName, version } = parseRevocationSpec(spec)
+  const matches = []
+  const updated = entries.map((entry) => {
+    if (entry.packageName !== packageName) return entry
+    if (version !== undefined && entry.version !== version) return entry
+    matches.push(entry)
+    return entry.revoked ? entry : { ...entry, revoked: true }
+  })
+  if (matches.length === 0) {
+    throw new Error(`no allowlist entry matches ${spec}${version === undefined ? ' (no version pinned: every version of the package would match)' : ''}`)
+  }
+  const alreadyRevoked = matches.filter((entry) => entry.revoked).length
+  if (alreadyRevoked === matches.length) {
+    throw new Error(`${spec} is already revoked in the allowlist (revocation is idempotent; nothing to reissue)`)
+  }
+  return { entries: updated, matches: matches.map(entryKey) }
+}

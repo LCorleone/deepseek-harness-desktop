@@ -1,0 +1,22 @@
+[
+  {
+    "packageName": "example-company-plugin",
+    "version": "1.4.2",
+    "bundlePatch": "./cordis.patch.yml",
+    "runtime": {
+      "dshRuntimeVersion": ">=0.1.1 <0.2.0",
+      "cordisRuntimeVersion": "^3.0.0",
+      "nodeRuntimeVersion": "^22.19.0"
+    },
+    "revoked": false
+  },
+  {
+    "packageName": "@company/scoped-plugin",
+    "version": "0.9.0",
+    "bundlePatch": "./patches/bundle.patch.yml",
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.1"
+    },
+    "revoked": false
+  }
+]

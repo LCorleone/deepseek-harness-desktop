@@ -1,0 +1,11 @@
+[
+  {
+    "packageName": "ms",
+    "version": "2.1.3",
+    "bundlePatch": "./cordis.patch.yml",
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.1"
+    },
+    "revoked": false
+  }
+]
