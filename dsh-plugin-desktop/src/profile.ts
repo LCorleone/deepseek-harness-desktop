@@ -41,6 +41,7 @@ import {
   type DesktopMarketProvider,
   type DesktopMarketSnapshot,
 } from './desktop-market.ts'
+import type { DesktopPolicy } from './desktop-policy.ts'
 
 /** Persistent profile managed by the desktop launcher and the ordinary dsh plugin command. */
 export const DESKTOP_PROFILE_NAME = 'desktop'
@@ -561,6 +562,21 @@ function assertEffectiveMarketRows(
 }
 
 /**
+ * Reject a home-level patch file in a locked build before it widens the input surface.
+ * @param policy - injected desktop policy; omitted keeps the unlocked dev behavior.
+ * @param home - Harness home that may carry a machine-wide patch file.
+ */
+function assertHomePatchAllowed(policy: DesktopPolicy | undefined, home: string): void {
+  if (policy?.locked !== true) return
+  const patchPath = join(home, PROFILE_PATCH_FILENAME)
+  if (existsSync(patchPath)) {
+    throw new Error(
+      `${BIN_NAME}: locked build forbids the home-level patch file ${patchPath}; remove it from the DSH home to start Desktop`,
+    )
+  }
+}
+
+/**
  * Load and compose one desktop profile generation.
  * @param telemetryDisabled - inherited DSH telemetry opt-out value.
  * @param home - Harness home containing profiles and the machine-wide patch.
@@ -568,6 +584,8 @@ function assertEffectiveMarketRows(
  * @param profileName - existing or lazily available Web profile to compose.
  * @param pluginStatePath - optional Desktop-private disabled-bundle state.
  * @param marketSelection - machine-level provider request fixed for this generation.
+ * @param hooks - optional observations emitted before profile preparation can fail.
+ * @param policy - injected desktop policy; locked policies reject a home-level patch file.
  * @returns root config, profile metadata, and ordered patches.
  */
 export function prepareDesktopProfile(
@@ -579,6 +597,7 @@ export function prepareDesktopProfile(
   marketSelection: DesktopMarketSnapshot = DEFAULT_DESKTOP_MARKET_SNAPSHOT,
   recoveryStatePath?: string,
   hooks: DesktopProfilePreparationHooks = {},
+  policy?: DesktopPolicy,
 ): PreparedDesktopProfile {
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
@@ -635,6 +654,7 @@ export function prepareDesktopProfile(
     throw new Error(`${BIN_NAME}: desktop profile is missing @deepseek-ai/dsh-web-app`)
   }
 
+  assertHomePatchAllowed(policy, home)
   const loadedHomePatches = loadOptionalPatches(BIN_NAME, join(home, PROFILE_PATCH_FILENAME)) ?? []
   const { patches: homePatches, skipped: skippedOptionalEntries } = omitUnresolvedOptionalEntries(
     loadedHomePatches,
