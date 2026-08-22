@@ -74,5 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-desktop-windows-x64
-          path: dsh-plugin-desktop/dist/*.exe
+          path: |
+            dsh-plugin-desktop/dist/*.exe
+            dsh-plugin-desktop/dist/*.zip
           if-no-files-found: error
