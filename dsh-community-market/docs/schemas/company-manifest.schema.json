@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dsh-community-market:schema:company-manifest:1.0.0",
+  "title": "DSH company catalog manifest",
+  "description": "The company-signed install allowlist for DSH Desktop. Each package entry pins an exact npm package version, its npm dist SHA-512 integrity, the in-package bundle patch path, a revocation flag, and the DSH runtime compatibility ranges the entry supports. The manifest is signed with a company ed25519 key: the signature block is detached (the signed bytes are the canonical JSON serialization of the document without the signature block itself) and carries the keyId plus the raw public key whose SHA-256 fingerprint must match the deployment policy trust root pinned for that keyId. Without a server-side revocation channel, freshness is enforced by the monotonic sequence (clients reject any manifest whose sequence does not strictly exceed the highest previously verified value) and expiresAt (the entire catalog is untrusted after the RFC 3339 instant). Canonical JSON rules for this schema: object keys sorted in UTF-16 code-unit order, no insignificant whitespace, minimal JSON string escaping with non-ASCII characters kept literal and encoded as UTF-8, and sequence as the only number (a safe integer in plain decimal); every other value is a string, boolean, null, array, or object. Verification additionally requires the raw manifest bytes to equal the canonical re-serialization of their parsed value byte for byte, which rejects reordered keys, added whitespace, alternate escapes, and non-canonical number spellings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "sequence",
+    "expiresAt",
+    "packages",
+    "signature"
+  ],
+  "properties": {
+    "manifestVersion": {
+      "const": "1.0.0"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Monotonic publication counter and the only JSON number allowed anywhere in the document. Clients persist the highest verified sequence and reject any manifest that does not strictly exceed it."
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 64,
+      "description": "RFC 3339 timestamp with an explicit UTC offset or Zulu suffix. The whole catalog, including every package entry, is untrusted at and after this instant."
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10000,
+      "description": "Install allowlist entries with unique packageName and version pairs.",
+      "items": {
+        "$ref": "#/$defs/packageEntry"
+      }
+    },
+    "signature": {
+      "$ref": "#/$defs/signatureBlock"
+    }
+  },
+  "$defs": {
+    "packageEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packageName",
+        "version",
+        "integrity",
+        "bundlePatch",
+        "revoked",
+        "runtime"
+      ],
+      "properties": {
+        "packageName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 214,
+          "pattern": "^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$",
+          "description": "npm package name of the plugin bundle."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$",
+          "description": "Exact stable semantic version; prerelease and build metadata are not allowed."
+        },
+        "integrity": {
+          "type": "string",
+          "pattern": "^sha512-[A-Za-z0-9+/]{86}==$",
+          "description": "npm dist integrity: the standard base64 encoding of the 64-byte SHA-512 digest of the package tarball."
+        },
+        "bundlePatch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u202A-\\u202E\\u2066-\\u2069]*$",
+          "description": "Relative path of the bundle patch file inside the installed package, for example ./cordis.patch.yml. Absolute paths, backslashes, drive letters, and dot segments are rejected by verification."
+        },
+        "revoked": {
+          "type": "boolean",
+          "description": "true withdraws the entry while keeping the signed audit trail intact. Revoked entries stay verifiable and readable but must be treated as uninstallable."
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtimeRanges"
+        }
+      }
+    },
+    "runtimeRanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dshRuntimeVersion"
+      ],
+      "description": "Semver ranges a client compares against its bundled runtime versions. The ranges are authoritative manifest data; clients only compare and never fall back to local defaults.",
+      "properties": {
+        "dshRuntimeVersion": {
+          "$ref": "#/$defs/semverRange",
+          "description": "Semver range of @deepseek-ai/dsh runtime versions this entry supports."
+        },
+        "cordisRuntimeVersion": {
+          "$ref": "#/$defs/semverRange",
+          "description": "Optional semver range of @deepseek-ai/cordis host versions this entry supports."
+        },
+        "nodeRuntimeVersion": {
+          "$ref": "#/$defs/semverRange",
+          "description": "Optional semver range of bundled Node.js versions this entry supports."
+        }
+      }
+    },
+    "semverRange": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "A node-semver range string, for example ^0.1.1-rc.2 or >=4.0.0 <5.0.0. Verification rejects strings that are not valid node-semver ranges."
+    },
+    "signatureBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyId",
+        "publicKey",
+        "value"
+      ],
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "description": "Stable identifier selecting among overlapping rotation keys pinned by the deployment policy trust roots."
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$",
+          "description": "Standard base64 encoding of the raw 32-byte ed25519 public key. Its SHA-256 fingerprint (64 lowercase hex characters) must equal the trust root fingerprint pinned for keyId."
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$",
+          "description": "Standard base64 encoding of the 64-byte detached ed25519 signature over the canonical JSON serialization of the manifest without the signature block."
+        }
+      }
+    }
+  }
+}

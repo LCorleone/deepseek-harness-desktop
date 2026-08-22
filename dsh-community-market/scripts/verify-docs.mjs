@@ -56,6 +56,7 @@ const publicFiles = [
   'docs/examples/catalog-provider-page.minimal.example.json',
   'docs/examples/catalog-snapshot.example.json',
   'docs/examples/catalog-source.example.json',
+  'docs/examples/company-manifest.example.json',
   'docs/market-shell.i18n.yaml',
   'docs/market-shell.md',
   'docs/market-shell.zh.md',
@@ -63,6 +64,7 @@ const publicFiles = [
   'docs/schemas/catalog-provider-page.schema.json',
   'docs/schemas/catalog-snapshot.schema.json',
   'docs/schemas/catalog-source.schema.json',
+  'docs/schemas/company-manifest.schema.json',
 ]
 for (const path of [...publicFiles, 'scripts/verify-docs.mjs']) {
   if (!existsSync(resolve(packageRoot, path))) fail(`${path} is missing`)
@@ -109,6 +111,7 @@ const schemaPaths = [
   'docs/schemas/catalog-query.schema.json',
   'docs/schemas/catalog-provider-page.schema.json',
   'docs/schemas/catalog-snapshot.schema.json',
+  'docs/schemas/company-manifest.schema.json',
 ]
 const schemas = Object.fromEntries(schemaPaths.map(path => [path, readJson(path)]))
 const assertClosedObjects = (value, path) => {
@@ -500,6 +503,45 @@ expectInvalid(
     })),
   },
   'a normalized snapshot with an unknown media role',
+)
+
+const companyManifestExample = validateFixture(
+  'docs/schemas/company-manifest.schema.json',
+  'docs/examples/company-manifest.example.json',
+)
+if (!Number.isSafeInteger(companyManifestExample.sequence) || companyManifestExample.sequence < 1) {
+  fail('company manifest example sequence must be a positive safe integer')
+}
+if (companyManifestExample.packages.length === 0) {
+  fail('company manifest example must contain at least one package entry')
+}
+for (const entry of companyManifestExample.packages) {
+  if (typeof entry.runtime?.dshRuntimeVersion !== 'string') {
+    fail('company manifest example entries must pin a dshRuntimeVersion range')
+  }
+}
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  { ...companyManifestExample, unknown: true },
+  'a company manifest with an unknown top-level field',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  { ...companyManifestExample, sequence: 0 },
+  'a company manifest with a non-positive sequence',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  { ...companyManifestExample, packages: companyManifestExample.packages.map(entry => ({ ...entry, revoked: 'yes' })) },
+  'a company manifest with a non-boolean revoked flag',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  {
+    ...companyManifestExample,
+    packages: companyManifestExample.packages.map(entry => ({ ...entry, version: '1.2.3-rc.1' })),
+  },
+  'a company manifest with a prerelease version',
 )
 
 const markdownFiles = publicFiles.filter(path => path.endsWith('.md'))
