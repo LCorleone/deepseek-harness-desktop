@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   MarketCatalogResponse,
   MarketInstallReceipt,
+  MarketInstallReceiptV1,
   MarketInstallableResponse,
   MarketSourceView,
   MarketStateResponse,
@@ -169,7 +170,7 @@ function makeInstallableItem(
   }
 }
 
-function makeReceipt(overrides: Partial<MarketInstallReceipt> = {}): MarketInstallReceipt {
+function makeReceipt(overrides: Partial<MarketInstallReceiptV1> = {}): MarketInstallReceipt {
   return {
     receiptId: '018f1f77-a5c4-7b73-a9ae-0242ac120099',
     profileName: 'web',

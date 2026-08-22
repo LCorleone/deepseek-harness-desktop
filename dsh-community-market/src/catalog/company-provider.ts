@@ -169,6 +169,8 @@ export class SettingsCompanyManifestSequenceStore implements CompanyManifestSequ
 interface CompanyCatalogScan {
   readonly verification: CompanyCatalogVerification
   readonly candidates: readonly CompanyCatalogCandidate[]
+  /** Signed entries of the last verified manifest, revoked entries included (P2-3 install-time query). */
+  readonly signedPackages: readonly CompanyManifestPackage[]
   readonly snapshots: readonly CatalogSnapshot[]
 }
 
@@ -228,7 +230,9 @@ function buildScan(
     // Revoked entries keep their signed audit trail inside the manifest but
     // never enter the catalog: no browse row, no install candidate. Exclusion
     // (instead of an "uninstallable" flag) matches the v1 candidate contract,
-    // which has no way to mark a row uninstallable.
+    // which has no way to mark a row uninstallable. The signed entries stay
+    // queryable through findSignedPackage so the install-time authority
+    // (P2-3) can distinguish a revoked entry from an absent one.
     if (entry.revoked) continue
     assertRepresentableEntry(entry)
     items.push(catalogItem(entry, source))
@@ -286,6 +290,7 @@ function buildScan(
       expiresAt: manifest.expiresAt,
     },
     candidates,
+    signedPackages: [...manifest.packages],
     snapshots,
   }
 }
@@ -357,7 +362,8 @@ function safeCompanyManifestUrl(value: string): URL {
  * deliberately thin: it verifies bytes, converts verified entries into the
  * normalized v1 candidate stream, and exposes the signed per-package metadata
  * (integrity, bundle patch, runtime ranges) for the install-time signature
- * check through {@link verifiedPackages} and {@link findVerifiedPackage}.
+ * check through {@link verifiedPackages}, {@link findVerifiedPackage}, and
+ * {@link findSignedPackage}.
  */
 export class CompanyCatalogProvider implements CatalogAdapter {
   readonly adapterId = COMPANY_CATALOG_ADAPTER_ID
@@ -457,6 +463,17 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   findVerifiedPackage(packageName: string, version: string): CompanyCatalogCandidate | undefined {
     return this.verifiedPackages().find(candidate =>
       candidate.packageName === packageName && candidate.version === version)
+  }
+
+  /**
+   * Signed entry of the last verified manifest, revoked entries included.
+   * Narrow install-time query (P2-3): the signed-manifest install authority
+   * must tell a revoked entry from an absent one, while the browsing
+   * candidate stream above excludes revoked entries by design.
+   */
+  findSignedPackage(packageName: string, version: string): CompanyManifestPackage | undefined {
+    return this.scan?.signedPackages.find(entry =>
+      entry.packageName === packageName && entry.version === version)
   }
 
   /** Last successful verification, or undefined before the first verified scan. */

@@ -144,6 +144,22 @@ export {
   type CompanyManifestSequenceStore,
 } from './catalog/company-provider.js'
 export type { MarketCompanyManifestRecord } from './catalog/source-store.js'
+export { createSignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'
+export type {
+  SignedManifestInstallTargetAuthority,
+  SignedManifestInstallTargetAuthorityOptions,
+  SignedManifestPackageSource,
+} from './install/signed-manifest-authority.js'
+export type {
+  InstallTargetAuthority,
+  InstallTargetCandidate,
+  InstallTargetDecision,
+  InstallTargetEvidence,
+} from './install/service.js'
+export type {
+  MarketInstallTreeDigest,
+  MarketInstallTreeDigestFile,
+} from './install/tree-digest.js'
 export { dsh1024StoreAdapter } from './adapters/dsh-1024store.js'
 export { dshfindAdapter } from './adapters/dshfind.js'
 export type * from './api-types.js'
