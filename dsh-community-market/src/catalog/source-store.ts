@@ -38,16 +38,47 @@ export function normalizeActiveSourceRecords(
   }))
 }
 
+/**
+ * Host-injected catalog source lock. Locked deployments pin the catalog to
+ * one built-in company source and reject every source registry mutation.
+ * Injected through options by the embedding Host; this package never
+ * imports the policy definition itself.
+ */
+export interface CatalogSourceLockOptions {
+  readonly locked: boolean
+  /** Built-in company source served as the only catalog source while locked. */
+  readonly companySource: LocalSourceRecord
+}
+
+/** Raised when a source registry mutation is attempted while it is locked. */
+export class MarketSourceLockError extends Error {
+  constructor() {
+    super('market catalog sources are locked by deployment policy')
+    this.name = 'MarketSourceLockError'
+  }
+}
+
+function lockedCompanyRecords(companySource: LocalSourceRecord): readonly LocalSourceRecord[] {
+  const records = [{ ...companySource, enabled: true }]
+  validateLocalSourceRecords(records)
+  return records
+}
+
 export class SettingsCatalogSourceStore implements CatalogSourceStore {
-  constructor(private readonly scope: SettingsScope<MarketSettingsDocument>) {}
+  constructor(
+    private readonly scope: SettingsScope<MarketSettingsDocument>,
+    private readonly lock?: CatalogSourceLockOptions,
+  ) {}
 
   async load(): Promise<readonly LocalSourceRecord[]> {
+    if (this.lock?.locked) return lockedCompanyRecords(this.lock.companySource)
     const records = [...this.scope.get().sources]
     validateLocalSourceRecords(records)
     return normalizeActiveSourceRecords(records)
   }
 
   async save(records: readonly LocalSourceRecord[]): Promise<void> {
+    if (this.lock?.locked) throw new MarketSourceLockError()
     const normalized = normalizeActiveSourceRecords(records)
     validateLocalSourceRecords(normalized)
     await this.scope.update({ sources: normalized })

@@ -7,7 +7,7 @@ import { FileSettingsProvider } from '@deepseek-ai/dsh-settings-file'
 import z from '@deepseek-ai/schemastery'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { MarketInstallReceipt } from '../src/api-types.js'
-import { DSH_1024STORE_ADAPTER_ID, DSH_1024STORE_PROVIDER_ID } from '../src/adapters/dsh-1024store.js'
+import { DSH_1024STORE_ADAPTER_ID, DSH_1024STORE_KEY, DSH_1024STORE_PROVIDER_ID } from '../src/adapters/dsh-1024store.js'
 import { SettingsCatalogSourceStore, type MarketSettingsDocument } from '../src/catalog/source-store.js'
 import type { LocalSourceRecord } from '../src/contracts/index.js'
 import { registerMarketSettings } from '../src/host/routes.js'
@@ -82,6 +82,27 @@ describe('community market file-backed settings', () => {
     await first.scope.replace({ sources: [], installReceipts: [receipt] })
 
     await new SettingsCatalogSourceStore(first.scope).save([source])
+    await first.dispose()
+
+    const second = await bootMarketSettings(path)
+    expect(second.scope.get()).toEqual({ sources: [source], installReceipts: [receipt] } satisfies MarketSettingsDocument)
+  })
+
+  it('keeps the company source forced and persisted sources intact while locked', async () => {
+    const path = await temporarySettingsFile()
+    const companySource: LocalSourceRecord = {
+      ...source,
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120009',
+      builtInProviderKey: DSH_1024STORE_KEY,
+      enabled: false,
+    }
+    const first = await bootMarketSettings(path)
+    await first.scope.replace({ sources: [source], installReceipts: [receipt] })
+
+    const locked = new SettingsCatalogSourceStore(first.scope, { locked: true, companySource })
+    await expect(locked.load()).resolves.toEqual([{ ...companySource, enabled: true }])
+    await expect(locked.save([source])).rejects.toThrowError('market catalog sources are locked by deployment policy')
+    expect(first.scope.get()).toEqual({ sources: [source], installReceipts: [receipt] } satisfies MarketSettingsDocument)
     await first.dispose()
 
     const second = await bootMarketSettings(path)

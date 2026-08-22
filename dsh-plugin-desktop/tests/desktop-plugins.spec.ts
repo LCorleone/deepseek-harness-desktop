@@ -436,6 +436,24 @@ describe('desktop direct bundle management', () => {
     await harness.dispose()
   })
 
+  it('rejects disabling the immutable community market bundle without touching state', async () => {
+    const root = temporaryRoot()
+    const options = bootstrap(root)
+    installBundle(options.homeDir, 'dsh-community-market')
+    addBundle(options.homeDir, 'dsh-community-market')
+    const harness = await createHarness(options)
+    const market = harness.service.list().find(item => item.packageName === 'dsh-community-market')
+    if (market === undefined) throw new Error('missing community market bundle')
+
+    expect(market).toEqual(expect.objectContaining({ status: 'active', mutable: false }))
+    expect(() => harness.service.previewDisable(market.bundleId)).toThrowError(
+      expect.objectContaining({ code: 'immutable-target' }),
+    )
+    expect(harness.service.isDisabled('dsh-community-market')).toBe(false)
+    expect(readDesktopDisabledBundles(options.statePath, 'desktop').size).toBe(0)
+    await harness.dispose()
+  })
+
   it('expires previews and clears all authority when the Cordis generation disposes', async () => {
     const root = temporaryRoot()
     let now = 1_800_000_000_000

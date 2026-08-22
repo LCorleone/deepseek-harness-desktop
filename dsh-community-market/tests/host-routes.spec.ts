@@ -17,6 +17,7 @@ import {
   DSHFIND_PROVIDER_ID,
 } from '../src/adapters/dshfind.js'
 import type { MarketSettingsDocument } from '../src/catalog/source-store.js'
+import type { CatalogSourceLockOptions } from '../src/catalog/source-store.js'
 import type { CatalogSourceManifest, LocalSourceRecord } from '../src/contracts/index.js'
 import { marketRoutes, registerMarketRoutes } from '../src/host/routes.js'
 import { restrictedHttpClient } from '../src/network/restricted-http.js'
@@ -100,6 +101,7 @@ const standardSource = (overrides: Partial<LocalSourceRecord> = {}): LocalSource
 async function startMarketServer(
   initialSources: readonly LocalSourceRecord[],
   sharedSettings?: SharedMarketSettings,
+  sourceLock?: CatalogSourceLockOptions,
 ): Promise<MarketServer> {
   const routes = new Map<string, RouteHandler>()
   const settings = sharedSettings ?? { document: { sources: initialSources } }
@@ -137,7 +139,7 @@ async function startMarketServer(
     },
     logger: { error: vi.fn() },
   } as unknown as Context
-  const disposeRoutes = registerMarketRoutes(ctx, scope)
+  const disposeRoutes = registerMarketRoutes(ctx, scope, undefined, undefined, undefined, sourceLock)
   return {
     baseUrl: `http://127.0.0.1:${String(port)}`,
     close: async () => {
@@ -542,6 +544,81 @@ describe('community market Host routes', () => {
       await vi.waitFor(() => { expect(externalSignal?.aborted).toBe(true) })
     } finally {
       controller.abort()
+      await server.close()
+    }
+  })
+
+  it('rejects every source mutation with 403 semantics while locked', async () => {
+    const companySource = builtInSource({
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120009',
+    })
+    const settings: SharedMarketSettings = { document: { sources: [companySource, standardSource()] } }
+    const getJson = vi.spyOn(restrictedHttpClient, 'getJson')
+    const server = await startMarketServer([], settings, { locked: true, companySource })
+    try {
+      const mutations = [
+        { action: 'add-builtin', key: DSHFIND_KEY },
+        { action: 'add-standard', manifestUrl: 'https://plugins.example.org/catalog-source.json' },
+        { action: 'select', sourceRecordId: companySource.sourceRecordId },
+        { action: 'remove', sourceRecordId: companySource.sourceRecordId },
+        { action: 'move', sourceRecordId: companySource.sourceRecordId, direction: 'up' },
+      ]
+      for (const mutation of mutations) {
+        const response = await mutateSource(server, mutation)
+        expect(response.status, JSON.stringify(mutation)).toBe(403)
+        await expect(response.json(), JSON.stringify(mutation)).resolves.toEqual({
+          error: 'market catalog sources are locked by deployment policy',
+        })
+      }
+      expect(getJson).not.toHaveBeenCalled()
+      expect(settings.document).toEqual({ sources: [companySource, standardSource()] })
+    } finally {
+      getJson.mockRestore()
+      await server.close()
+    }
+  })
+
+  it('lists only the forced company source while locked', async () => {
+    const companySource = builtInSource({
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120009',
+    })
+    const stored = standardSource({ enabled: true, order: 0 })
+    const settings: SharedMarketSettings = { document: { sources: [stored] } }
+    const server = await startMarketServer([], settings, { locked: true, companySource })
+    try {
+      const response = await readRoute(server, marketRoutes.state)
+
+      expect(response.status).toBe(200)
+      const body = await response.json() as { sources: unknown[] }
+      expect(body.sources).toHaveLength(1)
+      expect(body.sources[0]).toMatchObject({
+        sourceRecordId: companySource.sourceRecordId,
+        registrationKind: 'built-in',
+        builtInProviderKey: DSH_1024STORE_KEY,
+        adapterId: DSH_1024STORE_ADAPTER_ID,
+        providerId: DSH_1024STORE_PROVIDER_ID,
+        enabled: true,
+        name: 'DSH 1024Store',
+      })
+      expect(settings.document.sources).toEqual([stored])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps source mutations working when the lock is injected but disabled', async () => {
+    const companySource = builtInSource({
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120009',
+    })
+    const server = await startMarketServer([], undefined, { locked: false, companySource })
+    try {
+      const response = await mutateSource(server, { action: 'add-builtin', key: DSH_1024STORE_KEY })
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toMatchObject({
+        sources: [{ builtInProviderKey: DSH_1024STORE_KEY, enabled: false }],
+      })
+    } finally {
       await server.close()
     }
   })

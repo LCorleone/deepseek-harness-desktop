@@ -32,7 +32,13 @@ import {
 import { DSHFIND_ADAPTER_ID, DSHFIND_HOSTNAME } from '../adapters/dshfind.js'
 import { assertStandardSourceTrustRoot } from '../adapters/standard-http.js'
 import { BUILT_IN_PROVIDERS, DefaultCatalogService, type CatalogFetchScope, type CatalogFullIndex } from '../catalog/service.js'
-import { SettingsCatalogSourceStore, type MarketCatalogCache, type MarketSettingsDocument } from '../catalog/source-store.js'
+import {
+  MarketSourceLockError,
+  SettingsCatalogSourceStore,
+  type CatalogSourceLockOptions,
+  type MarketCatalogCache,
+  type MarketSettingsDocument,
+} from '../catalog/source-store.js'
 import { MARKET_MEDIA_ASSET_REF_PATTERN } from '../media/ref.js'
 import { createRestrictedImageFetcher } from '../media/restricted-image.js'
 import { createMarketMediaService } from '../media/service.js'
@@ -623,9 +629,11 @@ async function mutateSources(
     manifestUrl: string,
     signal: AbortSignal,
   ) => Promise<CatalogSourceManifest> = readStandardSourceManifest,
+  lock?: CatalogSourceLockOptions,
 ): Promise<void> {
   signal.throwIfAborted()
-  const store = new SettingsCatalogSourceStore(scope)
+  if (lock?.locked) throw new MarketSourceLockError()
+  const store = new SettingsCatalogSourceStore(scope, lock)
   const records = [...await store.load()]
   const unavailableSourceRecordIds = new Set<string>()
   const nextOrder = records.reduce((maximum, record) => Math.max(maximum, record.order), -1) + 1
@@ -694,6 +702,7 @@ export function createMarketSourceMutator(
   scope: SettingsScope<MarketSettingsDocument>,
   onUnavailable?: (sourceRecordId: string) => void,
   readManifest?: (manifestUrl: string, signal: AbortSignal) => Promise<CatalogSourceManifest>,
+  lock?: CatalogSourceLockOptions,
 ): (
   mutation: MarketSourceMutation,
   signal: AbortSignal,
@@ -702,7 +711,7 @@ export function createMarketSourceMutator(
   return (mutation, signal) => {
     const pending = tail.then(async () => {
       signal.throwIfAborted()
-      await mutateSources(scope, mutation, signal, onUnavailable, readManifest)
+      await mutateSources(scope, mutation, signal, onUnavailable, readManifest, lock)
     })
     tail = pending.catch(() => {})
     return pending
@@ -715,6 +724,7 @@ export function registerMarketRoutes(
   installProvider?: MarketInstallServiceProvider,
   desktopActionsProvider?: MarketDesktopActionsProvider,
   desktopPluginsProvider?: MarketDesktopPluginsProvider,
+  sourceLock?: CatalogSourceLockOptions,
 ): () => void {
   const expectedPort = ctx.webServer.port
   const generationController = new AbortController()
@@ -788,7 +798,7 @@ export function registerMarketRoutes(
       enablePreviews.delete(oldest)
     }
   }
-  const store = new SettingsCatalogSourceStore(scope)
+  const store = new SettingsCatalogSourceStore(scope, sourceLock)
   const media = createMarketMediaService({
     fetchImage: createRestrictedImageFetcher({
       // These are compiled-in adapter hosts, not names supplied by a remote source.
@@ -811,7 +821,7 @@ export function registerMarketRoutes(
       if (key.startsWith(`${sourceRecordId}\0`)) servedCatalogPreviews.delete(key)
     }
     installProvider?.get()?.invalidateSource(sourceRecordId)
-  })
+  }, undefined, sourceLock)
   const buildCatalogResponse = (
     index: CatalogFullIndex | undefined,
     query: Record<string, unknown>,
@@ -1027,7 +1037,11 @@ export function registerMarketRoutes(
         if (!signal.aborted && !res.destroyed) sendJson(res, 200, { sources: await service.listSources() })
       } catch (cause) {
         if (!signal.aborted && !res.destroyed) {
-          sendJson(res, 400, { error: cause instanceof Error ? cause.message : 'source change failed' })
+          if (cause instanceof MarketSourceLockError) {
+            sendJson(res, 403, { error: cause.message })
+          } else {
+            sendJson(res, 400, { error: cause instanceof Error ? cause.message : 'source change failed' })
+          }
         }
       } finally {
         stopWatching()
