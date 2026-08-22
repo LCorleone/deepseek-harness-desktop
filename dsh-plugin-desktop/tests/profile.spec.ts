@@ -1,9 +1,15 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { generateKeyPairSync } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { composeEntries, initProfile, PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
+import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from 'dsh-community-market'
 import {
   DESKTOP_PACKAGE_NAME,
   desktopShellModeFromSettings,
@@ -17,6 +23,11 @@ import {
 } from '../src/profile.ts'
 import { DESKTOP_MARKET_IDENTITIES } from '../src/desktop-market.ts'
 import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
+import {
+  computeDesktopBootTreeRootDigest,
+  type DesktopBootReceipt,
+  type DesktopBootVerificationInputs,
+} from '../src/boot-verification.ts'
 
 const homes: string[] = []
 
@@ -928,5 +939,413 @@ describe('desktop profile composition', {
       name: 'third-party-pwsh-sandbox',
     }))
     expect(rows.map(row => row.id)).not.toContain('desktop-windows-pwsh-sandbox')
+  })
+})
+
+describe('locked boot verification of third-party bundles (P2-4)', {
+  timeout: process.platform === 'win32' ? 20_000 : 10_000,
+}, () => {
+  const bootKeyId = 'company-catalog-2026.01'
+  const bootKeys = generateKeyPairSync('ed25519')
+  const bootTrustRoots = [{
+    keyId: bootKeyId,
+    fingerprint: ed25519PublicKeyFingerprint(bootKeys.publicKey),
+  }]
+  const firstPlugin = 'third-party-plugin'
+  const secondPlugin = 'third-party-plugin-two'
+  const firstVersion = '1.4.0'
+  const secondVersion = '2.1.0'
+  const bootIntegrity = (seed: number): string => `sha512-${Buffer.alloc(64, seed).toString('base64')}`
+  const firstIntegrity = bootIntegrity(11)
+  const secondIntegrity = bootIntegrity(12)
+
+  /** Locked content-mode policy fixture pinned to the test signing key. */
+  function bootPolicy(locked: boolean): DesktopPolicy {
+    return parseDesktopPolicy({
+      allowHomePatch: false,
+      allowManualPluginAdd: false,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+      locked,
+      trustRoots: bootTrustRoots,
+    })
+  }
+
+  function manifestEntry(
+    packageName: string,
+    version: string,
+    integrity: string,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      packageName,
+      version,
+      integrity,
+      bundlePatch: './cordis.patch.yml',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '*' },
+      ...overrides,
+    }
+  }
+
+  function manifestText(
+    packages: readonly Record<string, unknown>[],
+    options: { sequence?: number; expiresAt?: string } = {},
+  ): string {
+    const unsigned = {
+      manifestVersion: '1.0.0',
+      sequence: options.sequence ?? 7,
+      expiresAt: options.expiresAt ?? '2030-01-01T00:00:00Z',
+      packages,
+    }
+    const signature = createCompanyManifestSignature(
+      unsigned as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+      bootKeys.privateKey,
+      bootKeyId,
+    )
+    return canonicalJsonText({ ...unsigned, signature })
+  }
+
+  const markerId = (packageName: string): string => `${packageName.split('/').pop()}-marker`
+
+  /** Install one third-party bundle into the desktop profile, external-CLI style. */
+  function installThirdPartyBundle(
+    home: string,
+    packageName: string,
+    options: {
+      version?: string
+      bundlePatchField?: boolean
+      files?: Record<string, string>
+    } = {},
+  ): string {
+    const version = options.version ?? '1.0.0'
+    const dir = join(home, 'profiles', 'desktop', 'node_modules', ...packageName.split('/'))
+    mkdirSync(dir, { recursive: true })
+    const manifest: Record<string, unknown> = { name: packageName, version }
+    if (options.bundlePatchField !== false) {
+      manifest.dsh = { bundle: { patch: './cordis.patch.yml' } }
+      writeFileSync(
+        join(dir, 'cordis.patch.yml'),
+        `- insert:\n    - id: ${markerId(packageName)}\n      name: ${packageName}\n`,
+      )
+    }
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify(manifest)}\n`)
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'payload.js'), 'export const marker = 1\n')
+    for (const [name, content] of Object.entries(options.files ?? {})) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true })
+      writeFileSync(join(dir, name), content)
+    }
+    return dir
+  }
+
+  function writeProfileLock(
+    home: string,
+    entries: readonly { packageName: string; version: string; integrity: string }[],
+  ): void {
+    const lines = ["lockfileVersion: '9.0'", 'importers:', '  .:', '    dependencies:']
+    for (const entry of entries) {
+      lines.push(`      '${entry.packageName}':`)
+      lines.push(`        specifier: '${entry.version}'`)
+      lines.push(`        version: '${entry.version}'`)
+    }
+    lines.push('packages:')
+    for (const entry of entries) {
+      lines.push(`  '${entry.packageName}@${entry.version}':`)
+      lines.push('    resolution:')
+      lines.push(`      integrity: '${entry.integrity}'`)
+    }
+    writeFileSync(join(home, 'profiles', 'desktop', 'pnpm-lock.yaml'), `${lines.join('\n')}\n`)
+  }
+
+  function declareProfileBundles(home: string, packageNames: readonly string[]): void {
+    const path = join(ensureDesktopProfile(home), 'package.json')
+    const manifest = JSON.parse(readFileSync(path, 'utf8')) as {
+      dsh: { profile: { bundles: string[] } }
+    }
+    manifest.dsh.profile.bundles.push(...packageNames)
+    writeFileSync(path, `${JSON.stringify(manifest)}\n`)
+  }
+
+  function bootReceipt(dir: string, packageName: string, version: string): DesktopBootReceipt {
+    return {
+      packageName,
+      version,
+      manifestSequence: 7,
+      keyId: bootKeyId,
+      rootDigest: computeDesktopBootTreeRootDigest(dir),
+    }
+  }
+
+  function prepareLocked(
+    home: string,
+    inputs: DesktopBootVerificationInputs | undefined,
+    options: { policy?: DesktopPolicy } = {},
+  ) {
+    return prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      options.policy ?? bootPolicy(true),
+      inputs,
+    )
+  }
+
+  /** Home with two signed third-party bundles installed, locked, and receipted. */
+  function verifiedThirdPartyHome(): {
+    home: string
+    firstDir: string
+    secondDir: string
+    manifest: string
+    receipts: DesktopBootReceipt[]
+  } {
+    const home = temporaryHome()
+    const firstDir = installThirdPartyBundle(home, firstPlugin, {
+      version: firstVersion,
+      files: { 'lib/extra.js': 'export const extra = 2\n' },
+    })
+    const secondDir = installThirdPartyBundle(home, secondPlugin, { version: secondVersion })
+    declareProfileBundles(home, [firstPlugin, secondPlugin])
+    writeProfileLock(home, [
+      { packageName: firstPlugin, version: firstVersion, integrity: firstIntegrity },
+      { packageName: secondPlugin, version: secondVersion, integrity: secondIntegrity },
+    ])
+    return {
+      home,
+      firstDir,
+      secondDir,
+      manifest: manifestText([
+        manifestEntry(firstPlugin, firstVersion, firstIntegrity),
+        manifestEntry(secondPlugin, secondVersion, secondIntegrity),
+      ]),
+      receipts: [
+        bootReceipt(firstDir, firstPlugin, firstVersion),
+        bootReceipt(secondDir, secondPlugin, secondVersion),
+      ],
+    }
+  }
+
+  it('keeps every verified third-party bundle with receipt evidence', () => {
+    const fixture = verifiedThirdPartyHome()
+    const prepared = prepareLocked(fixture.home, {
+      manifestBytes: fixture.manifest,
+      receipts: fixture.receipts,
+    })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification).toEqual({
+      manifestTrusted: true,
+      manifestSequence: 7,
+      keyId: bootKeyId,
+      manifestFailure: undefined,
+      allowed: [
+        { packageName: firstPlugin, evidence: 'receipt', manifestSequence: 7, keyId: bootKeyId },
+        { packageName: secondPlugin, evidence: 'receipt', manifestSequence: 7, keyId: bootKeyId },
+      ],
+      rejected: [],
+    })
+    expect(rows.map(row => row.id)).toEqual(expect.arrayContaining([
+      markerId(firstPlugin),
+      markerId(secondPlugin),
+    ]))
+    // The upstream Web client rows stay composed alongside third-party content.
+    expect(rows.find(row => row.id === 'webserver')).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-host-webserver',
+    }))
+    expect(rows.find(row => row.id === 'ui-layout')?.name).toBe('@deepseek-ai/dsh-client-ui-layout')
+  })
+
+  it('rejects a tampered installed bundle while its peers and the upstream rows stay up', () => {
+    const fixture = verifiedThirdPartyHome()
+    writeFileSync(join(fixture.firstDir, 'lib', 'extra.js'), 'export const tampered = true\n')
+    const prepared = prepareLocked(fixture.home, {
+      manifestBytes: fixture.manifest,
+      receipts: fixture.receipts,
+    })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification?.rejected).toEqual([{
+      packageName: firstPlugin,
+      reason: `the installed files of ${firstPlugin}@${firstVersion} differ from the tree recorded in its install receipt`,
+    }])
+    expect(prepared.bootVerification?.allowed.map(entry => entry.packageName)).toEqual([secondPlugin])
+    expect(rows.map(row => row.id)).not.toContain(markerId(firstPlugin))
+    expect(rows.map(row => row.id)).toContain(markerId(secondPlugin))
+    expect(rows.find(row => row.id === 'webserver')).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-host-webserver',
+    }))
+  })
+
+  it('rejects a bundle whose lockfile integrity diverges from the signed manifest', () => {
+    const fixture = verifiedThirdPartyHome()
+    writeProfileLock(fixture.home, [
+      { packageName: firstPlugin, version: firstVersion, integrity: bootIntegrity(99) },
+      { packageName: secondPlugin, version: secondVersion, integrity: secondIntegrity },
+    ])
+    const prepared = prepareLocked(fixture.home, {
+      manifestBytes: fixture.manifest,
+      receipts: fixture.receipts,
+    })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification?.rejected.map(entry => entry.packageName)).toEqual([firstPlugin])
+    expect(prepared.bootVerification?.rejected[0]?.reason).toContain('profile lockfile pins')
+    expect(rows.map(row => row.id)).not.toContain(markerId(firstPlugin))
+    expect(rows.map(row => row.id)).toContain(markerId(secondPlugin))
+    expect(rows.some(row => row.id === 'webserver')).toBe(true)
+  })
+
+  it('downgrades receiptless bundles to manifest-only evidence instead of rejecting them', () => {
+    const fixture = verifiedThirdPartyHome()
+    const prepared = prepareLocked(fixture.home, { manifestBytes: fixture.manifest })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification?.rejected).toEqual([])
+    expect(prepared.bootVerification?.allowed).toEqual([
+      { packageName: firstPlugin, evidence: 'manifest-only', manifestSequence: 7, keyId: bootKeyId },
+      { packageName: secondPlugin, evidence: 'manifest-only', manifestSequence: 7, keyId: bootKeyId },
+    ])
+    expect(rows.map(row => row.id)).toEqual(expect.arrayContaining([
+      markerId(firstPlugin),
+      markerId(secondPlugin),
+    ]))
+  })
+
+  it('rejects a bundle whose receipt records a different tree than measured', () => {
+    const fixture = verifiedThirdPartyHome()
+    const forged = fixture.receipts.map(receipt => receipt.packageName === firstPlugin
+      ? { ...receipt, rootDigest: 'cd'.repeat(32) }
+      : receipt)
+    const prepared = prepareLocked(fixture.home, {
+      manifestBytes: fixture.manifest,
+      receipts: forged,
+    })
+
+    expect(prepared.bootVerification?.rejected.map(entry => entry.packageName)).toEqual([firstPlugin])
+    expect(composeEntries([prepared.patches]).map(row => row.id)).not.toContain(markerId(firstPlugin))
+  })
+
+  it('rejects every third-party bundle but never the boot for manifest failures', () => {
+    for (const [label, inputs, code] of [
+      ['missing asset', { receipts: [] as DesktopBootReceipt[] }, 'manifest-missing'],
+      ['expired manifest', {
+        manifestBytes: manifestText(
+          [manifestEntry(firstPlugin, firstVersion, firstIntegrity)],
+          { expiresAt: '2020-01-01T00:00:00Z' },
+        ),
+        receipts: [],
+      }, 'expired'],
+      ['tampered signature', {
+        manifestBytes: manifestText([manifestEntry(firstPlugin, firstVersion, firstIntegrity)])
+          .replace(/"value":"[^"]{20}/u, '"value":"AAAA'),
+        receipts: [],
+      }, undefined],
+    ] as const) {
+      const fixture = verifiedThirdPartyHome()
+      const prepared = prepareLocked(fixture.home, inputs as DesktopBootVerificationInputs)
+      const rows = composeEntries([prepared.patches])
+
+      expect(prepared.bootVerification?.manifestTrusted).toBe(false)
+      if (code !== undefined) {
+        expect(prepared.bootVerification?.manifestFailure?.code, label).toBe(code)
+      }
+      expect(prepared.bootVerification?.allowed, label).toEqual([])
+      expect(prepared.bootVerification?.rejected.map(entry => entry.packageName).sort(), label)
+        .toEqual([firstPlugin, secondPlugin])
+      expect(rows.map(row => row.id)).not.toContain(markerId(firstPlugin))
+      expect(rows.map(row => row.id)).not.toContain(markerId(secondPlugin))
+      expect(rows.find(row => row.id === 'webserver'), label).toEqual(expect.objectContaining({
+        name: '@deepseek-ai/dsh-host-webserver',
+      }))
+      expect(rows.find(row => row.id === 'desktop-shell')?.name).toBe(DESKTOP_PACKAGE_NAME)
+    }
+  })
+
+  it('rejects a package installed by an external CLI bypassing the signed catalog', () => {
+    const home = temporaryHome()
+    const rogue = 'rogue-external-plugin'
+    // A real external npm package: no dsh.bundle section, no manifest entry.
+    installThirdPartyBundle(home, rogue, { version: '0.9.0', bundlePatchField: false })
+    declareProfileBundles(home, [rogue])
+    writeProfileLock(home, [{ packageName: rogue, version: '0.9.0', integrity: bootIntegrity(77) }])
+
+    const prepared = prepareLocked(home, {
+      manifestBytes: manifestText([]),
+      receipts: [],
+    })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification?.rejected.map(entry => entry.packageName)).toEqual([rogue])
+    expect(prepared.bootVerification?.rejected[0]?.reason).toContain(
+      'is not in the signed company manifest',
+    )
+    expect(rows.map(row => row.id)).not.toContain(markerId(rogue))
+    expect(rows.find(row => row.id === 'webserver')).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-host-webserver',
+    }))
+  })
+
+  it('leaves unlocked builds completely unchanged', () => {
+    const fixture = verifiedThirdPartyHome()
+    const unlocked = prepareLocked(fixture.home, undefined, { policy: bootPolicy(false) })
+    const rows = composeEntries([unlocked.patches])
+
+    expect(unlocked.bootVerification).toBeUndefined()
+    expect(rows.map(row => row.id)).toEqual(expect.arrayContaining([
+      markerId(firstPlugin),
+      markerId(secondPlugin),
+    ]))
+
+    const omittedPolicy = prepareDesktopProfile(undefined, fixture.home, 'darwin')
+    expect(omittedPolicy.bootVerification).toBeUndefined()
+    expect(composeEntries([omittedPolicy.patches]).map(row => row.id))
+      .toContain(markerId(firstPlugin))
+  })
+
+  it('never rejects upstream, desktop, or market bundles (compatibility red line)', () => {
+    const home = temporaryHome()
+    const rogue = 'unsigned-third-party'
+    installThirdPartyBundle(home, rogue)
+    declareProfileBundles(home, [
+      DESKTOP_MARKET_IDENTITIES.dshMarket.packageName,
+      rogue,
+    ])
+    writeProfileLock(home, [{ packageName: rogue, version: '1.0.0', integrity: bootIntegrity(55) }])
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      { requested: 'dsh-market', effective: 'dsh-market', legacyDefaulted: false },
+      undefined,
+      {},
+      bootPolicy(true),
+      { manifestBytes: manifestText([]), receipts: [] },
+    )
+    const rows = composeEntries([prepared.patches])
+    const rejectedNames = prepared.bootVerification?.rejected.map(entry => entry.packageName)
+
+    expect(rejectedNames).toEqual([rogue])
+    expect(rejectedNames).not.toEqual(expect.arrayContaining([
+      ...(PROFILE_TEMPLATES.web ?? []),
+      DESKTOP_PACKAGE_NAME,
+      DESKTOP_MARKET_IDENTITIES.community.packageName,
+      DESKTOP_MARKET_IDENTITIES.dshMarket.packageName,
+    ]))
+    // The upstream default client and the selected market provider both stay bootable.
+    for (const rowId of ['webserver', 'ui-layout', 'subprocess', 'sandbox']) {
+      expect(rows.some(row => row.id === rowId), rowId).toBe(true)
+    }
+    expect(rows.filter(row => row.id === DESKTOP_MARKET_IDENTITIES.dshMarket.rowId)).toEqual([{
+      id: DESKTOP_MARKET_IDENTITIES.dshMarket.rowId,
+      name: DESKTOP_MARKET_IDENTITIES.dshMarket.packageName,
+    }])
   })
 })

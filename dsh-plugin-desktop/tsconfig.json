@@ -18,7 +18,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "dsh-community-market": ["./src/market-signing-types.ts"]
+    }
   },
   "include": ["src/*.ts"]
 }

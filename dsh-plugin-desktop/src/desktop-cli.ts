@@ -8,6 +8,7 @@ import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
+import { authorizeLockedPluginAdd } from './cli-install-channel.ts'
 import { readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
@@ -78,8 +79,14 @@ function takeEnvironmentValue(environment: NodeJS.ProcessEnv, expectedName: stri
   return result
 }
 
-/** Resolve the exact profile mutated by one built-in-terminal plugin-add command. */
-function pluginAddProfile(argv: readonly string[]): string | undefined {
+/** The profile and package arguments of one built-in-terminal plugin-add command. */
+interface PluginAddCommand {
+  readonly profileName: string
+  readonly packageSpecs: readonly string[]
+}
+
+/** Resolve the exact profile and package targets mutated by one built-in-terminal plugin-add command. */
+function pluginAddCommand(argv: readonly string[]): PluginAddCommand | undefined {
   if (argv[0] !== 'plugin') return undefined
   const forwarded: string[] = []
   let profileName: string | undefined
@@ -107,7 +114,7 @@ function pluginAddProfile(argv: readonly string[]): string | undefined {
   }
   if (forwarded[0] !== 'add' || profileName === undefined) return undefined
   assertDesktopProfileName(profileName)
-  return profileName
+  return { profileName, packageSpecs: forwarded.slice(1) }
 }
 
 class CapturedDesktopCliExit {
@@ -164,18 +171,13 @@ async function loadWithInstallRecovery(
   if (capturedExitCode !== undefined) process.exitCode = capturedExitCode
 }
 
-/** Deny terminal plugin adds in locked builds before pnpm or the DSH CLI is touched. */
-const LOCKED_PLUGIN_ADD_MESSAGE = [
-  'dsh-desktop: this is a company-locked build, so manual plugin installs (`dsh plugin add`) are disabled.',
-  'Install plugins from the company plugin market instead.',
-].join(' ')
-
 /**
  * Enter the packaged DSH CLI after removing the Electron-only launch marker.
  * @param environment - process environment inherited from the generated shim.
  * @param load - ESM loader used by the executable and focused tests.
  * @param argv - mutable process arguments presented to the upstream CLI.
  * @param policy - embedded company policy gating terminal plugin adds; defaults to the shipped asset.
+ * @param manifestAssetPath - company catalog manifest location for locked plugin adds; defaults to the embedded asset.
  * @returns once the imported CLI entry completes its top-level work.
  */
 export async function runDesktopDshCli(
@@ -183,6 +185,7 @@ export async function runDesktopDshCli(
   load: (url: string) => Promise<unknown> = url => import(url),
   argv: string[] = process.argv,
   policy?: DesktopPolicy,
+  manifestAssetPath?: string,
 ): Promise<void> {
   const profileName = takeDefaultProfile(environment)
   const installRecoveryStatePath = takeEnvironmentValue(
@@ -194,23 +197,35 @@ export async function runDesktopDshCli(
     argv.splice(2, argv.length - 2, ...withDefaultDesktopProfile(argv.slice(2), profileName))
   }
   const homeDir = environment[DSH_HOME]
-  const installProfileName = pluginAddProfile(argv.slice(2))
-  if (installProfileName !== undefined && (policy ?? readDesktopPolicy()).locked) {
-    process.stderr.write(`${LOCKED_PLUGIN_ADD_MESSAGE}\n`)
-    process.exitCode = 1
-    return
+  const installCommand = pluginAddCommand(argv.slice(2))
+  if (installCommand !== undefined) {
+    const effectivePolicy = policy ?? readDesktopPolicy()
+    if (effectivePolicy.locked) {
+      // Signed-catalog channel (P2-5): only a verified, unrevoked, exact
+      // `<package>@<version>` entry may proceed; every denial stays here.
+      const decision = await authorizeLockedPluginAdd(
+        installCommand.packageSpecs,
+        effectivePolicy,
+        manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath },
+      )
+      if (!decision.allowed) {
+        process.stderr.write(`${decision.reason}\n`)
+        process.exitCode = 1
+        return
+      }
+    }
   }
   if (
     installRecoveryStatePath !== undefined
-    && installProfileName !== undefined
+    && installCommand !== undefined
     && homeDir !== undefined
   ) {
     const store = new DesktopInstallRecoveryStore({
       statePath: desktopInstallRecoveryStatePath('/', {
         [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: installRecoveryStatePath,
       }),
-      profileName: installProfileName,
-      profileDir: resolveProfileDir(installProfileName, homeDir),
+      profileName: installCommand.profileName,
+      profileDir: resolveProfileDir(installCommand.profileName, homeDir),
       generationId: `terminal:${randomUUID()}`,
     })
     await loadWithInstallRecovery(load, store)

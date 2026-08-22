@@ -1,8 +1,14 @@
+import { generateKeyPairSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from 'dsh-community-market'
 import {
   clearElectronRunAsNode,
   runDesktopDshCli,
@@ -26,6 +32,59 @@ function desktopPolicy(locked: boolean): DesktopPolicy {
     locked,
     trustRoots: [],
   })
+}
+
+const catalogKeyId = 'company-catalog-2026.01'
+const catalogKey = generateKeyPairSync('ed25519')
+const catalogTrustRoots = [{
+  keyId: catalogKeyId,
+  fingerprint: ed25519PublicKeyFingerprint(catalogKey.publicKey),
+}]
+
+/** Locked policy whose trust roots match the catalog signing key fixture. */
+function companyLockedPolicy(): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    locked: true,
+    trustRoots: catalogTrustRoots,
+  })
+}
+
+const asUnsignedCatalog = (manifest: Record<string, unknown>) =>
+  manifest as unknown as Parameters<typeof createCompanyManifestSignature>[0]
+
+function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    packageName: 'example-plugin',
+    version: '1.0.0',
+    integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
+    bundlePatch: './cordis.patch.yml',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    ...overrides,
+  }
+}
+
+function unsignedCatalog(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    manifestVersion: '1.0.0',
+    sequence: 42,
+    expiresAt: '2030-01-01T00:00:00Z',
+    packages: [catalogEntry()],
+    ...overrides,
+  }
+}
+
+/** Sign and write one catalog manifest fixture; returns the asset path to inject. */
+function writeCompanyCatalogAsset(root: string, manifest: Record<string, unknown>): string {
+  const signature = createCompanyManifestSignature(asUnsignedCatalog(manifest), catalogKey.privateKey, catalogKeyId)
+  const assetPath = join(root, 'company-market', 'catalog-manifest.json')
+  mkdirSync(dirname(assetPath), { recursive: true })
+  writeFileSync(assetPath, canonicalJsonText({ ...manifest, signature }))
+  return assetPath
 }
 
 describe('packaged dsh bootstrap', () => {
@@ -196,8 +255,8 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
-  it('rejects a terminal plugin add in a locked build before loading the packaged dsh', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-add-'))
+  it('rejects a terminal plugin add in a locked build when the embedded manifest asset is missing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-missing-catalog-'))
     const homeDir = join(root, 'home')
     const profileDir = join(homeDir, 'profiles', 'desktop')
     const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
@@ -213,15 +272,180 @@ describe('packaged dsh bootstrap', () => {
         DSH_HOME: homeDir,
         DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
         [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
-      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'], desktopPolicy(true))
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), join(root, 'company-market', 'catalog-manifest.json'))
 
       expect(load).not.toHaveBeenCalled()
       expect(process.exitCode).toBe(1)
       expect(existsSync(statePath)).toBe(false)
       expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toEqual({ dependencies: {} })
       const stderr = stderrWrite.mock.calls.flat().join('')
-      expect(stderr).toContain('manual plugin installs (`dsh plugin add`) are disabled')
+      expect(stderr).toContain('unreadable company catalog manifest asset')
+      expect(stderr).toContain('company-market/catalog-manifest.json')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a signed terminal plugin add into the install recovery transaction in a locked build', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-signed-add-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const manifestPath = join(profileDir, 'package.json')
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: {} }))
+      const load = vi.fn(async () => {
+        writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'example-plugin': '1.0.0' } }))
+        process.exit(0)
+      })
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+      }, load, argv, companyLockedPolicy(), assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(load).toHaveBeenCalledWith(expect.stringMatching(/@deepseek-ai\/dsh\/lib\/bin\.js$/u))
+      expect(argv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'add', 'example-plugin@1.0.0'])
+      expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
+        profileName: 'desktop',
+        packageName: 'manual-plugin-install',
+        phase: 'awaiting-restart',
+      })
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a locked terminal plugin add that is not in the signed catalog', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-unsigned-add-'))
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: join(root, 'home'),
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'unapproved-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(existsSync(statePath)).toBe(false)
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('not in the signed company plugin catalog')
       expect(stderr).toContain('Install plugins from the company plugin market instead.')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a locked terminal plugin add for a revoked catalog entry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-revoked-add-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({
+      packages: [catalogEntry({ revoked: true })],
+    }))
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, load,
+        [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+        companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('revoked in the signed company plugin catalog')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a locked terminal plugin add when the catalog manifest is expired', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-expired-catalog-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({ expiresAt: '2020-01-01T00:00:00Z' }))
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, load,
+        [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+        companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('expired')
+      expect(stderr).toContain('2020-01-01T00:00:00Z')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a locked terminal plugin add when the catalog manifest bytes are tampered', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-tampered-catalog-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    writeFileSync(assetPath, readFileSync(assetPath, 'utf8').replace('"sequence":42', '"sequence":43'))
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, load,
+        [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+        companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('bad-signature')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects locked terminal plugin adds that are not exact <package>@<version> specs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-inexact-add-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      for (const spec of ['example-plugin@latest', 'example-plugin']) {
+        const load = vi.fn(async () => undefined)
+        stderrWrite.mockClear()
+
+        await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, load,
+          [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', spec],
+          companyLockedPolicy(), assetPath)
+
+        expect(load, `spec ${spec}`).not.toHaveBeenCalled()
+        expect(process.exitCode, `spec ${spec}`).toBe(1)
+        const stderr = stderrWrite.mock.calls.flat().join('')
+        expect(stderr, `spec ${spec}`).toContain('<exact version>')
+        expect(stderr, `spec ${spec}`).toContain('Install plugins from the company plugin market instead.')
+      }
     } finally {
       stderrWrite.mockRestore()
       process.exitCode = originalExitCode

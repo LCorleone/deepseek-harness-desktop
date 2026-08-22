@@ -42,6 +42,14 @@ import {
   type DesktopMarketSnapshot,
 } from './desktop-market.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
+import {
+  collectDesktopBootBundles,
+  defaultDesktopBootManifestBytes,
+  desktopBootBundleNames,
+  verifyDesktopBootBundles,
+  type DesktopBootVerification,
+  type DesktopBootVerificationInputs,
+} from './boot-verification.ts'
 
 /** Persistent profile managed by the desktop launcher and the ordinary dsh plugin command. */
 export const DESKTOP_PROFILE_NAME = 'desktop'
@@ -212,6 +220,8 @@ export interface PreparedDesktopProfile {
   market: DesktopMarketSnapshot
   /** Internal boot diagnostic when the requested provider was disabled. */
   marketFailure?: string
+  /** Locked-build verification decision over every third-party bundle; undefined when unlocked. */
+  bootVerification?: DesktopBootVerification
 }
 
 /** Optional observations emitted before profile preparation can fail. */
@@ -577,6 +587,47 @@ function assertHomePatchAllowed(policy: DesktopPolicy | undefined, home: string)
 }
 
 /**
+ * Read the bundle names a profile declares without validating their shape:
+ * malformed or missing manifests defer to the profile loader's fail-loud
+ * behavior, so boot verification only ever sees lists the loader accepts.
+ */
+function declaredProfileBundleNames(profileDir: string): readonly string[] {
+  if (!existsSync(join(profileDir, 'package.json'))) return []
+  let manifest: ProfileManifest
+  try {
+    manifest = readProfileManifest(BIN_NAME, profileDir)
+  } catch {
+    return []
+  }
+  const raw = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
+  if (!Array.isArray(raw) || raw.some(value => typeof value !== 'string')) return []
+  return raw
+}
+
+/**
+ * Verify every third-party bundle of one profile against the signed company
+ * manifest (P2-4). Locked builds only: the upstream Web client, this package,
+ * and both Market providers are never verification targets, so a missing or
+ * untrusted manifest can only reject third-party content, never the boot.
+ */
+function lockedProfileBootVerification(
+  policy: DesktopPolicy,
+  profileDir: string,
+  inputs: DesktopBootVerificationInputs | undefined,
+): DesktopBootVerification {
+  return verifyDesktopBootBundles(
+    defaultDesktopBootManifestBytes(policy, inputs),
+    collectDesktopBootBundles(profileDir, desktopBootBundleNames(declaredProfileBundleNames(profileDir))),
+    {
+      trustRoots: policy.trustRoots,
+      ...(inputs?.receipts === undefined ? {} : { receipts: inputs.receipts }),
+      ...(inputs?.lastSeenSequence === undefined ? {} : { lastSeenSequence: inputs.lastSeenSequence }),
+      ...(inputs?.now === undefined ? {} : { now: inputs.now }),
+    },
+  )
+}
+
+/**
  * Load and compose one desktop profile generation.
  * @param telemetryDisabled - inherited DSH telemetry opt-out value.
  * @param home - Harness home containing profiles and the machine-wide patch.
@@ -586,6 +637,7 @@ function assertHomePatchAllowed(policy: DesktopPolicy | undefined, home: string)
  * @param marketSelection - machine-level provider request fixed for this generation.
  * @param hooks - optional observations emitted before profile preparation can fail.
  * @param policy - injected desktop policy; locked policies reject a home-level patch file.
+ * @param bootVerificationInputs - optional manifest bytes, receipts, sequence floor, and clock for locked boot verification.
  * @returns root config, profile metadata, and ordered patches.
  */
 export function prepareDesktopProfile(
@@ -598,6 +650,7 @@ export function prepareDesktopProfile(
   recoveryStatePath?: string,
   hooks: DesktopProfilePreparationHooks = {},
   policy?: DesktopPolicy,
+  bootVerificationInputs?: DesktopBootVerificationInputs,
 ): PreparedDesktopProfile {
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
@@ -620,6 +673,17 @@ export function prepareDesktopProfile(
   if (recoveryStatePath === undefined
     || marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider) {
     for (const packageName of managedDisabledBundles) disabledBundles.add(packageName)
+  }
+  // Startup verification (P2-4): a locked build checks every third-party
+  // bundle against the signed company manifest before any untrusted layer
+  // is resolved or parsed. Rejections join the disable set, so loading and
+  // composition drop them through the same immutable-bundle guards that keep
+  // the upstream Web client, this package, and both Market providers alive.
+  const bootVerification = policy?.locked === true
+    ? lockedProfileBootVerification(policy, profileDir, bootVerificationInputs)
+    : undefined
+  if (bootVerification !== undefined) {
+    for (const rejected of bootVerification.rejected) disabledBundles.add(rejected.packageName)
   }
   const loadedProfile = loadRecoveryFilteredProfile(
     profileName,
@@ -893,6 +957,7 @@ export function prepareDesktopProfile(
     settingsDocument,
     market: desktopMarketSnapshotWithEffective(marketSelection, effectiveMarket),
     ...(marketFailure === undefined ? {} : { marketFailure }),
+    ...(bootVerification === undefined ? {} : { bootVerification }),
   }
 }
 
