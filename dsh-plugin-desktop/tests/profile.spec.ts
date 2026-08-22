@@ -344,6 +344,44 @@ describe('desktop profile composition', {
     expect(rows.some(row => row.id === DESKTOP_MARKET_IDENTITIES.community.rowId)).toBe(false)
   })
 
+  it('composes the locked company provider over a persisted dsh-market request', () => {
+    const home = temporaryHome()
+    installBundle(home, DESKTOP_MARKET_IDENTITIES.dshMarket.packageName, [
+      '- insert:',
+      '    - id: dsh-market',
+      '      name: dshmarket',
+      '',
+    ].join('\n'), '99.0.0')
+    const profileManifestPath = join(ensureDesktopProfile(home), 'package.json')
+    const profileManifest = JSON.parse(readFileSync(profileManifestPath, 'utf8')) as {
+      dsh: { profile: { bundles: string[] } }
+    }
+    profileManifest.dsh.profile.bundles.push(DESKTOP_MARKET_IDENTITIES.dshMarket.packageName)
+    writeFileSync(profileManifestPath, JSON.stringify(profileManifest) + '\n')
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      { requested: 'dsh-market', effective: 'community-market', legacyDefaulted: false },
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.market.requested).toBe('dsh-market')
+    expect(prepared.market.effective).toBe('community-market')
+    expect(prepared.marketFailure).toBeUndefined()
+    expect(rows.filter(row => row.id === DESKTOP_MARKET_IDENTITIES.community.rowId)).toEqual([{
+      id: DESKTOP_MARKET_IDENTITIES.community.rowId,
+      name: DESKTOP_MARKET_IDENTITIES.community.packageName,
+    }])
+    expect(rows.some(row => row.id === DESKTOP_MARKET_IDENTITIES.dshMarket.rowId)).toBe(false)
+  })
+
   it('keeps the newer Desktop dshmarket when a Profile copy is older', () => {
     const home = temporaryHome()
     const oldProfileMarketDir = installBundle(home, DESKTOP_MARKET_IDENTITIES.dshMarket.packageName, [

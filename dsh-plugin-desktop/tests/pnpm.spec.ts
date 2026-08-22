@@ -397,7 +397,7 @@ describe('desktop pnpm Host service', () => {
     await harness.dispose()
   })
 
-  it('rejects install options that could redirect the npm registry or configuration', async () => {
+  it('rejects install options outside the audited allow-list', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-options-'))
     const selectedBootstrap = bootstrap(root)
     const child = controlledSubprocess()
@@ -420,26 +420,46 @@ describe('desktop pnpm Host service', () => {
         ['--userconfig', '/workspace/evil.npmrc'],
         ['--globalconfig=/workspace/evil.npmrc'],
         ['--reporter=ndjson', '--registry=http://evil.example'],
+        ['-C', '/workspace/evil-project'],
+        ['--dir=/workspace/evil-project'],
+        ['--prefix=/workspace/evil-project'],
+        ['--filter=evil-workspace-package'],
+        ['evil-pkg@1.0.0'],
+        ['--save-exact', 'evil-pkg@1.0.0'],
+        ['--registry', 'https://registry.npmjs.org/'],
+        ['--reporter', 'ndjson'],
+        ['--save-exact=false'],
+        ['x:registry=https://registry.npmjs.org/'],
       ]) {
         await expect(harness.service.installPlugin({
           pnpmOptions,
           invokingDir: '/workspace',
           recovery,
-        })).rejects.toThrow('must not override the npm registry or configuration')
+        })).rejects.toThrow('install options are restricted to')
       }
       await expect(harness.service.runPluginInstall(
         ['add', '--save-exact', '--registry=http://evil.example', 'example-plugin@1.0.0'],
         '/workspace',
         recovery,
-      )).rejects.toThrow('must not override the npm registry or configuration')
+      )).rejects.toThrow('install options are restricted to')
+      await expect(harness.service.runPluginInstall(
+        ['add', '--save-exact', '--dir=/workspace/evil-project', 'example-plugin@1.0.0'],
+        '/workspace',
+        recovery,
+      )).rejects.toThrow('install options are restricted to')
+      await expect(harness.service.runPluginInstall(
+        ['add', 'extra-plugin@1.0.0', 'example-plugin@1.0.0'],
+        '/workspace',
+        recovery,
+      )).rejects.toThrow('requires the exact receipt target')
       expect(harness.spawn).not.toHaveBeenCalled()
 
       const operation = await harness.service.installPlugin({
         pnpmOptions: [
+          '--reporter=ndjson',
           '--save-exact',
           '--registry=https://registry.npmjs.org/',
           '--@scope:registry=https://registry.npmjs.org/',
-          '--reporter=ndjson',
         ],
         invokingDir: '/workspace',
         recovery,
@@ -453,10 +473,10 @@ describe('desktop pnpm Host service', () => {
         '--profile',
         selectedBootstrap.activeProfileName,
         'add',
+        '--reporter=ndjson',
         '--save-exact',
         '--registry=https://registry.npmjs.org/',
         '--@scope:registry=https://registry.npmjs.org/',
-        '--reporter=ndjson',
         'example-plugin@1.0.0',
       ])
       finish(child)
