@@ -11,7 +11,14 @@ import type { MarketSettingsDocument } from '../catalog/source-store.js'
 import { normalizeRepositoryIdentity } from '../contracts/identity.js'
 import type { CatalogHttpClient, NormalizedRepositoryIdentity } from '../contracts/types.js'
 import type { CatalogSnapshot } from '../contracts/index.js'
+import { isCompanyManifestKeyId } from '../signing/keys.js'
 import { manualInstallHints } from './manual.js'
+import {
+  computeInstallTreeDigest,
+  MAX_INSTALL_TREE_DIGEST_FILES,
+  MAX_INSTALL_TREE_PATH_LENGTH,
+  type MarketInstallTreeDigest,
+} from './tree-digest.js'
 
 const DEFAULT_NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
@@ -172,10 +179,24 @@ export interface InstallTargetCandidate {
   readonly integrity: string
 }
 
+/**
+ * Signed-manifest provenance attached to an allow decision (P2-3). Copied
+ * verbatim into the version-2 install receipt; the service treats it as
+ * opaque and never derives an allow decision from it.
+ */
+export interface InstallTargetEvidence {
+  /** Sequence of the signed company manifest whose entry matched the target. */
+  readonly manifestSequence: number
+  /** keyId of the trust root whose key verified that manifest. */
+  readonly keyId: string
+}
+
 /** Whitelist decision for one verified npm install target. */
 export interface InstallTargetDecision {
   readonly allowed: boolean
   readonly reason?: string
+  /** Signed-manifest evidence carried into the install receipt; never affects the decision. */
+  readonly evidence?: InstallTargetEvidence
 }
 
 /**
@@ -575,7 +596,7 @@ async function assertInstalledBundleFromSnapshot(
   version: string,
   expectedPatch: string,
   expectedIntegrity: string,
-): Promise<void> {
+): Promise<string> {
   if (profileDependency(snapshot.manifest, packageName) !== version) throw new Error('dependency mismatch')
   if (!profileBundles(snapshot.manifest).includes(packageName)) throw new Error('bundle missing')
   const packageDir = join(snapshot.nodeModules, ...packageSegments(packageName))
@@ -594,6 +615,7 @@ async function assertInstalledBundleFromSnapshot(
     throw new Error('bundle patch invalid')
   }
   assertProfileLockRecord(snapshot.lockfile, packageName, version, expectedIntegrity)
+  return resolvedPackageDir
 }
 
 async function assertInstalledBundle(
@@ -602,8 +624,8 @@ async function assertInstalledBundle(
   version: string,
   expectedPatch: string,
   expectedIntegrity: string,
-): Promise<void> {
-  await assertInstalledBundleFromSnapshot(
+): Promise<string> {
+  return await assertInstalledBundleFromSnapshot(
     await loadInstalledProfileSnapshot(profile),
     packageName,
     version,
@@ -629,7 +651,7 @@ async function assertRemoved(profile: MarketDesktopProfile, packageName: string)
 function validReceipt(value: unknown): value is MarketInstallReceipt {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
   const receipt = value as Record<string, unknown>
-  return typeof receipt.receiptId === 'string' && receipt.receiptId.length >= 16 && receipt.receiptId.length <= 128
+  if (!(typeof receipt.receiptId === 'string' && receipt.receiptId.length >= 16 && receipt.receiptId.length <= 128
     && typeof receipt.profileName === 'string' && receipt.profileName.length >= 1 && receipt.profileName.length <= 120
     && safePackageName(receipt.packageName)
     && marketManagedPackage(receipt.packageName)
@@ -640,7 +662,56 @@ function validReceipt(value: unknown): value is MarketInstallReceipt {
     && typeof receipt.providerId === 'string' && receipt.providerId.length >= 1 && receipt.providerId.length <= 200
     && typeof receipt.itemId === 'string' && receipt.itemId.length >= 1 && receipt.itemId.length <= 200
     && typeof receipt.displayName === 'string' && receipt.displayName.length >= 1 && receipt.displayName.length <= 240
-    && typeof receipt.installedAt === 'string' && !Number.isNaN(Date.parse(receipt.installedAt))
+    && typeof receipt.installedAt === 'string' && !Number.isNaN(Date.parse(receipt.installedAt)))) return false
+  // Legacy v1 receipts (written before the signed-manifest chain, P2-3) stay
+  // valid for uninstall reconciliation and display; they carry no signed
+  // evidence and are never a basis for any allow decision.
+  if (receipt.receiptVersion === undefined || receipt.receiptVersion === 1) return true
+  if (receipt.receiptVersion !== 2) return false
+  // v2 receipts are validated strictly: signed decision identity, measured
+  // tree, and the RFC 0004 evidence fields must all be present and consistent.
+  if (!Number.isSafeInteger(receipt.manifestSequence) || (receipt.manifestSequence as number) < 1) return false
+  if (!isCompanyManifestKeyId(receipt.keyId)) return false
+  if (!validInstallTreeDigest(receipt.treeDigest)) return false
+  const resolved = record(receipt.resolved)
+  if (
+    resolved === undefined
+    || !sha512Integrity(resolved.registryIntegrity)
+    || typeof resolved.treeRootDigest !== 'string'
+    || !SHA256_HEX.test(resolved.treeRootDigest)
+    || resolved.registryIntegrity !== receipt.integrity
+    || resolved.treeRootDigest !== (receipt.treeDigest as MarketInstallTreeDigest).rootDigest
+  ) return false
+  const decided = record(receipt.decided)
+  return decided !== undefined && decided.allowedBy === 'signed-company-manifest'
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/u
+
+/** Relative POSIX tree path guard aligned with the tree-digest determinism rules. */
+function validTreePath(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_INSTALL_TREE_PATH_LENGTH) return false
+  if (value.startsWith('/') || value.endsWith('/') || value.includes('\\') || value.includes('\0')) return false
+  return value.split('/').every(segment =>
+    segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes(':'))
+}
+
+function validInstallTreeDigest(value: unknown): value is MarketInstallTreeDigest {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const digest = value as Record<string, unknown>
+  if (digest.algorithm !== 'sha256') return false
+  if (typeof digest.rootDigest !== 'string' || !SHA256_HEX.test(digest.rootDigest)) return false
+  if (!Array.isArray(digest.files) || digest.files.length > MAX_INSTALL_TREE_DIGEST_FILES) return false
+  let previous: string | undefined
+  for (const entry of digest.files) {
+    const file = record(entry)
+    if (file === undefined || !validTreePath(file.path)) return false
+    if (typeof file.digest !== 'string' || !SHA256_HEX.test(file.digest)) return false
+    // Records are unique and sorted by path in ascending UTF-16 code-unit order.
+    if (previous !== undefined && !(previous < file.path)) return false
+    previous = file.path
+  }
+  return true
 }
 
 /** Host-owned install workflow. No provider command or Renderer package spec crosses this boundary. */
@@ -895,7 +966,7 @@ export class MarketInstallService {
       ) {
         throw new MarketInstallError('verification-failed', 'The npm package changed after preview. Preview the install again.')
       }
-      this.assertInstallTargetAllowed(candidate, verification)
+      const decision = this.assertInstallTargetAllowed(candidate, verification)
       await assertNotInstalled(profile, candidate.packageName)
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
@@ -903,19 +974,7 @@ export class MarketInstallService {
       if (disabledPackages.has(candidate.packageName)) {
         throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
       }
-      const receipt: MarketInstallReceipt = {
-        receiptId: randomUUID(),
-        profileName: profile.name,
-        packageName: candidate.packageName,
-        version: candidate.version,
-        integrity: verification.integrity,
-        bundlePatch: verification.bundlePatch,
-        sourceRecordId: candidate.sourceRecordId,
-        providerId: candidate.providerId,
-        itemId: candidate.itemId,
-        displayName: candidate.displayName,
-        installedAt: new Date(this.now()).toISOString(),
-      }
+      const receiptId = randomUUID()
       try {
         await this.runPlugin(
           this.installOptions(candidate.packageName),
@@ -923,21 +982,22 @@ export class MarketInstallService {
           operationSignal,
           true,
           {
-            packageName: receipt.packageName,
-            packageVersion: receipt.version,
-            receiptId: receipt.receiptId,
+            packageName: candidate.packageName,
+            packageVersion: candidate.version,
+            receiptId,
           },
         )
       } catch (cause) {
         if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
-        await this.rollbackInstall(profile, candidate.packageName, receipt.receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId)
         throw new MarketInstallError(
           'operation-failed',
           'The package manager failed after changing the active profile, so the partial installation was rolled back.',
         )
       }
+      let installedDir: string
       try {
-        await assertInstalledBundle(
+        installedDir = await assertInstalledBundle(
           profile,
           candidate.packageName,
           candidate.version,
@@ -946,16 +1006,41 @@ export class MarketInstallService {
         )
         operationSignal.throwIfAborted()
       } catch {
-        await this.rollbackInstall(profile, candidate.packageName, receipt.receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId)
         throw new MarketInstallError(
           'operation-failed',
           'The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.',
         )
       }
+      // Post-install measurement (P2-3): the receipt records what is actually
+      // on disk for installs a signed manifest allowed. Unlocked deployments
+      // without signed evidence keep the legacy v1 receipt shape.
+      let treeDigest: MarketInstallTreeDigest | undefined
+      if (decision.evidence !== undefined) {
+        try {
+          treeDigest = await computeInstallTreeDigest(installedDir)
+          operationSignal.throwIfAborted()
+        } catch {
+          await this.rollbackInstall(profile, candidate.packageName, receiptId)
+          throw new MarketInstallError(
+            'operation-failed',
+            'The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.',
+          )
+        }
+      }
+      const receipt: MarketInstallReceipt = this.buildInstallReceipt(
+        candidate,
+        verification,
+        profile,
+        receiptId,
+        new Date(this.now()).toISOString(),
+        decision,
+        treeDigest,
+      )
       try {
         await this.saveReceipts([...this.receipts(), receipt])
       } catch {
-        await this.rollbackInstall(profile, candidate.packageName, receipt.receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId)
         throw new MarketInstallError('persistence-failed', 'The install receipt could not be saved, so the installation was rolled back.')
       }
       return { receipt }
@@ -1259,7 +1344,7 @@ export class MarketInstallService {
   private assertInstallTargetAllowed(
     candidate: InstallCandidate,
     verification: MarketNpmPackageVerification,
-  ): void {
+  ): InstallTargetDecision {
     let decision: InstallTargetDecision
     try {
       decision = this.installTargetAuthority.canInstall({
@@ -1271,7 +1356,7 @@ export class MarketInstallService {
       if (cause instanceof MarketInstallError) throw cause
       throw new MarketInstallError('verification-failed', 'The trusted install whitelist could not be evaluated.')
     }
-    if (decision.allowed === true) return
+    if (decision.allowed === true) return decision
     throw new MarketInstallError(
       'verification-failed',
       decision.reason === undefined
@@ -1288,6 +1373,49 @@ export class MarketInstallService {
       `--registry=${registry}`,
       ...(scope === undefined ? [] : [`--${scope}:registry=${registry}`]),
     ]
+  }
+
+  /**
+   * Assemble the persisted receipt: version 2 with the signed-manifest
+   * evidence and the measured tree when the authority supplied evidence,
+   * otherwise the legacy v1 shape for deployments without a signed chain.
+   */
+  private buildInstallReceipt(
+    candidate: InstallCandidate,
+    verification: MarketNpmPackageVerification,
+    profile: MarketDesktopProfile,
+    receiptId: string,
+    installedAt: string,
+    decision: InstallTargetDecision,
+    treeDigest: MarketInstallTreeDigest | undefined,
+  ): MarketInstallReceipt {
+    const base = {
+      receiptId,
+      profileName: profile.name,
+      packageName: candidate.packageName,
+      version: candidate.version,
+      integrity: verification.integrity,
+      bundlePatch: verification.bundlePatch,
+      sourceRecordId: candidate.sourceRecordId,
+      providerId: candidate.providerId,
+      itemId: candidate.itemId,
+      displayName: candidate.displayName,
+      installedAt,
+    }
+    const evidence = decision.evidence
+    if (evidence === undefined || treeDigest === undefined) return base
+    return {
+      ...base,
+      receiptVersion: 2,
+      manifestSequence: evidence.manifestSequence,
+      keyId: evidence.keyId,
+      treeDigest,
+      resolved: {
+        registryIntegrity: verification.integrity,
+        treeRootDigest: treeDigest.rootDigest,
+      },
+      decided: { allowedBy: 'signed-company-manifest' },
+    }
   }
 
   private async rollbackInstall(

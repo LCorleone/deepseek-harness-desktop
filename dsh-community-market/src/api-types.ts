@@ -1,6 +1,9 @@
 import type { CatalogSnapshot } from './contracts/generated/catalog-snapshot.js'
 import type { CatalogSourceManifest } from './contracts/generated/catalog-source.js'
 import type { LocalSourceRecord } from './contracts/types.js'
+import type { MarketInstallTreeDigest, MarketInstallTreeDigestFile } from './install/tree-digest.js'
+
+export type { MarketInstallTreeDigest, MarketInstallTreeDigestFile }
 
 export interface MarketBuiltInProvider {
   readonly key: string
@@ -94,7 +97,7 @@ export type MarketSourceMutation =
   | { readonly action: 'remove'; readonly sourceRecordId: string }
 
 /** Durable proof that the Market installed one exact npm package into one profile. */
-export interface MarketInstallReceipt {
+export interface MarketInstallReceiptBase {
   readonly receiptId: string
   readonly profileName: string
   readonly packageName: string
@@ -107,6 +110,74 @@ export interface MarketInstallReceipt {
   readonly displayName: string
   readonly installedAt: string
 }
+
+/**
+ * Legacy receipt written before the signed-manifest install chain (P2-3) and
+ * still written by deployments without a signed install authority. A v1
+ * receipt is usable for uninstall reconciliation and display, but it carries
+ * no signed evidence and never participates in an install decision.
+ */
+export interface MarketInstallReceiptV1 extends MarketInstallReceiptBase {
+  /** Absent in receipts written before P2-3; `1` marks the same legacy shape explicitly. */
+  readonly receiptVersion?: 1
+}
+
+/**
+ * Evidence-class vocabulary mirrored from `dsh-community-fabric` RFC 0004
+ * "Provenance, Validation, Diagnostics, and the Effect Ledger" §4. The fabric
+ * package is documentation-only and exports no types, so the class names are
+ * defined locally with this source annotation and must not drift from the RFC.
+ */
+export type MarketEvidenceClass = 'declared' | 'resolved' | 'decided' | 'observed' | 'tested' | 'attested'
+
+/**
+ * RFC 0004 evidence class `resolved` of {@link MarketEvidenceClass}: digests
+ * derived from immutable inputs by a resolver or verifier. Both values must
+ * equal the corresponding top-level receipt fields.
+ */
+export interface MarketInstallResolvedEvidence {
+  /** npm dist SHA-512 integrity resolved from the allowed registry metadata chain. */
+  readonly registryIntegrity: string
+  /** Root digest of the installed package tree measured after installation. */
+  readonly treeRootDigest: string
+}
+
+/**
+ * RFC 0004 evidence class `decided` of {@link MarketEvidenceClass}: the Host
+ * policy outcome that permitted the install.
+ */
+export interface MarketInstallDecidedEvidence {
+  /** The only decision source that may permit a Market install in a locked deployment. */
+  readonly allowedBy: 'signed-company-manifest'
+}
+
+/**
+ * Receipt written when a signed company manifest entry allowed the install
+ * (P2-3). Records the signed decision (manifest sequence and trust-root
+ * key), the measured installed tree, and the RFC 0004 evidence classes. A
+ * receipt is a cache hint and an uninstall reconciliation credential only:
+ * install permission is always decided again from the signed manifest, the
+ * registry metadata, and the post-install measurement — never from a stored
+ * receipt, whatever its version.
+ */
+export interface MarketInstallReceiptV2 extends MarketInstallReceiptBase {
+  readonly receiptVersion: 2
+  /** Sequence of the signed company manifest whose entry allowed this install. */
+  readonly manifestSequence: number
+  /** keyId of the trust root whose key verified the manifest that allowed this install. */
+  readonly keyId: string
+  /** Post-install measurement of the installed package tree. */
+  readonly treeDigest: MarketInstallTreeDigest
+  readonly resolved: MarketInstallResolvedEvidence
+  readonly decided: MarketInstallDecidedEvidence
+}
+
+/**
+ * Durable proof that the Market installed one exact npm package into one
+ * profile. `receiptVersion` discriminates the legacy v1 shape (absent or `1`)
+ * from the signed-evidence v2 shape.
+ */
+export type MarketInstallReceipt = MarketInstallReceiptV1 | MarketInstallReceiptV2
 
 export type MarketInstallationView =
   | {

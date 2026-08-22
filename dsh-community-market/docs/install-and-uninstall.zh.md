@@ -124,7 +124,7 @@ flowchart LR
 - 已安装状态读取会核对当前 profile 的 direct-bundle 清单与合法 receipt。卸载 preview 只接受 `receiptId`；禁用和启用 preview 只接受 generation-scoped 不透明 `bundleId`。每次执行都只接受各自的一次性不透明 `previewId`，启用时还会重验禁用状态和 receipt 所有权。
 - renderer 不会获得文件系统、进程、环境变量或 package manager 权限。package 修改通过 `desktopPnpm.runPlugin()` 完成，参数由 Host 固定构造，并使用当前 profile 的绝对目录。它唯一可以收到的命令形文本是有界、只展示的手动提示；终端操作不能接收或执行该文本。
 
-Receipt 会记录 profile、精确 npm 身份、integrity、DSH bundle patch、目录 provenance、展示名称和安装时间。它只是“本 Market 已完成并验证一次受管安装”的本地证据，不是 provider 凭据，也不能依赖来源继续存在。
+Receipt 会记录 profile、精确 npm 身份、integrity、DSH bundle patch、目录 provenance、展示名称和安装时间。它只是“本 Market 已完成并验证一次受管安装”的本地证据，不是 provider 凭据，也不能依赖来源继续存在。在通过签名 company catalog 安装的部署中，receipt 为 version 2，额外记录允许本次安装的签名 manifest sequence 与 trust-root key、安装完成后立即测得的包目录 SHA-256 摘要，以及采用 dsh-community-fabric RFC 0004 证据词汇的 `resolved`/`decided` 证据字段。任何版本的 receipt 都只是缓存提示与卸载对账凭证：安装权限永远由签名 company manifest、registry 元数据和安装后实测重新判定，绝不来自已存储的 receipt。存量 version-1 receipt 仍可读取并用于卸载对账，但不携带任何签名证据。
 
 如果 Desktop package 能力不可用，目录浏览仍然可以工作，而安装、卸载、禁用和启用会返回不可用状态。受管路径不会退回 ambient `pnpm`、shell、猜测的 executable、repository 命令或未激活 profile。打开 DSH 终端是另一项明确的用户操作，本身绝不会启动 package 操作；只有之后通过内置终端运行的 `dsh plugin add` 会获得 Desktop 恢复 handoff，其他终端命令不会。
 
