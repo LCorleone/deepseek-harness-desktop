@@ -40,6 +40,12 @@
 
 同一时间只选择一个来源进行浏览。该来源故障时可以在其名称旁显示状态，但不得触发兜底来源、修改用户选择、清除本地安装 receipt，或阻止 DSH/Desktop 启动。
 
+## 公司部署（锁定构建）
+
+在公司锁定的 Desktop 构建中，Market 运行在内嵌部署策略之下：生效 provider 钉死为本市场壳，目录源锁定为公司签名 manifest，所有安装必须通过签名 manifest 权限判定（registry 验证过的 integrity 必须等于签名条目的 integrity；revoked 或不在清单的条目一律拒绝；目录不可信状态下安装整体失败闭合）。manifest sequence 在任何目录状态派生之前持久化，回滚的 manifest 跨重启都会被拒。receipt 仅作证据与卸载对账凭证 —— 永不授权安装。
+
+catalog 签名密钥是 ed25519 私钥，仅存于专用发布环境（与仓库写权限隔离的 CI secrets）；密钥管理决策见 owning Agent Note。轮换采用信任根内嵌的双钥重叠，吊销通过重发 manifest（`revoked: true` + `sequence` 严格递增）。客户端只钉公钥指纹，私钥未来迁移 KMS/HSM 无需客户端改动。
+
 ## 报告安全问题
 
 如果发现可能的安全问题，请通过 [t4wefan@qq.com](mailto:t4wefan@qq.com) 私下联系我们。请提供受影响的版本或 commit、操作系统、复现步骤、预期影响，以及可以安全分享的最小 proof of concept。
