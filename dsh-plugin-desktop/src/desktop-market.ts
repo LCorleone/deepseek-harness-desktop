@@ -1,4 +1,8 @@
-/** Machine-level Desktop Market provider selection and fail-safe state. */
+/**
+ * Machine-level Desktop Market provider selection and fail-safe state.
+ * The effective provider is derived from the embedded desktop policy, never
+ * from the user-writable request file alone.
+ */
 
 import {
   chmodSync,
@@ -12,6 +16,7 @@ import {
 } from 'node:fs'
 import { isAbsolute, basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { readDesktopPolicy, type DesktopPolicy } from './desktop-policy.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const STATE_VERSION = 1
@@ -38,35 +43,55 @@ export const DESKTOP_MARKET_IDENTITIES = Object.freeze({
   }),
 })
 
-/** Persisted machine-level provider selection. Effective state is derived at boot. */
+/**
+ * Persisted machine-level provider request. The user-writable state records the
+ * request only; the effective provider is derived from the embedded policy.
+ */
 export interface DesktopMarketStateV1 {
   readonly version: 1
   readonly requested: DesktopMarketProvider
   readonly legacyDefaulted: false
 }
 
-/** Immutable startup view. `effective` is initially the requested provider. */
+/**
+ * Immutable startup view. `requested` is a diagnostic record of the persisted
+ * request; `effective` is derived from it and the desktop policy and stays the
+ * company provider while the policy is locked.
+ */
 export interface DesktopMarketSnapshot {
   readonly requested: DesktopMarketProvider
   readonly effective: DesktopMarketProvider
   readonly legacyDefaulted: boolean
 }
 
-const DEFAULT_SNAPSHOT: DesktopMarketSnapshot = Object.freeze({
-  requested: 'disabled',
-  effective: 'disabled',
-  legacyDefaulted: true,
-})
+/** The provider the desktop policy pins while the build is locked. */
+const COMPANY_PROVIDER: DesktopMarketProvider = DESKTOP_MARKET_IDENTITIES.dshMarket.provider
+
+const DEFAULT_REQUESTED_PROVIDER: DesktopMarketProvider = 'disabled'
+
+/** Derive the effective provider: policy lock wins over any persisted request. */
+function effectiveProvider(
+  requested: DesktopMarketProvider,
+  policy: DesktopPolicy,
+): DesktopMarketProvider {
+  return policy.locked ? COMPANY_PROVIDER : requested
+}
 
 function snapshot(
   requested: DesktopMarketProvider,
   legacyDefaulted: boolean,
+  policy: DesktopPolicy,
 ): DesktopMarketSnapshot {
   return Object.freeze({
     requested,
-    effective: requested,
+    effective: effectiveProvider(requested, policy),
     legacyDefaulted,
   })
+}
+
+/** Fail-safe view used when the persisted state is missing or unusable. */
+function failSafeSnapshot(policy: DesktopPolicy): DesktopMarketSnapshot {
+  return snapshot(DEFAULT_REQUESTED_PROVIDER, true, policy)
 }
 
 /** Preserve the explicit request while projecting a generation-local effective provider. */
@@ -148,19 +173,29 @@ function readRawState(statePath: string): unknown {
   }
 }
 
-/** Read the state without ever writing a migration or repair marker. */
-export function readDesktopMarketState(statePath: string): DesktopMarketSnapshot {
+/**
+ * Read the state without ever writing a migration or repair marker. A missing
+ * or corrupted state fails safe to the disabled request; the policy lock still
+ * pins the effective provider. Policy resolution failures throw (fail-closed).
+ */
+export function readDesktopMarketState(
+  statePath: string,
+  policy: DesktopPolicy = readDesktopPolicy(),
+): DesktopMarketSnapshot {
   assertDesktopMarketStatePath(statePath)
   try {
-    return snapshot(parseDesktopMarketState(readRawState(statePath)).requested, false)
+    return snapshot(parseDesktopMarketState(readRawState(statePath)).requested, false, policy)
   } catch {
-    return DEFAULT_SNAPSHOT
+    return failSafeSnapshot(policy)
   }
 }
 
 /** Read the state using the Electron user-data directory convention. */
-export function readDesktopMarketStateForUserData(userDataDir: string): DesktopMarketSnapshot {
-  return readDesktopMarketState(desktopMarketStatePath(userDataDir))
+export function readDesktopMarketStateForUserData(
+  userDataDir: string,
+  policy: DesktopPolicy = readDesktopPolicy(),
+): DesktopMarketSnapshot {
+  return readDesktopMarketState(desktopMarketStatePath(userDataDir), policy)
 }
 
 function assertRealStateDirectory(statePath: string): void {
@@ -185,10 +220,16 @@ function assertRealStateDirectory(statePath: string): void {
   }
 }
 
-/** Persist an explicit provider choice with a locked, atomic replacement. */
+/**
+ * Persist an explicit provider request with a locked, atomic replacement.
+ * The persisted value is a request only: writing it never changes the
+ * effective provider, which stays the company provider while the policy is
+ * locked.
+ */
 export async function writeDesktopMarketSelection(
   statePath: string,
   provider: DesktopMarketProvider,
+  policy: DesktopPolicy = readDesktopPolicy(),
 ): Promise<DesktopMarketSnapshot> {
   assertDesktopMarketStatePath(statePath)
   if (!isProvider(provider)) throw new TypeError(`${BIN_NAME}: invalid Desktop Market provider`)
@@ -206,15 +247,20 @@ export async function writeDesktopMarketSelection(
       dirMode: STATE_DIRECTORY_MODE,
     })
   })
-  return snapshot(provider, false)
+  return snapshot(provider, false, policy)
 }
 
-/** Persist an explicit provider choice using the fixed Electron user-data path. */
+/**
+ * Persist an explicit provider request using the fixed Electron user-data
+ * path. Writing it never changes the effective provider while the policy is
+ * locked.
+ */
 export async function selectDesktopMarketProvider(
   userDataDir: string,
   provider: DesktopMarketProvider,
+  policy: DesktopPolicy = readDesktopPolicy(),
 ): Promise<DesktopMarketSnapshot> {
-  return writeDesktopMarketSelection(desktopMarketStatePath(userDataDir), provider)
+  return writeDesktopMarketSelection(desktopMarketStatePath(userDataDir), provider, policy)
 }
 
 export const desktopMarketStateConstants = Object.freeze({

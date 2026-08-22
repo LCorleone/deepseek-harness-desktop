@@ -22,6 +22,7 @@ import {
   selectDesktopMarketProvider,
   writeDesktopMarketSelection,
 } from '../src/desktop-market.ts'
+import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
 
 const roots: string[] = []
 
@@ -34,6 +35,28 @@ function temporaryUserData(): string {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
+
+function unlockedPolicy(): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    locked: false,
+    trustRoots: [],
+  })
+}
+
+function lockedPolicy(): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    locked: true,
+    trustRoots: [{ keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) }],
+  })
+}
 
 describe('Desktop Market state path and parser', () => {
   it('uses one machine-level state path and rejects ambiguous paths', () => {
@@ -94,7 +117,7 @@ describe('Desktop Market fail-safe reads', () => {
     prepare(statePath)
     const before = existsSync(statePath) ? readFileSync(statePath, 'utf8') : undefined
 
-    expect(readDesktopMarketStateForUserData(userData)).toEqual({
+    expect(readDesktopMarketStateForUserData(userData, unlockedPolicy())).toEqual({
       requested: 'disabled',
       effective: 'disabled',
       legacyDefaulted: true,
@@ -116,7 +139,7 @@ describe('Desktop Market fail-safe reads', () => {
     }
 
     expect(lstatSync(statePath).isSymbolicLink()).toBe(true)
-    expect(readDesktopMarketState(statePath)).toEqual({
+    expect(readDesktopMarketState(statePath, unlockedPolicy())).toEqual({
       requested: 'disabled',
       effective: 'disabled',
       legacyDefaulted: true,
@@ -130,7 +153,7 @@ describe('Desktop Market explicit selection', () => {
     'persists provider %s with no effective field',
     async provider => {
       const userData = temporaryUserData()
-      const selected = await selectDesktopMarketProvider(userData, provider)
+      const selected = await selectDesktopMarketProvider(userData, provider, unlockedPolicy())
       const statePath = desktopMarketStatePath(userData)
       const persisted = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>
 
@@ -141,7 +164,7 @@ describe('Desktop Market explicit selection', () => {
       })
       expect(persisted).toEqual({ version: 1, requested: provider, legacyDefaulted: false })
       expect(persisted).not.toHaveProperty('effective')
-      expect(readDesktopMarketState(statePath)).toEqual(selected)
+      expect(readDesktopMarketState(statePath, unlockedPolicy())).toEqual(selected)
       if (process.platform !== 'win32') {
         expect(statSync(join(userData, 'desktop-market')).mode & 0o777).toBe(0o700)
         expect(statSync(statePath).mode & 0o777).toBe(0o600)
@@ -152,14 +175,14 @@ describe('Desktop Market explicit selection', () => {
 
   it('replaces a previous valid state atomically and leaves no temporary siblings', async () => {
     const userData = temporaryUserData()
-    await selectDesktopMarketProvider(userData, 'community-market')
+    await selectDesktopMarketProvider(userData, 'community-market', unlockedPolicy())
     const statePath = desktopMarketStatePath(userData)
     const previous = readFileSync(statePath, 'utf8')
 
-    await writeDesktopMarketSelection(statePath, 'dsh-market')
+    await writeDesktopMarketSelection(statePath, 'dsh-market', unlockedPolicy())
 
     expect(readFileSync(statePath, 'utf8')).not.toBe(previous)
-    expect(readDesktopMarketState(statePath).requested).toBe('dsh-market')
+    expect(readDesktopMarketState(statePath, unlockedPolicy()).requested).toBe('dsh-market')
     expect(readdirSync(join(userData, 'desktop-market'))).toEqual(['state.json'])
   })
 
@@ -174,9 +197,79 @@ describe('Desktop Market explicit selection', () => {
       return
     }
 
-    await expect(selectDesktopMarketProvider(userData, 'community-market')).rejects.toThrow(
-      'state directory must be a real directory',
-    )
+    await expect(selectDesktopMarketProvider(userData, 'community-market', unlockedPolicy()))
+      .rejects.toThrow('state directory must be a real directory')
     expect(readdirSync(outside)).toEqual([])
+  })
+})
+
+describe('policy-pinned effective provider', () => {
+  it('keeps the company provider effective after a locked write of community-market', async () => {
+    const userData = temporaryUserData()
+
+    const selected = await selectDesktopMarketProvider(userData, 'community-market', lockedPolicy())
+
+    expect(selected).toEqual({
+      requested: 'community-market',
+      effective: 'dsh-market',
+      legacyDefaulted: false,
+    })
+    const persisted = JSON.parse(
+      readFileSync(desktopMarketStatePath(userData), 'utf8'),
+    ) as Record<string, unknown>
+    expect(persisted).toEqual({ version: 1, requested: 'community-market', legacyDefaulted: false })
+    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
+      requested: 'community-market',
+      effective: 'dsh-market',
+      legacyDefaulted: false,
+    })
+  })
+
+  it('pins the company provider for every request while the same state stays unlocked-effective', async () => {
+    const userData = temporaryUserData()
+    await selectDesktopMarketProvider(userData, 'community-market', unlockedPolicy())
+    const statePath = desktopMarketStatePath(userData)
+
+    expect(readDesktopMarketState(statePath, unlockedPolicy())).toMatchObject({
+      requested: 'community-market',
+      effective: 'community-market',
+    })
+    expect(readDesktopMarketState(statePath, lockedPolicy())).toMatchObject({
+      requested: 'community-market',
+      effective: 'dsh-market',
+    })
+  })
+
+  it.each([
+    ['missing', () => {}],
+    ['malformed JSON', (path: string) => writeFileSync(path, '{broken', 'utf8')],
+    ['invalid provider', (path: string) => writeFileSync(path, '{"version":1,"requested":"other","legacyDefaulted":false}\n', 'utf8')],
+  ])('keeps the company provider effective when the state is %s', (_label, prepare) => {
+    const userData = temporaryUserData()
+    const statePath = desktopMarketStatePath(userData)
+    mkdirSync(join(userData, 'desktop-market'), { recursive: true })
+    prepare(statePath)
+
+    expect(readDesktopMarketStateForUserData(userData, lockedPolicy())).toEqual({
+      requested: 'disabled',
+      effective: 'dsh-market',
+      legacyDefaulted: true,
+    })
+  })
+
+  it('fails closed instead of silently unlocking when the default policy asset is unreadable', () => {
+    const userData = temporaryUserData()
+    const statePath = desktopMarketStatePath(userData)
+    mkdirSync(join(userData, 'desktop-market'), { recursive: true })
+    writeFileSync(
+      statePath,
+      '{"version":1,"requested":"community-market","legacyDefaulted":false}\n',
+      'utf8',
+    )
+
+    expect(() => readDesktopMarketState(statePath)).toThrow('unreadable desktop policy asset')
+    expect(() => readDesktopMarketStateForUserData(userData)).toThrow(
+      'unreadable desktop policy asset',
+    )
   })
 })
