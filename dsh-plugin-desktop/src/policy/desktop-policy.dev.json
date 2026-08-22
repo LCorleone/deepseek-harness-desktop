@@ -1,0 +1,8 @@
+{
+  "allowHomePatch": false,
+  "allowManualPluginAdd": false,
+  "companyCatalogOrigin": null,
+  "companyManifestUrl": "company-market/catalog-manifest.json",
+  "locked": false,
+  "trustRoots": []
+}

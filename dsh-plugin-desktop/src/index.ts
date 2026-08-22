@@ -54,6 +54,16 @@ import type { DesktopShellMode } from './runtime.ts'
 import type {} from './runtime.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 
+/** Embedded company policy source distributed beside the built modules. */
+export {
+  desktopPolicyAssetPath,
+  desktopPolicyConstants,
+  parseDesktopPolicy,
+  readDesktopPolicy,
+} from './desktop-policy.ts'
+export type { DesktopPolicy, DesktopPolicyTrustRoot } from './desktop-policy.ts'
+
+
 /** Stable Cordis plugin name. */
 export const name = 'desktop-shell'
 
