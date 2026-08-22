@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   DesktopPluginsError,
@@ -21,6 +22,8 @@ import {
   type DesktopPlugins,
   type DesktopPluginsBootstrap,
 } from '../src/desktop-plugins.ts'
+import { desktopBootBundleNames } from '../src/boot-verification.ts'
+import { DESKTOP_MARKET_IDENTITIES } from '../src/desktop-market.ts'
 import {
   desktopInstallAnchor,
   ensureDesktopProfile,
@@ -120,6 +123,20 @@ function errorCode(cause: unknown): string | undefined {
 }
 
 describe('desktop direct bundle management', () => {
+  it('keeps upstream, desktop, and market bundles outside the boot-verification target set', () => {
+    // P2-4 compatibility red line: REQUIRED_BUNDLES, dsh-plugin-desktop, and
+    // both Market provider packages can never become verification targets,
+    // so no manifest state can ever reject them at boot.
+    const declared = [
+      ...(PROFILE_TEMPLATES.web ?? []),
+      'dsh-plugin-desktop',
+      'dsh-community-market',
+      DESKTOP_MARKET_IDENTITIES.dshMarket.packageName,
+      'third-party-plugin',
+    ]
+    expect(desktopBootBundleNames(declared)).toEqual(['third-party-plugin'])
+  })
+
   it('lists each direct bundle once and keeps only explicit product bundles immutable', async () => {
     const root = temporaryRoot()
     const options = bootstrap(root)

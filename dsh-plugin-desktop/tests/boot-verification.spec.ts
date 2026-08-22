@@ -1,0 +1,517 @@
+import { createHash, generateKeyPairSync } from 'node:crypto'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import { afterEach, describe, expect, it } from 'vitest'
+import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
+import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from 'dsh-community-market'
+import {
+  BOOT_TREE_MAX_PATH_LENGTH,
+  collectDesktopBootBundles,
+  companyManifestAssetPath,
+  computeDesktopBootTreeRootDigest,
+  desktopBootBundleNames,
+  desktopBootLockIntegrity,
+  desktopBootReceipts,
+  readCompanyManifestAsset,
+  readDesktopBootLockfile,
+  verifyDesktopBootBundles,
+  type DesktopBootBundle,
+  type DesktopBootReceipt,
+} from '../src/boot-verification.ts'
+
+const keyId = 'company-catalog-2026.01'
+const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+const trustRoots = [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }]
+const packageName = 'dsh-plugin-safe'
+const version = '1.2.3'
+const signedIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`
+const otherIntegrity = `sha512-${Buffer.alloc(64, 3).toString('base64')}`
+const manifestSequence = 21
+const temporaryDirectories: string[] = []
+const sha256hex = (data: Uint8Array | string): string => createHash('sha256').update(data).digest('hex')
+
+afterEach(() => {
+  for (const dir of temporaryDirectories.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+function temporaryDirectory(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-boot-verification-'))
+  temporaryDirectories.push(dir)
+  return dir
+}
+
+function packageEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    packageName,
+    version,
+    integrity: signedIntegrity,
+    bundlePatch: './cordis.patch.yml',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '*' },
+    ...overrides,
+  }
+}
+
+function signedManifestText(
+  packages: readonly Record<string, unknown>[],
+  options: { sequence?: number; expiresAt?: string } = {},
+): string {
+  const unsigned = {
+    manifestVersion: '1.0.0',
+    sequence: options.sequence ?? manifestSequence,
+    expiresAt: options.expiresAt ?? '2030-01-01T00:00:00Z',
+    packages,
+  }
+  const signature = createCompanyManifestSignature(
+    unsigned as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+    privateKey,
+    keyId,
+  )
+  return canonicalJsonText({ ...unsigned, signature })
+}
+
+/** Write one installed package tree and return its directory. */
+function installedPackage(files: Record<string, string>): string {
+  const dir = join(temporaryDirectory(), 'node_modules', packageName)
+  for (const [name, content] of Object.entries(files)) {
+    const path = join(dir, name)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+  }
+  return dir
+}
+
+const defaultFiles: Record<string, string> = {
+  'package.json': `{"name":"${packageName}","version":"${version}"}\n`,
+  'cordis.patch.yml': '- insert:\n    - id: safe-marker\n      name: dsh-plugin-safe\n',
+  'lib/payload.js': 'export const marker = 1\n',
+}
+
+function bundleInput(overrides: Partial<DesktopBootBundle> = {}): DesktopBootBundle {
+  return {
+    packageName,
+    version,
+    lockIntegrity: signedIntegrity,
+    packageDir: installedPackage(defaultFiles),
+    ...overrides,
+  }
+}
+
+function receiptFor(bundle: DesktopBootBundle, overrides: Partial<DesktopBootReceipt> = {}): DesktopBootReceipt {
+  return {
+    packageName: bundle.packageName,
+    version: bundle.version!,
+    manifestSequence,
+    keyId,
+    rootDigest: computeDesktopBootTreeRootDigest(bundle.packageDir!),
+    ...overrides,
+  }
+}
+
+const verify = (
+  manifestBytes: string | undefined,
+  bundles: readonly DesktopBootBundle[],
+  options: { receipts?: readonly DesktopBootReceipt[]; lastSeenSequence?: number; now?: () => number } = {},
+) => verifyDesktopBootBundles(manifestBytes, bundles, { trustRoots, ...options })
+
+describe('desktop boot tree digest', () => {
+  it('matches the documented serialization over files, symlinks, and nested directories', () => {
+    const dir = installedPackage({
+      'package.json': '{"name":"x","version":"1.0.0"}\n',
+      'a.txt': 'hello\n',
+      'nested/b.js': 'payload\n',
+      'nested/empty/.keep': '',
+    })
+    symlinkSync('./a.txt', join(dir, 'link'))
+
+    const digest = computeDesktopBootTreeRootDigest(dir)
+    // Independent re-derivation from the published rules: sorted relative
+    // POSIX paths, file bytes hashed, symlink target text hashed.
+    const entries: [string, string][] = [
+      ['a.txt', sha256hex('hello\n')],
+      ['link', sha256hex('./a.txt')],
+      ['nested/b.js', sha256hex('payload\n')],
+      ['nested/empty/.keep', sha256hex('')],
+      ['package.json', sha256hex('{"name":"x","version":"1.0.0"}\n')],
+    ]
+    const records = entries.sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0))
+    const root = createHash('sha256')
+    for (const [path, fileDigest] of records) root.update(`sha256:${path}\n${fileDigest}\n`, 'utf8')
+    expect(digest).toBe(root.digest('hex'))
+  })
+
+  it('is independent of file creation order and ignores empty directories', () => {
+    const first = installedPackage({ 'z.txt': 'z', 'a/m.txt': 'm' })
+    const secondRoot = temporaryDirectory()
+    const second = join(secondRoot, 'node_modules', packageName)
+    mkdirSync(join(second, 'ignored-empty-dir'), { recursive: true })
+    mkdirSync(join(second, 'a'), { recursive: true })
+    writeFileSync(join(second, 'z.txt'), 'z')
+    writeFileSync(join(second, 'a', 'm.txt'), 'm')
+    expect(computeDesktopBootTreeRootDigest(first)).toBe(computeDesktopBootTreeRootDigest(second))
+  })
+
+  it('rejects paths beyond the documented length limit', () => {
+    const dir = temporaryDirectory()
+    let path = dir
+    let length = 0
+    while (length <= BOOT_TREE_MAX_PATH_LENGTH) {
+      const segment = 'd'.repeat(64)
+      path = join(path, segment)
+      length += segment.length + 1
+    }
+    mkdirSync(path, { recursive: true })
+    writeFileSync(join(path, 'f.txt'), 'x')
+    expect(() => computeDesktopBootTreeRootDigest(dir)).toThrow('path length limit')
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects foreign entry types instead of skipping them', () => {
+    const dir = temporaryDirectory()
+    expect(spawnSync('mkfifo', [join(dir, 'pipe')]).status).toBe(0)
+    expect(() => computeDesktopBootTreeRootDigest(dir)).toThrow(
+      'is not a file, directory, or symbolic link',
+    )
+  })
+})
+
+describe('desktop boot bundle verification', () => {
+  it('allows a fully verified bundle with receipt evidence', () => {
+    const bundle = bundleInput()
+    const result = verify(signedManifestText([packageEntry()]), [bundle], { receipts: [receiptFor(bundle)] })
+    expect(result).toEqual({
+      manifestTrusted: true,
+      manifestSequence,
+      keyId,
+      manifestFailure: undefined,
+      allowed: [{ packageName, evidence: 'receipt', manifestSequence, keyId }],
+      rejected: [],
+    })
+  })
+
+  it('degrades to manifest-only evidence without a usable receipt', () => {
+    const result = verify(signedManifestText([packageEntry()]), [bundleInput()])
+    expect(result.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(result.rejected).toEqual([])
+  })
+
+  it('ignores legacy and malformed receipts and falls back to manifest-only', () => {
+    const bundle = bundleInput()
+    const legacy = { ...receiptFor(bundle), manifestSequence: 1, keyId: '', rootDigest: 'not-hex' }
+    const v1 = desktopBootReceipts([{
+      receiptId: 'r'.repeat(16),
+      profileName: 'desktop',
+      packageName,
+      version,
+      integrity: signedIntegrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'company-catalog',
+      providerId: 'com.deepseek.company-catalog',
+      itemId: `npm:${packageName}@${version}`,
+      displayName: packageName,
+      installedAt: '2026-09-01T00:00:00.000Z',
+    }])
+    expect(v1).toEqual([])
+    const result = verify(signedManifestText([packageEntry()]), [bundle], { receipts: [legacy] })
+    expect(result.allowed.map(entry => entry.evidence)).toEqual(['manifest-only'])
+  })
+
+  it('normalizes market receipt v2 records into boot evidence', () => {
+    const bundle = bundleInput()
+    const rootDigest = computeDesktopBootTreeRootDigest(bundle.packageDir!)
+    const receipts = desktopBootReceipts([{
+      receiptId: 'r'.repeat(16),
+      profileName: 'desktop',
+      packageName,
+      version,
+      integrity: signedIntegrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'company-catalog',
+      providerId: 'com.deepseek.company-catalog',
+      itemId: `npm:${packageName}@${version}`,
+      displayName: packageName,
+      installedAt: '2026-09-01T00:00:00.000Z',
+      receiptVersion: 2,
+      manifestSequence,
+      keyId,
+      treeDigest: { algorithm: 'sha256', files: [], rootDigest },
+      resolved: { registryIntegrity: signedIntegrity, treeRootDigest: rootDigest },
+      decided: { allowedBy: 'signed-company-manifest' },
+    }])
+    expect(receipts).toEqual([{ packageName, version, manifestSequence, keyId, rootDigest }])
+    const result = verify(signedManifestText([packageEntry()]), [bundle], { receipts })
+    expect(result.allowed.map(entry => entry.evidence)).toEqual(['receipt'])
+  })
+
+  it('rejects a bundle whose installed files differ from the receipt tree', () => {
+    const bundle = bundleInput()
+    const forged = receiptFor(bundle, { rootDigest: 'ab'.repeat(32) })
+    const result = verify(signedManifestText([packageEntry()]), [bundle], { receipts: [forged] })
+    expect(result.allowed).toEqual([])
+    expect(result.rejected).toEqual([{
+      packageName,
+      reason: `the installed files of ${packageName}@${version} differ from the tree recorded in its install receipt`,
+    }])
+  })
+
+  it('rejects a bundle whose tree cannot be measured', () => {
+    const bundle = bundleInput({ packageDir: join(temporaryDirectory(), 'missing') })
+    const result = verify(signedManifestText([packageEntry()]), [bundle], {
+      receipts: [receiptFor({ ...bundle, packageDir: installedPackage(defaultFiles) })],
+    })
+    expect(result.rejected[0]?.reason).toContain('could not be measured')
+  })
+
+  it('rejects absent, misversioned, and revoked manifest entries', () => {
+    const absent = verify(signedManifestText([]), [bundleInput()])
+    expect(absent.rejected[0]?.reason).toBe(`${packageName}@${version} is not in the signed company manifest`)
+
+    const otherVersion = verify(signedManifestText([packageEntry({ version: '2.0.0' })]), [bundleInput()])
+    expect(otherVersion.rejected[0]?.reason).toBe(
+      `the signed company manifest pins ${packageName}@2.0.0, but ${version} is installed`,
+    )
+
+    const revoked = verify(signedManifestText([packageEntry({ revoked: true })]), [bundleInput()])
+    expect(revoked.rejected[0]?.reason).toBe(`${packageName}@${version} is revoked in the signed company manifest`)
+  })
+
+  it('rejects unresolvable bundles and missing or diverging lock integrity', () => {
+    const unresolvable = verify(signedManifestText([packageEntry()]), [bundleInput({ packageDir: undefined, version: undefined })])
+    expect(unresolvable.rejected[0]?.reason).toContain('cannot be resolved as an installed package')
+
+    const unpinned = verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: undefined })])
+    expect(unpinned.rejected[0]?.reason).toContain('no exact pinned record in the profile lockfile')
+
+    const diverging = verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: otherIntegrity })])
+    expect(diverging.rejected[0]?.reason).toBe(
+      `the profile lockfile pins ${packageName}@${version} to integrity ${otherIntegrity}, but the signed company manifest pins ${signedIntegrity}`,
+    )
+  })
+
+  it('rejects every bundle when the manifest is missing, expired, or badly signed', () => {
+    const bundles = [bundleInput(), bundleInput({ packageName: 'second-plugin' })]
+    const missing = verify(undefined, bundles)
+    expect(missing).toEqual({
+      manifestTrusted: false,
+      manifestSequence: undefined,
+      keyId: undefined,
+      manifestFailure: {
+        code: 'manifest-missing',
+        reason: 'no signed company manifest bytes are available for this boot',
+      },
+      allowed: [],
+      rejected: [
+        { packageName, reason: expect.stringContaining('manifest-missing') },
+        { packageName: 'second-plugin', reason: expect.stringContaining('manifest-missing') },
+      ],
+    })
+
+    const expired = verify(signedManifestText([packageEntry()], { expiresAt: '2020-01-01T00:00:00Z' }), bundles)
+    expect(expired.manifestFailure?.code).toBe('expired')
+    expect(expired.rejected).toHaveLength(2)
+
+    const tamperedText = signedManifestText([packageEntry()]).replace(/"value":"[^"]{20}/u, '"value":"AAAA')
+    const tampered = verify(tamperedText, bundles)
+    expect(['bad-signature', 'non-canonical', 'malformed-json', 'invalid-manifest'])
+      .toContain(tampered.manifestFailure?.code)
+    expect(tampered.manifestTrusted).toBe(false)
+    expect(tampered.rejected).toHaveLength(2)
+  })
+
+  it('re-verifies the same manifest sequence as the receipts but rejects older manifests', () => {
+    const bundle = bundleInput()
+    const same = verify(signedManifestText([packageEntry()]), [bundle], {
+      receipts: [receiptFor(bundle, { manifestSequence })],
+    })
+    expect(same.manifestTrusted).toBe(true)
+
+    const older = verify(signedManifestText([packageEntry()], { sequence: manifestSequence - 1 }), [bundle], {
+      receipts: [receiptFor(bundle, { manifestSequence })],
+    })
+    expect(older.manifestFailure?.code).toBe('stale-sequence')
+    expect(older.rejected.map(entry => entry.packageName)).toEqual([packageName])
+  })
+
+  it('honors an injected sequence floor and clock', () => {
+    const bundle = bundleInput()
+    const floored = verify(signedManifestText([packageEntry()]), [bundle], { lastSeenSequence: manifestSequence })
+    expect(floored.manifestFailure?.code).toBe('stale-sequence')
+
+    const expiredAtFixedClock = verify(
+      signedManifestText([packageEntry()], { expiresAt: '2030-01-01T00:00:00Z' }),
+      [bundle],
+      { now: () => Date.parse('2031-01-01T00:00:00.000Z') },
+    )
+    expect(expiredAtFixedClock.manifestFailure?.code).toBe('expired')
+  })
+
+  it('decides each duplicate bundle name once and skips blank names', () => {
+    const bundle = bundleInput()
+    const blank: DesktopBootBundle = { packageName: '', version: undefined, lockIntegrity: undefined, packageDir: undefined }
+    const result = verify(signedManifestText([packageEntry()]), [bundle, bundle, blank])
+    expect(result.allowed).toHaveLength(1)
+    expect(result.rejected).toEqual([])
+  })
+
+  it('fails closed with empty trust roots', () => {
+    const result = verifyDesktopBootBundles(signedManifestText([packageEntry()]), [bundleInput()], {
+      trustRoots: [],
+    })
+    expect(result.manifestFailure?.code).toBe('unknown-key')
+    expect(result.rejected).toHaveLength(1)
+  })
+})
+
+describe('boot verification target selection', () => {
+  it('exempts upstream, desktop, and market bundles from verification', () => {
+    const declared = [
+      ...(PROFILE_TEMPLATES.web ?? []),
+      'dsh-plugin-desktop',
+      'dsh-community-market',
+      'dshmarket',
+      '@deepseek-ai/dsh-desktop-app',
+      'third-party-plugin',
+      '@scope/third-party-plugin',
+    ]
+    expect(desktopBootBundleNames(declared)).toEqual(['third-party-plugin', '@scope/third-party-plugin'])
+  })
+})
+
+describe('profile lockfile reader', () => {
+  function lockfileFixture(overrides: { version?: string; specifier?: string } = {}): string {
+    const profileDir = temporaryDirectory()
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+      `lockfileVersion: '${overrides.version ?? '9.0'}'`,
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      '${packageName}':`,
+      `        specifier: '${overrides.specifier ?? version}'`,
+      `        version: '${version}'`,
+      'packages:',
+      `  '${packageName}@${version}':`,
+      '    resolution:',
+      `      integrity: '${signedIntegrity}'`,
+      '',
+    ].join('\n'))
+    return profileDir
+  }
+
+  it('pins integrity for an exact specifier and resolution', () => {
+    const lockfile = readDesktopBootLockfile(lockfileFixture())!
+    expect(lockfile).toBeDefined()
+    expect(desktopBootLockIntegrity(lockfile, packageName, version)).toBe(signedIntegrity)
+  })
+
+  it('accepts a peer-suffixed resolution through the resolved key', () => {
+    const profileDir = temporaryDirectory()
+    const resolvedVersion = `${version}(_abc)`
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      '${packageName}':`,
+      `        specifier: '${version}'`,
+      `        version: '${resolvedVersion}'`,
+      'packages:',
+      `  '${packageName}@${resolvedVersion}':`,
+      '    resolution:',
+      `      integrity: '${signedIntegrity}'`,
+      '',
+    ].join('\n'))
+    const lockfile = readDesktopBootLockfile(profileDir)!
+    expect(desktopBootLockIntegrity(lockfile, packageName, version)).toBe(signedIntegrity)
+  })
+
+  it('returns nothing for range specifiers or missing package entries', () => {
+    const rangeLockfile = readDesktopBootLockfile(lockfileFixture({ specifier: `^${version}` }))!
+    expect(desktopBootLockIntegrity(rangeLockfile, packageName, version)).toBeUndefined()
+
+    const lockfile = readDesktopBootLockfile(lockfileFixture())!
+    expect(desktopBootLockIntegrity(lockfile, packageName, '9.9.9')).toBeUndefined()
+    expect(desktopBootLockIntegrity(lockfile, 'other-package', version)).toBeUndefined()
+  })
+
+  it('treats missing, corrupt, and unsupported lockfiles as unpinned', () => {
+    expect(readDesktopBootLockfile(temporaryDirectory())).toBeUndefined()
+
+    const profileDir = temporaryDirectory()
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), 'lockfileVersion: [broken\n')
+    expect(readDesktopBootLockfile(profileDir)).toBeUndefined()
+
+    const unsupported = readDesktopBootLockfile(lockfileFixture({ version: '6.0' }))
+    expect(unsupported).toBeUndefined()
+  })
+})
+
+describe('boot bundle collection', () => {
+  it('collects version, lock integrity, and the installed directory', () => {
+    const profileDir = temporaryDirectory()
+    const packageDir = join(profileDir, 'node_modules', packageName)
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), `{"name":"${packageName}","version":"${version}"}\n`)
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      '${packageName}':`,
+      `        specifier: '${version}'`,
+      `        version: '${version}'`,
+      'packages:',
+      `  '${packageName}@${version}':`,
+      '    resolution:',
+      `      integrity: '${signedIntegrity}'`,
+      '',
+    ].join('\n'))
+
+    expect(collectDesktopBootBundles(profileDir, [packageName])).toEqual([{
+      packageName,
+      version,
+      lockIntegrity: signedIntegrity,
+      packageDir,
+    }])
+  })
+
+  it('keeps unresolvable and unpinned bundles as records with undefined evidence fields', () => {
+    const profileDir = temporaryDirectory()
+    expect(collectDesktopBootBundles(profileDir, [packageName, 'missing-plugin'])).toEqual([
+      { packageName, version: undefined, lockIntegrity: undefined, packageDir: undefined },
+      { packageName: 'missing-plugin', version: undefined, lockIntegrity: undefined, packageDir: undefined },
+    ])
+  })
+})
+
+describe('company manifest asset reader', () => {
+  it('anchors the asset beside the module and reads or misses it', () => {
+    const root = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(root, 'lib', 'profile.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    expect(assetPath).toBe(join(root, 'lib', 'company-market', 'catalog-manifest.json'))
+    expect(readCompanyManifestAsset(assetPath)).toBeUndefined()
+
+    mkdirSync(dirname(assetPath), { recursive: true })
+    writeFileSync(assetPath, signedManifestText([]))
+    expect(readCompanyManifestAsset(assetPath)).toBe(signedManifestText([]))
+  })
+
+  it('rejects unsafe asset specifiers', () => {
+    const moduleUrl = pathToFileURL(fileURLToPath(import.meta.url)).href
+    expect(() => companyManifestAssetPath('/absolute/manifest.json', moduleUrl)).toThrow(
+      'must stay inside the bundled module directory',
+    )
+    expect(() => companyManifestAssetPath('../escape.json', moduleUrl)).toThrow(
+      'must stay inside the bundled module directory',
+    )
+    expect(() => companyManifestAssetPath('a\\b.json', moduleUrl)).toThrow(
+      'without NUL or backslash',
+    )
+  })
+})
