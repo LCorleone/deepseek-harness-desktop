@@ -86,6 +86,10 @@ describe('published package surface', () => {
       types: './lib/types/windows-pwsh-sandbox.d.ts',
       default: './lib/windows-pwsh-sandbox.js',
     })
+    expect(manifest.exports).toHaveProperty('./windows-subprocess', {
+      types: './lib/types/windows-subprocess.d.ts',
+      default: './lib/windows-subprocess.js',
+    })
     expect(manifest.exports).not.toHaveProperty('./windows-agent-presets')
     expect(manifest.exports).toHaveProperty('./terminal', {
       types: './lib/types/terminal.d.ts',
@@ -357,6 +361,7 @@ describe('published package surface', () => {
     const config = readFileSync(new URL('tsdown.config.ts', packageRoot), 'utf8')
 
     expect(config).toContain("'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts'")
+    expect(config).toContain("'windows-subprocess': 'src/windows-subprocess.ts'")
     expect(config).not.toContain("'windows-agent-presets': 'src/windows-agent-presets.ts'")
     expect(config).toContain("'windows-acl-runner': 'src/windows-acl-runner.ts'")
     expect(config).toContain("'desktop-cli': 'src/desktop-cli.ts'")

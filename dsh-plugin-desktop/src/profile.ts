@@ -65,6 +65,10 @@ const PWSH_SANDBOX_ROW_ID = 'pwsh-sandbox'
 const UPSTREAM_PWSH_SANDBOX_PACKAGE = '@deepseek-ai/dsh-pwsh-sandbox'
 const DESKTOP_WINDOWS_PWSH_SANDBOX_ROW_ID = 'desktop-windows-pwsh-sandbox'
 const DESKTOP_WINDOWS_PWSH_SANDBOX_PACKAGE = 'dsh-plugin-desktop/windows-pwsh-sandbox'
+const SUBPROCESS_ROW_ID = 'subprocess'
+const UPSTREAM_SUBPROCESS_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
+const DESKTOP_WINDOWS_SUBPROCESS_ROW_ID = 'desktop-windows-subprocess'
+const DESKTOP_WINDOWS_SUBPROCESS_PACKAGE = 'dsh-plugin-desktop/windows-subprocess'
 const AGENT_PRESETS_ROW_ID = 'agent-presets'
 const DEFAULT_DESKTOP_SHELL_MODE: DesktopShellMode = 'compatibility'
 const DEFAULT_DESKTOP_PORT = DESKTOP_DEFAULT_WEB_PORT
@@ -756,6 +760,27 @@ export function prepareDesktopProfile(
         ],
       },
     )
+    const subprocess = rows.get(SUBPROCESS_ROW_ID)
+    if (subprocess?.name === UPSTREAM_SUBPROCESS_PACKAGE
+      && !rowDisabledOnPlatform(subprocess, platform)) {
+      patches.push(
+        {
+          id: SUBPROCESS_ROW_ID,
+          name: UPSTREAM_SUBPROCESS_PACKAGE,
+          disabled: true,
+        },
+        {
+          insert: [
+            {
+              id: DESKTOP_WINDOWS_SUBPROCESS_ROW_ID,
+              name: DESKTOP_WINDOWS_SUBPROCESS_PACKAGE,
+              ...(subprocess.disabled === undefined ? {} : { disabled: subprocess.disabled }),
+              config: rowConfig(subprocess),
+            },
+          ],
+        },
+      )
+    }
     const pwshSandbox = rows.get(PWSH_SANDBOX_ROW_ID)
     if (pwshSandbox?.name === UPSTREAM_PWSH_SANDBOX_PACKAGE
       && !rowDisabledOnPlatform(pwshSandbox, platform)) {

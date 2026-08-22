@@ -248,6 +248,7 @@ describe('desktop profile composition', {
       id: 'subprocess',
       name: '@deepseek-ai/dsh-subprocess-local',
     })
+    expect(rows.map(row => row.id)).not.toContain('desktop-windows-subprocess')
     expect(rows.find(row => row.id === 'sandbox')).toEqual({
       id: 'sandbox',
       name: '@deepseek-ai/dsh-sandbox-local',
@@ -633,7 +634,12 @@ describe('desktop profile composition', {
     expect(rows.find(row => row.id === 'subprocess')).toEqual({
       id: 'subprocess',
       name: '@deepseek-ai/dsh-subprocess-local',
+      disabled: true,
     })
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: 'desktop-windows-subprocess',
+      name: 'dsh-plugin-desktop/windows-subprocess',
+    }))
     expect(rows.find(row => row.id === 'sandbox')).toEqual({
       id: 'sandbox',
       name: '@deepseek-ai/dsh-sandbox-local',
@@ -774,7 +780,7 @@ describe('desktop profile composition', {
     expect(prepared.skippedOptionalEntries).toEqual([])
   })
 
-  it('preserves an explicitly disabled upstream pwsh provider and a third-party replacement', () => {
+  it('preserves explicitly disabled upstream Windows providers and third-party replacements', () => {
     const home = temporaryHome()
     writeFileSync(join(home, 'cordis.patch.yml'), [
       '- id: pwsh-sandbox',
@@ -783,6 +789,12 @@ describe('desktop profile composition', {
       '- insert:',
       '    - id: third-party-pwsh-sandbox',
       "      name: 'third-party-pwsh-sandbox'",
+      '- id: subprocess',
+      "  name: '@deepseek-ai/dsh-subprocess-local'",
+      '  disabled: true',
+      '- insert:',
+      '    - id: third-party-subprocess',
+      "      name: 'third-party-subprocess'",
       '',
     ].join('\n'))
 
@@ -798,5 +810,14 @@ describe('desktop profile composition', {
       name: 'third-party-pwsh-sandbox',
     }))
     expect(rows.map(row => row.id)).not.toContain('desktop-windows-pwsh-sandbox')
+    expect(rows.find(row => row.id === 'subprocess')).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-subprocess-local',
+      disabled: true,
+    }))
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: 'third-party-subprocess',
+      name: 'third-party-subprocess',
+    }))
+    expect(rows.map(row => row.id)).not.toContain('desktop-windows-subprocess')
   })
 })
