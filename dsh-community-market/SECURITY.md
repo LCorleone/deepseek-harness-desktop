@@ -40,6 +40,12 @@ Source requests use no ambient cookies or credentials. They have bounded redirec
 
 Only one source is selected for browsing at a time. Its failure may be shown beside its source name, but must not trigger a fallback source, modify the user's selection, erase local install receipts, or block DSH/Desktop startup.
 
+## Company deployment (locked builds)
+
+In a company-locked Desktop build, Market runs under the embedded deployment policy: the effective provider is pinned to this market shell, the catalog source is locked to the signed company manifest, and every install must pass the signed-manifest authority (registry-verified integrity must equal the signed entry's integrity; revoked or absent entries are rejected; an untrusted catalog state fails installs closed). The manifest sequence is persisted before any catalog state is derived, so a rolled-back manifest is rejected across restarts. Receipts are evidence and uninstall-reconciliation records only — they never authorize an install.
+
+The catalog signing key is an ed25519 key held in a dedicated publishing environment (CI secrets isolated from repository write access); see the key-management decision record in the owning Agent Note. Rotation uses dual-key overlap in the pinned trust roots, and revocation republishes the manifest with `revoked: true` and a strictly greater sequence. The client pins only public-key fingerprints, so moving the private key to a KMS/HSM later needs no client change.
+
 ## Reporting a vulnerability
 
 Please report a suspected vulnerability privately to [t4wefan@qq.com](mailto:t4wefan@qq.com). Include the affected version or commit, operating system, reproduction steps, expected impact, and any proof of concept that can be shared safely.
