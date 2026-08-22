@@ -115,7 +115,7 @@ export const REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES = [
  * enabled as its rollback point, and the follow-up flip changes this constant
  * together with `build.electronFuses.runAsNode` and its spec expectation.
  */
-export const REQUIRED_RUN_AS_NODE_FUSE = true
+export const REQUIRED_RUN_AS_NODE_FUSE = false
 
 /** Directory `extraResources` places the bundled Node distribution into. */
 export const BUNDLED_NODE_RESOURCE_DIRECTORY = 'node-runtime'

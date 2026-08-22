@@ -570,7 +570,7 @@ describe('published package surface', () => {
       'lib/**',
       'node_modules/**',
     ])
-    expect(manifest.build?.electronFuses).toEqual({ runAsNode: true })
+    expect(manifest.build?.electronFuses).toEqual({ runAsNode: false })
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },
     ])

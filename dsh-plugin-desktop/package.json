@@ -302,7 +302,7 @@
     "beforePack": "./scripts/prepare-bundled-node.ts",
     "afterPack": "./scripts/verify-packaged-runtime.ts",
     "electronFuses": {
-      "runAsNode": true
+      "runAsNode": false
     },
     "directories": {
       "output": "dist",
