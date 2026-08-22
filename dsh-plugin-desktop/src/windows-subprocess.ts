@@ -19,6 +19,9 @@ import {
 } from './windows-acl-relay.ts'
 
 const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
+const POWERSHELL_EXECUTION_POLICY = 'PSExecutionPolicyPreference'
+const POWERSHELL_EXECUTION_POLICY_BYPASS = 'Bypass'
+const OFFICIAL_WINDOWS_POWERSHELL_ARGS = ['-NoLogo', '-NoProfile'] as const
 const UPSTREAM_RUNNER = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/runner'))
 const DESKTOP_TRAMPOLINE = fileURLToPath(new URL('./windows-acl-runner.js', import.meta.url))
 const CMD_VARIABLE_ELECTRON = `%${WINDOWS_ACL_RELAY_ELECTRON}%`
@@ -31,9 +34,36 @@ export interface WindowsAclTerminalAdaptation extends WindowsAclAdaptation {
 }
 
 function removeEnvironmentKey(env: NodeJS.ProcessEnv, name: string): void {
+  const normalized = name.toUpperCase()
   for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === name) delete env[key]
+    if (key.toUpperCase() === normalized) delete env[key]
   }
+}
+
+function systemRootOf(env: NodeJS.ProcessEnv): string | undefined {
+  return Object.entries(env)
+    .find(([key]) => key.toUpperCase() === 'SYSTEMROOT')?.[1]
+}
+
+function sameWindowsPath(left: string, right: string): boolean {
+  return win32.normalize(left).toUpperCase() === win32.normalize(right).toUpperCase()
+}
+
+/** Match only the official persistent-terminal argv when it falls back to Windows PowerShell 5.1. */
+export function isOfficialWindowsPowerShell51Terminal(
+  runnerArgs: readonly string[],
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const separator = runnerArgs.lastIndexOf('--')
+  if (separator < 0) return false
+  const childArgv = runnerArgs.slice(separator + 1)
+  const [program, ...args] = childArgv
+  const systemRoot = systemRootOf(env)
+  if (program === undefined || systemRoot === undefined || systemRoot.length === 0) return false
+  const expected = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  return sameWindowsPath(program, expected)
+    && args.length === OFFICIAL_WINDOWS_POWERSHELL_ARGS.length
+    && args.every((arg, index) => arg === OFFICIAL_WINDOWS_POWERSHELL_ARGS[index])
 }
 
 /** Resolve cmd.exe without consulting PATH or the caller-controlled ComSpec value. */
@@ -49,8 +79,7 @@ export function desktopWindowsCommandPath(
   },
 ): string | undefined {
   if (platform !== 'win32') return undefined
-  const systemRoot = Object.entries(env)
-    .find(([key]) => key.toUpperCase() === 'SYSTEMROOT')?.[1]
+  const systemRoot = systemRootOf(env)
   if (systemRoot === undefined || systemRoot.length === 0) {
     throw new Error('dsh-plugin-desktop: Windows ACL terminal relay requires SystemRoot')
   }
@@ -81,6 +110,13 @@ export function adaptWindowsAclTerminalSpawn(
   const env = { ...spec.env }
   removeWindowsAclRelayEnvironment(env)
   removeEnvironmentKey(env, RUN_AS_NODE)
+  if (isOfficialWindowsPowerShell51Terminal(args, adaptation.env)) {
+    // Execution Policy is not the ACL security boundary. Process scope only
+    // suppresses Windows PowerShell 5.1's publisher prompt, which otherwise
+    // consumes the persistent terminal's first command and stalls the tool.
+    removeEnvironmentKey(env, POWERSHELL_EXECUTION_POLICY)
+    env[POWERSHELL_EXECUTION_POLICY] = POWERSHELL_EXECUTION_POLICY_BYPASS
+  }
   env[RUN_AS_NODE] = '1'
   env[WINDOWS_ACL_RELAY_PAYLOAD] = encodeWindowsAclRelay(runner, args)
   env[WINDOWS_ACL_RELAY_ELECTRON] = quotedWindowsRelayPath(adaptation.execPath, 'Electron executable')

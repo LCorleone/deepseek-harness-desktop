@@ -1,18 +1,26 @@
-/** Real Windows smoke for the Desktop ACL runner over a cmd-owned ConPTY. */
+/** Real Windows smoke for the official minimal pwsh stack over the Desktop ACL relay. */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
+import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
+import { CallId } from '@deepseek-ai/dsh-llm'
+import { resolvePwshPath } from '@deepseek-ai/dsh-pwsh-local'
+import LocalSandbox from '@deepseek-ai/dsh-sandbox-local'
+import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
-import { desktopWindowsPwshPath } from '../lib/windows-pwsh-sandbox.js'
+import TerminalSessionService from '@deepseek-ai/dsh-terminal'
+import * as TerminalBash from '@deepseek-ai/dsh-terminal-bash'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import * as ToolPwshPersistent from '@deepseek-ai/dsh-tool-pwsh-persistent'
+import ToolRegistry from '@deepseek-ai/dsh-tools'
 import { adaptWindowsAclTerminalSpawn } from '../lib/windows-subprocess.js'
 
 const WORKER_FLAG = '--worker'
-const SUCCESS = JSON.stringify({ ok: true })
-const PROMPT = '__DSH_PERSISTENT_PWSH_PROMPT__ '
-const PROMPT_SETUP = `function prompt { [Console]::Write([char]27 + ']133;D;' + [int]$LASTEXITCODE + [char]7); '${PROMPT}' }`
+const EXECUTION_POLICY = 'PSEXECUTIONPOLICYPREFERENCE'
 
 function deadline(promise, timeoutMs, label) {
   return new Promise((resolve, reject) => {
@@ -24,106 +32,157 @@ function deadline(promise, timeoutMs, label) {
   })
 }
 
+function sameWindowsPath(left, right) {
+  return win32.normalize(left).toUpperCase() === win32.normalize(right).toUpperCase()
+}
+
+function expect(condition, message) {
+  if (!condition) throw new Error(message)
+}
+
+function toolText(result) {
+  return result.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+}
+
+function owner(ctx, rawId, cwd) {
+  const id = SessionId(rawId)
+  const scope = ctx.plugin(() => {})
+  const session = Session.create(id, [], { version: 0, id, createdAt: 0, cwd })
+  const value = {
+    id,
+    options: {},
+    session,
+    inbox: new Inbox(session, { inserted() {}, discarded() {}, claimed() {} }),
+    status: 'idle',
+    ctx: scope.ctx,
+    send() {},
+    followup() {},
+    steer() { return { outcome: Promise.resolve({ status: 'rejected' }) } },
+    inject() {},
+    cancel() {},
+    runMaintenance: task => task(new AbortController().signal),
+    whenIdle: () => Promise.resolve(),
+  }
+  ctx.agents.register(value)
+  return value
+}
+
+async function scenario(inputs) {
+  const context = new Context()
+  let callNumber = 0
+  try {
+    await context.plugin(SystemPrompt)
+    await context.plugin(ToolRegistry)
+    await context.plugin(AgentRegistry)
+    await context.plugin(TerminalSessionService)
+    await context.plugin(LocalSandbox, {})
+    // A Node worker models the Electron Host by asking the official sandbox
+    // provider to emit the same Electron + runner prefix used in production.
+    context.sandbox.internals.windowsAclRunnerArgs = [inputs.electron, inputs.runner]
+    await context.plugin(SandboxPolicyService, {
+      mode: 'read-only',
+      workspaceRoot: inputs.packageRoot,
+    })
+
+    class SmokeDesktopSubprocess extends LocalSubprocessRuntime {
+      spawnTerminal(spec) {
+        return super.spawnTerminal(adaptWindowsAclTerminalSpawn(spec, {
+          platform: 'win32',
+          electron: true,
+          execPath: inputs.electron,
+          upstreamRunner: inputs.runner,
+          trampoline: inputs.trampoline,
+          env: process.env,
+        }))
+      }
+    }
+
+    await context.plugin(SmokeDesktopSubprocess)
+    await context.plugin(TerminalBash, {
+      shellDialect: 'pwsh',
+      shellPath: inputs.shellPath,
+      timeoutMs: 20_000,
+      idleSilenceMs: 1_000,
+      handoffGraceMs: 500,
+      disposeGraceMs: 1_000,
+    })
+    await context.plugin(ToolPwshPersistent, { timeoutMs: 30_000 })
+
+    const agent = owner(context, `windows-minimal-${inputs.label}`, inputs.packageRoot)
+    const execute = (command, signal = new AbortController().signal) => context.tools.execute({
+      signal,
+      callId: CallId(`${inputs.label}-${++callNumber}`),
+      name: 'pwsh',
+      arguments: { command },
+      agent,
+    })
+
+    const first = await execute('$global:DshDesktopRelayState = 41; Write-Output ([int]$global:DshDesktopRelayState + 1)')
+    expect(!first.isError && toolText(first).trim() === '42', `${inputs.label}: first persistent command failed: ${JSON.stringify(first)}`)
+
+    const second = await execute('Write-Output ("中文 special=&|<>^ value=" + ([int]$global:DshDesktopRelayState * 2))')
+    expect(
+      !second.isError && toolText(second).trim() === '中文 special=&|<>^ value=82',
+      `${inputs.label}: Unicode or persistent state failed: ${JSON.stringify(second)}`,
+    )
+
+    const policy = await execute("if (Test-Path Env:PSExecutionPolicyPreference) { Write-Output $env:PSExecutionPolicyPreference } else { Write-Output '<unset>' }")
+    const expectedPolicy = inputs.expectsBypass ? 'Bypass' : '<unset>'
+    expect(
+      !policy.isError && toolText(policy).trim() === expectedPolicy,
+      `${inputs.label}: unexpected process execution policy: ${JSON.stringify(policy)}`,
+    )
+
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => { controller.abort(new Error('windows-minimal-audit-stop')) }, 3_000)
+    const aborted = await execute('Start-Sleep -Seconds 60', controller.signal).finally(() => { clearTimeout(abortTimer) })
+    expect(aborted.isError && /abort|windows-minimal-audit-stop/iu.test(toolText(aborted)), `${inputs.label}: abort was not reported: ${JSON.stringify(aborted)}`)
+    expect(context.terminals.list(agent).length === 0, `${inputs.label}: aborted terminal was not reset`)
+
+    const recovered = await execute('Write-Output "after-abort-ok"')
+    expect(!recovered.isError && toolText(recovered).trim() === 'after-abort-ok', `${inputs.label}: recovery failed: ${JSON.stringify(recovered)}`)
+
+    const exited = await execute('exit 7')
+    expect(toolText(exited).includes('next pwsh call starts from the workspace'), `${inputs.label}: shell exit was not reset: ${JSON.stringify(exited)}`)
+    expect(context.terminals.list(agent).length === 0, `${inputs.label}: exited terminal was not reset`)
+
+    const afterExit = await execute('Write-Output "after-exit-ok"')
+    expect(!afterExit.isError && toolText(afterExit).trim() === 'after-exit-ok', `${inputs.label}: post-exit recovery failed: ${JSON.stringify(afterExit)}`)
+    return { label: inputs.label, shellPath: inputs.shellPath }
+  } finally {
+    await context.fiber.dispose()
+  }
+}
+
 async function worker() {
+  for (const key of Object.keys(process.env)) {
+    if (key.toUpperCase() === EXECUTION_POLICY) delete process.env[key]
+  }
   const packageRoot = fileURLToPath(new URL('..', import.meta.url))
   const electron = join(packageRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
   const trampoline = join(packageRoot, 'lib', 'windows-acl-runner.js')
   const runner = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/runner'))
-  const pwsh = desktopWindowsPwshPath(process.env, process.platform)
-  if (pwsh === undefined) throw new Error('Windows minimal PTY smoke could not resolve PowerShell')
-
-  const context = new Context()
-  const runtime = new LocalSubprocessRuntime(context)
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined))
-  const spec = adaptWindowsAclTerminalSpawn({
-    argv: [
-      electron,
-      runner,
-      '--workspace',
-      packageRoot,
-      '--temp',
-      tmpdir(),
-      '--mode',
-      'read-only',
-      '--',
-      pwsh,
-      '-NoLogo',
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-    ],
-    cwd: packageRoot,
-    env: environment,
-    rows: 30,
-    cols: 120,
-    graceMs: 3_000,
-  }, {
-    platform: 'win32',
-    electron: true,
-    execPath: electron,
-    upstreamRunner: runner,
-    trampoline,
-    env: process.env,
-  })
-
-  const terminal = await runtime.spawnTerminal(spec)
-  let output = ''
-  terminal.output.on('data', chunk => { output += chunk.toString() })
-  const visibleOutput = () => output
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, '')
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '')
-  const waitFor = async (pattern, label) => {
-    try {
-      await deadline(new Promise((resolve, reject) => {
-        const inspect = () => {
-          if (pattern.test(visibleOutput())) {
-            cleanup()
-            resolve()
-          }
-        }
-        const exited = () => {
-          cleanup()
-          reject(new Error(`${label} exited before matching ${String(pattern)}`))
-        }
-        const cleanup = () => {
-          terminal.output.off('data', inspect)
-          terminal.output.off('end', exited)
-        }
-        terminal.output.on('data', inspect)
-        terminal.output.on('end', exited)
-        inspect()
-      }), 20_000, label)
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`${detail}; PTY output: ${JSON.stringify(output)}`)
-    }
+  const systemRoot = process.env.SystemRoot
+  if (systemRoot === undefined || systemRoot.length === 0) throw new Error('Windows minimal PTY smoke requires SystemRoot')
+  const fallback = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const resolved = resolvePwshPath()
+  const paths = [{
+    label: 'official-resolver',
+    shellPath: resolved,
+    expectsBypass: sameWindowsPath(resolved, fallback),
+  }]
+  if (existsSync(fallback) && !sameWindowsPath(resolved, fallback)) {
+    paths.push({ label: 'windows-powershell-5.1-fallback', shellPath: fallback, expectsBypass: true })
   }
 
-  try {
-    await waitFor(/untrusted publisher|PS(?: [^\r\n>]*)?>/iu, 'initial PowerShell prompt')
-    if (/untrusted publisher/iu.test(visibleOutput())) {
-      output = ''
-      await terminal.write('D\r')
-      await waitFor(/PS(?: [^\r\n>]*)?>/u, 'PowerShell prompt after publisher rejection')
-    }
-    output = ''
-    await terminal.write(`${PROMPT_SETUP}; prompt\r`)
-    await waitFor(/\r?\n__DSH_PERSISTENT_PWSH_PROMPT__ \r?\n/u, 'PowerShell prompt initialization')
-    output = ''
-    await terminal.write('$global:DshDesktopRelayState = 41; Write-Output ([int]$global:DshDesktopRelayState + 1)\r')
-    await waitFor(/42\r?\n/u, 'first persistent PowerShell command')
-    output = ''
-    await terminal.write('Write-Output ([int]$global:DshDesktopRelayState * 2)\r')
-    await waitFor(/82\r?\n/u, 'second persistent PowerShell command')
-    await terminal.write('exit 7\r')
-    const outcome = await deadline(terminal.done, 10_000, 'PowerShell relay exit')
-    if (outcome.exitCode !== 7) {
-      throw new Error(`Windows minimal PTY smoke expected exit code 7, received ${JSON.stringify(outcome)}`)
-    }
-  } finally {
-    await terminal.terminate()
-    await context.fiber.dispose()
+  const results = []
+  for (const path of paths) {
+    results.push(await scenario({ packageRoot, electron, trampoline, runner, ...path }))
   }
+  await new Promise(resolve => { process.stdout.write(`${JSON.stringify({ ok: true, results })}\n`, resolve) })
 }
 
 async function parent() {
@@ -142,11 +201,17 @@ async function parent() {
   const exitCode = await deadline(new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', resolve)
-  }), 30_000, 'Windows minimal PTY smoke worker').catch(error => {
+  }), 90_000, 'Windows minimal PTY smoke worker').catch(error => {
     child.kill()
     throw error
   })
-  if (exitCode !== 0 || stdout.trim() !== SUCCESS || stderr.length > 0) {
+  let report
+  try {
+    report = JSON.parse(stdout)
+  } catch {
+    report = undefined
+  }
+  if (exitCode !== 0 || report?.ok !== true || stderr.length > 0) {
     throw new Error(`Windows minimal PTY smoke leaked host output or failed: ${JSON.stringify({ exitCode, stdout, stderr })}`)
   }
 }
@@ -155,7 +220,6 @@ async function main() {
   if (process.platform !== 'win32') return
   if (process.argv.includes(WORKER_FLAG)) {
     await worker()
-    await new Promise(resolve => { process.stdout.write(`${SUCCESS}\n`, resolve) })
     process.exit(0)
   }
   await parent()

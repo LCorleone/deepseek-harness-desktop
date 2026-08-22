@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   adaptWindowsAclTerminalSpawn,
   desktopWindowsCommandPath,
+  isOfficialWindowsPowerShell51Terminal,
   type WindowsAclTerminalAdaptation,
 } from '../src/windows-subprocess.ts'
 import {
@@ -17,7 +18,9 @@ import {
 } from '../src/windows-acl-relay.ts'
 
 const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
+const EXECUTION_POLICY = 'PSExecutionPolicyPreference'
 const commandPath = 'C:\\Windows\\System32\\cmd.exe'
+const windowsPowerShell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const adaptation: WindowsAclTerminalAdaptation = {
   platform: 'win32',
   electron: true,
@@ -115,6 +118,62 @@ describe('Windows Electron persistent-terminal relay', () => {
     expect(result.env?.[RUN_AS_NODE]).toBe('1')
     expect(decodeWindowsAclRelay(result.env?.[WINDOWS_ACL_RELAY_PAYLOAD] as string).args)
       .toEqual(['--', 'powershell.exe'])
+  })
+
+  it('sets process-scope Bypass only for the exact official Windows PowerShell 5.1 terminal', () => {
+    const args = [
+      '--workspace',
+      'C:\\workspace',
+      '--mode',
+      'read-only',
+      '--',
+      windowsPowerShell,
+      '-NoLogo',
+      '-NoProfile',
+    ]
+    const spec = terminalSpec([adaptation.execPath, adaptation.upstreamRunner, ...args], {
+      psExecutionPolicyPreference: 'RemoteSigned',
+      KEEP: 'value',
+    })
+
+    const result = adaptWindowsAclTerminalSpawn(spec, adaptation)
+
+    expect(result.env).not.toHaveProperty('psExecutionPolicyPreference')
+    expect(result.env?.[EXECUTION_POLICY]).toBe('Bypass')
+    expect(decodeWindowsAclRelay(result.env?.[WINDOWS_ACL_RELAY_PAYLOAD] as string).args).toEqual(args)
+    expect(spec.env).toEqual({ psExecutionPolicyPreference: 'RemoteSigned', KEEP: 'value' })
+  })
+
+  it.each([
+    ['PowerShell 7', ['--', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', '-NoLogo', '-NoProfile']],
+    ['custom argument', ['--', windowsPowerShell, '-NoLogo', '-NoProfile', '-NoExit']],
+    ['missing argument', ['--', windowsPowerShell, '-NoLogo']],
+    ['relative executable', ['--', 'powershell.exe', '-NoLogo', '-NoProfile']],
+    ['no runner separator', [windowsPowerShell, '-NoLogo', '-NoProfile']],
+  ])('does not change execution policy for %s', (_label, args) => {
+    const spec = terminalSpec([adaptation.execPath, adaptation.upstreamRunner, ...args], {
+      [EXECUTION_POLICY]: 'RemoteSigned',
+    })
+
+    const result = adaptWindowsAclTerminalSpawn(spec, adaptation)
+
+    expect(result.env?.[EXECUTION_POLICY]).toBe('RemoteSigned')
+  })
+})
+
+describe('Windows PowerShell 5.1 terminal recognition', () => {
+  it('uses Windows path semantics and a case-insensitive SystemRoot key', () => {
+    expect(isOfficialWindowsPowerShell51Terminal(
+      ['--workspace', 'C:\\workspace', '--', 'c:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '-NoLogo', '-NoProfile'],
+      { systemroot: 'C:\\Windows' },
+    )).toBe(true)
+  })
+
+  it('fails closed without SystemRoot', () => {
+    expect(isOfficialWindowsPowerShell51Terminal(
+      ['--', windowsPowerShell, '-NoLogo', '-NoProfile'],
+      {},
+    )).toBe(false)
   })
 })
 
