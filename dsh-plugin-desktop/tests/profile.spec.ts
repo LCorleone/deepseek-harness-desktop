@@ -16,8 +16,21 @@ import {
   validateDshMarketBundlePatches,
 } from '../src/profile.ts'
 import { DESKTOP_MARKET_IDENTITIES } from '../src/desktop-market.ts'
+import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
 
 const homes: string[] = []
+
+/** Build a strict policy fixture through the real parser, locked or not. */
+function injectedDesktopPolicy(locked: boolean): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    locked,
+    trustRoots: [],
+  })
+}
 
 function temporaryHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-profile-'))
@@ -590,6 +603,96 @@ describe('desktop profile composition', {
     expect(() => prepareDesktopProfile(undefined, invalidHome, 'win32')).toThrow(
       'must be a top-level YAML array of loader patch entries',
     )
+  })
+
+  it('rejects a home-level patch file in a locked build before loading it', () => {
+    const home = temporaryHome()
+    writeFileSync(join(home, 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: home-marker',
+      "      name: 'cordis:example'",
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )).toThrow('locked build forbids the home-level patch file')
+  })
+
+  it('rejects a home-level patch file in a locked build even when it is empty', () => {
+    const home = temporaryHome()
+    const patchPath = join(home, 'cordis.patch.yml')
+    writeFileSync(patchPath, '# no machine-wide patches\n')
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'win32',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )).toThrow(`locked build forbids the home-level patch file ${patchPath}`)
+  })
+
+  it('keeps a locked build bootable when no home-level patch file exists', () => {
+    const home = temporaryHome()
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.market.effective).toBe('disabled')
+    expect(rows.some(row => row.id === 'webserver')).toBe(true)
+  })
+
+  it('composes a home-level patch identically for unlocked and omitted policies', () => {
+    const home = temporaryHome()
+    writeFileSync(join(home, 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: home-marker',
+      "      name: 'cordis:example'",
+      '',
+    ].join('\n'))
+
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false),
+    )
+    const omitted = prepareDesktopProfile(undefined, home, 'darwin')
+
+    expect(unlocked.patches).toEqual(omitted.patches)
+    expect(unlocked.skippedOptionalEntries).toEqual(omitted.skippedOptionalEntries)
+    expect(composeEntries([unlocked.patches])).toContainEqual({
+      id: 'home-marker',
+      name: 'cordis:example',
+    })
   })
 
   it('keeps the Windows browse panel and desktop pwsh provider without replacing process boundaries', () => {
