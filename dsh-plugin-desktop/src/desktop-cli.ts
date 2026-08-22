@@ -8,8 +8,10 @@ import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
+import { readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
+import type { DesktopPolicy } from './desktop-policy.ts'
 
 const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
@@ -162,17 +164,25 @@ async function loadWithInstallRecovery(
   if (capturedExitCode !== undefined) process.exitCode = capturedExitCode
 }
 
+/** Deny terminal plugin adds in locked builds before pnpm or the DSH CLI is touched. */
+const LOCKED_PLUGIN_ADD_MESSAGE = [
+  'dsh-desktop: this is a company-locked build, so manual plugin installs (`dsh plugin add`) are disabled.',
+  'Install plugins from the company plugin market instead.',
+].join(' ')
+
 /**
  * Enter the packaged DSH CLI after removing the Electron-only launch marker.
  * @param environment - process environment inherited from the generated shim.
  * @param load - ESM loader used by the executable and focused tests.
  * @param argv - mutable process arguments presented to the upstream CLI.
+ * @param policy - embedded company policy gating terminal plugin adds; defaults to the shipped asset.
  * @returns once the imported CLI entry completes its top-level work.
  */
 export async function runDesktopDshCli(
   environment: NodeJS.ProcessEnv = process.env,
   load: (url: string) => Promise<unknown> = url => import(url),
   argv: string[] = process.argv,
+  policy?: DesktopPolicy,
 ): Promise<void> {
   const profileName = takeDefaultProfile(environment)
   const installRecoveryStatePath = takeEnvironmentValue(
@@ -185,6 +195,11 @@ export async function runDesktopDshCli(
   }
   const homeDir = environment[DSH_HOME]
   const installProfileName = pluginAddProfile(argv.slice(2))
+  if (installProfileName !== undefined && (policy ?? readDesktopPolicy()).locked) {
+    process.stderr.write(`${LOCKED_PLUGIN_ADD_MESSAGE}\n`)
+    process.exitCode = 1
+    return
+  }
   if (
     installRecoveryStatePath !== undefined
     && installProfileName !== undefined

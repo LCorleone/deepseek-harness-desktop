@@ -8,11 +8,25 @@ import {
   runDesktopDshCli,
   withDefaultDesktopProfile,
 } from '../src/desktop-cli.ts'
+import { parseDesktopPolicy } from '../src/desktop-policy.ts'
+import type { DesktopPolicy } from '../src/desktop-policy.ts'
 import {
   DESKTOP_INSTALL_RECOVERY_STATE_ENV,
   desktopInstallRecoveryStatePath,
 } from '../src/install-recovery.ts'
 import { packagedDependencyPath, unpackedAsarPath } from '../src/packaged-runtime-path.ts'
+
+/** Build one policy fixture with the same schema as the embedded asset. */
+function desktopPolicy(locked: boolean): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    locked,
+    trustRoots: [],
+  })
+}
 
 describe('packaged dsh bootstrap', () => {
   it('removes every Windows casing of Electron Node mode', () => {
@@ -100,7 +114,7 @@ describe('packaged dsh bootstrap', () => {
       await runDesktopDshCli(environment, async () => {
         writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'example-plugin': '1.0.0' } }))
         process.exit(0)
-      }, argv)
+      }, argv, desktopPolicy(false))
 
       expect(environment).toEqual({ DSH_HOME: homeDir })
       expect(argv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'add', 'example-plugin'])
@@ -140,7 +154,7 @@ describe('packaged dsh bootstrap', () => {
           dependencies: { 'example-plugin': '1.0.0' },
         }))
         process.exit(0)
-      }, [process.execPath, '/app/desktop-cli.js', 'plugin', '--profile', 'web', 'add', 'example-plugin'])
+      }, [process.execPath, '/app/desktop-cli.js', 'plugin', '--profile', 'web', 'add', 'example-plugin'], desktopPolicy(false))
 
       expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
         profileName: 'web',
@@ -171,7 +185,7 @@ describe('packaged dsh bootstrap', () => {
       }, async () => {
         writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'broken-plugin': '0.0.0' } }))
         process.exit(1)
-      }, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'broken-plugin'])
+      }, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'broken-plugin'], desktopPolicy(false))
 
       expect(readFileSync(manifestPath, 'utf8')).toBe(originalManifest)
       expect(existsSync(statePath)).toBe(false)
@@ -180,6 +194,76 @@ describe('packaged dsh bootstrap', () => {
       process.exitCode = originalExitCode
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it('rejects a terminal plugin add in a locked build before loading the packaged dsh', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-add-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const manifestPath = join(profileDir, 'package.json')
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: {} }))
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'], desktopPolicy(true))
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(existsSync(statePath)).toBe(false)
+      expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toEqual({ dependencies: {} })
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('manual plugin installs (`dsh plugin add`) are disabled')
+      expect(stderr).toContain('Install plugins from the company plugin market instead.')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps terminal plugin adds working in an unlocked build', async () => {
+    const load = vi.fn(async () => undefined)
+    const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+
+    await runDesktopDshCli(
+      { DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' },
+      load,
+      argv,
+      desktopPolicy(false),
+    )
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(load).toHaveBeenCalledWith(expect.stringMatching(/@deepseek-ai\/dsh\/lib\/bin\.js$/u))
+    expect(argv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'add', 'example-plugin@1.0.0'])
+  })
+
+  it('keeps non-add commands working in a locked build', async () => {
+    const removeArgv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'remove', 'example-plugin']
+    const removeLoad = vi.fn(async () => undefined)
+
+    await runDesktopDshCli(
+      { DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' },
+      removeLoad,
+      removeArgv,
+      desktopPolicy(true),
+    )
+
+    expect(removeLoad).toHaveBeenCalledOnce()
+    expect(removeLoad).toHaveBeenCalledWith(expect.stringMatching(/@deepseek-ai\/dsh\/lib\/bin\.js$/u))
+    expect(removeArgv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'remove', 'example-plugin'])
+
+    const dumpLoad = vi.fn(async () => undefined)
+    await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, dumpLoad,
+      [process.execPath, '/app/desktop-cli.js', '--dump-config'], desktopPolicy(true))
+    expect(dumpLoad).toHaveBeenCalledOnce()
   })
 
   it('uses the physical unpacked dependency tree only inside an Electron package', () => {
