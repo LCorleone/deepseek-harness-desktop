@@ -69,6 +69,7 @@ import {
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
+import { readDesktopPolicy } from './desktop-policy.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
 import {
@@ -598,7 +599,8 @@ async function start(): Promise<void> {
     startupStage = 'profile-composition'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
-    const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
+    const policy = readDesktopPolicy()
+    const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -616,6 +618,7 @@ async function start(): Promise<void> {
           }
         },
       },
+      policy,
     )
     if (profileCheckpoint === undefined) {
       try {
@@ -804,6 +807,7 @@ async function start(): Promise<void> {
         hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
+        hostCtx.provide('desktopPolicy', policy)
         await hostCtx.plugin(DesktopActionsService, {
           openTerminal: () => { runtime.openTerminal() },
           requestRestart: () => runtime.requestRestart(),

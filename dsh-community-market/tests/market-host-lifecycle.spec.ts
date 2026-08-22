@@ -54,6 +54,7 @@ function createHarness() {
       }),
     },
     effect: (factory: () => void | (() => void)) => { registerEffect(factory) },
+    get: (name: string): unknown => values.get(name),
     inject: (
       names: readonly string[],
       factory: (ctx: { get(name: string): unknown; effect(factory: () => void | (() => void)): void }) => void,

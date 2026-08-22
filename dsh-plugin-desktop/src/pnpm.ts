@@ -155,19 +155,24 @@ function validatedArgs(args: readonly string[]): string[] {
   return [...args]
 }
 
+/** Canonical npm registry URL the desktop install path pins; only its exact value passes the audit. */
+const PINNED_NPM_REGISTRY = 'https://registry.npmjs.org/'
+
 /** Audit caller-supplied install flags; registry and npm-configuration redirects are rejected. */
 function auditInstallOptions(options: readonly string[]): void {
   for (const option of options) {
     if (!option.startsWith('-')) continue
     const name = option.replace(/^-+/u, '').split('=')[0] ?? ''
+    const value = option.includes('=') ? option.slice(option.indexOf('=') + 1) : undefined
+    const isRegistryFlag = name === 'registry' || name.endsWith(':registry')
     if (
-      name === 'registry'
-      || name.endsWith(':registry')
-      || name === 'config'
-      || name.startsWith('config.')
-      || name === 'userconfig'
-      || name === 'globalconfig'
-      || name.includes('npmrc')
+      (isRegistryFlag && value !== PINNED_NPM_REGISTRY)
+      || (!isRegistryFlag && (
+        name === 'config'
+        || name.startsWith('config.')
+        || name === 'userconfig'
+        || name === 'globalconfig'
+        || name.includes('npmrc')))
     ) {
       throw new Error(`${BIN_NAME}: desktop pnpm install options must not override the npm registry or configuration`)
     }
