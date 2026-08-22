@@ -10,6 +10,7 @@ const targets = [
   ['catalog-query', 'CatalogQuery'],
   ['catalog-provider-page', 'CatalogProviderPage'],
   ['catalog-snapshot', 'CatalogSnapshot'],
+  ['company-manifest', 'CompanyManifest'],
 ]
 const outputDir = resolve(packageRoot, 'src/contracts/generated')
 const options = {
