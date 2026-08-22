@@ -50,7 +50,7 @@ function spawnHarness(): SpawnHarness {
 function macOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopTerminalOptions {
   return {
     platform: 'darwin',
-    appExecutable: "/Applications/DSH O'Brien.app/Contents/MacOS/DSH Desktop",
+    nodeExecutable: "/Applications/DSH O'Brien.app/Contents/Resources/node-runtime/node",
     dshBootstrapPath: "/Applications/DSH O'Brien.app/Contents/Resources/app.asar/lib/dsh-terminal-bootstrap.js",
     pnpmBinPath: "/Applications/DSH O'Brien.app/Contents/Resources/app.asar/node_modules/pnpm/bin/pnpm.mjs",
     electronVersion: '43.4.0',
@@ -64,7 +64,6 @@ function macOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopTermi
     environment: {
       PATH: '/usr/local/bin:/usr/bin:/bin',
       DSH_HOME: '/inherited/dsh-home',
-      electron_run_as_node: 'inherited-node-mode',
       KEEP: 'value',
     },
   }
@@ -73,7 +72,7 @@ function macOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopTermi
 function windowsOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopTerminalOptions {
   return {
     platform: 'win32',
-    appExecutable: 'C:\\Program Files\\DSH 100% Desktop\\DSH Desktop.exe',
+    nodeExecutable: 'C:\\Program Files\\DSH 100% Desktop\\resources\\node-runtime\\node.exe',
     dshBootstrapPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\lib\\dsh-terminal-bootstrap.js',
     pnpmBinPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\node_modules\\pnpm\\bin\\pnpm.mjs',
     electronVersion: '43.4.0',
@@ -86,7 +85,6 @@ function windowsOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopT
     spawn,
     environment: {
       Path: 'C:\\Windows\\System32;C:\\Windows',
-      ELECTRON_RUN_AS_NODE: 'inherited-node-mode',
       dsh_home: 'C:\\inherited',
       SystemRoot: 'C:\\Windows',
     },
@@ -139,27 +137,26 @@ describe('desktop terminal environment', () => {
     }
 
     const dshShim = readFileSync(launch.dshShimPath, 'utf8')
-    expect(dshShim).toContain("DSH_DESKTOP_DEFAULT_PROFILE='desktop' ELECTRON_RUN_AS_NODE=1 exec")
+    expect(dshShim).toContain("DSH_DESKTOP_DEFAULT_PROFILE='desktop' exec")
     expect(dshShim).toContain('--expose-internals')
-    expect(dshShim).toContain("'/Applications/DSH O'\"'\"'Brien.app/Contents/MacOS/DSH Desktop'")
+    expect(dshShim).toContain("'/Applications/DSH O'\"'\"'Brien.app/Contents/Resources/node-runtime/node'")
     expect(dshShim).toContain("'/Applications/DSH O'\"'\"'Brien.app/Contents/Resources/app.asar/lib/dsh-terminal-bootstrap.js'")
     expect(dshShim).toContain('"$@"')
     expect(dshShim).not.toContain('npm_config_')
     const pnpmShim = readFileSync(launch.pnpmShimPath, 'utf8')
-    expect(pnpmShim).toContain('ELECTRON_RUN_AS_NODE=1 npm_config_runtime=electron')
+    expect(pnpmShim).toContain('npm_config_runtime=electron')
     expect(pnpmShim).toContain("npm_config_target='43.4.0'")
     expect(pnpmShim).toContain("npm_config_disturl='https://electronjs.org/headers'")
     const nodeShim = readFileSync(launch.nodeShimPath, 'utf8')
     expect(nodeShim).toBe([
       '#!/bin/sh',
-      `ELECTRON_RUN_AS_NODE=1 exec '/Applications/DSH O'"'"'Brien.app/Contents/MacOS/DSH Desktop' "$@"`,
+      `exec '/Applications/DSH O'"'"'Brien.app/Contents/Resources/node-runtime/node' "$@"`,
       '',
     ].join('\n'))
     expect(nodeShim).not.toContain('npm_config_')
 
     const welcome = readFileSync(launch.welcomePath, 'utf8')
-    expect(welcome).toContain('unset ELECTRON_RUN_AS_NODE')
-    expect(welcome).not.toContain('ELECTRON_RUN_AS_NODE=1')
+    expect(welcome).not.toContain('ELECTRON_RUN_AS_NODE')
     expect(welcome).toContain("printf '\\033[2J\\033[3J\\033[H'")
     expect(welcome).toContain('DSH Desktop 2.0.0 terminal')
     expect(welcome).toContain('Profile: desktop')
@@ -176,7 +173,7 @@ describe('desktop terminal environment', () => {
 
     const zshRc = readFileSync(join(stateDir, '.zshrc'), 'utf8')
     expect(zshRc).toContain('source "${DSH_DESKTOP_USER_ZDOTDIR}/.zshrc"')
-    expect(zshRc).toContain('unset ELECTRON_RUN_AS_NODE')
+    expect(zshRc).toContain("export DSH_HOME='/Users/example/Library/Application Support/DSH O'\"'\"'Brien'")
     expect(zshRc).toContain(`path=('${launch.shimDir}' $path)`)
     const bashRc = readFileSync(join(stateDir, 'bashrc'), 'utf8')
     expect(bashRc).toContain('. "${DSH_DESKTOP_USER_BASHRC}"')
@@ -214,7 +211,6 @@ describe('desktop terminal environment', () => {
     expect(options.environment).toEqual({
       PATH: '/usr/local/bin:/usr/bin:/bin',
       DSH_HOME: '/inherited/dsh-home',
-      electron_run_as_node: 'inherited-node-mode',
       KEEP: 'value',
     })
   })
@@ -229,18 +225,17 @@ describe('desktop terminal environment', () => {
     expect(readFileSync(launch.dshShimPath, 'utf8')).toContain([
       '@echo off',
       'setlocal DisableDelayedExpansion',
-      'set "ELECTRON_RUN_AS_NODE=1"',
-      '"%DSH_DESKTOP_APP_EXECUTABLE%" --expose-internals "%DSH_DESKTOP_DSH_BOOTSTRAP%"',
+      '"%DSH_DESKTOP_NODE_EXECUTABLE%" --expose-internals "%DSH_DESKTOP_DSH_BOOTSTRAP%"',
     ].join('\r\n'))
     const pnpmShim = readFileSync(launch.pnpmShimPath, 'utf8')
     expect(pnpmShim).toContain('set "npm_config_runtime=electron"')
     expect(pnpmShim).toContain('set "npm_config_target=%DSH_DESKTOP_ELECTRON_VERSION%"')
     expect(pnpmShim).toContain('set "npm_config_disturl=https://electronjs.org/headers"')
     expect(readFileSync(launch.nodeShimPath, 'utf8')).toContain(
-      '"%DSH_DESKTOP_APP_EXECUTABLE%" %*',
+      '"%DSH_DESKTOP_NODE_EXECUTABLE%" %*',
     )
     const welcome = readFileSync(launch.welcomePath, 'utf8')
-    expect(welcome).toContain('Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue')
+    expect(welcome).not.toContain('ELECTRON_RUN_AS_NODE')
     expect(welcome).toContain('Set-Location -LiteralPath $env:DSH_DESKTOP_PROFILE_DIRECTORY')
     expect(welcome).toContain('"DSH Desktop {0} terminal" -f $env:DSH_DESKTOP_PRODUCT_VERSION')
     expect(welcome).toContain('"Plugin commands without --profile modify the {0} profile."')
@@ -272,7 +267,7 @@ describe('desktop terminal environment', () => {
           PATH: `${launch.shimDir};C:\\Windows\\System32;C:\\Windows`,
           DSH_HOME: options.homeDir,
           DSH_DESKTOP_DEFAULT_PROFILE: options.profileName,
-          DSH_DESKTOP_APP_EXECUTABLE: options.appExecutable,
+          DSH_DESKTOP_NODE_EXECUTABLE: options.nodeExecutable,
           DSH_DESKTOP_DSH_BOOTSTRAP: options.dshBootstrapPath,
           DSH_DESKTOP_INSTALL_RECOVERY_STATE_PATH: options.installRecoveryStatePath,
           DSH_DESKTOP_ELECTRON_VERSION: options.electronVersion,
@@ -358,7 +353,7 @@ describe('desktop terminal environment', () => {
     expect(harness.calls[0]?.options.shell).toBe(false)
     const welcome = readFileSync(join(stateDir, 'welcome.cmd'), 'utf8')
     expect(welcome).toContain('setlocal EnableDelayedExpansion')
-    expect(welcome).toContain('set "ELECTRON_RUN_AS_NODE="')
+    expect(welcome).not.toContain('ELECTRON_RUN_AS_NODE')
     expect(welcome).toContain('cd /d "!DSH_DESKTOP_PROFILE_DIRECTORY!"')
     expect(welcome).toContain('echo(Profile directory: !DSH_DESKTOP_PROFILE_DIRECTORY!')
     const launcher = readFileSync(launch.windowsLauncherPath!, 'utf8')
@@ -439,7 +434,7 @@ describe('desktop terminal environment', () => {
     options.profileName = '工作 profile'
     options.profileDir = 'C:\\用户\\工作 profile'
     options.homeDir = 'C:\\用户'
-    options.appExecutable = 'C:\\程序\\DSH Desktop.exe'
+    options.nodeExecutable = 'C:\\程序\\resources\\node-runtime\\node.exe'
     options.dshBootstrapPath = 'C:\\程序\\resources\\app.asar\\lib\\desktop-cli.js'
     options.pnpmBinPath = 'C:\\程序\\resources\\app.asar.unpacked\\node_modules\\pnpm\\bin\\pnpm.mjs'
 
@@ -461,7 +456,7 @@ describe('desktop terminal environment', () => {
     expect(harness.calls[0]?.options.env).toEqual(expect.objectContaining({
       DSH_HOME: 'C:\\用户',
       DSH_DESKTOP_DEFAULT_PROFILE: '工作 profile',
-      DSH_DESKTOP_APP_EXECUTABLE: 'C:\\程序\\DSH Desktop.exe',
+      DSH_DESKTOP_NODE_EXECUTABLE: 'C:\\程序\\resources\\node-runtime\\node.exe',
       DSH_DESKTOP_DSH_BOOTSTRAP: 'C:\\程序\\resources\\app.asar\\lib\\desktop-cli.js',
       DSH_DESKTOP_ELECTRON_VERSION: '43.4.0',
       DSH_DESKTOP_PNPM_ENTRY: 'C:\\程序\\resources\\app.asar.unpacked\\node_modules\\pnpm\\bin\\pnpm.mjs',

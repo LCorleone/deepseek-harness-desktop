@@ -1,7 +1,6 @@
 /** Desktop-owned package-manager capability for the active DSH profile. */
 
 import { delimiter, isAbsolute } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import type { Readable } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {
@@ -28,19 +27,17 @@ export interface DesktopPnpmBootstrap {
   readonly activeProfileDir: string
   /** Harness home containing every managed profile. */
   readonly homeDir: string
-  /** Electron executable reused through RunAsNode. */
-  readonly appExecutable: string
+  /** Bundled Node command that runs the packaged pnpm and DSH CLI entries. */
+  readonly nodeExecutable: string
   /** Physical JavaScript entry for the packaged pnpm release. */
   readonly pnpmBinPath: string
   /** Electron version used when pnpm installs native dependencies. */
   readonly electronVersion: string
-  /** Private directory containing the Electron-backed Node command. */
+  /** Private directory containing the Node command used by pnpm lifecycle scripts. */
   readonly nodeBinDir: string
-  /** Private Electron-backed Node command used by pnpm lifecycle scripts. */
+  /** Private Node command used by pnpm lifecycle scripts. */
   readonly nodeShimPath: string
-  /** Preloaded module that removes RunAsNode before a JavaScript entry executes. */
-  readonly clearEnvironmentPath: string
-  /** Desktop bootstrap that clears RunAsNode before importing the packaged DSH CLI. */
+  /** Desktop bootstrap that imports the packaged DSH CLI under the bundled Node. */
   readonly dshBootstrapPath: string
   /** Desktop-private install recovery WAL shared with the launcher and built-in terminal. */
   readonly installRecoveryStatePath: string
@@ -218,11 +215,10 @@ function validateBootstrap(bootstrap: DesktopPnpmBootstrap): void {
   for (const [label, value] of [
     ['active profile directory', bootstrap.activeProfileDir],
     ['Harness home', bootstrap.homeDir],
-    ['application executable', bootstrap.appExecutable],
+    ['bundled Node command', bootstrap.nodeExecutable],
     ['pnpm entry', bootstrap.pnpmBinPath],
     ['Node command directory', bootstrap.nodeBinDir],
-    ['Node command', bootstrap.nodeShimPath],
-    ['environment preloader', bootstrap.clearEnvironmentPath],
+    ['lifecycle Node command', bootstrap.nodeShimPath],
     ['DSH bootstrap', bootstrap.dshBootstrapPath],
     ['install recovery state', bootstrap.installRecoveryStatePath],
   ] as const) assertAbsolutePath(label, value)
@@ -277,9 +273,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     const resolvedArgs = validatedArgs(args)
     return this.start({
       argv: [
-        this.bootstrap.appExecutable,
-        '--import',
-        pathToFileURL(this.bootstrap.clearEnvironmentPath).href,
+        this.bootstrap.nodeExecutable,
         this.bootstrap.pnpmBinPath,
         ...resolvedArgs,
       ],
@@ -310,7 +304,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     assertAbsolutePath('plugin invoking directory', invokingDir)
     return this.start({
       argv: [
-        this.bootstrap.appExecutable,
+        this.bootstrap.nodeExecutable,
         '--expose-internals',
         this.bootstrap.dshBootstrapPath,
         'plugin',
@@ -336,7 +330,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     assertAbsolutePath('plugin invoking directory', invokingDir)
     return this.start({
       argv: [
-        this.bootstrap.appExecutable,
+        this.bootstrap.nodeExecutable,
         '--expose-internals',
         this.bootstrap.dshBootstrapPath,
         'plugin',
@@ -395,7 +389,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
       transaction = await this.installRecovery.begin(request.recovery)
       const handle = this.start({
         argv: [
-          this.bootstrap.appExecutable,
+          this.bootstrap.nodeExecutable,
           '--expose-internals',
           this.bootstrap.dshBootstrapPath,
           'plugin',
@@ -488,7 +482,6 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
           ? this.bootstrap.nodeBinDir
           : `${this.bootstrap.nodeBinDir}${delimiter}${path}`,
         NODE: this.bootstrap.nodeShimPath,
-        ELECTRON_RUN_AS_NODE: '1',
         DSH_HOME: this.bootstrap.homeDir,
         CI: 'true',
         npm_config_runtime: 'electron',

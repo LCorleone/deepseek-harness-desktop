@@ -11,7 +11,6 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   installDesktopDshRuntime,
@@ -34,9 +33,9 @@ function options(
 ): DesktopPnpmRuntimeOptions {
   return {
     platform,
-    appExecutable: platform === 'win32'
-      ? 'C:\\Program Files\\DSH 100% Desktop\\DSH Desktop.exe'
-      : "/Applications/DSH O'Brien.app/Contents/MacOS/DSH Desktop",
+    nodeExecutable: platform === 'win32'
+      ? 'C:\\Program Files\\DSH 100% Desktop\\resources\\node-runtime\\node.exe'
+      : "/Applications/DSH O'Brien.app/Contents/Resources/node-runtime/node",
     pnpmBinPath: platform === 'win32'
       ? 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\node_modules\\pnpm\\bin\\pnpm.mjs'
       : "/Applications/DSH O'Brien.app/Contents/Resources/app.asar.unpacked/node_modules/pnpm/bin/pnpm.mjs",
@@ -59,7 +58,6 @@ describe('desktop Host pnpm runtime', () => {
     const environment: NodeJS.ProcessEnv = {
       PATH: '/usr/local/bin:/usr/bin:/bin',
       KEEP: 'value',
-      ELECTRON_RUN_AS_NODE: 'inherited-value',
       npm_config_runtime: 'inherited-runtime',
     }
     const original = { ...environment }
@@ -74,25 +72,24 @@ describe('desktop Host pnpm runtime', () => {
       expect(lstatSync(installation.nodeBinDir).mode & 0o777).toBe(0o700)
       expect(lstatSync(installation.pnpmShimPath).mode & 0o777).toBe(0o700)
       expect(lstatSync(installation.nodeShimPath).mode & 0o777).toBe(0o700)
-      expect(lstatSync(installation.clearEnvironmentPath).mode & 0o777).toBe(0o600)
     }
 
-    const clearEnvironmentUrl = pathToFileURL(installation.clearEnvironmentPath).href
     const pnpm = readFileSync(installation.pnpmShimPath, 'utf8')
     expect(pnpm).toContain(`PATH='${installation.nodeBinDir}':"\${PATH:-}"`)
     expect(pnpm).toContain(`NODE='${installation.nodeShimPath}'`)
-    expect(pnpm).toContain('ELECTRON_RUN_AS_NODE=1 npm_config_runtime=electron')
+    expect(pnpm).toContain('npm_config_runtime=electron')
     expect(pnpm).toContain("npm_config_target='43.4.0'")
     expect(pnpm).toContain("npm_config_disturl='https://electronjs.org/headers'")
-    expect(pnpm).toContain(`--import '${clearEnvironmentUrl}'`)
-    expect(pnpm.indexOf(`--import '${clearEnvironmentUrl}'`)).toBeLessThan(pnpm.indexOf('pnpm/bin/pnpm.mjs'))
+    expect(pnpm).not.toContain('ELECTRON_RUN_AS_NODE')
     const node = readFileSync(installation.nodeShimPath, 'utf8')
-    expect(node).toContain(`ELECTRON_RUN_AS_NODE=1 exec`)
-    expect(node).toContain(`--import '${clearEnvironmentUrl}' "$@"`)
+    expect(node).toBe([
+      '#!/bin/sh',
+      `exec '/Applications/DSH O'"'"'Brien.app/Contents/Resources/node-runtime/node' "$@"`,
+      '',
+    ].join('\n'))
+    expect(node).not.toContain('--import')
     expect(node).not.toContain('npm_config_')
-    expect(readFileSync(installation.clearEnvironmentPath, 'utf8')).toContain(
-      "name.toUpperCase() === 'ELECTRON_RUN_AS_NODE'",
-    )
+    expect(node).not.toContain('--import')
 
     expect(environment).toEqual({
       ...original,
@@ -125,26 +122,19 @@ describe('desktop Host pnpm runtime', () => {
     expect(environment).toEqual(original)
   })
 
-  it('clears every RunAsNode casing before the requested Node entry executes', () => {
+  it('generates shims that never enable Electron node mode', () => {
     const stateDir = join(temporaryDirectory(), 'runtime')
-    const installation = installDesktopPnpmRuntime(options(stateDir, 'linux', { PATH: '/usr/bin' }))
-    const result = spawnSync(process.execPath, [
-      '--import',
-      pathToFileURL(installation.clearEnvironmentPath).href,
-      '-e',
-      'process.stdout.write(JSON.stringify(Object.keys(process.env).filter(name => name.toUpperCase() === "ELECTRON_RUN_AS_NODE")))',
-    ], {
-      encoding: 'utf8',
-      env: {
-        PATH: process.env.PATH,
-        ELECTRON_RUN_AS_NODE: '1',
-        electron_run_as_node: 'legacy',
-      },
-    })
+    const environment: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
+    const installation = installDesktopPnpmRuntime(options(stateDir, 'linux', environment))
 
-    expect(result.error).toBeUndefined()
-    expect(result.status).toBe(0)
-    expect(result.stdout).toBe('[]')
+    for (const shim of [
+      readFileSync(installation.pnpmShimPath, 'utf8'),
+      readFileSync(installation.nodeShimPath, 'utf8'),
+    ]) {
+      expect(shim).not.toContain('ELECTRON_RUN_AS_NODE')
+      expect(shim).not.toContain('electron_run_as_node')
+      expect(shim).not.toContain('--import')
+    }
     installation.dispose()
   })
 
@@ -169,7 +159,7 @@ describe('desktop Host pnpm runtime', () => {
     const environment: NodeJS.ProcessEnv = { PATH: process.env.PATH }
     const installation = installDesktopPnpmRuntime({
       ...options(stateDir, platform, environment),
-      appExecutable: process.execPath,
+      nodeExecutable: process.execPath,
       pnpmBinPath: captureEntry,
     })
 
@@ -213,19 +203,16 @@ describe('desktop Host pnpm runtime', () => {
 
     expect(readdirSync(installation.pathDir)).toEqual(['pnpm.cmd'])
     expect(readdirSync(installation.nodeBinDir)).toEqual(['node.cmd'])
-    const clearEnvironmentUrl = pathToFileURL(installation.clearEnvironmentPath).href
-    const escapedClearEnvironmentUrl = clearEnvironmentUrl.replaceAll('%', '%%')
     const pnpm = readFileSync(installation.pnpmShimPath, 'utf8')
     expect(pnpm).toContain(`set "PATH=${installation.nodeBinDir};%PATH%"`)
     expect(pnpm).toContain(`set "NODE=${installation.nodeShimPath}"`)
-    expect(pnpm).toContain('set "ELECTRON_RUN_AS_NODE=1"')
     expect(pnpm).toContain('set "npm_config_runtime=electron"')
     expect(pnpm).toContain('set "npm_config_target=43.4.0"')
-    expect(pnpm).toContain(`--import "${escapedClearEnvironmentUrl}"`)
-    expect(pnpm.indexOf(`--import "${escapedClearEnvironmentUrl}"`)).toBeLessThan(pnpm.indexOf('pnpm\\bin\\pnpm.mjs'))
+    expect(pnpm).not.toContain('ELECTRON_RUN_AS_NODE')
+    expect(pnpm).not.toContain('--import')
     const node = readFileSync(installation.nodeShimPath, 'utf8')
-    expect(node).toContain('set "ELECTRON_RUN_AS_NODE=1"')
-    expect(node).toContain(`--import "${escapedClearEnvironmentUrl}" %*`)
+    expect(node).not.toContain('ELECTRON_RUN_AS_NODE')
+    expect(node).not.toContain('--import')
     expect(node).not.toContain('npm_config_')
 
     expect(environment).toEqual({
@@ -399,7 +386,7 @@ describe('desktop Host dsh runtime', () => {
 
     const installation = installDesktopDshRuntime({
       platform: 'win32',
-      appExecutable: process.execPath,
+      nodeExecutable: process.execPath,
       dshBootstrapPath: captureEntry,
       profileName: 'web',
       homeDir,

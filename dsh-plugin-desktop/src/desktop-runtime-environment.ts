@@ -11,11 +11,9 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
-const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
 const DSH_HOME = 'DSH_HOME'
 const PATH = 'PATH'
@@ -29,8 +27,8 @@ const TEMPORARY_ID = /^\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a
 export interface DesktopPnpmRuntimeOptions {
   /** Host platform selecting POSIX or Windows command shims. */
   platform: NodeJS.Platform
-  /** Electron executable reused in RunAsNode mode. */
-  appExecutable: string
+  /** Node command the generated shims execute; packaged builds pass the bundled distribution. */
+  nodeExecutable: string
   /** Physical packaged pnpm JavaScript entry. */
   pnpmBinPath: string
   /** Electron version used when pnpm installs native dependencies. */
@@ -51,8 +49,6 @@ export interface DesktopPnpmRuntimeInstallation {
   nodeBinDir: string
   /** Private Node command shim used by pnpm lifecycle scripts. */
   nodeShimPath: string
-  /** Preloaded module that removes Electron RunAsNode from child environments. */
-  clearEnvironmentPath: string
   /** Remove this installation's PATH entry without deleting persistent generated files. */
   dispose(): void
 }
@@ -60,7 +56,8 @@ export interface DesktopPnpmRuntimeInstallation {
 /** Inputs used to publish the packaged DSH command to Windows Host plugins. */
 export interface DesktopDshRuntimeOptions {
   platform: NodeJS.Platform
-  appExecutable: string
+  /** Node command the generated shim executes; packaged builds pass the bundled distribution. */
+  nodeExecutable: string
   dshBootstrapPath: string
   profileName: string
   homeDir: string
@@ -200,21 +197,11 @@ function replacePrivateFile(filename: string, contents: string, mode: number): v
   }
 }
 
-/** Module preloaded into RunAsNode children before their requested entry. */
-function clearEnvironmentModule(): string {
-  return [
-    `for (const name of Object.keys(process.env)) {`,
-    `  if (name.toUpperCase() === '${RUN_AS_NODE}') delete process.env[name]`,
-    '}',
-    '',
-  ].join('\n')
-}
-
 /** Build the private POSIX Node command used only by pnpm lifecycle scripts. */
-function posixNodeShim(appExecutable: string, clearEnvironmentUrl: string): string {
+function posixNodeShim(nodeExecutable: string): string {
   return [
     '#!/bin/sh',
-    `${RUN_AS_NODE}=1 exec ${quoteSh(appExecutable)} --import ${quoteSh(clearEnvironmentUrl)} "$@"`,
+    `exec ${quoteSh(nodeExecutable)} "$@"`,
     '',
   ].join('\n')
 }
@@ -224,30 +211,27 @@ function posixPnpmShim(
   options: DesktopPnpmRuntimeOptions,
   nodeBinDir: string,
   nodeShimPath: string,
-  clearEnvironmentUrl: string,
 ): string {
   return [
     '#!/bin/sh',
     [
       `PATH=${quoteSh(nodeBinDir)}:"\${PATH:-}"`,
       `NODE=${quoteSh(nodeShimPath)}`,
-      `${RUN_AS_NODE}=1`,
       'npm_config_runtime=electron',
       `npm_config_target=${quoteSh(options.electronVersion)}`,
       `npm_config_disturl=${quoteSh(ELECTRON_HEADERS_URL)}`,
-      `exec ${quoteSh(options.appExecutable)} --import ${quoteSh(clearEnvironmentUrl)} ${quoteSh(options.pnpmBinPath)} "$@"`,
+      `exec ${quoteSh(options.nodeExecutable)} ${quoteSh(options.pnpmBinPath)} "$@"`,
     ].join(' '),
     '',
   ].join('\n')
 }
 
 /** Build the private Windows Node command used only by pnpm lifecycle scripts. */
-function windowsNodeShim(appExecutable: string, clearEnvironmentUrl: string): string {
+function windowsNodeShim(nodeExecutable: string): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `set "${RUN_AS_NODE}=1"`,
-    `${quoteBatchWord(appExecutable)} --import ${quoteBatchWord(clearEnvironmentUrl)} %*`,
+    `${quoteBatchWord(nodeExecutable)} %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -258,18 +242,16 @@ function windowsPnpmShim(
   options: DesktopPnpmRuntimeOptions,
   nodeBinDir: string,
   nodeShimPath: string,
-  clearEnvironmentUrl: string,
 ): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
     `set "PATH=${escapeBatchSetValue(nodeBinDir)};%PATH%"`,
     `set "NODE=${escapeBatchSetValue(nodeShimPath)}"`,
-    `set "${RUN_AS_NODE}=1"`,
     'set "npm_config_runtime=electron"',
     `set "npm_config_target=${escapeBatchSetValue(options.electronVersion)}"`,
     `set "npm_config_disturl=${ELECTRON_HEADERS_URL}"`,
-    `${quoteBatchWord(options.appExecutable)} --import ${quoteBatchWord(clearEnvironmentUrl)} ${quoteBatchWord(options.pnpmBinPath)} %*`,
+    `${quoteBatchWord(options.nodeExecutable)} ${quoteBatchWord(options.pnpmBinPath)} %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -280,11 +262,10 @@ function windowsDshShim(options: DesktopDshRuntimeOptions): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `set "${RUN_AS_NODE}=1"`,
     `set "${DEFAULT_PROFILE}=${escapeBatchSetValue(options.profileName)}"`,
     `set "${DSH_HOME}=${escapeBatchSetValue(options.homeDir)}"`,
     `set "${DESKTOP_INSTALL_RECOVERY_STATE_ENV}=${escapeBatchSetValue(options.installRecoveryStatePath)}"`,
-    `${quoteBatchWord(options.appExecutable)} --expose-internals ${quoteBatchWord(options.dshBootstrapPath)} %*`,
+    `${quoteBatchWord(options.nodeExecutable)} --expose-internals ${quoteBatchWord(options.dshBootstrapPath)} %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -361,8 +342,8 @@ export function installDesktopDshRuntime(options: DesktopDshRuntimeOptions): Des
   }
   assertDesktopProfileName(options.profileName)
   for (const [label, value] of [
-    ['application executable', options.appExecutable],
-    ['DSH bootstrap', options.dshBootstrapPath],
+    ['Node command', options.nodeExecutable],
+    ['dsh bootstrap', options.dshBootstrapPath],
     ['Harness home', options.homeDir],
     ['install recovery state', options.installRecoveryStatePath],
     ['state directory', options.stateDir],
@@ -393,7 +374,7 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
     throw new Error(`dsh-plugin-desktop: pnpm runtime is unsupported on ${options.platform}`)
   }
   for (const [label, value] of [
-    ['application executable', options.appExecutable],
+    ['Node command', options.nodeExecutable],
     ['pnpm entry', options.pnpmBinPath],
     ['Electron version', options.electronVersion],
     ['state directory', options.stateDir],
@@ -412,26 +393,22 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
   const nodeShimName = windows ? 'node.cmd' : 'node'
   removeStaleTemporaryFiles(pathDir, pnpmShimName)
   removeStaleTemporaryFiles(nodeBinDir, nodeShimName)
-  removeStaleTemporaryFiles(privateDir, 'clear-env.mjs')
   reconcileOwnedDirectoryEntries(pathDir, [pnpmShimName])
   reconcileOwnedDirectoryEntries(nodeBinDir, [nodeShimName])
   const pnpmShimPath = join(pathDir, pnpmShimName)
   const nodeShimPath = join(nodeBinDir, nodeShimName)
-  const clearEnvironmentPath = join(privateDir, 'clear-env.mjs')
-  replacePrivateFile(clearEnvironmentPath, clearEnvironmentModule(), PRIVATE_FILE_MODE)
-  const clearEnvironmentUrl = pathToFileURL(clearEnvironmentPath).href
   replacePrivateFile(
     nodeShimPath,
     windows
-      ? windowsNodeShim(options.appExecutable, clearEnvironmentUrl)
-      : posixNodeShim(options.appExecutable, clearEnvironmentUrl),
+      ? windowsNodeShim(options.nodeExecutable)
+      : posixNodeShim(options.nodeExecutable),
     windows ? PRIVATE_FILE_MODE : EXECUTABLE_FILE_MODE,
   )
   replacePrivateFile(
     pnpmShimPath,
     windows
-      ? windowsPnpmShim(options, nodeBinDir, nodeShimPath, clearEnvironmentUrl)
-      : posixPnpmShim(options, nodeBinDir, nodeShimPath, clearEnvironmentUrl),
+      ? windowsPnpmShim(options, nodeBinDir, nodeShimPath)
+      : posixPnpmShim(options, nodeBinDir, nodeShimPath),
     windows ? PRIVATE_FILE_MODE : EXECUTABLE_FILE_MODE,
   )
 
@@ -440,7 +417,6 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
     pnpmShimPath,
     nodeBinDir,
     nodeShimPath,
-    clearEnvironmentPath,
     dispose: installPathDirectory(options.environment ?? process.env, pathDir, options.platform),
   }
 }

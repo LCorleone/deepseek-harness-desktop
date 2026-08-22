@@ -6,10 +6,9 @@ import { win32 } from 'node:path'
 import type { ShellExecSpec, ShellProcess, ShellRunResult } from '@deepseek-ai/dsh-shell'
 import { SandboxPwshExecutor } from '@deepseek-ai/dsh-pwsh-sandbox'
 import type { Config as PwshConfig } from '@deepseek-ai/dsh-pwsh-local'
+import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
 
-const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const UPSTREAM_RUNNER = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/runner'))
-const DESKTOP_TRAMPOLINE = fileURLToPath(new URL('./windows-acl-runner.js', import.meta.url))
 
 /** Inputs controlling one exact ACL-runner argv rewrite. */
 export interface WindowsAclAdaptation {
@@ -21,15 +20,15 @@ export interface WindowsAclAdaptation {
   execPath: string
   /** Resolved upstream ACL runner path. */
   upstreamRunner: string
-  /** Desktop-owned Node-mode trampoline path. */
-  trampoline: string
+  /** Node command the adapted runner executes under. */
+  nodeExecutable: string
 }
 
 /** Adapted execution inputs passed to the ordinary local executor. */
 export interface AdaptedWindowsAclExecution {
-  /** Spec carrying the runner-only Electron environment. */
+  /** Spec unchanged from the upstream sandbox provider. */
   spec: ShellExecSpec
-  /** Exact argv, with the desktop trampoline inserted when required. */
+  /** Exact argv, with the bundled Node command running the ACL runner. */
   argv: readonly string[]
 }
 
@@ -62,11 +61,11 @@ export function desktopWindowsPwshConfig(
 }
 
 /**
- * Insert the desktop Node-mode trampoline for the exact upstream ACL runner.
+ * Run the exact upstream ACL runner under the bundled Node command.
  * @param spec - resolved PowerShell execution spec.
  * @param argv - argv after the upstream sandbox provider has confined it.
  * @param adaptation - executable and runner identities for this Host.
- * @returns unchanged inputs for every non-runner call, otherwise the isolated runner launch.
+ * @returns unchanged inputs for every non-runner call, otherwise the bundled-Node runner launch.
  */
 export function adaptWindowsAclExecution(
   spec: ShellExecSpec,
@@ -81,14 +80,9 @@ export function adaptWindowsAclExecution(
     return { spec, argv }
   }
 
-  const env = { ...spec.env }
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === RUN_AS_NODE) delete env[key]
-  }
-  env[RUN_AS_NODE] = '1'
   return {
-    spec: { ...spec, env },
-    argv: [adaptation.execPath, adaptation.trampoline, adaptation.upstreamRunner, ...args],
+    spec,
+    argv: [adaptation.nodeExecutable, adaptation.upstreamRunner, ...args],
   }
 }
 
@@ -104,7 +98,10 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
       electron: process.versions.electron !== undefined,
       execPath: process.execPath,
       upstreamRunner: UPSTREAM_RUNNER,
-      trampoline: DESKTOP_TRAMPOLINE,
+      nodeExecutable: resolveDesktopNodeExecutable(import.meta.url, {
+        platform: process.platform,
+        environment: process.env,
+      }),
     })
   }
 

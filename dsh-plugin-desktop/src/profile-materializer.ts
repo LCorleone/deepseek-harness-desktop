@@ -3,7 +3,6 @@
 import { spawn as childSpawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { delimiter, isAbsolute } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -12,8 +11,8 @@ const TERMINATION_GRACE_MS = 3_000
 
 /** Runtime inputs resolved by the Electron bootstrap. */
 export interface ProfileMaterializerOptions {
-  readonly appExecutable: string
-  readonly clearEnvironmentPath: string
+  /** Node command that runs the packaged pnpm entry; packaged builds pass the bundled distribution. */
+  readonly nodeExecutable: string
   readonly pnpmBinPath: string
   readonly nodeBinDir: string
   readonly nodeShimPath: string
@@ -111,8 +110,7 @@ export async function materializeProfile(
   options: ProfileMaterializerOptions,
 ): Promise<ProfileMaterializationResult> {
   for (const [label, value] of [
-    ['application executable', options.appExecutable],
-    ['environment preloader', options.clearEnvironmentPath],
+    ['Node command', options.nodeExecutable],
     ['pnpm entry', options.pnpmBinPath],
     ['Node command directory', options.nodeBinDir],
     ['Node command', options.nodeShimPath],
@@ -129,9 +127,7 @@ export async function materializeProfile(
   options.signal?.throwIfAborted()
 
   const argv = [
-    options.appExecutable,
-    '--import',
-    pathToFileURL(options.clearEnvironmentPath).href,
+    options.nodeExecutable,
     options.pnpmBinPath,
     'install',
     '--frozen-lockfile',
@@ -141,7 +137,6 @@ export async function materializeProfile(
     ...process.env,
     PATH: path.length === 0 ? options.nodeBinDir : `${options.nodeBinDir}${delimiter}${path}`,
     NODE: options.nodeShimPath,
-    ELECTRON_RUN_AS_NODE: '1',
     DSH_HOME: options.homeDir,
     CI: 'true',
     npm_config_runtime: 'electron',
@@ -149,7 +144,7 @@ export async function materializeProfile(
     npm_config_disturl: ELECTRON_HEADERS_URL,
   }
   const spawn = options.spawn ?? childSpawn
-  const child = spawn(options.appExecutable, argv.slice(1), {
+  const child = spawn(options.nodeExecutable, argv.slice(1), {
     cwd: options.profileDir,
     env: environment,
     shell: false,

@@ -2,7 +2,6 @@ import { PassThrough } from 'node:stream'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import type {
   SubprocessHandle,
@@ -73,12 +72,11 @@ function bootstrap(root = '/desktop runtime'): DesktopPnpmBootstrap {
     activeProfileName: '工作 profile',
     activeProfileDir: join(root, 'profiles', '工作 profile'),
     homeDir: join(root, 'harness home'),
-    appExecutable: join(root, 'DSH Desktop'),
+    nodeExecutable: join(root, 'resources', 'node-runtime', 'node'),
     pnpmBinPath: join(root, 'node_modules', 'pnpm', 'bin', 'pnpm.mjs'),
     electronVersion: '43.4.0',
     nodeBinDir: join(root, 'private', 'node-bin'),
     nodeShimPath: join(root, 'private', 'node-bin', 'node'),
-    clearEnvironmentPath: join(root, 'private', 'clear-env.mjs'),
     dshBootstrapPath: join(root, 'app.asar', 'lib', 'desktop-cli.js'),
     installRecoveryStatePath: join(root, 'plugin-install-recovery', 'state.json'),
     generationId: 'test-generation-0001',
@@ -119,7 +117,7 @@ function finish(child: ControlledSubprocess, outcome: SubprocessOutcome = {
 }
 
 describe('desktop pnpm Host service', () => {
-  it('runs physical packaged pnpm with the Electron-backed lifecycle environment', async () => {
+  it('runs physical packaged pnpm with the bundled Node lifecycle environment', async () => {
     const child = controlledSubprocess()
     const harness = await createHarness([child])
     const signal = new AbortController().signal
@@ -130,9 +128,7 @@ describe('desktop pnpm Host service', () => {
     const spec = harness.spawn.mock.calls[0]?.[0]
     expect(spec).toEqual({
       argv: [
-        bootstrap().appExecutable,
-        '--import',
-        pathToFileURL(bootstrap().clearEnvironmentPath).href,
+        bootstrap().nodeExecutable,
         bootstrap().pnpmBinPath,
         'list',
         '--depth=0',
@@ -144,7 +140,6 @@ describe('desktop pnpm Host service', () => {
       env: {
         PATH: `${bootstrap().nodeBinDir}${delimiter}${process.env.PATH ?? ''}`,
         NODE: bootstrap().nodeShimPath,
-        ELECTRON_RUN_AS_NODE: '1',
         DSH_HOME: bootstrap().homeDir,
         CI: 'true',
         npm_config_runtime: 'electron',
@@ -152,6 +147,7 @@ describe('desktop pnpm Host service', () => {
         npm_config_disturl: 'https://electronjs.org/headers',
       },
     })
+    expect(spec?.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
     expect(spec).not.toHaveProperty('shell')
     expect(operation.stdout).toBe(child.stdout)
     expect(operation.stderr).toBe(child.stderr)
@@ -174,7 +170,7 @@ describe('desktop pnpm Host service', () => {
 
     const spec = harness.spawn.mock.calls[0]?.[0]
     expect(spec?.argv).toEqual([
-      bootstrap().appExecutable,
+      bootstrap().nodeExecutable,
       '--expose-internals',
       bootstrap().dshBootstrapPath,
       'plugin',
@@ -216,7 +212,7 @@ describe('desktop pnpm Host service', () => {
     )
 
     expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
-      selectedBootstrap.appExecutable,
+      selectedBootstrap.nodeExecutable,
       '--expose-internals',
       selectedBootstrap.dshBootstrapPath,
       'plugin',
@@ -285,7 +281,7 @@ describe('desktop pnpm Host service', () => {
       await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
 
       expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
-        selectedBootstrap.appExecutable,
+        selectedBootstrap.nodeExecutable,
         '--expose-internals',
         selectedBootstrap.dshBootstrapPath,
         'plugin',
@@ -357,7 +353,7 @@ describe('desktop pnpm Host service', () => {
       )
 
       expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
-        selectedBootstrap.appExecutable,
+        selectedBootstrap.nodeExecutable,
         '--expose-internals',
         selectedBootstrap.dshBootstrapPath,
         'plugin',
@@ -466,7 +462,7 @@ describe('desktop pnpm Host service', () => {
       })
       expect(harness.spawn).toHaveBeenCalledOnce()
       expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
-        selectedBootstrap.appExecutable,
+        selectedBootstrap.nodeExecutable,
         '--expose-internals',
         selectedBootstrap.dshBootstrapPath,
         'plugin',

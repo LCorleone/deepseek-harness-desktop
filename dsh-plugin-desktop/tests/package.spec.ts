@@ -30,6 +30,8 @@ const manifest = JSON.parse(readFileSync(new URL('package.json', packageRoot), '
     productName?: unknown
     appId?: unknown
     asarUnpack?: unknown
+    extraResources?: unknown
+    beforePack?: unknown
     afterPack?: unknown
     electronFuses?: unknown
     toolsets?: Record<string, unknown>
@@ -340,7 +342,8 @@ describe('published package surface', () => {
 
     expect(config).toContain("'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts'")
     expect(config).toContain("'windows-agent-presets': 'src/windows-agent-presets.ts'")
-    expect(config).toContain("'windows-acl-runner': 'src/windows-acl-runner.ts'")
+    expect(config).toContain("'desktop-node-runtime': 'src/desktop-node-runtime.ts'")
+    expect(config).not.toContain('windows-acl-runner')
     expect(config).toContain("'desktop-cli': 'src/desktop-cli.ts'")
     expect(config).toContain("'desktop-runtime-environment': 'src/desktop-runtime-environment.ts'")
     expect(config).toContain("'desktop-terminal': 'src/desktop-terminal.ts'")
@@ -568,6 +571,10 @@ describe('published package surface', () => {
       'node_modules/**',
     ])
     expect(manifest.build?.electronFuses).toEqual({ runAsNode: true })
+    expect(manifest.build?.extraResources).toEqual([
+      { from: 'build/node-runtime', to: 'node-runtime' },
+    ])
+    expect(manifest.build?.beforePack).toBe('./scripts/prepare-bundled-node.ts')
     expect(manifest.build?.toolsets).toEqual({ nsis: '1.2.1' })
     expect(manifest.files).toEqual(expect.arrayContaining([
       'build/app-icon.png',

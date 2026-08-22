@@ -1,13 +1,11 @@
 import type { ShellExecSpec } from '@deepseek-ai/dsh-shell'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   adaptWindowsAclExecution,
   desktopWindowsPwshConfig,
   desktopWindowsPwshPath,
   type WindowsAclAdaptation,
 } from '../src/windows-pwsh-sandbox.ts'
-
-const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 
 function shellSpec(env?: Record<string, string>): ShellExecSpec {
   return {
@@ -25,7 +23,7 @@ const adaptation: WindowsAclAdaptation = {
   electron: true,
   execPath: 'C:\\Program Files\\DSH Desktop\\DSH Desktop.exe',
   upstreamRunner: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\runner.js',
-  trampoline: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\desktop-runner.js',
+  nodeExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe',
 }
 
 describe('Windows Electron PowerShell sandbox adaptation', () => {
@@ -85,10 +83,9 @@ describe('Windows Electron PowerShell sandbox adaptation', () => {
 
     const result = adaptWindowsAclExecution(spec, argv, adaptation)
 
-    expect(result.spec).not.toBe(spec)
+    expect(result.spec).toBe(spec)
     expect(result.argv).toEqual([
-      adaptation.execPath,
-      adaptation.trampoline,
+      adaptation.nodeExecutable,
       adaptation.upstreamRunner,
       '--workspace',
       'C:\\workspace',
@@ -97,10 +94,7 @@ describe('Windows Electron PowerShell sandbox adaptation', () => {
       '-Command',
       'Write-Output ok',
     ])
-    expect(result.spec.env).toEqual({
-      KEEP: 'value',
-      [RUN_AS_NODE]: '1',
-    })
+    expect(result.spec.env).toEqual({ KEEP: 'value' })
     expect(spec.env).toBe(env)
     expect(argv).toEqual([
       adaptation.execPath,
@@ -146,81 +140,5 @@ describe('Windows Electron PowerShell sandbox adaptation', () => {
     expect(result).toEqual({ spec, argv })
     expect(result.spec).toBe(spec)
     expect(result.argv).toBe(argv)
-    expect(result.spec.env).not.toHaveProperty(RUN_AS_NODE)
-  })
-
-  it('removes every inherited Node-mode key case-insensitively', () => {
-    const spec = shellSpec({
-      electron_run_as_node: 'legacy-value',
-      KEEP: 'value',
-    })
-    const argv = [adaptation.execPath, adaptation.upstreamRunner, '--', 'powershell.exe']
-
-    const result = adaptWindowsAclExecution(spec, argv, adaptation)
-
-    expect(result.spec.env).toEqual({
-      KEEP: 'value',
-      [RUN_AS_NODE]: '1',
-    })
-    expect(spec.env).toEqual({
-      electron_run_as_node: 'legacy-value',
-      KEEP: 'value',
-    })
-  })
-
-  it('puts Node-mode variables only on the adapted child spec', () => {
-    const previousRunAsNode = process.env[RUN_AS_NODE]
-    process.env[RUN_AS_NODE] = 'host-value'
-    try {
-      const spec = shellSpec({ KEEP: 'value' })
-      const result = adaptWindowsAclExecution(
-        spec,
-        [adaptation.execPath, adaptation.upstreamRunner, '--', 'powershell.exe'],
-        adaptation,
-      )
-
-      expect(result.spec.env?.[RUN_AS_NODE]).toBe('1')
-      expect(spec.env).toEqual({ KEEP: 'value' })
-      expect(process.env[RUN_AS_NODE]).toBe('host-value')
-    } finally {
-      if (previousRunAsNode === undefined) delete process.env[RUN_AS_NODE]
-      else process.env[RUN_AS_NODE] = previousRunAsNode
-    }
-  })
-})
-
-describe('Windows ACL runner trampoline', () => {
-  const originalArgv = process.argv
-  const originalExitCode = process.exitCode
-  const originalRunAsNode = process.env[RUN_AS_NODE]
-  const originalLowercaseRunAsNode = process.env.electron_run_as_node
-
-  afterEach(() => {
-    process.argv = originalArgv
-    process.exitCode = originalExitCode
-    if (originalRunAsNode === undefined) delete process.env[RUN_AS_NODE]
-    else process.env[RUN_AS_NODE] = originalRunAsNode
-    if (originalLowercaseRunAsNode === undefined) delete process.env.electron_run_as_node
-    else process.env.electron_run_as_node = originalLowercaseRunAsNode
-    vi.restoreAllMocks()
-  })
-
-  it('removes Node mode from the target environment before rejecting an unexpected runner', async () => {
-    process.argv = [process.execPath, 'windows-acl-runner.js', 'unexpected-runner.js']
-    process.env[RUN_AS_NODE] = '1'
-    process.env.electron_run_as_node = 'legacy-value'
-    const stderr = vi.spyOn(process.stderr, 'write')
-      .mockImplementation((() => true) as typeof process.stderr.write)
-
-    const runnerModule: string = '../src/windows-acl-runner.ts?unexpected-runner-test'
-    await import(/* @vite-ignore */ runnerModule)
-    await new Promise<void>(resolve => setImmediate(resolve))
-
-    expect(process.env[RUN_AS_NODE]).toBeUndefined()
-    expect(process.env.electron_run_as_node).toBeUndefined()
-    expect(process.exitCode).toBe(127)
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(
-      'windows-acl-run: desktop trampoline: desktop trampoline received an unexpected ACL runner',
-    ))
   })
 })

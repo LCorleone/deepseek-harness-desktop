@@ -1,4 +1,4 @@
-/** Private RunAsNode bootstrap for the packaged DeepSeek Harness CLI. */
+/** Private bootstrap for the packaged DeepSeek Harness CLI under the bundled Node. */
 
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -15,19 +15,11 @@ import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
 
-const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
 const DSH_HOME = 'DSH_HOME'
 const DSH_ENTRY_URL = pathToFileURL(
   packagedDependencyPath(import.meta.url, '@deepseek-ai/dsh/lib/bin.js'),
 ).href
-
-/** Remove Electron Node mode before the DSH CLI creates any child process. */
-export function clearElectronRunAsNode(environment: NodeJS.ProcessEnv): void {
-  for (const key of Object.keys(environment)) {
-    if (key.toUpperCase() === RUN_AS_NODE) delete environment[key]
-  }
-}
 
 /**
  * Apply the terminal-owned default without overriding global help or an explicit profile.
@@ -215,7 +207,7 @@ async function loadWithInstallRecovery(
 }
 
 /**
- * Enter the packaged DSH CLI after removing the Electron-only launch marker.
+ * Enter the packaged DSH CLI under the bundled Node runtime.
  * @param environment - process environment inherited from the generated shim.
  * @param load - ESM loader used by the executable and focused tests.
  * @param argv - mutable process arguments presented to the upstream CLI.
@@ -235,7 +227,6 @@ export async function runDesktopDshCli(
     environment,
     DESKTOP_INSTALL_RECOVERY_STATE_ENV,
   )
-  clearElectronRunAsNode(environment)
   if (profileName !== undefined) {
     argv.splice(2, argv.length - 2, ...withDefaultDesktopProfile(argv.slice(2), profileName))
   }

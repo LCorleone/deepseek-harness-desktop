@@ -1,17 +1,25 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import AdmZip from 'adm-zip'
 import {
   afterPack,
-  REQUIRED_PACKAGED_RUNTIME_ENTRIES,
+  BUNDLED_NODE_RESOURCE_DIRECTORY,
   REQUIRED_MACOS_UNIVERSAL_ENTRIES,
+  REQUIRED_PACKAGED_RUNTIME_ENTRIES,
+  REQUIRED_RUN_AS_NODE_FUSE,
   REQUIRED_UNPACKED_PACKAGE_SPECIFIERS,
   REQUIRED_UNPACKED_RUNTIME_ENTRIES,
   REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES,
+  resolveBundledNodeResourcePath,
   resolvePackagedAsarPath,
+  resolvePackagedResourcesDirectory,
   resolvePackagedUnpackedRoot,
+  readPackagedRunAsNodeFuse,
   smokePackagedDiagnosticWorker,
+  verifyBundledNodeRuntime,
+  verifyRunAsNodeFuseStage,
   verifyUnpackedArchiveMirror,
   verifyPackagedRuntime,
   type ArchiveLister,
@@ -91,7 +99,7 @@ describe('packaged desktop runtime verification', () => {
     },
   )
 
-  it('runs the static package gate before the diagnostic Worker smoke', async () => {
+  it('runs the static, bundled-Node, and fuse gates before the diagnostic Worker smoke', async () => {
     const runtimeContext = context('/build', 'win32')
     const calls: string[] = []
 
@@ -99,9 +107,65 @@ describe('packaged desktop runtime verification', () => {
       runtimeContext,
       () => { calls.push('static') },
       async (unpackedRoot) => { calls.push(unpackedRoot) },
+      {
+        exists: filename => {
+          calls.push(filename)
+          return true
+        },
+        readFuse: () => {
+          calls.push('fuse')
+          return REQUIRED_RUN_AS_NODE_FUSE
+        },
+      },
     )
 
-    expect(calls).toEqual(['static', resolvePackagedUnpackedRoot(runtimeContext)])
+    expect(calls).toEqual([
+      'static',
+      join('/build', 'resources', BUNDLED_NODE_RESOURCE_DIRECTORY, 'node.exe'),
+      'fuse',
+      resolvePackagedUnpackedRoot(runtimeContext),
+    ])
+  })
+
+  it('requires the bundled Node command beside the packaged app.asar', () => {
+    const runtimeContext = context('/build', 'win32')
+    const nodePath = resolveBundledNodeResourcePath(runtimeContext)
+
+    expect(nodePath).toBe(join('/build', 'resources', 'node-runtime', 'node.exe'))
+    expect(resolveBundledNodeResourcePath(context('/build', 'darwin')))
+      .toBe(join('/build', 'DSH Desktop.app', 'Contents', 'Resources', 'node-runtime', 'node'))
+    expect(resolvePackagedResourcesDirectory(runtimeContext)).toBe(join('/build', 'resources'))
+    expect(() => verifyBundledNodeRuntime(runtimeContext, () => false))
+      .toThrow(`missing the bundled Node command: ${nodePath}`)
+    expect(verifyBundledNodeRuntime(runtimeContext, filename => filename === nodePath)).toBe(nodePath)
+  })
+
+  it('reads the fuse stage from the effective build configuration or the repository manifest', () => {
+    expect(() => verifyRunAsNodeFuseStage(REQUIRED_RUN_AS_NODE_FUSE)).not.toThrow()
+    expect(() => verifyRunAsNodeFuseStage(!REQUIRED_RUN_AS_NODE_FUSE))
+      .toThrow(`requires electronFuses.runAsNode=${String(REQUIRED_RUN_AS_NODE_FUSE)}`)
+
+    // The live Electron Builder configuration wins over the repository manifest.
+    expect(readPackagedRunAsNodeFuse({
+      appInfo: { productFilename: 'DSH Desktop' },
+      config: { electronFuses: { runAsNode: !REQUIRED_RUN_AS_NODE_FUSE } },
+    })).toBe(!REQUIRED_RUN_AS_NODE_FUSE)
+
+    // Without a live configuration the repository manifest is the fallback.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-fuse-stage-'))
+    try {
+      const manifestPath = join(root, 'package.json')
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({ build: { electronFuses: { runAsNode: REQUIRED_RUN_AS_NODE_FUSE } } }),
+      )
+      expect(readPackagedRunAsNodeFuse(
+        { appInfo: { productFilename: 'DSH Desktop' } },
+        () => readFileSync(manifestPath, 'utf8'),
+      )).toBe(REQUIRED_RUN_AS_NODE_FUSE)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('tracks the ConPTY-only native surface shipped by node-pty 1.2', () => {

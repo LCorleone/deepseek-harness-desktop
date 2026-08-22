@@ -44,7 +44,7 @@ try {
   const electronVersion = JSON.parse(readFileSync(new URL('node_modules/electron/package.json', packageRoot), 'utf8')).version
   pnpmRuntime = installDesktopPnpmRuntime({
     platform: process.platform,
-    appExecutable: process.execPath,
+    nodeExecutable: process.execPath,
     pnpmBinPath,
     electronVersion,
     stateDir: join(home, 'runtime-commands'),

@@ -42,6 +42,11 @@ vi.mock('../src/desktop-terminal.ts', async (importOriginal) => ({
   openDesktopTerminal: terminal.open,
 }))
 
+vi.mock('../src/desktop-node-runtime.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/desktop-node-runtime.ts')>(),
+  resolveDesktopNodeExecutable: vi.fn(() => process.execPath),
+}))
+
 vi.mock('../src/diagnostic-export.ts', () => ({
   exportDesktopDiagnostics: diagnostics.export,
 }))
@@ -1126,7 +1131,7 @@ describe('Electron desktop runtime', () => {
 
       expect(terminal.open).toHaveBeenCalledWith(expect.objectContaining({
         platform: 'darwin',
-        appExecutable: process.execPath,
+        nodeExecutable: process.execPath,
         electronVersion: '43.4.0',
         profileName: 'desktop',
         productVersion: '2.0.2',

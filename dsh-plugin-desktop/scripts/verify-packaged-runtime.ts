@@ -1,9 +1,10 @@
 /** Fail-loud verification of the runtime entries sealed into Electron's app.asar. */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { listPackage } from '@electron/asar'
 import AdmZip from 'adm-zip'
@@ -25,6 +26,10 @@ export interface PackagedRuntimeContext {
     readonly appInfo: {
       readonly productFilename: string
     }
+    /** Effective Electron Builder configuration; the packaged manifest omits `build`. */
+    readonly config?: {
+      readonly electronFuses?: { readonly runAsNode?: unknown }
+    }
   }
 }
 
@@ -44,6 +49,7 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/diagnostics.js',
   'lib/diagnostic-export-worker.js',
   'lib/desktop-cli.js',
+  'lib/desktop-node-runtime.js',
   'lib/desktop-runtime-environment.js',
   'lib/desktop-terminal.js',
   'lib/terminal.js',
@@ -51,7 +57,7 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/update-download.js',
   'lib/updates.js',
   'lib/windows-agent-presets.js',
-  'lib/windows-acl-runner.js',
+  'lib/windows-pwsh-sandbox.js',
   'node_modules/@deepseek-ai/dsh/lib/bin.js',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
   'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
@@ -101,6 +107,18 @@ export const REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES = [
   'node_modules/node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe',
   'node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll',
 ] as const
+
+/**
+ * Fuse stage the packaged application must ship.
+ *
+ * P3-1 lands in two commits: the bundle-plus-callers switch keeps the fuse
+ * enabled as its rollback point, and the follow-up flip changes this constant
+ * together with `build.electronFuses.runAsNode` and its spec expectation.
+ */
+export const REQUIRED_RUN_AS_NODE_FUSE = true
+
+/** Directory `extraResources` places the bundled Node distribution into. */
+export const BUNDLED_NODE_RESOURCE_DIRECTORY = 'node-runtime'
 
 /** CPU-specific runtime assets that must coexist in a universal macOS application. */
 export const REQUIRED_MACOS_UNIVERSAL_ENTRIES = [
@@ -264,6 +282,68 @@ export function resolvePackagedUnpackedRoot(context: PackagedRuntimeContext): st
   return `${resolvePackagedAsarPath(context)}.unpacked`
 }
 
+/** Resolve the resources directory holding both app.asar and extraResources. */
+export function resolvePackagedResourcesDirectory(context: PackagedRuntimeContext): string {
+  return dirname(resolvePackagedAsarPath(context))
+}
+
+/**
+ * Resolve the bundled Node command shipped beside app.asar.
+ * @param context - completed application directory and target platform.
+ * @returns the packaged `node-runtime` command path for the target platform.
+ */
+export function resolveBundledNodeResourcePath(context: PackagedRuntimeContext): string {
+  const commandName = context.electronPlatformName === 'win32' ? 'node.exe' : 'node'
+  return join(resolvePackagedResourcesDirectory(context), BUNDLED_NODE_RESOURCE_DIRECTORY, commandName)
+}
+
+/**
+ * Verify the bundled Node command shipped beside app.asar.
+ * @param context - completed application directory and target platform.
+ * @param exists - physical-file probe for the packaged application tree.
+ * @returns the verified bundled Node command path.
+ */
+export function verifyBundledNodeRuntime(
+  context: PackagedRuntimeContext,
+  exists: FileProbe = existsSync,
+): string {
+  const nodePath = resolveBundledNodeResourcePath(context)
+  if (!exists(nodePath)) {
+    throw new Error(
+      `dsh-plugin-desktop: packaged runtime at ${resolvePackagedResourcesDirectory(context)} is missing the bundled Node command: ${nodePath}`,
+    )
+  }
+  return nodePath
+}
+
+/** Read the `runAsNode` fuse value the shipped application configures. */
+export function readPackagedRunAsNodeFuse(
+  packager: PackagedRuntimeContext['packager'],
+  readRepositoryManifest: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
+): unknown {
+  // Electron Builder prunes the `build` section from the packaged manifest,
+  // so the effective build configuration is authoritative and the repository
+  // manifest is the fallback for contexts without it.
+  const configured = packager.config?.electronFuses?.runAsNode
+  if (configured !== undefined) return configured
+  const manifest = JSON.parse(readRepositoryManifest(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'),
+  )) as { build?: { electronFuses?: { runAsNode?: unknown } } }
+  return manifest.build?.electronFuses?.runAsNode
+}
+
+/** Require the shipped fuse stage to match {@link REQUIRED_RUN_AS_NODE_FUSE}. */
+export function verifyRunAsNodeFuseStage(
+  fuse: unknown,
+  required: boolean = REQUIRED_RUN_AS_NODE_FUSE,
+): void {
+  if (fuse !== required) {
+    throw new Error(
+      `dsh-plugin-desktop: packaged runtime requires electronFuses.runAsNode=${String(required)} but the application manifest declares ${JSON.stringify(fuse)}`,
+    )
+  }
+}
+
 /** Normalize the host-specific separators emitted by the ASAR reader. */
 function normalizeArchiveEntry(entry: string): string {
   return entry.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
@@ -397,17 +477,33 @@ export function verifyPackagedRuntime(
   verifyUnpackedPackageResolution(unpackedRoot, resolvePackage)
 }
 
+/** Injectable seams for the packaged application probes afterPack runs. */
+export interface PackagedRuntimeProbe {
+  /** Physical-file probe for the bundled Node command; defaults to `existsSync`. */
+  readonly exists?: FileProbe
+  /** Manifest reader returning the shipped `runAsNode` fuse value. */
+  readonly readFuse?: () => unknown
+}
+
 /**
  * Run the static packaged-runtime check as Electron Builder's afterPack hook.
  * @param context - Electron Builder's afterPack context.
+ * @param verify - static archive and physical-tree verifier.
+ * @param smoke - diagnostic Worker smoke launcher.
+ * @param probe - injectable seams for the bundled-Node and fuse-stage checks.
  * @returns A promise that rejects before signing when the runtime is incomplete.
  */
 export async function afterPack(
   context: PackagedRuntimeContext,
   verify: typeof verifyPackagedRuntime = verifyPackagedRuntime,
   smoke: PackagedDiagnosticWorkerSmoke = smokePackagedDiagnosticWorker,
+  probe: PackagedRuntimeProbe = {},
 ): Promise<void> {
   verify(context)
+  verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
+  verifyRunAsNodeFuseStage(
+    (probe.readFuse ?? (() => readPackagedRunAsNodeFuse(context.packager)))(),
+  )
   await smoke(resolvePackagedUnpackedRoot(context))
 }
 

@@ -15,11 +15,10 @@ import { basename, dirname, join, win32 } from 'node:path'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
-const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
 const DSH_HOME = 'DSH_HOME'
 const PATH = 'PATH'
-const WINDOWS_APP_EXECUTABLE = 'DSH_DESKTOP_APP_EXECUTABLE'
+const WINDOWS_NODE_EXECUTABLE = 'DSH_DESKTOP_NODE_EXECUTABLE'
 const WINDOWS_DSH_BOOTSTRAP = 'DSH_DESKTOP_DSH_BOOTSTRAP'
 const WINDOWS_ELECTRON_VERSION = 'DSH_DESKTOP_ELECTRON_VERSION'
 const WINDOWS_PNPM_ENTRY = 'DSH_DESKTOP_PNPM_ENTRY'
@@ -31,7 +30,7 @@ const WINDOWS_CMD_WELCOME = 'DSH_DESKTOP_CMD_WELCOME'
 const WINDOWS_SHELL_EXECUTABLE = 'DSH_DESKTOP_SHELL_EXECUTABLE'
 const WINDOWS_GENERATED_ENVIRONMENT_KEYS = new Set([
   DEFAULT_PROFILE,
-  WINDOWS_APP_EXECUTABLE,
+  WINDOWS_NODE_EXECUTABLE,
   WINDOWS_DSH_BOOTSTRAP,
   WINDOWS_ELECTRON_VERSION,
   WINDOWS_PNPM_ENTRY,
@@ -80,9 +79,9 @@ export interface WindowsTerminalLauncher {
 export interface DesktopTerminalOptions {
   /** Host platform selecting the generated scripts and native launcher. */
   platform: NodeJS.Platform
-  /** Electron executable reused as Node by command shims. */
-  appExecutable: string
-  /** Desktop-owned bootstrap that clears Node mode before importing the `dsh` CLI. */
+  /** Node command the generated shims execute; packaged builds pass the bundled distribution. */
+  nodeExecutable: string
+  /** Desktop-owned bootstrap that imports the `dsh` CLI under the bundled Node. */
   dshBootstrapPath: string
   /** Packaged JavaScript entry for the `pnpm` CLI. */
   pnpmBinPath: string
@@ -214,23 +213,21 @@ function prepareStateDirectory(stateDir: string): void {
   chmodSync(stateDir, STATE_DIRECTORY_MODE)
 }
 
-/** Build a command shim that enables Electron's Node mode only for its child. */
-function macShim(appExecutable: string, binPath?: string): string {
-  const entry = binPath === undefined ? '' : ` ${quoteSh(binPath)}`
+/** Build a generic command shim backed by the bundled Node runtime. */
+function macShim(nodeExecutable: string): string {
   return [
     '#!/bin/sh',
-    `${RUN_AS_NODE}=1 exec ${quoteSh(appExecutable)}${entry} "$@"`,
+    `exec ${quoteSh(nodeExecutable)} "$@"`,
     '',
   ].join('\n')
 }
 
-/** Build a command shim that enables Electron's Node mode only for its child. */
+/** Build a generic Windows command shim backed by the bundled Node runtime. */
 function windowsShim(): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `set "${RUN_AS_NODE}=1"`,
-    `"%${WINDOWS_APP_EXECUTABLE}%" %*`,
+    `"%${WINDOWS_NODE_EXECUTABLE}%" %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -242,8 +239,7 @@ function macDshShim(options: DesktopTerminalOptions): string {
     '#!/bin/sh',
     [
       `${DEFAULT_PROFILE}=${quoteSh(options.profileName)}`,
-      `${RUN_AS_NODE}=1`,
-      `exec ${quoteSh(options.appExecutable)} --expose-internals ${quoteSh(options.dshBootstrapPath)} "$@"`,
+      `exec ${quoteSh(options.nodeExecutable)} --expose-internals ${quoteSh(options.dshBootstrapPath)} "$@"`,
     ].join(' '),
     '',
   ].join('\n')
@@ -254,8 +250,7 @@ function windowsDshShim(): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `set "${RUN_AS_NODE}=1"`,
-    `"%${WINDOWS_APP_EXECUTABLE}%" --expose-internals "%${WINDOWS_DSH_BOOTSTRAP}%" %*`,
+    `"%${WINDOWS_NODE_EXECUTABLE}%" --expose-internals "%${WINDOWS_DSH_BOOTSTRAP}%" %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -266,11 +261,10 @@ function macPnpmShim(options: DesktopTerminalOptions): string {
   return [
     '#!/bin/sh',
     [
-      `${RUN_AS_NODE}=1`,
       'npm_config_runtime=electron',
       `npm_config_target=${quoteSh(options.electronVersion)}`,
       `npm_config_disturl=${quoteSh(ELECTRON_HEADERS_URL)}`,
-      `exec ${quoteSh(options.appExecutable)} ${quoteSh(options.pnpmBinPath)} "$@"`,
+      `exec ${quoteSh(options.nodeExecutable)} ${quoteSh(options.pnpmBinPath)} "$@"`,
     ].join(' '),
     '',
   ].join('\n')
@@ -281,11 +275,10 @@ function windowsPnpmShim(): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `set "${RUN_AS_NODE}=1"`,
     'set "npm_config_runtime=electron"',
     `set "npm_config_target=%${WINDOWS_ELECTRON_VERSION}%"`,
     `set "npm_config_disturl=${ELECTRON_HEADERS_URL}"`,
-    `"%${WINDOWS_APP_EXECUTABLE}%" "%${WINDOWS_PNPM_ENTRY}%" %*`,
+    `"%${WINDOWS_NODE_EXECUTABLE}%" "%${WINDOWS_PNPM_ENTRY}%" %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -298,7 +291,6 @@ function macZshRc(options: DesktopTerminalOptions, shimDir: string): string {
     '  ZDOTDIR="${DSH_DESKTOP_USER_ZDOTDIR}"',
     '  source "${DSH_DESKTOP_USER_ZDOTDIR}/.zshrc"',
     'fi',
-    `unset ${RUN_AS_NODE}`,
     `export ${DSH_HOME}=${quoteSh(options.homeDir)}`,
     'typeset -U path',
     `path=(${quoteSh(shimDir)} $path)`,
@@ -314,7 +306,6 @@ function macBashRc(options: DesktopTerminalOptions, shimDir: string): string {
     'if [ -n "${DSH_DESKTOP_USER_BASHRC:-}" ] && [ -r "${DSH_DESKTOP_USER_BASHRC}" ]; then',
     '  . "${DSH_DESKTOP_USER_BASHRC}"',
     'fi',
-    `unset ${RUN_AS_NODE}`,
     `export ${DSH_HOME}=${quoteSh(options.homeDir)}`,
     'case ":${PATH:-}:" in',
     `  *:${quoteSh(shimDir)}:*) ;;`,
@@ -337,7 +328,6 @@ function macWelcome(
   const pluginUpdate = 'dsh plugin update'
   return [
     '#!/bin/sh',
-    `unset ${RUN_AS_NODE}`,
     `export ${DSH_HOME}=${quoteSh(options.homeDir)}`,
     `export PATH=${quoteSh(shimDir)}:"\${PATH:-}"`,
     `cd ${quoteSh(options.profileDir)}`,
@@ -380,7 +370,6 @@ function windowsWelcome(): string {
   const pluginRemove = 'dsh plugin remove <third-party-plugin>'
   const pluginUpdate = 'dsh plugin update'
   return [
-    `Remove-Item Env:${RUN_AS_NODE} -ErrorAction SilentlyContinue`,
     `$dshDesktopShimDir = $env:${WINDOWS_SHIM_DIRECTORY}`,
     `$dshDesktopPath = @($env:${PATH} -split ';' | Where-Object { -not [string]::Equals($_, $dshDesktopShimDir, [StringComparison]::OrdinalIgnoreCase) })`,
     `$env:${PATH} = (@($dshDesktopShimDir) + $dshDesktopPath) -join ';'`,
@@ -409,7 +398,6 @@ function windowsCmdWelcome(): string {
   return [
     '@echo off',
     'setlocal EnableDelayedExpansion',
-    `set "${RUN_AS_NODE}="`,
     `cd /d "!${WINDOWS_PROFILE_DIRECTORY}!"`,
     `echo(DSH Desktop !${WINDOWS_PRODUCT_VERSION}! terminal`,
     `echo(Profile: !${DEFAULT_PROFILE}!`,
@@ -422,7 +410,7 @@ function windowsCmdWelcome(): string {
     `echo(  ${escapeBatchText(pluginRemove)}`,
     `echo(  ${escapeBatchText(pluginUpdate)}`,
     `echo(${escapeBatchText('Restart DSH Desktop after plugin changes.')}`,
-    'endlocal & set "ELECTRON_RUN_AS_NODE="',
+    'endlocal',
     '',
   ].join('\r\n')
 }
@@ -434,7 +422,7 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
   }
   assertDesktopProfileName(options.profileName)
   for (const [label, value] of [
-    ['application executable', options.appExecutable],
+    ['Node command', options.nodeExecutable],
     ['dsh bootstrap', options.dshBootstrapPath],
     ['pnpm entry', options.pnpmBinPath],
     ['Electron version', options.electronVersion],
@@ -459,7 +447,7 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
     const bashRcPath = join(options.stateDir, 'bashrc')
     replacePrivateFile(files.dshShimPath, macDshShim(options), EXECUTABLE_FILE_MODE)
     replacePrivateFile(files.pnpmShimPath, macPnpmShim(options), EXECUTABLE_FILE_MODE)
-    replacePrivateFile(files.nodeShimPath, macShim(options.appExecutable), EXECUTABLE_FILE_MODE)
+    replacePrivateFile(files.nodeShimPath, macShim(options.nodeExecutable), EXECUTABLE_FILE_MODE)
     replacePrivateFile(join(options.stateDir, '.zshrc'), macZshRc(options, shimDir), PRIVATE_FILE_MODE)
     replacePrivateFile(bashRcPath, macBashRc(options, shimDir), PRIVATE_FILE_MODE)
     replacePrivateFile(files.welcomePath, macWelcome(options, shimDir, bashRcPath), EXECUTABLE_FILE_MODE)
@@ -493,8 +481,7 @@ function terminalEnvironment(options: DesktopTerminalOptions, files: DesktopTerm
   for (const [key, value] of Object.entries(source)) {
     const normalized = key.toUpperCase()
     if (
-      normalized === RUN_AS_NODE
-      || normalized === DSH_HOME
+      normalized === DSH_HOME
       || normalized === DESKTOP_INSTALL_RECOVERY_STATE_ENV
     ) continue
     if (options.platform === 'win32' && WINDOWS_GENERATED_ENVIRONMENT_KEYS.has(normalized)) continue
@@ -512,7 +499,7 @@ function terminalEnvironment(options: DesktopTerminalOptions, files: DesktopTerm
   env[DESKTOP_INSTALL_RECOVERY_STATE_ENV] = options.installRecoveryStatePath
   if (options.platform === 'win32') {
     env[DEFAULT_PROFILE] = options.profileName
-    env[WINDOWS_APP_EXECUTABLE] = options.appExecutable
+    env[WINDOWS_NODE_EXECUTABLE] = options.nodeExecutable
     env[WINDOWS_DSH_BOOTSTRAP] = options.dshBootstrapPath
     env[WINDOWS_ELECTRON_VERSION] = options.electronVersion
     env[WINDOWS_PNPM_ENTRY] = options.pnpmBinPath

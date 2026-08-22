@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { delimiter } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import {
   materializeProfile,
@@ -30,8 +29,7 @@ function fakeChild(): FakeChild {
 
 function options(spawn: ProfileMaterializerSpawn): ProfileMaterializerOptions {
   return {
-    appExecutable: '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop',
-    clearEnvironmentPath: '/private/clear-env.mjs',
+    nodeExecutable: '/Applications/DSH Desktop.app/Contents/Resources/node-runtime/node',
     pnpmBinPath: '/private/pnpm/bin/pnpm.mjs',
     nodeBinDir: '/private/node-bin',
     nodeShimPath: '/private/node-bin/node',
@@ -43,7 +41,7 @@ function options(spawn: ProfileMaterializerSpawn): ProfileMaterializerOptions {
 }
 
 describe('profile materializer', () => {
-  it('runs the fixed packaged pnpm command with the desktop lifecycle environment', async () => {
+  it('runs the fixed packaged pnpm command under the bundled Node runtime', async () => {
     const child = fakeChild()
     let command = ''
     let args: readonly string[] = []
@@ -61,10 +59,8 @@ describe('profile materializer', () => {
     child.emit('close', 0, null)
     const result = await resultPromise
 
-    expect(command).toBe('/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop')
+    expect(command).toBe('/Applications/DSH Desktop.app/Contents/Resources/node-runtime/node')
     expect(args).toEqual([
-      '--import',
-      pathToFileURL('/private/clear-env.mjs').href,
       '/private/pnpm/bin/pnpm.mjs',
       'install',
       '--frozen-lockfile',
@@ -76,7 +72,6 @@ describe('profile materializer', () => {
       env: {
         PATH: `/private/node-bin${delimiter}${process.env.PATH ?? ''}`,
         NODE: '/private/node-bin/node',
-        ELECTRON_RUN_AS_NODE: '1',
         DSH_HOME: '/Users/test/.dsh',
         CI: 'true',
         npm_config_runtime: 'electron',

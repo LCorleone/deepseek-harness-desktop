@@ -44,6 +44,7 @@ import { maskSecrets } from './mask-secrets.ts'
 import { resolveDesktopShellEnvironment } from './shell-environment.ts'
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
+import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
 import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
@@ -466,9 +467,13 @@ async function start(): Promise<void> {
       throw new Error(`${BIN_NAME}: plugin runtime requires the Electron runtime version`)
     }
     const pnpmBinPath = packagedDependencyPath(import.meta.url, 'pnpm/bin/pnpm.mjs')
+    const nodeExecutable = resolveDesktopNodeExecutable(import.meta.url, {
+      platform: process.platform,
+      environment: process.env,
+    })
     const pnpmRuntime = installDesktopPnpmRuntime({
       platform: process.platform,
-      appExecutable: process.execPath,
+      nodeExecutable,
       pnpmBinPath,
       electronVersion,
       stateDir: join(app.getPath('userData'), 'runtime-commands'),
@@ -654,7 +659,7 @@ async function start(): Promise<void> {
     const dshRuntime = process.platform === 'win32'
       ? installDesktopDshRuntime({
           platform: process.platform,
-          appExecutable: process.execPath,
+          nodeExecutable,
           dshBootstrapPath,
           profileName: activeProfileName,
           homeDir,
@@ -668,12 +673,11 @@ async function start(): Promise<void> {
       activeProfileName,
       activeProfileDir: prepared.profile.dir,
       homeDir,
-      appExecutable: process.execPath,
+      nodeExecutable,
       pnpmBinPath,
       electronVersion,
       nodeBinDir: pnpmRuntime.nodeBinDir,
       nodeShimPath: pnpmRuntime.nodeShimPath,
-      clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
       dshBootstrapPath,
       installRecoveryStatePath,
       generationId,
@@ -708,8 +712,7 @@ async function start(): Promise<void> {
       if (dependencyFilesChanged || forceMaterialization) {
         try {
           await materializeProfile({
-            appExecutable: process.execPath,
-            clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
+            nodeExecutable,
             pnpmBinPath,
             nodeBinDir: pnpmRuntime.nodeBinDir,
             nodeShimPath: pnpmRuntime.nodeShimPath,

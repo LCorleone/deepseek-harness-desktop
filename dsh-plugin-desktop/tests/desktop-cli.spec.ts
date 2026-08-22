@@ -10,7 +10,6 @@ import {
   ed25519PublicKeyFingerprint,
 } from 'dsh-community-market'
 import {
-  clearElectronRunAsNode,
   runDesktopDshCli,
   withDefaultDesktopProfile,
 } from '../src/desktop-cli.ts'
@@ -115,21 +114,8 @@ function marketReceipt(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 describe('packaged dsh bootstrap', () => {
-  it('removes every Windows casing of Electron Node mode', () => {
+  it('loads the fixed packaged CLI entry without requiring an Electron node-mode marker', async () => {
     const environment = {
-      ELECTRON_RUN_AS_NODE: '1',
-      electron_run_as_node: 'inherited',
-      Path: 'C:\\Windows',
-    }
-
-    clearElectronRunAsNode(environment)
-
-    expect(environment).toEqual({ Path: 'C:\\Windows' })
-  })
-
-  it('clears Node mode before loading the fixed packaged CLI entry', async () => {
-    const environment = {
-      ELECTRON_RUN_AS_NODE: '1',
       DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
       KEEP: 'value',
     }

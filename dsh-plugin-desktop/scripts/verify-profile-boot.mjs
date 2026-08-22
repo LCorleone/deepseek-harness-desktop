@@ -65,7 +65,7 @@ try {
   ).version
   pnpmRuntime = installDesktopPnpmRuntime({
     platform: process.platform,
-    appExecutable: process.execPath,
+    nodeExecutable: process.execPath,
     pnpmBinPath,
     electronVersion,
     stateDir: join(home, 'runtime-commands'),
@@ -123,12 +123,11 @@ try {
         activeProfileName: 'desktop',
         activeProfileDir: prepared.profile.dir,
         homeDir: prepared.homeDir,
-        appExecutable: process.execPath,
+        nodeExecutable: process.execPath,
         pnpmBinPath,
         electronVersion,
         nodeBinDir: pnpmRuntime.nodeBinDir,
         nodeShimPath: pnpmRuntime.nodeShimPath,
-        clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
         dshBootstrapPath: fileURLToPath(new URL('../lib/desktop-cli.js', import.meta.url)),
         installRecoveryStatePath: join(home, 'plugin-install-recovery', 'state.json'),
         generationId: 'profile-smoke-generation',

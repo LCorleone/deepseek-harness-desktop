@@ -293,6 +293,13 @@
       "lib/**",
       "node_modules/**"
     ],
+    "extraResources": [
+      {
+        "from": "build/node-runtime",
+        "to": "node-runtime"
+      }
+    ],
+    "beforePack": "./scripts/prepare-bundled-node.ts",
     "afterPack": "./scripts/verify-packaged-runtime.ts",
     "electronFuses": {
       "runAsNode": true

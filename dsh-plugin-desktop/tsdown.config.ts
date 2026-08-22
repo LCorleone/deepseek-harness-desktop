@@ -29,7 +29,7 @@ export default defineConfig([
       updates: 'src/updates.ts',
       'windows-agent-presets': 'src/windows-agent-presets.ts',
       'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts',
-      'windows-acl-runner': 'src/windows-acl-runner.ts',
+      'desktop-node-runtime': 'src/desktop-node-runtime.ts',
       main: 'src/main.ts',
     },
     outDir: 'lib',
