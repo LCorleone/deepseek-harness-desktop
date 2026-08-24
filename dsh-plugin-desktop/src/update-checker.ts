@@ -1,7 +1,23 @@
 /** Headless version checks against the public DSH Desktop release service. */
 
+import {
+  ARTIFACT_TRUST_ROOTS,
+  normalizeUpdateChannelTrustRoots,
+  warnSkippedUpdateSignatureVerification,
+  type UpdateChannelTrustRoot,
+} from './update-verification.ts'
+import { fetchVerifiedUpdateManifest, guardUpdateManifestSequence } from './update-manifest.ts'
+
 /** Public endpoint returning the latest stable DSH Desktop version. */
 export const DESKTOP_VERSION_ENDPOINT = 'https://www.dshdesktop.cn/api/desktop/version'
+
+/**
+ * Pinned endpoint of the signed update manifest (P3-3), accompanied by its
+ * detached signature at `${DESKTOP_UPDATE_MANIFEST_ENDPOINT}.sig`. Only
+ * builds with non-empty `ARTIFACT_TRUST_ROOTS` use it; development builds
+ * keep using the unsigned legacy version endpoint above.
+ */
+export const DESKTOP_UPDATE_MANIFEST_ENDPOINT = 'https://www.dshdesktop.cn/api/desktop/update-manifest'
 
 /** Maximum response body bytes accepted from the version service. */
 export const MAX_VERSION_RESPONSE_BYTES = 4 * 1024
@@ -33,6 +49,22 @@ export interface UpdateCheckOptions {
   readonly signal?: AbortSignal
   /** Optional fetch implementation for a host adapter or test. */
   readonly request?: UpdateRequest
+  /** Optional legacy version-endpoint override for tests; defaults to the pinned constant. */
+  readonly versionUrl?: string
+  /** Signed update-channel inputs; defaults select the pinned manifest endpoint and embedded trust roots. */
+  readonly updateChannel?: UpdateChannelCheckOptions
+}
+
+/** Strict-mode update channel inputs for one version check. */
+export interface UpdateChannelCheckOptions {
+  /** Signed version-manifest endpoint; defaults to the pinned build constant. */
+  readonly manifestUrl?: string
+  /** Trusted update signing keys; defaults to the embedded `ARTIFACT_TRUST_ROOTS`. */
+  readonly trustRoots?: readonly UpdateChannelTrustRoot[]
+  /** Highest sequence accepted without a persisted state file; defaults to 0. */
+  readonly lastSeenSequence?: number
+  /** Optional private file persisting the highest verified sequence (anti-rollback). */
+  readonly sequenceStatePath?: string
 }
 
 /** Successful comparison returned by the stable version service. */
@@ -43,6 +75,8 @@ export type UpdateCheckResult = {
   readonly currentVersion: string
   /** Canonical latest stable version returned by the service. */
   readonly latestVersion: string
+  /** Present when the signed update manifest channel produced this result. */
+  readonly updateChannel?: { readonly manifestSequence: number; readonly keyId: string }
 }
 
 const SEMVER_PATTERN =
@@ -85,7 +119,15 @@ export function compareSemVerVersions(left: string, right: string): number | nul
 }
 
 /**
- * Check the fixed DSH Desktop version endpoint for a newer stable release.
+ * Check for a newer stable DSH Desktop release.
+ *
+ * Builds with embedded update-channel trust roots use the signed manifest
+ * channel: the pinned manifest endpoint plus its detached signature, trust
+ * root binding, and the sequence anti-rollback gate. Builds without trust
+ * roots (development placeholder) fall back to the unsigned legacy version
+ * endpoint after logging a warning. Any request or validation failure
+ * returns null.
+ *
  * @param options - installed version, caller-owned signal, and optional request adapter.
  * @returns a successful comparison, or null when any request or validation step fails.
  */
@@ -95,6 +137,28 @@ export async function checkForStableUpdate(
   const current = parseCanonicalStableVersion(options.currentVersion)
   if (current === null) return null
 
+  const trustRoots = normalizeUpdateChannelTrustRoots(
+    options.updateChannel === undefined || options.updateChannel.trustRoots === undefined
+      ? ARTIFACT_TRUST_ROOTS
+      : options.updateChannel.trustRoots,
+  )
+  if (trustRoots.length === 0) {
+    warnSkippedUpdateSignatureVerification('the update version check')
+    return checkUnsignedVersionService(options, current, options.versionUrl ?? DESKTOP_VERSION_ENDPOINT)
+  }
+  return checkSignedUpdateManifest(options, current, {
+    url: options.updateChannel?.manifestUrl ?? DESKTOP_UPDATE_MANIFEST_ENDPOINT,
+    trustRoots,
+    lastSeenSequence: options.updateChannel?.lastSeenSequence,
+    sequenceStatePath: options.updateChannel?.sequenceStatePath,
+  })
+}
+
+async function checkUnsignedVersionService(
+  options: UpdateCheckOptions,
+  current: ParsedSemVer,
+  endpoint: string,
+): Promise<UpdateCheckResult | null> {
   const init: RequestInit = {
     method: 'GET',
     headers: { Accept: 'application/json' },
@@ -106,7 +170,7 @@ export async function checkForStableUpdate(
 
   let response: Response
   try {
-    response = await request(DESKTOP_VERSION_ENDPOINT, init)
+    response = await request(endpoint, init)
   } catch {
     return null
   }
@@ -125,6 +189,52 @@ export async function checkForStableUpdate(
     status: compareParsedSemVer(latest, current) > 0 ? 'update-available' : 'up-to-date',
     currentVersion: current.version,
     latestVersion: latest.version,
+  }
+}
+
+interface SignedChannelInputs {
+  readonly url: string
+  readonly trustRoots: readonly UpdateChannelTrustRoot[]
+  readonly lastSeenSequence: number | undefined
+  readonly sequenceStatePath: string | undefined
+}
+
+async function checkSignedUpdateManifest(
+  options: UpdateCheckOptions,
+  current: ParsedSemVer,
+  channel: SignedChannelInputs,
+): Promise<UpdateCheckResult | null> {
+  let manifest: Awaited<ReturnType<typeof fetchVerifiedUpdateManifest>>
+  try {
+    manifest = await fetchVerifiedUpdateManifest({
+      request: options.request ?? defaultRequest,
+      url: channel.url,
+      trustRoots: channel.trustRoots,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+  } catch {
+    // Cancellation and transport surprises stay silent, like every other check failure.
+    return null
+  }
+  if (!manifest.ok) return null
+
+  const latest = parseCanonicalStableVersion(manifest.document.latest)
+  if (latest === null) return null
+  try {
+    const guard = await guardUpdateManifestSequence({
+      sequence: manifest.sequence,
+      ...(channel.lastSeenSequence === undefined ? {} : { lastSeenSequence: channel.lastSeenSequence }),
+      ...(channel.sequenceStatePath === undefined ? {} : { statePath: channel.sequenceStatePath }),
+    })
+    if (!guard.ok) return null
+  } catch {
+    return null
+  }
+  return {
+    status: compareParsedSemVer(latest, current) > 0 ? 'update-available' : 'up-to-date',
+    currentVersion: current.version,
+    latestVersion: latest.version,
+    updateChannel: { manifestSequence: manifest.sequence, keyId: manifest.keyId },
   }
 }
 

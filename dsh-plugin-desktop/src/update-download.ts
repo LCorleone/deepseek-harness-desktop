@@ -1,10 +1,27 @@
 /** Headless, confirmation-gated downloads for DSH Desktop installers. */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { compareSemVerVersions, parseSemVer } from './update-checker.ts'
+import { compareSemVerVersions, DESKTOP_UPDATE_MANIFEST_ENDPOINT, parseSemVer } from './update-checker.ts'
+import {
+  fetchUpdateChannelBytes,
+  fetchVerifiedUpdateManifest,
+  guardUpdateManifestSequence,
+  MAX_UPDATE_MANIFEST_SIGNATURE_BYTES,
+  updateManifestSignatureUrl,
+  type UpdateChannelBodyResult,
+  type UpdateManifestArtifact,
+  type VerifiedUpdateManifest,
+} from './update-manifest.ts'
+import {
+  ARTIFACT_TRUST_ROOTS,
+  normalizeUpdateChannelTrustRoots,
+  verifyDetachedUpdateSignature,
+  warnSkippedUpdateSignatureVerification,
+  type UpdateChannelTrustRoot,
+} from './update-verification.ts'
 
 /** Desktop platforms with a fixed installer download endpoint. */
 export type DesktopDownloadPlatform = 'darwin' | 'win32'
@@ -43,6 +60,18 @@ export interface DownloadDesktopUpdateOptions {
   readonly request: UpdateArtifactRequest
   /** Optional cancellation signal owned by the update coordinator. */
   readonly signal?: AbortSignal
+  /** Signed update-channel inputs; defaults come from the build constants. */
+  readonly verification?: UpdateVerificationOptions
+}
+
+/** Strict signed-update-channel inputs for one installer download. */
+export interface UpdateVerificationOptions {
+  /** Trusted update signing keys; defaults to the embedded `ARTIFACT_TRUST_ROOTS`. */
+  readonly trustRoots?: readonly UpdateChannelTrustRoot[]
+  /** Signed version-manifest endpoint; defaults to the pinned build constant. */
+  readonly manifestUrl?: string
+  /** Optional private file persisting the highest verified manifest sequence (anti-rollback). */
+  readonly sequenceStatePath?: string
 }
 
 /** Typed failure from installer request, validation, or cancellation. */
@@ -94,9 +123,26 @@ export interface DesktopUpdateArtifact {
 const UPDATE_ARTIFACT_STATE_VERSION = 1
 const UPDATE_ARTIFACT_STATE_BYTES = 4 * 1024
 const UPDATE_ARTIFACT_STATE_FILENAME = 'pending-installer.json'
+const UPDATE_SEQUENCE_STATE_FILENAME = 'manifest-sequence.json'
+
+/** Canonical anti-rollback state file under the user-data update directory (P3-3). */
+export function desktopUpdateSequenceStatePath(userDataPath: string): string {
+  return join(validatedUserDataPath(userDataPath), 'updates', UPDATE_SEQUENCE_STATE_FILENAME)
+}
 
 /**
  * Download one installer after its caller has obtained user confirmation.
+ *
+ * Builds with embedded update-channel trust roots download strictly through
+ * the signed manifest channel: the manifest and its detached signature are
+ * fetched and verified first (including the anti-rollback sequence gate and
+ * the confirmed-version binding), then the selected artifact is streamed to
+ * a private temporary file and must pass the installer magic check, its
+ * signed size and SHA-256 digest, and its detached ed25519 signature before
+ * the atomic rename — a verification failure never leaves a downloaded
+ * installer behind. Builds without trust roots keep the unsigned legacy
+ * endpoints and skip verification after logging a warning.
+ *
  * @param options - Fixed platform, release version, selected destination, request, and cancellation inputs.
  * @returns Absolute path to the completely written and validated installer.
  * @throws {UpdateDownloadError} For invalid inputs, transport failures, rejected responses, cancellation, and invalid installers.
@@ -108,9 +154,12 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
   const paths = await prepareDownloadPaths(destinationPath)
   throwIfAborted(options.signal)
 
+  const channel = await resolveUpdateVerificationChannel(options, platform)
+  const artifactUrl = channel.strict ? channel.artifact.url : DESKTOP_DOWNLOAD_URLS[platform]
+
   let response: Response
   try {
-    response = await options.request(DESKTOP_DOWNLOAD_URLS[platform], {
+    response = await options.request(artifactUrl, {
       method: 'GET',
       cache: 'no-store',
       redirect: 'follow',
@@ -132,12 +181,20 @@ export async function downloadDesktopUpdate(options: DownloadDesktopUpdateOption
     throw new UpdateDownloadError('empty-body', 'The update download service returned an empty body.')
   }
   assertDeclaredSize(response)
+  if (channel.strict) assertDeclaredManifestSize(response, channel.artifact.size)
 
   let failure: unknown
   try {
-    await writeResponseBody(paths.temporary, response.body, options.signal)
+    await writeResponseBody(
+      paths.temporary,
+      response.body,
+      options.signal,
+      channel.strict ? channel.artifact.size : MAX_UPDATE_DOWNLOAD_BYTES,
+    )
     throwIfAborted(options.signal)
     await validateArtifact(paths.temporary, platform)
+    throwIfAborted(options.signal)
+    if (channel.strict) await verifySignedInstaller(options, paths.temporary, channel)
     throwIfAborted(options.signal)
     await unlinkIfPresent(paths.completed)
     await rename(paths.temporary, paths.completed)
@@ -370,10 +427,187 @@ function assertDeclaredSize(response: Response): void {
   }
 }
 
+function assertDeclaredManifestSize(response: Response, expectedSize: number): void {
+  const declared = response.headers.get('content-length')
+  if (declared === null || !DECIMAL_BYTES.test(declared)) return
+  if (BigInt(declared) !== BigInt(expectedSize)) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      'The update installer size does not match the signed update manifest.',
+    )
+  }
+}
+
+/** Resolved signed-channel inputs for one download. */
+interface StrictUpdateChannel {
+  readonly strict: true
+  readonly artifact: UpdateManifestArtifact
+  readonly publicKeyBase64: string
+  readonly trustRoots: readonly UpdateChannelTrustRoot[]
+}
+
+type ResolvedUpdateChannel = { readonly strict: false } | StrictUpdateChannel
+
+/**
+ * Resolve the verification mode for one download. Empty trust roots keep the
+ * unsigned legacy endpoints (development build) after a warning; non-empty
+ * roots fail closed through the signed manifest channel: fetch and verify the
+ * manifest, enforce the anti-rollback sequence gate, bind the confirmed
+ * version, and select the platform artifact.
+ */
+async function resolveUpdateVerificationChannel(
+  options: DownloadDesktopUpdateOptions,
+  platform: DesktopDownloadPlatform,
+): Promise<ResolvedUpdateChannel> {
+  let trustRoots: readonly UpdateChannelTrustRoot[]
+  try {
+    trustRoots = normalizeUpdateChannelTrustRoots(
+      options.verification === undefined || options.verification.trustRoots === undefined
+        ? ARTIFACT_TRUST_ROOTS
+        : options.verification.trustRoots,
+    )
+  } catch (cause) {
+    throw new UpdateDownloadError('invalid-options', 'The update verification trust roots are invalid.', { cause })
+  }
+  if (trustRoots.length === 0) {
+    warnSkippedUpdateSignatureVerification('the update installer download')
+    return { strict: false }
+  }
+
+  let manifest: VerifiedUpdateManifest
+  try {
+    manifest = await fetchVerifiedUpdateManifest({
+      request: options.request,
+      url: options.verification?.manifestUrl ?? DESKTOP_UPDATE_MANIFEST_ENDPOINT,
+      trustRoots,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+  } catch (cause) {
+    if (options.signal?.aborted === true || isAbortFailure(cause)) throw aborted(cause)
+    throw new UpdateDownloadError('network', 'The update manifest could not be downloaded.', { cause })
+  }
+  if (!manifest.ok) throw updateChannelManifestFailure(manifest)
+
+  const sequenceStatePath = options.verification?.sequenceStatePath
+  const guard = await guardUpdateManifestSequence({
+    sequence: manifest.sequence,
+    ...(sequenceStatePath === undefined ? {} : { statePath: sequenceStatePath }),
+  })
+  if (!guard.ok) {
+    throw new UpdateDownloadError('invalid-artifact', `The signed update manifest was rejected: ${guard.reason}.`)
+  }
+  if (manifest.document.latest !== options.version) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      'The signed update manifest does not match the confirmed update version.',
+    )
+  }
+  const artifact = manifest.document.artifacts.find(entry => entry.platform === platform)
+  if (artifact === undefined) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      `The signed update manifest has no ${platform} artifact.`,
+    )
+  }
+  return { strict: true, artifact, publicKeyBase64: manifest.document.publicKey, trustRoots }
+}
+
+function updateChannelManifestFailure(
+  failure: Extract<VerifiedUpdateManifest, { ok: false }>,
+): UpdateDownloadError {
+  if (failure.code === 'network') {
+    return new UpdateDownloadError('network', 'The update manifest could not be downloaded.')
+  }
+  if (failure.code === 'http-status') {
+    return new UpdateDownloadError(
+      'http-status',
+      `The update manifest service returned HTTP ${String(failure.status)}.`,
+      { ...(failure.status === undefined ? {} : { status: failure.status }) },
+    )
+  }
+  if (failure.code === 'empty-body') {
+    return new UpdateDownloadError('empty-body', 'The update manifest service returned an empty body.')
+  }
+  if (failure.code === 'response-too-large') {
+    return new UpdateDownloadError('response-too-large', 'The update manifest exceeds its size limit.')
+  }
+  return new UpdateDownloadError('invalid-artifact', `The signed update manifest was rejected: ${failure.reason}.`)
+}
+
+/**
+ * Verify one streamed installer against its signed manifest entry: exact
+ * size, SHA-256 digest, and detached ed25519 signature over the downloaded
+ * bytes. Runs after the magic check and before the atomic rename, so a
+ * failure never persists the installer.
+ */
+async function verifySignedInstaller(
+  options: DownloadDesktopUpdateOptions,
+  filename: string,
+  channel: StrictUpdateChannel,
+): Promise<void> {
+  const stat = await lstat(filename)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== channel.artifact.size) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      'The downloaded update size does not match the signed update manifest.',
+    )
+  }
+  const content = await readFile(filename)
+  if (createHash('sha256').update(content).digest('hex') !== channel.artifact.sha256) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      'The downloaded update does not match its signed SHA-256 digest.',
+    )
+  }
+  const signatureUrl = channel.artifact.signatureUrl ?? updateManifestSignatureUrl(channel.artifact.url)
+  const signatureBody = await fetchUpdateChannelBytes({
+    request: options.request,
+    url: signatureUrl,
+    label: 'update installer signature',
+    maxBytes: MAX_UPDATE_MANIFEST_SIGNATURE_BYTES,
+    redirect: 'follow',
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  })
+  if (!signatureBody.ok) throw installerSignatureFailure(signatureBody)
+  const verification = verifyDetachedUpdateSignature({
+    content,
+    signatureBase64: signatureBody.bytes.toString('utf8'),
+    keyId: channel.artifact.keyId,
+    publicKeyBase64: channel.publicKeyBase64,
+    trustRoots: channel.trustRoots,
+  })
+  if (!verification.ok) {
+    throw new UpdateDownloadError(
+      'invalid-artifact',
+      `The downloaded update failed signature verification: ${verification.reason}.`,
+    )
+  }
+}
+
+function installerSignatureFailure(
+  failure: Extract<UpdateChannelBodyResult, { ok: false }>,
+): UpdateDownloadError {
+  if (failure.code === 'network') {
+    return new UpdateDownloadError('network', 'The update installer signature could not be downloaded.')
+  }
+  if (failure.code === 'http-status') {
+    return new UpdateDownloadError(
+      'http-status',
+      `The update signature service returned HTTP ${String(failure.status)}.`,
+      { ...(failure.status === undefined ? {} : { status: failure.status }) },
+    )
+  }
+  if (failure.code === 'response-too-large') {
+    return new UpdateDownloadError('response-too-large', 'The update installer signature exceeds its size limit.')
+  }
+  return new UpdateDownloadError('invalid-artifact', 'The update installer did not provide a detached signature.')
+}
+
 async function writeResponseBody(
   filename: string,
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
+  maxBytes: number,
 ): Promise<void> {
   const handle = await open(filename, 'wx', PRIVATE_FILE_MODE)
   const reader = body.getReader()
@@ -384,10 +618,10 @@ async function writeResponseBody(
       const chunk = await reader.read()
       throwIfAborted(signal)
       if (chunk.done) break
-      if (chunk.value.byteLength > MAX_UPDATE_DOWNLOAD_BYTES - bytesWritten) {
+      if (chunk.value.byteLength > maxBytes - bytesWritten) {
         throw new UpdateDownloadError(
           'response-too-large',
-          `The update installer exceeds ${String(MAX_UPDATE_DOWNLOAD_BYTES)} bytes.`,
+          `The update installer exceeds ${String(maxBytes)} bytes.`,
         )
       }
       await writeAll(handle, chunk.value)

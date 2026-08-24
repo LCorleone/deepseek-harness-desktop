@@ -5,6 +5,17 @@ import z from '@deepseek-ai/schemastery'
 import type {} from './runtime.ts'
 import { startDesktopUpdateLifecycle } from './update-lifecycle.ts'
 
+/*
+ * Signed update channel (P3-3): version checks and installer downloads verify
+ * detached ed25519 signatures against the trust roots embedded in
+ * `update-verification.ts` whenever that array is non-empty. Development
+ * builds ship the placeholder (empty) array and keep the unsigned legacy
+ * endpoints, logging a warning per skipped verification. Company release
+ * builds replace the placeholder keys (P3-4 release gate); wiring the
+ * user-data `sequenceStatePath` (see `desktopUpdateSequenceStatePath`) into
+ * the native adapter's check and download calls belongs to that same gate.
+ */
+
 /** Stable Cordis plugin name. */
 export const name = 'desktop-updates'
 
