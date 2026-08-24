@@ -6,6 +6,8 @@ import AdmZip from 'adm-zip'
 import {
   afterPack,
   BUNDLED_NODE_RESOURCE_DIRECTORY,
+  REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+  REQUIRED_ELECTRON_FUSES,
   REQUIRED_MACOS_UNIVERSAL_ENTRIES,
   REQUIRED_PACKAGED_RUNTIME_ENTRIES,
   REQUIRED_RUN_AS_NODE_FUSE,
@@ -16,9 +18,12 @@ import {
   resolvePackagedAsarPath,
   resolvePackagedResourcesDirectory,
   resolvePackagedUnpackedRoot,
+  readPackagedElectronFuses,
   readPackagedRunAsNodeFuse,
   smokePackagedDiagnosticWorker,
+  verifyArchiveOnlyPartition,
   verifyBundledNodeRuntime,
+  verifyElectronFuseStage,
   verifyRunAsNodeFuseStage,
   verifyUnpackedArchiveMirror,
   verifyPackagedRuntime,
@@ -44,11 +49,20 @@ function context(
 }
 
 function completeArchiveEntries(separator = '/'): string[] {
-  return REQUIRED_PACKAGED_RUNTIME_ENTRIES.map(entry => `${separator}${entry.replaceAll('/', separator)}`)
+  return [
+    ...REQUIRED_PACKAGED_RUNTIME_ENTRIES,
+    ...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+  ].map(entry => `${separator}${entry.replaceAll('/', separator)}`)
 }
 
 function completePackageResolver(unpackedRoot: string): PackageResolver {
   return specifier => join(unpackedRoot, 'resolved', `${specifier.replaceAll('/', '-')}.js`)
+}
+
+/** File probe for success paths: everything physical except the archive-only assets. */
+function completeFileProbe(unpackedRoot: string): FileProbe {
+  return filename => !REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES
+    .some(entry => filename === join(unpackedRoot, entry))
 }
 
 describe('packaged desktop runtime verification', () => {
@@ -112,9 +126,9 @@ describe('packaged desktop runtime verification', () => {
           calls.push(filename)
           return true
         },
-        readFuse: () => {
+        readFuses: () => {
           calls.push('fuse')
-          return REQUIRED_RUN_AS_NODE_FUSE
+          return REQUIRED_ELECTRON_FUSES
         },
       },
     )
@@ -140,16 +154,35 @@ describe('packaged desktop runtime verification', () => {
     expect(verifyBundledNodeRuntime(runtimeContext, filename => filename === nodePath)).toBe(nodePath)
   })
 
-  it('reads the fuse stage from the effective build configuration or the repository manifest', () => {
+  it('reads and enforces the staged Electron fuse map', () => {
+    expect(REQUIRED_ELECTRON_FUSES).toEqual({
+      runAsNode: false,
+      enableEmbeddedAsarIntegrityValidation: true,
+      onlyLoadAppFromAsar: true,
+    })
+    expect(REQUIRED_RUN_AS_NODE_FUSE).toBe(false)
+    expect(() => verifyElectronFuseStage(REQUIRED_ELECTRON_FUSES)).not.toThrow()
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, runAsNode: true }))
+      .toThrow('requires electronFuses.runAsNode=false')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, enableEmbeddedAsarIntegrityValidation: false }))
+      .toThrow('requires electronFuses.enableEmbeddedAsarIntegrityValidation=true')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, onlyLoadAppFromAsar: false }))
+      .toThrow('requires electronFuses.onlyLoadAppFromAsar=true')
+    // The P3-1 single-fuse verifier keeps its contract for direct callers.
     expect(() => verifyRunAsNodeFuseStage(REQUIRED_RUN_AS_NODE_FUSE)).not.toThrow()
     expect(() => verifyRunAsNodeFuseStage(!REQUIRED_RUN_AS_NODE_FUSE))
       .toThrow(`requires electronFuses.runAsNode=${String(REQUIRED_RUN_AS_NODE_FUSE)}`)
 
     // The live Electron Builder configuration wins over the repository manifest.
+    const configured = { runAsNode: true, onlyLoadAppFromAsar: false }
+    expect(readPackagedElectronFuses({
+      appInfo: { productFilename: 'DSH Desktop' },
+      config: { electronFuses: configured },
+    })).toEqual(configured)
     expect(readPackagedRunAsNodeFuse({
       appInfo: { productFilename: 'DSH Desktop' },
-      config: { electronFuses: { runAsNode: !REQUIRED_RUN_AS_NODE_FUSE } },
-    })).toBe(!REQUIRED_RUN_AS_NODE_FUSE)
+      config: { electronFuses: configured },
+    })).toBe(true)
 
     // Without a live configuration the repository manifest is the fallback.
     const root = mkdtempSync(join(tmpdir(), 'dsh-fuse-stage-'))
@@ -157,11 +190,16 @@ describe('packaged desktop runtime verification', () => {
       const manifestPath = join(root, 'package.json')
       writeFileSync(
         manifestPath,
-        JSON.stringify({ build: { electronFuses: { runAsNode: REQUIRED_RUN_AS_NODE_FUSE } } }),
+        JSON.stringify({ build: { electronFuses: REQUIRED_ELECTRON_FUSES } }),
       )
+      const readManifest = () => readFileSync(manifestPath, 'utf8')
+      expect(readPackagedElectronFuses(
+        { appInfo: { productFilename: 'DSH Desktop' } },
+        readManifest,
+      )).toEqual(REQUIRED_ELECTRON_FUSES)
       expect(readPackagedRunAsNodeFuse(
         { appInfo: { productFilename: 'DSH Desktop' } },
-        () => readFileSync(manifestPath, 'utf8'),
+        readManifest,
       )).toBe(REQUIRED_RUN_AS_NODE_FUSE)
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -189,8 +227,8 @@ describe('packaged desktop runtime verification', () => {
   ])('inspects the %s app.asar path', (platform, expectedPath) => {
     const list = vi.fn<ArchiveLister>(() => completeArchiveEntries(platform === 'win32' ? '\\' : '/'))
 
-    const exists = vi.fn<FileProbe>(() => true)
     const unpackedRoot = `${expectedPath}.unpacked`
+    const exists = vi.fn<FileProbe>(completeFileProbe(unpackedRoot))
     const resolvePackage = vi.fn<PackageResolver>(completePackageResolver(unpackedRoot))
 
     verifyPackagedRuntime(context('/build', platform), list, exists, resolvePackage)
@@ -202,7 +240,8 @@ describe('packaged desktop runtime verification', () => {
     expect(exists).toHaveBeenCalledTimes(
       REQUIRED_UNPACKED_RUNTIME_ENTRIES.length
         + (platform === 'win32' ? REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES.length : 0)
-        + completeArchiveEntries().length,
+        + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
+        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length,
     )
     expect(resolvePackage.mock.calls.map(([specifier]) => specifier))
       .toEqual(REQUIRED_UNPACKED_PACKAGE_SPECIFIERS)
@@ -226,7 +265,9 @@ describe('packaged desktop runtime verification', () => {
     )).toThrow(`missing required physical entries: ${missing}`)
 
     const exists = vi.fn<FileProbe>(filename => !FORBIDDEN_MACOS_UNIVERSAL_ENTRIES
-      .some(entry => filename === join(unpackedRoot, entry)))
+      .some(entry => filename === join(unpackedRoot, entry))
+      && !REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES
+        .some(entry => filename === join(unpackedRoot, entry)))
     verifyPackagedRuntime(
       runtimeContext,
       () => completeArchiveEntries(),
@@ -237,7 +278,8 @@ describe('packaged desktop runtime verification', () => {
       REQUIRED_UNPACKED_RUNTIME_ENTRIES.length
         + REQUIRED_MACOS_UNIVERSAL_ENTRIES.length
         + FORBIDDEN_MACOS_UNIVERSAL_ENTRIES.length
-        + completeArchiveEntries().length,
+        + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
+        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length,
     )
   })
 
@@ -250,6 +292,39 @@ describe('packaged desktop runtime verification', () => {
       unpackedRoot,
       filename => filename !== join(unpackedRoot, missing),
     )).toThrow(`missing ASAR-declared physical entries: ${missing}`)
+  })
+
+  it('keeps archive-only build assets out of the physical mirror requirement', () => {
+    const unpackedRoot = join('/build', 'resources', 'app.asar.unpacked')
+
+    // build/** entries — including the bare `build` directory header entry —
+    // are in-archive only; the mirror must not demand them physically, and
+    // the partition must reject a leaked physical copy.
+    expect(() => verifyUnpackedArchiveMirror(
+      new Set(['build', 'build/app-icon.png', 'build/tray-iconTemplate.png', 'lib/main.js']),
+      unpackedRoot,
+      filename => filename === join(unpackedRoot, 'lib', 'main.js'),
+    )).not.toThrow()
+
+    expect(() => verifyArchiveOnlyPartition(
+      unpackedRoot,
+      filename => filename === join(unpackedRoot, 'build', 'app-icon.png'),
+    )).toThrow('archive-only runtime entries leaked into the physical tree')
+  })
+
+  it('rejects a shrunk archive-only asset that reappears inside app.asar.unpacked', () => {
+    const runtimeContext = context('/build', 'win32')
+    const unpackedRoot = resolvePackagedUnpackedRoot(runtimeContext)
+    const leaked = REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES[0]
+
+    expect(() => verifyPackagedRuntime(
+      runtimeContext,
+      () => completeArchiveEntries(),
+      filename => filename === join(unpackedRoot, leaked)
+        || !REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES
+          .some(entry => filename === join(unpackedRoot, entry)),
+      completePackageResolver(unpackedRoot),
+    )).toThrow(`archive-only runtime entries leaked into the physical tree at ${unpackedRoot}: ${leaked}`)
   })
 
   it('rejects a host-architecture node-pty build from a universal app', () => {
@@ -283,10 +358,18 @@ describe('packaged desktop runtime verification', () => {
       .toThrow(`missing required ASAR entries: ${missing}`)
   })
 
+  it.each([...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES])(
+    'fails loud when archive-only entry %s is absent from app.asar',
+    (missing) => {
+      const entries = completeArchiveEntries().filter(entry => entry !== `/${missing}`)
+
+      expect(() => verifyPackagedRuntime(context('/build', 'win32'), () => entries, () => false))
+        .toThrow(`missing required ASAR entries: ${missing}`)
+    },
+  )
+
   it.each([
     'package.json',
-    'build/app-icon-mac.png',
-    'build/tray-iconTemplate.png',
     'lib/terminal.js',
     'lib/diagnostics.js',
     'lib/diagnostic-export-worker.js',
@@ -340,7 +423,7 @@ describe('packaged desktop runtime verification', () => {
     expect(() => verifyPackagedRuntime(
       runtimeContext,
       () => completeArchiveEntries(),
-      () => true,
+      completeFileProbe(unpackedRoot),
       resolvePackage,
     )).toThrow(
       `packaged runtime at ${unpackedRoot} cannot resolve required package export dsh-plugin-desktop/profiles`,
@@ -359,7 +442,7 @@ describe('packaged desktop runtime verification', () => {
     expect(() => verifyPackagedRuntime(
       runtimeContext,
       () => completeArchiveEntries(),
-      () => true,
+      completeFileProbe(unpackedRoot),
       resolvePackage,
     )).toThrow(
       `packaged runtime at ${unpackedRoot} cannot resolve required package export ${specifier}`,
@@ -378,7 +461,7 @@ describe('packaged desktop runtime verification', () => {
     expect(() => verifyPackagedRuntime(
       runtimeContext,
       () => completeArchiveEntries(),
-      () => true,
+      completeFileProbe(unpackedRoot),
       resolvePackage,
     )).toThrow(
       `required package export @deepseek-ai/dsh-base/package.json resolved outside ${unpackedRoot}: ${escapedPath}`,

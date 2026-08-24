@@ -289,7 +289,6 @@
     "asarUnpack": [
       "package.json",
       "cordis.patch.yml",
-      "build/**",
       "lib/**",
       "node_modules/**"
     ],
@@ -302,7 +301,9 @@
     "beforePack": "./scripts/prepare-bundled-node.ts",
     "afterPack": "./scripts/verify-packaged-runtime.ts",
     "electronFuses": {
-      "runAsNode": false
+      "runAsNode": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
     },
     "directories": {
       "output": "dist",

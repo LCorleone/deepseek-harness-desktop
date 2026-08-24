@@ -28,7 +28,7 @@ export interface PackagedRuntimeContext {
     }
     /** Effective Electron Builder configuration; the packaged manifest omits `build`. */
     readonly config?: {
-      readonly electronFuses?: { readonly runAsNode?: unknown }
+      readonly electronFuses?: { readonly [fuse: string]: unknown }
     }
   }
 }
@@ -68,10 +68,6 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
 export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'package.json',
   'cordis.patch.yml',
-  'build/app-icon.png',
-  'build/app-icon-mac.png',
-  'build/tray-iconTemplate.png',
-  'build/tray-icon-blue.png',
   'lib/main.js',
   'lib/client.js',
   'lib/policy/desktop-policy.json',
@@ -109,13 +105,50 @@ export const REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES = [
 ] as const
 
 /**
- * Fuse stage the packaged application must ship.
+ * Application files that must live inside app.asar with no physical mirror.
  *
- * P3-1 lands in two commits: the bundle-plus-callers switch keeps the fuse
- * enabled as its rollback point, and the follow-up flip changes this constant
- * together with `build.electronFuses.runAsNode` and its spec expectation.
+ * P3-2 moved the build-time icon assets out of `asarUnpack`: only the
+ * Electron main process reads them (`nativeImage.createFromPath` and the
+ * window/tray code), and it reads virtual ASAR paths transparently.
  */
-export const REQUIRED_RUN_AS_NODE_FUSE = false
+export const REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES = [
+  'build/app-icon.png',
+  'build/app-icon-mac.png',
+  'build/tray-iconTemplate.png',
+  'build/tray-icon-blue.png',
+] as const
+
+/** Archive-only prefixes that must never grow a physical `app.asar.unpacked` mirror. */
+const ARCHIVE_ONLY_PREFIXES = ['build/'] as const
+
+/** Whether one archive entry is intentionally stored in-archive without a physical mirror. */
+export function isArchiveOnlyRuntimeEntry(entry: string): boolean {
+  const normalized = entry.replaceAll('\\', '/')
+  return ARCHIVE_ONLY_PREFIXES.some(prefix =>
+    normalized === prefix.slice(0, -1) || normalized.startsWith(prefix))
+}
+
+/**
+ * Fuse stage the packaged application must ship (P3-1, P3-2).
+ *
+ * `runAsNode` landed false together with the bundled Node runtime (P3-1).
+ * P3-2 adds the ASAR hardening pair: `onlyLoadAppFromAsar` forbids a
+ * loose-file app root and `enableEmbeddedAsarIntegrityValidation` makes
+ * Electron compare the app.asar header hash against the value Electron
+ * Builder embeds in the platform binary (Windows PE resource, macOS
+ * Info.plist plus signature). Advisory positioning: without Authenticode or
+ * a Developer ID signature the fuse wire itself can be flipped back by a
+ * determined actor, so these fuses raise the cost of tampering rather than
+ * preventing it.
+ */
+export const REQUIRED_ELECTRON_FUSES = Object.freeze({
+  runAsNode: false,
+  enableEmbeddedAsarIntegrityValidation: true,
+  onlyLoadAppFromAsar: true,
+})
+
+/** Back-compatible alias for the P3-1 runAsNode stage constant. */
+export const REQUIRED_RUN_AS_NODE_FUSE = REQUIRED_ELECTRON_FUSES.runAsNode
 
 /** Directory `extraResources` places the bundled Node distribution into. */
 export const BUNDLED_NODE_RESOURCE_DIRECTORY = 'node-runtime'
@@ -316,23 +349,47 @@ export function verifyBundledNodeRuntime(
   return nodePath
 }
 
-/** Read the `runAsNode` fuse value the shipped application configures. */
+/** Read the Electron fuse values the shipped application configures. */
+export function readPackagedElectronFuses(
+  packager: PackagedRuntimeContext['packager'],
+  readRepositoryManifest: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
+): Readonly<Record<string, unknown>> {
+  // Electron Builder prunes the `build` section from the packaged manifest,
+  // so the effective build configuration is authoritative and the repository
+  // manifest is the fallback for contexts without it.
+  const configured = packager.config?.electronFuses
+  if (configured !== undefined) return configured
+  const manifest = JSON.parse(readRepositoryManifest(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'),
+  )) as { build?: { electronFuses?: Record<string, unknown> } }
+  return manifest.build?.electronFuses ?? {}
+}
+
+/** Read only the `runAsNode` fuse (P3-1 compatibility wrapper). */
 export function readPackagedRunAsNodeFuse(
   packager: PackagedRuntimeContext['packager'],
   readRepositoryManifest: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
 ): unknown {
-  // Electron Builder prunes the `build` section from the packaged manifest,
-  // so the effective build configuration is authoritative and the repository
-  // manifest is the fallback for contexts without it.
-  const configured = packager.config?.electronFuses?.runAsNode
-  if (configured !== undefined) return configured
-  const manifest = JSON.parse(readRepositoryManifest(
-    join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'),
-  )) as { build?: { electronFuses?: { runAsNode?: unknown } } }
-  return manifest.build?.electronFuses?.runAsNode
+  return readPackagedElectronFuses(packager, readRepositoryManifest).runAsNode
 }
 
-/** Require the shipped fuse stage to match {@link REQUIRED_RUN_AS_NODE_FUSE}. */
+/** Require every staged fuse to match {@link REQUIRED_ELECTRON_FUSES}. */
+export function verifyElectronFuseStage(
+  fuses: Readonly<Record<string, unknown>>,
+  required: Readonly<Record<string, unknown>> = REQUIRED_ELECTRON_FUSES,
+): void {
+  const mismatched = Object.entries(required).filter(([fuse, value]) => fuses[fuse] !== value)
+  if (mismatched.length > 0) {
+    const detail = mismatched
+      .map(([fuse, value]) => `electronFuses.${fuse}=${String(value)}`)
+      .join(', ')
+    throw new Error(
+      `dsh-plugin-desktop: packaged runtime requires ${detail} but the application manifest declares ${JSON.stringify(fuses)}`,
+    )
+  }
+}
+
+/** Require the shipped `runAsNode` fuse stage to match {@link REQUIRED_RUN_AS_NODE_FUSE}. */
 export function verifyRunAsNodeFuseStage(
   fuse: unknown,
   required: boolean = REQUIRED_RUN_AS_NODE_FUSE,
@@ -370,7 +427,11 @@ export function verifyPackagedAsar(
   }
 
   const present = new Set(entries.map(normalizeArchiveEntry))
-  const missing = REQUIRED_PACKAGED_RUNTIME_ENTRIES.filter(entry => !present.has(entry))
+  const required = [
+    ...REQUIRED_PACKAGED_RUNTIME_ENTRIES,
+    ...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+  ]
+  const missing = required.filter(entry => !present.has(entry))
   if (missing.length > 0) {
     throw new Error(
       `dsh-plugin-desktop: packaged runtime at ${archivePath} is missing required ASAR entries: ${missing.join(', ')}`,
@@ -380,13 +441,20 @@ export function verifyPackagedAsar(
 }
 
 /**
- * Require every ASAR header entry to have a physical counterpart.
+ * Require the exact P3-2 partition between the ASAR archive and its physical
+ * unpacked mirror.
  *
- * The Desktop packaging contract unpacks every included application file so
- * profile fallback links and Node ESM resolution never target virtual paths.
+ * Every archive entry under the application runtime (`lib/`, `node_modules/`,
+ * the root manifest, and the Cordis patch) must also exist physically under
+ * `app.asar.unpacked`: profile-fallback symlinks and the bundled-Node
+ * subprocess entries (`dsh` bootstrap, pnpm, the diagnostics Worker) cannot
+ * read virtual ASAR paths, and `process.dlopen` needs real native files.
  * Checking the complete header closes the gap left by a curated entry list:
  * a collector regression cannot silently omit transitive packages such as
  * yaml, zod, or typebox from app.asar.unpacked.
+ *
+ * The inverse direction is pinned by {@link verifyArchiveOnlyPartition}:
+ * archive-only prefixes (`build/`) must never grow a physical mirror.
  */
 export function verifyUnpackedArchiveMirror(
   archiveEntries: ReadonlySet<string>,
@@ -394,10 +462,31 @@ export function verifyUnpackedArchiveMirror(
   exists: FileProbe = existsSync,
 ): void {
   const missing = [...archiveEntries]
-    .filter(entry => entry.length > 0 && !exists(join(unpackedRoot, entry)))
+    .filter(entry => entry.length > 0
+      && !isArchiveOnlyRuntimeEntry(entry)
+      && !exists(join(unpackedRoot, entry)))
   if (missing.length > 0) {
     throw new Error(
       `dsh-plugin-desktop: unpacked runtime at ${unpackedRoot} is missing ASAR-declared physical entries: ${missing.join(', ')}`,
+    )
+  }
+}
+
+/**
+ * Pin the shrunk side of the P3-2 partition: the archive-only entries must
+ * exist inside app.asar and must not exist as physical unpacked files. A
+ * regression that reintroduces `build/**` into `asarUnpack` fails here
+ * instead of silently widening the plaintext surface.
+ */
+export function verifyArchiveOnlyPartition(
+  unpackedRoot: string,
+  exists: FileProbe = existsSync,
+  entries: readonly string[] = REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+): void {
+  const leaked = entries.filter(entry => exists(join(unpackedRoot, entry)))
+  if (leaked.length > 0) {
+    throw new Error(
+      `dsh-plugin-desktop: archive-only runtime entries leaked into the physical tree at ${unpackedRoot}: ${leaked.join(', ')}`,
     )
   }
 }
@@ -474,6 +563,7 @@ export function verifyPackagedRuntime(
     }
   }
   verifyUnpackedArchiveMirror(archiveEntries, unpackedRoot, exists)
+  verifyArchiveOnlyPartition(unpackedRoot, exists)
   verifyUnpackedPackageResolution(unpackedRoot, resolvePackage)
 }
 
@@ -481,8 +571,8 @@ export function verifyPackagedRuntime(
 export interface PackagedRuntimeProbe {
   /** Physical-file probe for the bundled Node command; defaults to `existsSync`. */
   readonly exists?: FileProbe
-  /** Manifest reader returning the shipped `runAsNode` fuse value. */
-  readonly readFuse?: () => unknown
+  /** Fuse map the shipped application configures; defaults to the build configuration. */
+  readonly readFuses?: () => Readonly<Record<string, unknown>>
 }
 
 /**
@@ -501,8 +591,8 @@ export async function afterPack(
 ): Promise<void> {
   verify(context)
   verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
-  verifyRunAsNodeFuseStage(
-    (probe.readFuse ?? (() => readPackagedRunAsNodeFuse(context.packager)))(),
+  verifyElectronFuseStage(
+    (probe.readFuses ?? (() => readPackagedElectronFuses(context.packager)))(),
   )
   await smoke(resolvePackagedUnpackedRoot(context))
 }

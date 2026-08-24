@@ -566,11 +566,14 @@ describe('published package surface', () => {
     expect(manifest.build?.asarUnpack).toEqual([
       'package.json',
       'cordis.patch.yml',
-      'build/**',
       'lib/**',
       'node_modules/**',
     ])
-    expect(manifest.build?.electronFuses).toEqual({ runAsNode: false })
+    expect(manifest.build?.electronFuses).toEqual({
+      runAsNode: false,
+      enableEmbeddedAsarIntegrityValidation: true,
+      onlyLoadAppFromAsar: true,
+    })
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },
     ])
@@ -616,6 +619,21 @@ describe('published package surface', () => {
       artifactName: 'DSH-Desktop-${version}-${arch}-Setup.${ext}',
     })
     expect(manifest.build?.linux?.icon).toBe('build/app-icon.png')
+  })
+
+  it('hands bundled-Node subprocesses the physical unpacked CLI bootstrap', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const electronRuntime = readFileSync(new URL('src/electron-runtime.ts', packageRoot), 'utf8')
+
+    // The generated terminal/Host shims execute `desktop-cli.js` with the
+    // bundled plain Node distribution, which cannot read virtual ASAR paths,
+    // so every spawn site must map the module-relative entry onto
+    // app.asar.unpacked (a no-op in an unpackaged development checkout).
+    for (const source of [main, electronRuntime]) {
+      expect(source).toContain("unpackedAsarPath(")
+      expect(source).toContain("new URL('./desktop-cli.js', import.meta.url)")
+    }
+    expect(main).toContain('import { packagedDependencyPath, unpackedAsarPath } from')
   })
 
   it('separates unsigned smoke packaging from the signed macOS release', () => {

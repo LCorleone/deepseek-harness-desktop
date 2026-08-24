@@ -43,7 +43,7 @@ import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { resolveDesktopShellEnvironment } from './shell-environment.ts'
 import { installProfilePackageResolver } from './module-resolution.ts'
-import { packagedDependencyPath } from './packaged-runtime-path.ts'
+import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
 import {
   DesktopInstallRecoveryStore,
@@ -655,7 +655,12 @@ async function start(): Promise<void> {
     }
     startupStage = 'runtime-bootstrap'
     lifecycleRecorder.transitionStartupStage(startupStage)
-    const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
+    // The bundled-Node terminal and Host-plugin subprocesses execute this
+    // entry directly, so it must be the physical app.asar.unpacked path; a
+    // virtual ASAR path is only readable inside the Electron process (P3-2).
+    const dshBootstrapPath = unpackedAsarPath(
+      fileURLToPath(new URL('./desktop-cli.js', import.meta.url)),
+    )
     const dshRuntime = process.platform === 'win32'
       ? installDesktopDshRuntime({
           platform: process.platform,
