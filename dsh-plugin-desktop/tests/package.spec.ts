@@ -317,6 +317,37 @@ describe('published package surface', () => {
     }
   })
 
+  it('preserves model input modalities in the Host session catalog', () => {
+    const patchPath = './patches/dsh-host-apiproxy-model-modalities@0.1.1-rc.2.patch'
+    expect(workspaceManifest.resolutions).toMatchObject({
+      '@deepseek-ai/dsh-host-apiproxy@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
+      '@deepseek-ai/dsh-host-apiproxy@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
+    })
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedRoot = new URL(
+      'node_modules/@deepseek-ai/dsh-host-apiproxy/',
+      packageRoot,
+    )
+    const installedRuntime = readFileSync(new URL('lib/index.js', installedRoot), 'utf8')
+    const installedSchema = readFileSync(
+      new URL('lib/types/api/sessions.schema.js', installedRoot),
+      'utf8',
+    )
+    const installedTypes = readFileSync(
+      new URL('lib/types/api/sessions.d.ts', installedRoot),
+      'utf8',
+    )
+    const schemaMarker = 'inputModalities: z.array(z.enum([\'text\', \'image\'])).optional()'
+    const projectionMarker = '{ inputModalities: [...model.inputModalities] }'
+
+    expect(patch).toContain(schemaMarker)
+    expect(patch).toContain(projectionMarker)
+    expect(installedRuntime).toContain('inputModalities: z$1.array(z$1.enum(["text", "image"])).optional()')
+    expect(installedRuntime).toContain(projectionMarker)
+    expect(installedSchema).toContain(schemaMarker)
+    expect(installedTypes).toContain("inputModalities?: readonly ('text' | 'image')[];")
+  })
+
   it('localizes Trajectory toolbar labels in Simplified Chinese', () => {
     const patchPath = './patches/dsh-client-ui-trajectory@0.1.1-rc.2.patch'
     expect(workspaceManifest.resolutions).toMatchObject({
