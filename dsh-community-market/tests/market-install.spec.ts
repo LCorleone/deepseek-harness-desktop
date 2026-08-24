@@ -320,6 +320,41 @@ describe('npm registry verification', () => {
         .rejects.toBeInstanceOf(MarketInstallError)
     }
   })
+
+  it('tolerates a leftover bare cordis peer alongside the scoped host but rejects a bare-only host', async () => {
+    const getJson = vi.fn<(...args: any[]) => Promise<{ finalUrl: string; value: unknown }>>(async () => ({
+      finalUrl: `https://registry.npmjs.org/${packageName}/${version}`,
+      value: {
+        name: packageName,
+        version,
+        repository: { type: 'git', url: 'git+https://github.com/example/dsh-plugin-safe.git' },
+        scripts: { test: 'vitest' },
+        peerDependencies: { '@deepseek-ai/cordis': '^4.0.1', cordis: '^4.0.0-rc.8' },
+        engines: { node: '>=22.19.0' },
+        dist: { integrity, tarball },
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      },
+    }))
+    const verifier = createNpmRegistryVerifier({ getJson } as CatalogHttpClient)
+    await expect(verifier.verify({ packageName, version, repository }, new AbortController().signal))
+      .resolves.toBeTruthy()
+
+    getJson.mockResolvedValueOnce({
+      finalUrl: `https://registry.npmjs.org/${packageName}/${version}`,
+      value: {
+        name: packageName,
+        version,
+        repository: { type: 'git', url: 'git+https://github.com/example/dsh-plugin-safe.git' },
+        scripts: { test: 'vitest' },
+        peerDependencies: { cordis: '^4.0.0-rc.8' },
+        engines: { node: '>=22.19.0' },
+        dist: { integrity, tarball },
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      },
+    })
+    await expect(verifier.verify({ packageName, version, repository }, new AbortController().signal))
+      .rejects.toThrow('legacy Cordis runtime')
+  })
 })
 
 describe('install target whitelist and registry origin injection', () => {

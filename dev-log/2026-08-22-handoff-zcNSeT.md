@@ -22,6 +22,10 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **上游跟进结论（2026-08-24 查）**：master 停在 `b150a551b8`（0.1.1-rc.2，8/21），与我们钉的完全一致，零新提交；最新 release 同版（图像 Files API 体验向，无安装器改动）；issues 公开列表为空。**安装耗时问题无新上游可拉**——若再复现慢装，方向转本机 EDR/杀软扫描与 NSIS 逐文件解压特性
 - **Blocked on**: 无
 
+## 试点期安全决策（2026-08-24）
+- **裸 cordis peerDep 放行**（用户拍板）：`dsh-better-sidebar@0.15.2` 的 peerDependencies 同时声明 `@deepseek-ai/cordis: ^4.0.1`（真宿主）与裸 `cordis: ^4.0.0-rc.8`（疑似残留）；市场安装器对裸 cordis 的 legacy 拒绝检查会挡住市场 UI 安装。决策：改为「裸 cordis 4.x 且同时存在 `@deepseek-ai/cordis` 依赖时放行，否则维持拒绝」——仅放宽到共存场景，裸 cordis 作为唯一宿主仍拒。风险定性：这是对既有安全检查的试点期放宽，若上游包后续去掉裸 cordis 声明应回收紧语义
+- allowlist 样例条目 `ms@2.1.3` 移除（非 DSH 插件，误导测试组）；首个正式条目 `dsh-better-sidebar@0.15.2`（runtime 范围 `^0.1.1-rc.2` 对齐 fork 钉定版本；0.16.0 未发布故不收；仓库 omdsh-dev 非我方可控，故选上述放行而非上游修）
+
 ## Phase 1 · L1 客户端策略锁定
 - 6 卡 + 接线（见上表）。锁定语义：策略资产构建期内嵌（dev/release 双变体，release=locked 为默认）；effective provider 钉死 `community-market`（本仓市场壳）；source 锁死公司源；安装 reject-all（P2 前全拒绝）；CLI add 拒绝；home patch 拒启。
 - 接线机制：main.ts `readDesktopPolicy()` → market snapshot/profile → `hostCtx.provide('desktopPolicy')`（boot 回调先于 Loader）；market `ctx.get()` 同步读、零 desktop import。

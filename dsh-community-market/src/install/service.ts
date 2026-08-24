@@ -306,12 +306,25 @@ function assertRuntimeCompatibility(manifest: Record<string, unknown>): void {
     if (dependencies === null || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
       throw new MarketInstallError('verification-failed', 'The npm package dependency metadata was invalid.')
     }
+    const declaresScopedCordis
+      = ['dependencies', 'peerDependencies', 'optionalDependencies']
+        .some(scope => {
+          const entries = manifest[scope]
+          return entries !== null && typeof entries === 'object' && !Array.isArray(entries)
+            && (entries as Record<string, unknown>)['@deepseek-ai/cordis'] !== undefined
+        })
     for (const [name, range] of Object.entries(dependencies)) {
       if (name === 'cordis') {
-        throw new MarketInstallError(
-          'verification-failed',
-          'The plugin package depends on the legacy Cordis runtime and is not compatible with DSH Desktop.',
-        )
+        // Pilot-era relaxation (dev-log 2026-08-24): a bare `cordis` entry
+        // alongside the scoped `@deepseek-ai/cordis` host is tolerated as a
+        // leftover declaration; a bare-only host is still rejected as legacy.
+        if (!declaresScopedCordis) {
+          throw new MarketInstallError(
+            'verification-failed',
+            'The plugin package depends on the legacy Cordis runtime and is not compatible with DSH Desktop.',
+          )
+        }
+        continue
       }
       const runtimeVersion = name === '@deepseek-ai/cordis'
         ? CORDIS_RUNTIME_VERSION
