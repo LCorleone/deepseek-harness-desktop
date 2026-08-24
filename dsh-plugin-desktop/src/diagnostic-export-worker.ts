@@ -36,6 +36,7 @@ interface DiagnosticExportWorkerData {
   readonly crashDumpsDir?: string
   readonly runStatePath?: string
   readonly lifecycleEvidencePath?: string
+  readonly selfCheck?: { readonly reportText: string, readonly signed: boolean }
 }
 
 export type DiagnosticExportWorkerResult =
@@ -198,6 +199,22 @@ async function createDiagnosticsArchive(data: DiagnosticExportWorkerData): Promi
   let omittedLifecycleEvidence = false
   let includedLifecycleSummary = false
   let omittedLifecycleSummary = false
+  let includedSelfCheckReport = false
+  let selfCheckReportSigned = false
+  // The signed self-check report (P4-1) is embedded first: it is tiny and it
+  // is the one entry an administrator verifies cryptographically, so it must
+  // never be crowded out by bulk evidence. The entry name mirrors
+  // DESKTOP_SELF_CHECK_REPORT_ENTRY in src/diagnostic-self-check.ts; the
+  // worker stays free of that module's market imports on purpose.
+  if (data.selfCheck !== undefined) {
+    const content = Buffer.from(data.selfCheck.reportText, 'utf8')
+    if (content.byteLength <= data.maxEvidenceBytes - includedBytes) {
+      zip.addFile('self-check-report.json', content)
+      includedBytes += content.byteLength
+      includedSelfCheckReport = true
+      selfCheckReportSigned = data.selfCheck.signed
+    }
+  }
   if (lifecycleCandidate !== undefined) {
     const content = readStableLog(lifecycleCandidate, data.maxEvidenceBytes - includedBytes)
     if (content === undefined) {
@@ -250,6 +267,8 @@ async function createDiagnosticsArchive(data: DiagnosticExportWorkerData): Promi
     `omitted-lifecycle-evidence: ${String(omittedLifecycleEvidence)}`,
     `included-lifecycle-summary: ${String(includedLifecycleSummary)}`,
     `omitted-lifecycle-summary: ${String(omittedLifecycleSummary)}`,
+    `included-self-check-report: ${String(includedSelfCheckReport)}`,
+    `self-check-report-signed: ${String(selfCheckReportSigned)}`,
     `evidence-byte-limit: ${String(data.maxEvidenceBytes)}`,
     'privacy: logs may contain local paths, workspace IDs, and session IDs; crash dumps may contain process memory; lifecycle evidence contains startup timings and bounded plugin IDs',
   ].join('\n')

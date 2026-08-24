@@ -72,6 +72,7 @@ import {
 } from './desktop-market.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'
+import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
 import {
@@ -634,6 +635,14 @@ async function start(): Promise<void> {
       policy,
       bootVerificationInputs,
     )
+    // P4-1: persist this boot's verification decision so every diagnostic
+    // export — tray, recovery window, or headless CLI — can embed the exact
+    // allowed and refused bundle lists in its signed self-check report.
+    if (!writeDesktopBootVerificationSnapshot(app.getPath('userData'), prepared.bootVerification)) {
+      electronLogger.error(
+        `${BIN_NAME}: failed to persist the boot verification snapshot for diagnostics`,
+      )
+    }
     if (profileCheckpoint === undefined) {
       try {
         profileCheckpoint = new DesktopProfileCheckpoint({

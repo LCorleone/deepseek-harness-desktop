@@ -4,6 +4,8 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import type { DiagnosticExportWorkerResult } from './diagnostic-export-worker.ts'
+import { assembleDesktopSelfCheckExport } from './diagnostic-self-check.ts'
+import type { DesktopSelfCheckExportPayload } from './diagnostic-self-check.ts'
 import { desktopLifecycleEvidencePath } from './lifecycle-events.ts'
 
 /** Bound both worker memory and the amount of potentially sensitive log history exported. */
@@ -23,6 +25,8 @@ export interface DiagnosticExportOptions {
   readonly runStatePath?: string
   /** Current-run lifecycle JSONL written by the Electron launcher. */
   readonly lifecycleEvidencePath?: string
+  /** Pre-assembled signed self-check report (P4-1); omitted disables the entry. */
+  readonly selfCheck?: DesktopSelfCheckExportPayload
   /** Cancels the short-lived worker when its owning UI or process operation ends. */
   readonly signal?: AbortSignal
 }
@@ -32,6 +36,8 @@ export interface DesktopDiagnosticExportOptions {
   /** Exact Electron Crashpad directory; defaults to the conventional user-data location. */
   readonly crashDumpsDir?: string
   readonly maxEvidenceBytes?: number
+  /** Pre-assembled self-check payload; defaults to assembling one for this user data. */
+  readonly selfCheck?: DesktopSelfCheckExportPayload
   readonly signal?: AbortSignal
 }
 
@@ -113,6 +119,7 @@ export function exportDiagnosticsZip(
       ...(options.crashDumpsDir === undefined ? {} : { crashDumpsDir: options.crashDumpsDir }),
       ...(options.runStatePath === undefined ? {} : { runStatePath: options.runStatePath }),
       ...(options.lifecycleEvidencePath === undefined ? {} : { lifecycleEvidencePath: options.lifecycleEvidencePath }),
+      ...(options.selfCheck === undefined ? {} : { selfCheck: options.selfCheck }),
     },
     resourceLimits: { maxOldGenerationSizeMb: 256 },
   })
@@ -126,6 +133,8 @@ export function exportDesktopDiagnostics(
 ): Promise<string> {
   const logsDir = join(userDataDir, 'logs')
   mkdirSync(logsDir, { recursive: true })
+  const selfCheck = options.selfCheck
+    ?? assembleDesktopSelfCheckExport(userDataDir, options.appVersion)
   return exportDiagnosticsZip(logsDir, userDataDir, {
     appVersion: options.appVersion,
     crashDumpsDir: options.crashDumpsDir ?? join(userDataDir, 'Crashpad'),
@@ -133,5 +142,6 @@ export function exportDesktopDiagnostics(
     lifecycleEvidencePath: desktopLifecycleEvidencePath(userDataDir),
     ...(options.maxEvidenceBytes === undefined ? {} : { maxEvidenceBytes: options.maxEvidenceBytes }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    selfCheck,
   })
 }
