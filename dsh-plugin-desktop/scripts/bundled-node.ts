@@ -71,7 +71,9 @@ export const BUNDLED_NODE_DISTRIBUTIONS = {
   'win-x64': {
     archive: `node-v${BUNDLED_NODE_VERSION}-win-x64.zip`,
     sha256: '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97',
-    member: 'node.exe',
+    // Official Windows zips nest the binary under a versioned directory
+    // (unlike the tarballs' `bin/` layout), so the member must carry it.
+    member: `node-v${BUNDLED_NODE_VERSION}-win-x64/node.exe`,
   },
 } as const satisfies Record<BundledNodeTarget, BundledNodeDistribution>
 
