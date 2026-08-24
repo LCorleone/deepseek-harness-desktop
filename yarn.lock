@@ -8349,7 +8349,7 @@ __metadata:
     koffi: "npm:3.1.5"
     lucide-react: "npm:^1.33.0"
     node-addon-require-builtin: "npm:^0.1.4"
-    pnpm: "npm:11.7.0"
+    pnpm: "npm:11.8.0"
     react: "npm:18.3.1"
     react-dom: "npm:18.3.1"
     semver: "npm:^7.8.5"
@@ -11833,9 +11833,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"pnpm@npm:11.7.0":
-  version: 11.7.0
-  resolution: "pnpm@npm:11.7.0"
+"pnpm@npm:11.8.0":
+  version: 11.8.0
+  resolution: "pnpm@npm:11.8.0"
   dependencies:
     node-gyp: "npm:latest"
   bin:
@@ -11843,7 +11843,7 @@ __metadata:
     pnpm: bin/pnpm.mjs
     pnpx: bin/pnpx.mjs
     pnx: bin/pnpx.mjs
-  checksum: 10c0/fdc13140f280771191b210385c7cffe288870ba14c6a5e7a212e90703a4327d8903fdcee6409daff9a3f8fba5cc2b323344ed59effeac66df0bdc2235a01cce0
+  checksum: 10c0/a24262bc503a6007a1948c2182377b30d22e8e192cb2b85e8dd7e2bbac0e87ed1426f454a73ed95943f36177d54938a02d5d6cbbadf01f58467c8c2d06d1a35d
   languageName: node
   linkType: hard
 
