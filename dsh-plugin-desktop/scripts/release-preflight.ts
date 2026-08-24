@@ -1,6 +1,7 @@
 /** Fail-loud checks required before a signed and notarized macOS desktop release. */
 
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -229,6 +230,7 @@ function listCodeSigningIdentities(env: NodeJS.ProcessEnv): string {
 
 function main(): void {
   try {
+    assertCompanyReleaseConfiguration()
     const env = adaptMacReleaseEnvironment(process.env)
     const safeEnvironment = withoutMacReleaseSecrets(env)
     const result = assertMacReleaseReady({
@@ -247,3 +249,67 @@ function main(): void {
 
 const invokedPath = process.argv[1]
 if (invokedPath !== undefined && resolve(invokedPath) === fileURLToPath(import.meta.url)) main()
+
+/**
+ * Company release configuration checklist (P4-4): every company-issued build
+ * must embed the locked policy, non-empty update and diagnostics trust keys,
+ * and the full fuse set. Mirrors verifyCompanyReleaseChecklist in
+ * verify-packaged-runtime.ts, which asserts the same against the packaged
+ * tree; this preflight fails before electron-builder runs so a missing piece
+ * never reaches packaging.
+ */
+export interface CompanyReleaseConfigurationOverrides {
+  /** Parsed release policy document override (defaults to the checked-in variant). */
+  readonly policy?: { locked?: unknown }
+  /** Raw declaration text standing in for the update trust roots constant. */
+  readonly updateRoots?: string
+  /** Raw declaration text standing in for the diagnostics view keys constant. */
+  readonly diagnosticsKeys?: string
+  /** Electron fuse map override (defaults to package.json build.electronFuses). */
+  readonly fuses?: Record<string, unknown>
+}
+
+export function assertCompanyReleaseConfiguration(
+  overrides: CompanyReleaseConfigurationOverrides = {},
+): void {
+  const packageRoot = resolve(fileURLToPath(import.meta.url), '..', '..')
+  const fail = (message: string): never => { throw new Error(`company release preflight: ${message}`) }
+
+  const releasePolicy = overrides.policy ?? JSON.parse(
+    readFileSync(resolve(packageRoot, 'src', 'policy', 'desktop-policy.release.json'), 'utf8'),
+  ) as { locked?: unknown }
+  if (releasePolicy.locked !== true) fail('the release policy variant must be locked')
+
+  const readPlaceholder = (file: string, marker: string, override?: string): void => {
+    const text = override ?? readFileSync(resolve(packageRoot, 'src', file), 'utf8')
+    const declaration = text.match(new RegExp(`export const ${marker}[^=]*=([\\s\\S]*?)(?=;|//|$)`, 'mu'))
+    const initializer = declaration?.[1]
+    if (initializer === undefined) {
+      fail(`${file} no longer declares ${marker}`)
+    }
+    const nonEmpty = (initializer as string).match(/\[\s*\{/u)
+    if (nonEmpty === null) {
+      fail(`${marker} is an empty development placeholder; company release builds must provision real keys`)
+    }
+  }
+  readPlaceholder('update-verification.ts', 'ARTIFACT_TRUST_ROOTS', overrides.updateRoots)
+  readPlaceholder('diagnostic-self-check.ts', 'DIAGNOSTICS_SIGNING_PUBLIC_KEYS', overrides.diagnosticsKeys)
+
+  const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'))
+  const fuses = overrides.fuses
+    ?? (manifest as { build?: { electronFuses?: Record<string, unknown> } }).build?.electronFuses
+  const REQUIRED_FUSES: readonly [string, boolean][] = [
+    ['runAsNode', false],
+    ['enableCookieEncryption', true],
+    ['enableNodeOptionsEnvironmentVariable', false],
+    ['enableNodeCliInspectArguments', false],
+    ['enableEmbeddedAsarIntegrityValidation', true],
+    ['onlyLoadAppFromAsar', true],
+    ['loadBrowserProcessSpecificV8Snapshot', false],
+    ['grantFileProtocolExtraPrivileges', false],
+  ]
+  for (const [key, expected] of REQUIRED_FUSES) {
+    if (fuses?.[key] !== expected) fail(`electronFuses.${key} must be ${String(expected)}`)
+  }
+  console.log('company release configuration passed: locked policy, provisioned trust keys, full fuse set')
+}

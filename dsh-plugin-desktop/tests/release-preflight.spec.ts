@@ -1,14 +1,77 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   adaptMacReleaseEnvironment,
+  assertCompanyReleaseConfiguration,
   assertMacReleaseReady,
   withoutMacReleaseSecrets,
 } from '../scripts/release-preflight.ts'
+
+const packageRoot = (): string => resolve(fileURLToPath(import.meta.url), '..', '..')
 
 const DEVELOPER_ID_OUTPUT = `
   1) 0123456789ABCDEF "Developer ID Application: Mengxin Yang (TEAM123456)"
      1 valid identities found
 `
+
+describe('company release configuration checklist', () => {
+  const fuses = (): Record<string, unknown> => JSON.parse(
+    readFileSync(resolve(packageRoot(), 'package.json'), 'utf8'),
+  ).build.electronFuses as Record<string, unknown>
+
+  it('reports the missing company keys as the actionable preflight failure', () => {
+    // The development tree ships empty placeholders by design; the preflight
+    // must stop a company release until real keys are provisioned.
+    expect(() => assertCompanyReleaseConfiguration()).toThrow(
+      'ARTIFACT_TRUST_ROOTS is an empty development placeholder',
+    )
+  })
+
+  it('passes once policy, keys, and fuses are provisioned', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: "k", fingerprint: "f" }] // marker',
+      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [{ keyId: "k", publicKey: "p" }] // marker',
+    })).not.toThrow()
+  })
+
+  it('fails on an unlocked policy variant', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
+      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
+      policy: { locked: false },
+    })).toThrow('the release policy variant must be locked')
+  })
+
+  it('fails on an empty update trust-root placeholder', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [] // marker',
+      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
+    })).toThrow('ARTIFACT_TRUST_ROOTS is an empty development placeholder')
+  })
+
+  it('fails on an empty diagnostics view-key placeholder', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
+      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [] // marker',
+    })).toThrow('DIAGNOSTICS_SIGNING_PUBLIC_KEYS is an empty development placeholder')
+  })
+
+  it('fails when a required fuse is missing or flipped', () => {
+    const provisioned = {
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
+      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
+    }
+    expect(() => assertCompanyReleaseConfiguration({ ...provisioned, fuses: { runAsNode: true } })).toThrow(
+      'electronFuses.runAsNode must be false',
+    )
+    expect(() => assertCompanyReleaseConfiguration({
+      ...provisioned,
+      fuses: { ...fuses(), onlyLoadAppFromAsar: undefined },
+    })).toThrow('electronFuses.onlyLoadAppFromAsar must be true')
+  })
+})
 
 function ready(overrides: Partial<NodeJS.ProcessEnv> = {}) {
   return assertMacReleaseReady({
