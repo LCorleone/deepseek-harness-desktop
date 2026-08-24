@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import type { DesktopLocale } from './runtime.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
 import {
@@ -15,7 +16,12 @@ import {
 } from './startup-recovery-controller.ts'
 
 const RECOVERY_SCHEME = 'dsh-recovery:'
-const RECOVERY_DOCUMENT = fileURLToPath(new URL('./native-ui/recovery.html', import.meta.url))
+// native-ui ships in both the archive and the unpacked mirror (lib/** stays
+// dual-homed), but which copy a packaged module URL resolves against depends
+// on which half loaded this module. loadFile needs a real physical file, so
+// pin the document to the unpacked mirror explicitly (dev paths pass through
+// unchanged; see unpackedAsarPath).
+const RECOVERY_DOCUMENT = unpackedAsarPath(fileURLToPath(new URL('./native-ui/recovery.html', import.meta.url)))
 const MAX_FAILURE_DETAIL_LENGTH = 4_000
 const DEFAULT_RECOVERY_WIDTH = 800
 const DEFAULT_RECOVERY_HEIGHT = 760

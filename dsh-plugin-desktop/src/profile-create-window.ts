@@ -2,11 +2,14 @@
 
 import { BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import type { DesktopLocale } from './runtime.ts'
 
 const PROFILE_CREATE_SCHEME = 'dsh-profile-create:'
 const MAX_NAME_QUERY_BYTES = 1024
-const PROFILE_CREATE_DOCUMENT = fileURLToPath(new URL('./native-ui/profile-create.html', import.meta.url))
+// loadFile requires a physical file; pin to the unpacked mirror (dev paths
+// pass through unchanged) — see startup-recovery-window.ts for the rationale.
+const PROFILE_CREATE_DOCUMENT = unpackedAsarPath(fileURLToPath(new URL('./native-ui/profile-create.html', import.meta.url)))
 
 interface ProfileCreateCopy {
   readonly title: string

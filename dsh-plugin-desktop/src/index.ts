@@ -1,6 +1,7 @@
 /** DSH Desktop Host plugin: owns the selected native shell generation. */
 
 import { fileURLToPath } from 'node:url'
+import { archivedAsarPath } from './packaged-runtime-path.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-cmdline'
@@ -163,10 +164,14 @@ export function apply(ctx: Context, config: Config): void {
   const iconFilename = runtime.platform === 'darwin'
     ? 'app-icon-mac.png'
     : 'app-icon.png'
-  const iconPath = fileURLToPath(new URL(`../build/${iconFilename}`, import.meta.url))
+  // The icon assets live inside app.asar only (P3-2 archive-only partition);
+  // nativeImage.createFromPath reads the virtual in-archive path, so route the
+  // module-relative path into the archive explicitly instead of letting the
+  // unpacked lib module URL resolve it into the missing physical build/ tree.
+  const iconPath = archivedAsarPath(fileURLToPath(new URL(`../build/${iconFilename}`, import.meta.url)))
   const trayIcons = {
-    templatePath: fileURLToPath(new URL('../build/tray-iconTemplate.png', import.meta.url)),
-    bluePath: fileURLToPath(new URL('../build/tray-icon-blue.png', import.meta.url)),
+    templatePath: archivedAsarPath(fileURLToPath(new URL('../build/tray-iconTemplate.png', import.meta.url))),
+    bluePath: archivedAsarPath(fileURLToPath(new URL('../build/tray-icon-blue.png', import.meta.url))),
   }
   const settings = ctx.settings.register(
     DESKTOP_SETTINGS_NAMESPACE,
