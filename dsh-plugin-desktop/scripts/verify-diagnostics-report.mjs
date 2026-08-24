@@ -14,15 +14,23 @@
  *
  * - A valid signature proves the report content is byte-intact under the
  *   ed25519 key embedded beside the signature (the report is self-contained).
+ *   Reports ship unsigned (direction B); a signature block is forward
+ *   compatibility for the future centralized re-signing service, and when
+ *   one is present this script still verifies it.
  * - Binding that key to the company is the administrator's step: compare the
  *   printed SHA-256 fingerprint against the fingerprint published in the
  *   operations manual (P4-2), or pass `--fingerprint <64 hex>` to let this
  *   script enforce the comparison (`--key-id` pins the rotation slot too).
- * - An unsigned report (development build) fails verification and prints the
- *   recorded reason.
+ * - An unsigned report is not a script error: the script prints a prominent
+ *   UNSIGNED line and exits 0, because under the direction-B model the
+ *   absence or suppression of the report — not a client-side signature — is
+ *   the control signal. Whether an UNSIGNED export is a finding is the
+ *   reviewer's call per the runbook; compare the printed content (policy
+ *   digest, manifest sequences) against company-published values.
  *
- * Exit codes: 0 signature verified; 1 verification failed (including usage
- * of a malformed file); 2 bad command-line usage.
+ * Exit codes: 0 signature verified, or unsigned report flagged with an
+ * UNSIGNED warning; 1 verification failed (tampered content, malformed
+ * report, or a missing/unreadable report); 2 bad command-line usage.
  */
 
 import { createHash, createPublicKey, verify } from 'node:crypto'
@@ -33,6 +41,8 @@ const REPORT_ENTRY = 'self-check-report.json'
 const PUBLIC_KEY_BYTES = 32
 const SIGNATURE_BYTES = 64
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u
+/** Upper bound for one inflated zip entry, so a malicious archive cannot balloon memory. */
+const MAX_ENTRY_BYTES = 64 * 1024 * 1024
 
 function fail(message) {
   process.stderr.write(`verify-diagnostics-report: ${message}\n`)
@@ -43,7 +53,9 @@ function usage(message) {
   if (message !== undefined) process.stderr.write(`verify-diagnostics-report: ${message}\n`)
   process.stderr.write(
     'Usage: node verify-diagnostics-report.mjs <self-check-report.json | diagnostics-*.zip>\n'
-      + '                                  [--fingerprint <64 lowercase hex>] [--key-id <id>]\n',
+      + '                                  [--fingerprint <64 lowercase hex>] [--key-id <id>]\n'
+      + 'Exit codes: 0 verified, or unsigned report flagged with an UNSIGNED warning (absence of the\n'
+      + '            report is the control signal); 1 tampered/malformed/missing report; 2 usage error.\n',
   )
   process.exit(2)
 }
@@ -127,6 +139,7 @@ function readZipEntry(archiveBytes, wantedName) {
   if (eocd < 0) throw new Error('the file is not a zip archive (no end-of-central-directory record)')
   const entries = view.getUint16(eocd + 10, true)
   let offset = view.getUint32(eocd + 16, true)
+  const seenNames = new Set()
   for (let index = 0; index < entries; index += 1) {
     if (view.getUint32(offset, true) !== 0x02014b50) {
       throw new Error('the zip central directory is malformed')
@@ -138,6 +151,12 @@ function readZipEntry(archiveBytes, wantedName) {
     const commentLength = view.getUint16(offset + 32, true)
     const localHeaderOffset = view.getUint32(offset + 42, true)
     const name = archiveBytes.subarray(offset + 46, offset + 46 + nameLength).toString('utf8')
+    // A well-formed archive declares each name exactly once; duplicates could
+    // let a second, different self-check-report.json hide behind the first.
+    if (seenNames.has(name)) {
+      throw new Error(`the zip archive declares the entry ${name} more than once`)
+    }
+    seenNames.add(name)
     if (name === wantedName) {
       if (view.getUint32(localHeaderOffset, true) !== 0x04034b50) {
         throw new Error(`the zip local header of ${wantedName} is malformed`)
@@ -147,7 +166,9 @@ function readZipEntry(archiveBytes, wantedName) {
       const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength
       const data = archiveBytes.subarray(dataStart, dataStart + compressedSize)
       if (method === 0) return data
-      if (method === 8) return inflateRawSync(data)
+      if (method === 8) {
+        return inflateRawSync(data, { maxOutputLength: MAX_ENTRY_BYTES })
+      }
       throw new Error(`the zip entry ${wantedName} uses unsupported compression method ${String(method)}`)
     }
     offset += 46 + nameLength + extraLength + commentLength
@@ -161,6 +182,16 @@ function decodeStrictBase64(text, expectedBytes) {
   return bytes.byteLength === expectedBytes ? bytes : undefined
 }
 
+function bootSummaryOf(parsed) {
+  const boot = parsed.bootVerification
+  return boot !== null && typeof boot === 'object' && boot.available === true
+    ? `boot ${typeof boot.recordedAt === 'string' ? boot.recordedAt : '?'}: manifest sequence `
+      + `${boot.manifestSequence === null ? 'n/a' : String(boot.manifestSequence)}`
+      + `, allowed ${String(Array.isArray(boot.allowed) ? boot.allowed.length : 0)}`
+      + `, refused ${String(Array.isArray(boot.refused) ? boot.refused.length : 0)}`
+    : 'boot verification: no locked-boot record in this report'
+}
+
 function main() {
   const positional = []
   let expectedFingerprint
@@ -168,10 +199,14 @@ function main() {
   for (let index = 2; index < process.argv.length; index += 1) {
     const argument = process.argv[index]
     if (argument === '--fingerprint') {
-      expectedFingerprint = process.argv[index + 1]
+      const value = process.argv[index + 1]
+      if (value === undefined) usage('--fingerprint requires a value')
+      expectedFingerprint = value
       index += 1
     } else if (argument === '--key-id') {
-      expectedKeyId = process.argv[index + 1]
+      const value = process.argv[index + 1]
+      if (value === undefined) usage('--key-id requires a value')
+      expectedKeyId = value
       index += 1
     } else if (argument.startsWith('--')) {
       usage(`unknown option ${argument}`)
@@ -214,11 +249,23 @@ function main() {
 
   const signature = parsed.signature ?? null
   if (signature === null) {
+    // Direction B: an unsigned report is the expected shape, not a script
+    // error. The script's job is content-tamper verification; the absence or
+    // suppression of the report is the control signal (see the runbook), and
+    // a missing or malformed report file is the actual exit-1 condition.
     const reason = parsed.unsigned !== null && typeof parsed.unsigned === 'object'
       && typeof parsed.unsigned.reason === 'string'
       ? parsed.unsigned.reason
       : 'no reason recorded'
-    fail(`the report is unsigned and cannot be verified (${reason})`)
+    process.stdout.write(
+      `UNSIGNED self-check report — absence or suppression of this report is the tamper signal, not a script error\n`
+        + `  reason       : ${reason}\n`
+        + `  app version  : ${String(parsed.appVersion)}\n`
+        + `  generated at : ${String(parsed.generatedAt)}\n`
+        + `  ${bootSummaryOf(parsed)}\n`
+        + '  next step    : compare policy.sha256 and bootVerification.manifestSequence against company-published values before trusting the content\n',
+    )
+    return
   }
   if (signature.algorithm !== 'ed25519' || typeof signature.keyId !== 'string'
     || typeof signature.publicKey !== 'string' || typeof signature.value !== 'string') {
@@ -262,13 +309,7 @@ function main() {
     fail('ed25519 signature verification failed — the report content was modified or the signature is invalid')
   }
 
-  const boot = parsed.bootVerification
-  const bootSummary = boot !== null && typeof boot === 'object' && boot.available === true
-    ? `boot ${typeof boot.recordedAt === 'string' ? boot.recordedAt : '?'}: manifest sequence `
-      + `${boot.manifestSequence === null ? 'n/a' : String(boot.manifestSequence)}`
-      + `, allowed ${String(Array.isArray(boot.allowed) ? boot.allowed.length : 0)}`
-      + `, refused ${String(Array.isArray(boot.refused) ? boot.refused.length : 0)}`
-    : 'boot verification: no locked-boot record in this report'
+  const bootSummary = bootSummaryOf(parsed)
   process.stdout.write(
     `self-check report signature VERIFIED\n`
       + `  app version : ${String(parsed.appVersion)}\n`

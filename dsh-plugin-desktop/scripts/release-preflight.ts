@@ -252,26 +252,47 @@ if (invokedPath !== undefined && resolve(invokedPath) === fileURLToPath(import.m
 
 /**
  * Company release configuration checklist (P4-4): every company-issued build
- * must embed the locked policy, non-empty update and diagnostics trust keys,
- * and the full fuse set. Mirrors verifyCompanyReleaseChecklist in
- * verify-packaged-runtime.ts, which asserts the same against the packaged
- * tree; this preflight fails before electron-builder runs so a missing piece
- * never reaches packaging.
+ * must embed the locked policy, non-empty update trust roots, and the full
+ * fuse set. Diagnostics view keys are deliberately absent from this list:
+ * client-side report signing was removed (direction B), so the report's
+ * absence — not its signature — is the tamper signal, and a future
+ * centralized re-signing service provisions those keys on its own. Mirrors
+ * verifyCompanyReleaseChecklist in verify-packaged-runtime.ts, which asserts
+ * the update roots and fuses against the packaged tree; this preflight fails
+ * before electron-builder runs so a missing piece never reaches packaging.
+ *
+ * The strict gate must only run for company-issued builds: the development
+ * tree ships empty placeholders by design, and CI smoke packaging builds that
+ * same tree. macOS wiring is safe unconditionally (dist:mac is inherently a
+ * credentialed company release; CI uses dist:mac-smoke → package-mac.ts),
+ * while the Windows packaging entry opts in via `companyBuild` so CI and
+ * internal unsigned builds keep working.
  */
 export interface CompanyReleaseConfigurationOverrides {
   /** Parsed release policy document override (defaults to the checked-in variant). */
   readonly policy?: { locked?: unknown }
   /** Raw declaration text standing in for the update trust roots constant. */
   readonly updateRoots?: string
-  /** Raw declaration text standing in for the diagnostics view keys constant. */
-  readonly diagnosticsKeys?: string
   /** Electron fuse map override (defaults to package.json build.electronFuses). */
   readonly fuses?: Record<string, unknown>
 }
 
+/** Whether {@link assertCompanyReleaseConfiguration} applies its strict checks. */
+export interface CompanyReleaseConfigurationGate {
+  /**
+   * Whether this build is a company-issued release. `false` (or omitted on a
+   * non-release caller) skips the strict checks so development and CI smoke
+   * packaging paths stay runnable; the default is `true` because the gate's
+   * callers are release scripts.
+   */
+  readonly companyBuild?: boolean
+}
+
 export function assertCompanyReleaseConfiguration(
   overrides: CompanyReleaseConfigurationOverrides = {},
+  { companyBuild = true }: CompanyReleaseConfigurationGate = {},
 ): void {
+  if (!companyBuild) return
   const packageRoot = resolve(fileURLToPath(import.meta.url), '..', '..')
   const fail = (message: string): never => { throw new Error(`company release preflight: ${message}`) }
 
@@ -282,18 +303,24 @@ export function assertCompanyReleaseConfiguration(
 
   const readPlaceholder = (file: string, marker: string, override?: string): void => {
     const text = override ?? readFileSync(resolve(packageRoot, 'src', file), 'utf8')
-    const declaration = text.match(new RegExp(`export const ${marker}[^=]*=([\\s\\S]*?)(?=;|//|$)`, 'mu'))
-    const initializer = declaration?.[1]
-    if (initializer === undefined) {
+    // The declaration may span multiple lines: capture from the `=` through
+    // the first closing bracket plus the rest of that line (the same window
+    // verify-packaged-runtime.ts uses), so a naturally formatted multi-line
+    // array cannot slip past the empty-placeholder check on a line-boundary
+    // technicality.
+    const declaration = new RegExp(
+      `^export const ${marker}\\b[^\\n=]*=[\\s\\S]*?\\][^\\n]*$`,
+      'mu',
+    ).exec(text)?.[0]
+    if (declaration === undefined) {
       fail(`${file} no longer declares ${marker}`)
     }
-    const nonEmpty = (initializer as string).match(/\[\s*\{/u)
+    const nonEmpty = /\[\s*\{/u.exec(declaration as string)
     if (nonEmpty === null) {
       fail(`${marker} is an empty development placeholder; company release builds must provision real keys`)
     }
   }
   readPlaceholder('update-verification.ts', 'ARTIFACT_TRUST_ROOTS', overrides.updateRoots)
-  readPlaceholder('diagnostic-self-check.ts', 'DIAGNOSTICS_SIGNING_PUBLIC_KEYS', overrides.diagnosticsKeys)
 
   const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'))
   const fuses = overrides.fuses
@@ -311,5 +338,5 @@ export function assertCompanyReleaseConfiguration(
   for (const [key, expected] of REQUIRED_FUSES) {
     if (fuses?.[key] !== expected) fail(`electronFuses.${key} must be ${String(expected)}`)
   }
-  console.log('company release configuration passed: locked policy, provisioned trust keys, full fuse set')
+  console.log('company release configuration passed: locked policy, provisioned update trust roots, full fuse set')
 }

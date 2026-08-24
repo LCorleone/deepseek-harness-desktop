@@ -1,5 +1,6 @@
 /**
- * Signed self-check report for the diagnostics export (security plan P4-1).
+ * Self-check report for the diagnostics export (security plan P4-1, review
+ * direction B).
  *
  * The diagnostics archive gains one deterministic entry,
  * `self-check-report.json`: a machine-readable snapshot of what this build's
@@ -9,27 +10,29 @@
  * embedded policy asset (`desktop-policy.json`), the bundled Node runtime
  * self-check (P3-1), the application version, and a generation timestamp.
  *
- * The report is signed with a detached ed25519 signature over its canonical
- * JSON serialization (`canonicalJsonText` imported from the public
- * `dsh-community-market` export face; the signed window is the report minus
- * its `signature` member). The intended verifier is the company security
- * administrator, not the client: the signature block therefore carries the
- * signing public key itself so the report is self-contained, and the
- * administrator binds that key to the company by comparing its SHA-256
- * fingerprint against the fingerprints published in the operations manual
- * (P4-2). `scripts/verify-diagnostics-report.mjs` is the zero-dependency
- * verifier for exactly that workflow.
+ * Reports are generated unsigned, by design (review direction B): a
+ * client-side signature is not a forge-resistant control, because an
+ * attacker who can modify the client can extract or strip its signing key,
+ * so signing on the client proves nothing the report's content does not
+ * already carry. The tamper signal is the report's absence — a modified
+ * client can suppress or forge an unsigned report, but its content then has
+ * to contradict the company-published policy digests and manifest
+ * sequences to be useful, and suppressing the report entirely is itself
+ * the signal the operations manual (P4-2) instructs reviewers to act on.
+ * The `signature`/`unsigned` grammar, the `signing.viewKeys` section, and
+ * the canonical signed-window functions are retained so a future
+ * centralized re-signing service can sign exported reports off-client
+ * without a format break; `scripts/verify-diagnostics-report.mjs` already
+ * verifies such signature blocks when present.
  *
  * Key relationship (P4-1 vs P2-1): diagnostics signing uses a dedicated
  * "view key" pair — the same ed25519 library and trust-root shape as the
  * company catalog and update channels, but a completely independent key.
- * The keypair is held by the release pipeline; this module embeds only the
- * public halves as {@link DIAGNOSTICS_SIGNING_PUBLIC_KEYS}, following the
- * P3-3 `ARTIFACT_TRUST_ROOTS` placeholder pattern: an empty array (the
- * development state) skips signing and marks the report
- * `unsigned: {reason}`, and the P4-4 release gate owns replacing the array.
- * Because the self-contained report must carry the key body — a fingerprint
- * alone cannot verify a signature — each entry is `{keyId, publicKey}`.
+ * {@link DIAGNOSTICS_SIGNING_PUBLIC_KEYS} keeps the `{keyId, publicKey}`
+ * shape (the key body, not just a fingerprint, because a self-contained
+ * re-signed report must carry it) as future material for the centralized
+ * signer; it ships empty today and the client embeds it only in the
+ * report's `signing.viewKeys` fingerprints section.
  *
  * Evidence vocabulary: allowed and refused bundles use the `resolved` /
  * `decided` field names of `dsh-community-fabric` RFC 0004
@@ -45,9 +48,7 @@
 
 import {
   createPublicKey,
-  sign as cryptoSign,
   verify as cryptoVerify,
-  type KeyObject,
 } from 'node:crypto'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -93,16 +94,28 @@ export interface DiagnosticsViewKey {
 }
 
 /**
+ * Reason recorded on every generated report (review direction B): the
+ * client cannot hold a signing key an attacker could not also hold, so the
+ * report is unsigned and its absence — plus content that contradicts the
+ * company-published policy digests and manifest sequences — is the tamper
+ * signal. Exported for the runbook and tests.
+ */
+export const DESKTOP_SELF_CHECK_UNSIGNED_REASON
+  = 'client-side signing is not a forge-resistant control; absence of the report is the tamper signal'
+
+/**
  * Diagnostics view keys embedded at build time.
  *
- * Placeholder: empty in development builds. An empty array makes every
- * self-check report carry `unsigned: {reason}` instead of a signature; a
- * non-empty array requires a matching signing key at export time. Company
- * release builds replace this constant with their pinned keys — the P4-4
- * release gate owns that swap, and `tests/diagnostic-self-check.spec.ts`
- * exercises the signed path by injecting keys instead.
+ * Future material for the centralized re-signing service (P4-1 direction
+ * B): client-side signing was removed — a private key shipped to the client
+ * is extractable by exactly the attacker it would claim to bound — so
+ * reports are generated unsigned and the report's absence plus content
+ * comparison is the tamper signal. The constant stays empty in every build
+ * today and the shape stays strict, so a later company-side signer can
+ * publish `{keyId, publicKey}` entries without touching the report grammar,
+ * the verifier, or the P4-2 runbook.
  */
-export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [] // development placeholder — company release builds replace this array (P4-4 gate marker)
+export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [] // future centralized re-signing material — deliberately empty under the direction-B unsigned-report model (P4-1)
 
 /**
  * Validate and freeze diagnostics view keys. Mirrors the strict catalog and
@@ -282,8 +295,7 @@ export interface DesktopSelfCheckReportInput {
   readonly nodeRuntime: DesktopSelfCheckNodeRuntimeStatus
   /** Boot verification snapshot of the export; undefined records no boot data. */
   readonly bootSnapshot: DesktopBootVerificationSnapshot | undefined
-  /** Why this report is generated unsigned; signing clears it. */
-  readonly unsignedReason: string
+  /** View keys pinned by this build (reported as fingerprints, never used to sign). */
   readonly viewKeys: readonly DiagnosticsViewKey[]
   /** Clock injection for the generation timestamp; defaults to now. */
   readonly now?: () => Date
@@ -337,7 +349,7 @@ function selfCheckBootVerification(
   }
 }
 
-/** Assemble one unsigned self-check report from measured inputs. */
+/** Assemble one self-check report from measured inputs; always unsigned (direction B). */
 export function buildDesktopSelfCheckReport(input: DesktopSelfCheckReportInput): DesktopSelfCheckReport {
   const viewKeys = normalizeDiagnosticsViewKeys(input.viewKeys)
   return {
@@ -358,7 +370,7 @@ export function buildDesktopSelfCheckReport(input: DesktopSelfCheckReportInput):
       })),
     },
     signature: null,
-    unsigned: { reason: input.unsignedReason },
+    unsigned: { reason: DESKTOP_SELF_CHECK_UNSIGNED_REASON },
   }
 }
 
@@ -376,57 +388,6 @@ export function canonicalDesktopSelfCheckReportWindow(report: DesktopSelfCheckRe
 /** Canonical text of the complete report — the exact archived file bytes. */
 export function desktopSelfCheckReportText(report: DesktopSelfCheckReport): string {
   return canonicalJsonText(report)
-}
-
-/** Extract the raw 32-byte ed25519 public key of an ed25519 private KeyObject. */
-function rawPublicKeyOf(privateKey: KeyObject): Uint8Array {
-  if (privateKey.type !== 'private' || privateKey.asymmetricKeyType !== 'ed25519') {
-    throw new TypeError('an ed25519 private KeyObject is required')
-  }
-  const spki = createPublicKey(privateKey).export({ type: 'spki', format: 'der' })
-  if (!(spki instanceof Uint8Array) || spki.byteLength !== 12 + DIAGNOSTICS_PUBLIC_KEY_BYTES) {
-    throw new TypeError('the ed25519 public key could not be exported in raw form')
-  }
-  return new Uint8Array(spki.subarray(12))
-}
-
-/**
- * Sign one unsigned report with a diagnostics view key. The derived public
- * key must equal the body of one pinned {@link DiagnosticsViewKey}; the
- * returned report clears `unsigned` and carries the detached signature plus
- * the self-contained public key. Constructive failures (non-ed25519 key,
- * unpinned key, already-signed report) throw `TypeError`.
- */
-export function signDesktopSelfCheckReport(
-  report: DesktopSelfCheckReport,
-  privateKey: KeyObject,
-  viewKeys: readonly DiagnosticsViewKey[],
-): DesktopSelfCheckReport {
-  const pinned = normalizeDiagnosticsViewKeys(viewKeys)
-  if (report.signature !== null) {
-    throw new TypeError('the self-check report is already signed')
-  }
-  const rawKey = rawPublicKeyOf(privateKey)
-  const publicKey = Buffer.from(rawKey).toString('base64')
-  const match = pinned.find(entry => entry.publicKey === publicKey)
-  if (match === undefined) {
-    throw new TypeError('the provided signing key is not one of the pinned diagnostics view keys')
-  }
-  const signed: DesktopSelfCheckReport = { ...report, unsigned: null }
-  const value = cryptoSign(
-    null,
-    Buffer.from(canonicalDesktopSelfCheckReportWindow(signed), 'utf8'),
-    privateKey,
-  )
-  return {
-    ...signed,
-    signature: {
-      algorithm: 'ed25519',
-      keyId: match.keyId,
-      publicKey,
-      value: value.toString('base64'),
-    },
-  }
 }
 
 /** Why a self-check report signature was rejected. */
@@ -723,8 +684,6 @@ export interface DesktopSelfCheckAssemblyInputs {
   readonly policyAssetPath?: string
   /** Boot snapshot path override; defaults to `<userDataDir>/boot-verification.json`. */
   readonly bootSnapshotPath?: string
-  /** Signing key of a pinned view key; absent exports an unsigned report. */
-  readonly signingKey?: KeyObject
   /** View keys override; defaults to the embedded {@link DIAGNOSTICS_SIGNING_PUBLIC_KEYS}. */
   readonly viewKeys?: readonly DiagnosticsViewKey[]
   /** Clock injection for the generation timestamp. */
@@ -742,9 +701,9 @@ export interface DesktopSelfCheckExportPayload {
 /**
  * Assemble the self-check report for one diagnostics export: measure the
  * policy asset and Node runtime, read the latest boot-verification snapshot
- * from user data, and sign the canonical report when both a pinned view key
- * list and its private signing key are available. Development builds embed
- * no view keys, so their reports carry `unsigned` with the reason.
+ * from user data, and emit the canonical report. Every report is unsigned
+ * (direction B): client-side signing is not a forge-resistant control, so
+ * the recorded reason states the absence-is-the-signal model instead.
  */
 export function assembleDesktopSelfCheckExport(
   userDataDir: string,
@@ -752,7 +711,7 @@ export function assembleDesktopSelfCheckExport(
   inputs: DesktopSelfCheckAssemblyInputs = {},
 ): DesktopSelfCheckExportPayload {
   const viewKeys = inputs.viewKeys ?? normalizeDiagnosticsViewKeys(DIAGNOSTICS_SIGNING_PUBLIC_KEYS)
-  const unsignedReport = buildDesktopSelfCheckReport({
+  const report = buildDesktopSelfCheckReport({
     appVersion,
     policy: desktopPolicySelfCheckStatus(inputs.policyAssetPath),
     nodeRuntime: desktopNodeRuntimeSelfCheckStatus(),
@@ -761,14 +720,7 @@ export function assembleDesktopSelfCheckExport(
     ),
     viewKeys,
     ...(inputs.now === undefined ? {} : { now: inputs.now }),
-    unsignedReason: viewKeys.length === 0
-      ? 'no diagnostics signing view keys are embedded (development build);'
-        + ' the P4-4 release gate embeds them'
-      : 'no diagnostics signing key was provided for this export',
   })
-  const report = inputs.signingKey === undefined || viewKeys.length === 0
-    ? unsignedReport
-    : signDesktopSelfCheckReport(unsignedReport, inputs.signingKey, viewKeys)
   return {
     reportText: desktopSelfCheckReportText(report), signed: report.signature !== null,
   }

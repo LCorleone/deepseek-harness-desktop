@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   adaptMacReleaseEnvironment,
+  assertCompanyReleaseConfiguration,
   assertMacReleaseReady,
   withoutMacReleaseSecrets,
 } from './release-preflight.ts'
@@ -34,6 +35,8 @@ export interface MacReleaseOptions {
   ) => void
   /** Report non-secret release progress. */
   readonly log: (message: string) => void
+  /** Assert the P4-4 company release configuration; defaults to the strict preflight gate. */
+  readonly companyPreflight: () => void
   /** Validate and prepare both architecture-specific runtime trees. */
   readonly prepareRuntime: () => void
 }
@@ -70,6 +73,7 @@ function defaultReleaseOptions(): MacReleaseOptions {
     listCodeSigningIdentities,
     run,
     log: message => console.log(message),
+    companyPreflight: () => assertCompanyReleaseConfiguration(),
     prepareRuntime: () => prepareInstalledMacUniversalRuntime(desktopRoot),
   }
 }
@@ -79,6 +83,12 @@ function defaultReleaseOptions(): MacReleaseOptions {
  * @param options - Injectable process and command boundaries.
  */
 export function releaseMac(options: MacReleaseOptions = defaultReleaseOptions()): void {
+  // The P4-4 company gate runs before anything else: a release must not reach
+  // credential handling, let alone electron-builder, without the locked
+  // policy, update trust roots, and the full fuse set. CI's dist:mac-smoke
+  // path (package-mac.ts) never calls releaseMac, so the strict gate cannot
+  // break smoke builds.
+  options.companyPreflight()
   const releaseEnvironment = adaptMacReleaseEnvironment(options.env)
   const buildEnvironment = withoutMacReleaseSecrets(releaseEnvironment)
   const result = assertMacReleaseReady({

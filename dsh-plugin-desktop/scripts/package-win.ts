@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertCompanyReleaseConfiguration } from './release-preflight.ts'
 
 const WINDOWS_SIGNING_KEYS = [
   'CSC_IDENTITY_AUTO_DISCOVERY',
@@ -118,6 +119,20 @@ function assertWindowsPackageHost(options: WindowsPackageOptions, artifact: stri
   }
 }
 
+/** Run the P4-4 company release configuration gate for one Windows artifact build. */
+function assertWindowsCompanyConfiguration(options: WindowsPackageOptions): void {
+  // Unlike the macOS release (release-mac.ts, inherently a credentialed
+  // company build), `dist:win` and `dist:win-portable` also package the
+  // development tree for CI and internal unsigned builds, so the strict gate
+  // is an explicit opt-in: a company-issued Windows release sets
+  // DSH_COMPANY_RELEASE=1 after provisioning the release configuration.
+  if (options.env.DSH_COMPANY_RELEASE === '1') {
+    assertCompanyReleaseConfiguration()
+    return
+  }
+  options.log('Skipping the company release configuration gate; set DSH_COMPANY_RELEASE=1 for a company-issued build.')
+}
+
 /** Run the gates and package one unsigned x64 Windows artifact. */
 export function packageWindowsArtifact(
   options: WindowsPackageOptions,
@@ -125,6 +140,7 @@ export function packageWindowsArtifact(
   artifact: 'installer' | 'portable archive',
 ): void {
   assertWindowsPackageHost(options, artifact)
+  assertWindowsCompanyConfiguration(options)
 
   const cleanEnvironment = withoutWindowsSigningSecrets(options.env)
   options.log(`Building an unsigned Windows x64 ${artifact}; Authenticode is a separate release step.`)

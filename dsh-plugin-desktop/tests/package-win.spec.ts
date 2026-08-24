@@ -38,7 +38,33 @@ function options(calls: CommandCall[], logs: string[] = []): WindowsPackageOptio
   }
 }
 
+const COMPANY_GATE_SKIP = 'Skipping the company release configuration gate; set DSH_COMPANY_RELEASE=1 for a company-issued build.'
+
 describe('Windows x64 installer packaging', () => {
+  it('skips the company release gate for a non-company build, keeping CI packaging runnable', () => {
+    const calls: CommandCall[] = []
+    const logs: string[] = []
+
+    packageWindowsInstaller(options(calls, logs))
+
+    expect(calls).toHaveLength(3)
+    expect(logs[0]).toBe(COMPANY_GATE_SKIP)
+  })
+
+  it('runs the P4-4 company release gate before any command when DSH_COMPANY_RELEASE=1', () => {
+    // The development tree ships empty placeholders by design; a company
+    // Windows release must stop before the package gate or electron-builder.
+    const calls: CommandCall[] = []
+    const logs: string[] = []
+
+    expect(() => packageWindowsInstaller({
+      ...options(calls, logs),
+      env: { ...options(calls).env, DSH_COMPANY_RELEASE: '1' },
+    })).toThrow('company release preflight')
+    expect(calls).toEqual([])
+    expect(logs).toEqual([])
+  })
+
   it('checks without credentials, builds an unsigned NSIS target, then verifies it', () => {
     const calls: CommandCall[] = []
     const logs: string[] = []
@@ -83,6 +109,7 @@ describe('Windows x64 installer packaging', () => {
       env: { PATH: 'C:\\Windows\\System32', SAFE_VALUE: 'kept' },
     })
     expect(logs).toEqual([
+      COMPANY_GATE_SKIP,
       'Building an unsigned Windows x64 installer; Authenticode is a separate release step.',
     ])
   })
@@ -111,6 +138,7 @@ describe('Windows x64 installer packaging', () => {
       'C:\\repo\\dsh-plugin-desktop\\scripts\\verify-win-portable.ts',
     ])
     expect(logs).toEqual([
+      COMPANY_GATE_SKIP,
       'Building an unsigned Windows x64 portable archive; Authenticode is a separate release step.',
     ])
   })
@@ -140,6 +168,7 @@ describe('Windows x64 installer packaging', () => {
       '--config.npmRebuild=false',
     ])
     expect(logs).toEqual([
+      COMPANY_GATE_SKIP,
       'Building an unsigned Windows x64 installer; Authenticode is a separate release step.',
       'Skipping the Windows package preflight; the package gate already passed.',
     ])

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { releaseMac, type MacReleaseOptions } from '../scripts/release-mac.ts'
+import { assertCompanyReleaseConfiguration } from '../scripts/release-preflight.ts'
 
 const DEVELOPER_ID_OUTPUT = `
   1) 0123456789ABCDEF "Developer ID Application: Mengxin Yang (TEAM123456)"
@@ -19,6 +20,7 @@ function baseOptions(
   calls: CommandCall[],
   identityEnvironments: NodeJS.ProcessEnv[] = [],
   logs: string[] = [],
+  companyPreflight: () => void = () => undefined,
 ): MacReleaseOptions {
   return {
     env,
@@ -34,11 +36,51 @@ function baseOptions(
       calls.push({ command, args: [...args], cwd, env: { ...commandEnv } })
     },
     log: message => logs.push(message),
+    companyPreflight,
     prepareRuntime: () => undefined,
   }
 }
 
 describe('macOS release command boundary', () => {
+  it('runs the company release configuration gate before any command', () => {
+    const calls: CommandCall[] = []
+    const order: string[] = []
+    const options: MacReleaseOptions = {
+      ...baseOptions({
+        APPLE_KEYCHAIN_PROFILE: 'dsh-notary',
+      }, calls, [], [], () => order.push('company-preflight')),
+      run: (command, args, cwd, commandEnv) => {
+        order.push(`run:${command} ${args.join(' ')}`)
+        calls.push({ command, args: [...args], cwd, env: { ...commandEnv } })
+      },
+    }
+
+    releaseMac(options)
+
+    expect(order[0]).toBe('company-preflight')
+    expect(order).toHaveLength(4)
+    expect(calls).toHaveLength(3)
+  })
+
+  it('stops on the real P4-4 gate before touching credentials or commands', () => {
+    // Wiring the production companyPreflight (assertCompanyReleaseConfiguration)
+    // proves releaseMac's default seam is the strict gate. Like
+    // release-preflight.spec's dev-tree case, this relies on the checked-in
+    // development placeholders and shows a company release attempt stops
+    // before electron-builder runs.
+    const calls: CommandCall[] = []
+    const identityEnvironments: NodeJS.ProcessEnv[] = []
+
+    expect(() => releaseMac(baseOptions({
+      APPLE_ID: 'developer@example.test',
+      APPLE_APP_SPECIFIC_PASSWORD: 'notary-password',
+      APPLE_TEAM_ID: 'TEAM123456',
+    }, calls, identityEnvironments, [], assertCompanyReleaseConfiguration)))
+      .toThrow('company release preflight')
+    expect(calls).toEqual([])
+    expect(identityEnvironments).toEqual([])
+  })
+
   it('runs checks without credentials, then gives credentials only to the DMG builder', () => {
     const calls: CommandCall[] = []
     const identityEnvironments: NodeJS.ProcessEnv[] = []

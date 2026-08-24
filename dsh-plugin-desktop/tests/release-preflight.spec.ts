@@ -32,14 +32,32 @@ describe('company release configuration checklist', () => {
   it('passes once policy, keys, and fuses are provisioned', () => {
     expect(() => assertCompanyReleaseConfiguration({
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: "k", fingerprint: "f" }] // marker',
-      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [{ keyId: "k", publicKey: "p" }] // marker',
     })).not.toThrow()
+  })
+
+  it('accepts a naturally formatted multi-line trust-root array', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: [
+        'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [',
+        '  { keyId: \'company-update-2026.01\', fingerprint: \'0123\' },',
+        '  { keyId: \'company-update-2027.01\', fingerprint: \'4567\' },',
+        '] // pinned company update trust roots',
+      ].join('\n'),
+    })).not.toThrow()
+  })
+
+  it('rejects a multi-line but empty trust-root placeholder', () => {
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: [
+        'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [',
+        '] // development placeholder — company release builds replace this array (P3-4 gate marker)',
+      ].join('\n'),
+    })).toThrow('ARTIFACT_TRUST_ROOTS is an empty development placeholder')
   })
 
   it('fails on an unlocked policy variant', () => {
     expect(() => assertCompanyReleaseConfiguration({
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
-      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
       policy: { locked: false },
     })).toThrow('the release policy variant must be locked')
   })
@@ -47,21 +65,18 @@ describe('company release configuration checklist', () => {
   it('fails on an empty update trust-root placeholder', () => {
     expect(() => assertCompanyReleaseConfiguration({
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [] // marker',
-      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
     })).toThrow('ARTIFACT_TRUST_ROOTS is an empty development placeholder')
   })
 
-  it('fails on an empty diagnostics view-key placeholder', () => {
-    expect(() => assertCompanyReleaseConfiguration({
-      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
-      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS: readonly DiagnosticsViewKey[] = [] // marker',
-    })).toThrow('DIAGNOSTICS_SIGNING_PUBLIC_KEYS is an empty development placeholder')
+  it('skips the strict gate for non-company builds so smoke packaging stays runnable', () => {
+    // CI and internal builds package the development tree; the strict gate
+    // must be opt-in there or every smoke build would fail on the placeholders.
+    expect(() => assertCompanyReleaseConfiguration({}, { companyBuild: false })).not.toThrow()
   })
 
   it('fails when a required fuse is missing or flipped', () => {
     const provisioned = {
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
-      diagnosticsKeys: 'export const DIAGNOSTICS_SIGNING_PUBLIC_KEYS = [{ keyId: "k", publicKey: "p" }]',
     }
     expect(() => assertCompanyReleaseConfiguration({ ...provisioned, fuses: { runAsNode: true } })).toThrow(
       'electronFuses.runAsNode must be false',

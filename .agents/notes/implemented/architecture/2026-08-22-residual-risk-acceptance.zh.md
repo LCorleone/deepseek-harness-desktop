@@ -12,13 +12,13 @@
 
 - 锁定构建钉死：生效 market provider、catalog source、安装 authority（签名 manifest 三链收敛）、终端 `dsh plugin add` 通道、启动时 bundle 校验（P1/P2）。
 - 打包加固：捆绑钉版 sha256 的 Node 运行时（启动自检）、fuse 全集（含 `runAsNode:false`）、asar 分区 integrity、签名更新通道（P3，含评审修复）。
-- 签名诊断自检报告 + 篡改证据链手册（P4-1/2）。
+- 诊断自检报告 + 篡改证据链手册（P4-1/2，评审方向 B：报告恒定 unsigned——检测控制是报告缺失加与公司公布值的内容比对，并为中心化重签保留格式）。
 
 ## 残余风险登记表
 
 | # | 风险 | 暴露面 | 处置状态 |
 |---|---|---|---|
-| R1 | 本地同用户修改 unpacked 资产（`lib/**`；绕过摘要须改 asar） | 改 JS 即可关掉客户端校验；策略 JSON 廉价通道已封（CLI 策略 env 注入、asar 侧摘要），代码级修改仍在 | 已签收上限；检测靠签名报告缺失（P4-2 §3） |
+| R1 | 本地同用户修改 unpacked 资产（`lib/**`、`node-runtime/`；绕过摘要须改 asar） | 改 JS 即可关掉客户端校验；策略 JSON 廉价通道已封（CLI 策略 env 注入、asar 侧摘要），代码级修改仍在 | 已签收上限；检测靠报告缺失与内容比对（P4-2 §3） |
 | R2 | 外部上游 CLI 直装进 `DSH_HOME` | 安装动作拦不住（不可达）；插件永不加载（boot 校验拒载） | 设计如此（拒载不拦装） |
 | R3 | 内嵌 manifest 资产在 per-user 安装下用户可写；receipts 序列下限只抬成本 | 有效期内旧 manifest 重放仅限公司签名内容；registry integrity 仍钉死 | P2 评审修复已缓解；代码签名后彻底关闭（未来） |
 | R4 | CI 签名私钥失陷 | catalog 与更新通道密钥独立；轮换=双钥重叠；吊销=sequence 重发 | 架构 note 有 runbook；待真实密钥演练 |

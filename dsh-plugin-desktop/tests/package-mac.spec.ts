@@ -1,8 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   packageMacSmoke,
   type MacSmokePackageOptions,
 } from '../scripts/package-mac.ts'
+
+const packageRoot = (): string => resolve(fileURLToPath(import.meta.url), '..', '..')
 
 interface CommandCall {
   readonly command: string
@@ -47,6 +52,14 @@ function options(calls: CommandCall[], logs: string[] = []): MacSmokePackageOpti
 }
 
 describe('macOS DMG smoke packaging', () => {
+  it('keeps the smoke path free of the P4-4 company release gate', () => {
+    // dist:mac-smoke builds the checked-in development tree on CI; the strict
+    // company gate (which fails on the empty key placeholders) must stay wired
+    // only into the signed release path (release-mac.ts).
+    const source = readFileSync(resolve(packageRoot(), 'scripts', 'package-mac.ts'), 'utf8')
+    expect(source).not.toContain('assertCompanyReleaseConfiguration')
+  })
+
   it('checks without credentials, builds an unsigned DMG, then verifies it', () => {
     const calls: CommandCall[] = []
     const logs: string[] = []

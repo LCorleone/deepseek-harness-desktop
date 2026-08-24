@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from 'node:crypto'
+import { createHash, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,17 +9,18 @@ import AdmZip from 'adm-zip'
 import { canonicalJsonText, ed25519PublicKeyFingerprint } from 'dsh-community-market'
 import {
   assembleDesktopSelfCheckExport,
-  buildDesktopSelfCheckReport,
   canonicalDesktopSelfCheckReportWindow,
   DESKTOP_SELF_CHECK_REPORT_ENTRY,
+  DESKTOP_SELF_CHECK_UNSIGNED_REASON,
   desktopBootVerificationSnapshotPath,
   desktopPolicySelfCheckStatus,
   desktopSelfCheckReportText,
+  type DesktopSelfCheckExportPayload,
+  type DesktopSelfCheckReport,
   DIAGNOSTICS_SIGNING_PUBLIC_KEYS,
   diagnosticsViewKeyFingerprint,
   normalizeDiagnosticsViewKeys,
   readDesktopBootVerificationSnapshot,
-  signDesktopSelfCheckReport,
   verifyDesktopSelfCheckReport,
   writeDesktopBootVerificationSnapshot,
 } from '../src/diagnostic-self-check.ts'
@@ -36,6 +37,27 @@ const APP_VERSION = '2.0.1-test'
 const temporaryDirectories: string[] = []
 
 const verifyScript = fileURLToPath(new URL('../scripts/verify-diagnostics-report.mjs', import.meta.url))
+
+/**
+ * Client-side signing was removed (direction B), so tests that need a signed
+ * fixture construct one the way the future centralized re-signing service
+ * will: sign the canonical window with an ed25519 key and attach the
+ * self-contained signature block.
+ */
+function reSignReportFixture(
+  report: DesktopSelfCheckReport,
+  privateKey: KeyObject,
+  keyId: string,
+): DesktopSelfCheckReport {
+  const spki = createPublicKey(privateKey).export({ type: 'spki', format: 'der' })
+  const publicKey = Buffer.from(spki.subarray(12)).toString('base64')
+  const cleared: DesktopSelfCheckReport = { ...report, unsigned: null }
+  const value = sign(null, Buffer.from(canonicalDesktopSelfCheckReportWindow(cleared), 'utf8'), privateKey)
+  return {
+    ...cleared,
+    signature: { algorithm: 'ed25519', keyId, publicKey, value: value.toString('base64') },
+  }
+}
 
 afterEach(() => {
   for (const dir of temporaryDirectories.splice(0)) rmSync(dir, { recursive: true, force: true })
@@ -104,8 +126,8 @@ function unsignedReportInput(dir: string, verification: DesktopBootVerification 
   })
 }
 
-describe('diagnostics view keys (P4-1 placeholder)', () => {
-  it('embeds an empty development placeholder like ARTIFACT_TRUST_ROOTS', () => {
+describe('diagnostics view keys (P4-1 direction B)', () => {
+  it('keeps the empty constant as future centralized re-signing material', () => {
     expect(DIAGNOSTICS_SIGNING_PUBLIC_KEYS).toEqual([])
   })
 
@@ -213,8 +235,8 @@ describe('policy self-measurement', () => {
   })
 })
 
-describe('unsigned development reports', () => {
-  it('marks the empty-placeholder state with unsigned and a warning reason', () => {
+describe('unsigned reports (direction B: always unsigned)', () => {
+  it('carries the fixed absence-is-the-signal reason on every export', () => {
     const dir = temporaryDirectory('dsh-self-check-dev-')
     const userDataDir = temporaryDirectory('dsh-self-check-user-')
     writeSnapshot(userDataDir, lockedBootVerification())
@@ -226,11 +248,12 @@ describe('unsigned development reports', () => {
     expect(payload.signed).toBe(false)
     const report = JSON.parse(payload.reportText)
     expect(report.signature).toBeNull()
-    expect(report.unsigned.reason).toMatch(/no diagnostics signing view keys are embedded \(development build\)/u)
+    expect(report.unsigned).toEqual({ reason: DESKTOP_SELF_CHECK_UNSIGNED_REASON })
+    expect(report.unsigned.reason).toMatch(/absence of the report is the tamper signal/u)
     expect(report.signing.viewKeys).toEqual([])
     const verification = verifyDesktopSelfCheckReport(report)
     expect(verification).toMatchObject({ ok: false, code: 'unsigned' })
-    expect(verification.ok === false ? verification.reason : '').toMatch(/development build/u)
+    expect(verification.ok === false ? verification.reason : '').toBe(DESKTOP_SELF_CHECK_UNSIGNED_REASON)
   })
 
   it('records the boot refusal list, manifest sequence, and policy digest fields', () => {
@@ -319,22 +342,27 @@ describe('unsigned development reports', () => {
   })
 })
 
-describe('signed reports (round-trip and tampering)', () => {
-  function signedPayload(viewKeys: readonly { keyId: string, publicKey: string }[] = [viewKey]) {
+describe('re-signed report fixtures (centralized re-signing forward compatibility)', () => {
+  function reSignedPayload(
+    viewKeys: readonly { keyId: string, publicKey: string }[] = [viewKey],
+    signer: KeyObject = privateKey,
+    keyId = viewKey.keyId,
+  ): DesktopSelfCheckExportPayload {
     const dir = temporaryDirectory('dsh-self-check-signed-')
     const userDataDir = temporaryDirectory('dsh-self-check-user-')
     writeSnapshot(userDataDir, lockedBootVerification())
-    return assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
+    const unsigned = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
       bootSnapshotPath: desktopBootVerificationSnapshotPath(userDataDir),
       policyAssetPath: join(dir, 'missing-policy.json'),
       viewKeys,
-      signingKey: privateKey,
       now: () => new Date('2026-08-20T09:00:00.000Z'),
     })
+    const report = reSignReportFixture(JSON.parse(unsigned.reportText), signer, keyId)
+    return { reportText: desktopSelfCheckReportText(report), signed: true }
   }
 
-  it('signs the canonical window and verifies against the pinned view key', () => {
-    const payload = signedPayload()
+  it('verifies a signature over the canonical window against the pinned view key', () => {
+    const payload = reSignedPayload()
     expect(payload.signed).toBe(true)
     const report = JSON.parse(payload.reportText)
     expect(report.unsigned).toBeNull()
@@ -348,8 +376,8 @@ describe('signed reports (round-trip and tampering)', () => {
     })
   })
 
-  it('archives exactly the canonical bytes it signed', () => {
-    const payload = signedPayload()
+  it('archives exactly the canonical bytes of the signed window', () => {
+    const payload = reSignedPayload()
     const report = JSON.parse(payload.reportText)
     expect(payload.reportText).toBe(canonicalJsonText(report))
     const window = { ...report }
@@ -358,7 +386,7 @@ describe('signed reports (round-trip and tampering)', () => {
   })
 
   it('fails verification after report content is tampered with', () => {
-    const report = JSON.parse(signedPayload().reportText)
+    const report = JSON.parse(reSignedPayload().reportText)
     const tampered = { ...report, appVersion: '9.9.9-evil' }
     expect(verifyDesktopSelfCheckReport(tampered)).toMatchObject({ ok: false, code: 'bad-signature' })
     const tamperedBoot = JSON.parse(JSON.stringify(report))
@@ -374,25 +402,16 @@ describe('signed reports (round-trip and tampering)', () => {
 
   it('rejects signatures under keys outside the pinned view keys', () => {
     const other = generateKeyPairSync('ed25519')
-    const unsigned = buildDesktopSelfCheckReport({
-      appVersion: APP_VERSION,
-      policy: desktopPolicySelfCheckStatus('/nonexistent/policy.json'),
-      nodeRuntime: { status: 'development', detail: null },
-      bootSnapshot: undefined,
-      unsignedReason: 'test',
-      viewKeys: [viewKey],
-    })
-    expect(() => signDesktopSelfCheckReport(unsigned, other.privateKey, [viewKey]))
-      .toThrow(/not one of the pinned diagnostics view keys/u)
-    const signed = signDesktopSelfCheckReport(unsigned, privateKey, [viewKey])
-    expect(() => signDesktopSelfCheckReport(signed, privateKey, [viewKey])).toThrow(/already signed/u)
+    // Signed with the real view key; only the administrator's pin is wrong.
+    const signed = reSignedPayload()
+    const report = JSON.parse(signed.reportText)
 
     const wrongPin = { keyId: viewKey.keyId, publicKey: other.publicKey.export({ type: 'spki', format: 'der' }).subarray(12).toString('base64') }
-    expect(verifyDesktopSelfCheckReport(signed, { trustedViewKeys: [wrongPin] }))
+    expect(verifyDesktopSelfCheckReport(report, { trustedViewKeys: [wrongPin] }))
       .toMatchObject({ ok: false, code: 'key-mismatch' })
-    expect(verifyDesktopSelfCheckReport(signed, { trustedViewKeys: [{ keyId: 'other-key', publicKey: viewKey.publicKey }] }))
+    expect(verifyDesktopSelfCheckReport(report, { trustedViewKeys: [{ keyId: 'other-key', publicKey: viewKey.publicKey }] }))
       .toMatchObject({ ok: false, code: 'unknown-key' })
-    expect(verifyDesktopSelfCheckReport(desktopSelfCheckReportText(signed))).toMatchObject({ ok: false, code: 'invalid-report' })
+    expect(verifyDesktopSelfCheckReport(desktopSelfCheckReportText(report))).toMatchObject({ ok: false, code: 'invalid-report' })
     expect(verifyDesktopSelfCheckReport(null)).toMatchObject({ ok: false, code: 'invalid-report' })
   })
 })
@@ -406,7 +425,7 @@ describe('diagnostics archive integration', () => {
     expect(zip.getEntries().map(entry => entry.entryName)).toContain(DESKTOP_SELF_CHECK_REPORT_ENTRY)
     const reportText = zip.readAsText(DESKTOP_SELF_CHECK_REPORT_ENTRY)
     const report = JSON.parse(reportText)
-    expect(report.unsigned.reason).toMatch(/development build/u)
+    expect(report.unsigned).toEqual({ reason: DESKTOP_SELF_CHECK_UNSIGNED_REASON })
     expect(report.bootVerification.available).toBe(true)
     expect(report.bootVerification.refused).toHaveLength(1)
     expect(report.bootVerification.manifestSequence).toBe(21)
@@ -415,15 +434,22 @@ describe('diagnostics archive integration', () => {
     expect(systemInfo).toContain('self-check-report-signed: false')
   })
 
-  it('verifies a signed report straight from the exported zip with the zero-dependency script', async () => {
+  it('verifies a re-signed report straight from the exported zip with the zero-dependency script', async () => {
     const userDataDir = temporaryDirectory('dsh-self-check-export-')
     writeSnapshot(userDataDir, lockedBootVerification())
-    const payload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
+    const unsignedPayload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
       bootSnapshotPath: desktopBootVerificationSnapshotPath(userDataDir),
       viewKeys: [viewKey],
-      signingKey: privateKey,
       now: () => new Date('2026-08-20T09:00:00.000Z'),
     })
+    // The client never signs (direction B); this fixture is signed the way the
+    // future centralized re-signing service will, so the script's verify path
+    // stays covered.
+    const reSigned = reSignReportFixture(JSON.parse(unsignedPayload.reportText), privateKey, viewKey.keyId)
+    const payload: DesktopSelfCheckExportPayload = {
+      reportText: desktopSelfCheckReportText(reSigned),
+      signed: true,
+    }
     const logs = join(userDataDir, 'logs')
     mkdirSync(logs)
     const out = await exportDiagnosticsZip(logs, userDataDir, { appVersion: APP_VERSION, selfCheck: payload })
@@ -447,16 +473,16 @@ describe('diagnostics archive integration', () => {
     expect(wrongPin.stderr).toContain('does not match the pinned --fingerprint')
   })
 
-  it('fails the script on tampered report content and unsigned development reports', async () => {
+  it('flags an unsigned report with exit 0 and fails only on tampered content or bad usage', async () => {
     const userDataDir = temporaryDirectory('dsh-self-check-export-')
     writeSnapshot(userDataDir, lockedBootVerification())
-    const payload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
+    const unsignedPayload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
       bootSnapshotPath: desktopBootVerificationSnapshotPath(userDataDir),
       viewKeys: [viewKey],
-      signingKey: privateKey,
       now: () => new Date('2026-08-20T09:00:00.000Z'),
     })
-    const tampered = JSON.parse(payload.reportText)
+    const reSigned = reSignReportFixture(JSON.parse(unsignedPayload.reportText), privateKey, viewKey.keyId)
+    const tampered = JSON.parse(desktopSelfCheckReportText(reSigned))
     tampered.bootVerification.allowed = []
     const tamperedPath = join(userDataDir, 'tampered-report.json')
     writeFileSync(tamperedPath, canonicalJsonText(tampered))
@@ -464,16 +490,24 @@ describe('diagnostics archive integration', () => {
     expect(tamperedRun.status).toBe(1)
     expect(tamperedRun.stderr).toContain('signature verification failed')
 
-    const unsignedPayload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
+    const unsignedPayloadPlain = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
       bootSnapshotPath: desktopBootVerificationSnapshotPath(userDataDir),
     })
     const unsignedPath = join(userDataDir, 'unsigned-report.json')
-    writeFileSync(unsignedPath, unsignedPayload.reportText)
-    const unsignedRun = spawnSync(process.execPath, [verifyScript, unsignedPath], { encoding: 'utf8' })
-    expect(unsignedRun.status).toBe(1)
-    expect(unsignedRun.stderr).toContain('unsigned')
+    writeFileSync(unsignedPath, unsignedPayloadPlain.reportText)
+    const unsignedReportRun = spawnSync(process.execPath, [verifyScript, unsignedPath], { encoding: 'utf8' })
+    expect(unsignedReportRun.status).toBe(0)
+    expect(unsignedReportRun.stderr).toBe('')
+    expect(unsignedReportRun.stdout).toContain('UNSIGNED self-check report')
+    expect(unsignedReportRun.stdout).toContain(DESKTOP_SELF_CHECK_UNSIGNED_REASON)
 
     const usage = spawnSync(process.execPath, [verifyScript], { encoding: 'utf8' })
     expect(usage.status).toBe(2)
+    const missingFingerprint = spawnSync(process.execPath, [verifyScript, unsignedPath, '--fingerprint'], { encoding: 'utf8' })
+    expect(missingFingerprint.status).toBe(2)
+    expect(missingFingerprint.stderr).toContain('--fingerprint requires a value')
+    const missingKeyId = spawnSync(process.execPath, [verifyScript, unsignedPath, '--key-id'], { encoding: 'utf8' })
+    expect(missingKeyId.status).toBe(2)
+    expect(missingKeyId.stderr).toContain('--key-id requires a value')
   })
 })
