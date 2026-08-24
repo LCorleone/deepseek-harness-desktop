@@ -3668,7 +3668,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@deepseek-ai/dsh-token-meter@npm:0.1.1-rc.2, @deepseek-ai/dsh-token-meter@npm:^0.1.1-rc.2":
+"@deepseek-ai/dsh-token-meter@npm:0.1.1-rc.2":
   version: 0.1.1-rc.2
   resolution: "@deepseek-ai/dsh-token-meter@npm:0.1.1-rc.2"
   dependencies:
@@ -3682,6 +3682,23 @@ __metadata:
     "@deepseek-ai/dsh-session": ^0.1.1-rc.2
     "@deepseek-ai/dsh-session-projection": ^0.1.1-rc.2
   checksum: 10c0/36821698fb949e23fdea70b0e457de7b37752fcfed0441e3fc6d5c0a6cb1e9dbe642a220bc95c4b583afff2c38eaffc8f9307e52540f6d45b46731f1cb8c415b
+  languageName: node
+  linkType: hard
+
+"@deepseek-ai/dsh-token-meter@patch:@deepseek-ai/dsh-token-meter@npm%3A0.1.1-rc.2#./patches/dsh-token-meter@0.1.1-rc.2.patch::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.1-rc.2
+  resolution: "@deepseek-ai/dsh-token-meter@patch:@deepseek-ai/dsh-token-meter@npm%3A0.1.1-rc.2#./patches/dsh-token-meter@0.1.1-rc.2.patch::version=0.1.1-rc.2&hash=ff06c1&locator=deepseek-harness-desktop%40workspace%3A."
+  dependencies:
+    "@deepseek-ai/schemastery": "npm:^3.18.1"
+    zod: "npm:^4.4.3"
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-compaction": ^0.1.1-rc.2
+    "@deepseek-ai/dsh-invariants": ^0.1.1-rc.2
+    "@deepseek-ai/dsh-llm": ^0.1.1-rc.2
+    "@deepseek-ai/dsh-session": ^0.1.1-rc.2
+    "@deepseek-ai/dsh-session-projection": ^0.1.1-rc.2
+  checksum: 10c0/6df3ca60c881f186357ac53c6ff9c0a0805a7dd6ce08f9c4c8a7b6cdddf00c69f19659b4800bb13a71bf0542d5beddab6ff681b783f17806e37bc27f9cab277b
   languageName: node
   linkType: hard
 
