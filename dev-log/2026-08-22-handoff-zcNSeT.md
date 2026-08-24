@@ -17,9 +17,10 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 | 评审修复 ×4 | 详见各 Phase 段 | 894e82223f, c9e8c773e4, e9c2785877, b5ef752291 |
 
 ## Current State
-- **Working on**: 无——计划交付完成
-- **Blocked on**: 无（CI 由用户盯，最后一批 = `e9c2785877..b5ef752291`）
-- **Known issues**: 上游 CI 有失败记录（Action required，不影响本仓）；本容器 npmRebuild 失败（g++ 无 gnu++20），发布构建用 `--config.npmRebuild=false` 绕过
+- **Working on**: 计划交付 + L2 接线迭代完成；Windows Package CI 全绿（run 32708698357，8m28s，安装包含 L2 全链 + 真签名 manifest）
+- **密钥状态**：会话内生成过两对演示钥，均已暴露于会话输出——**生产前必须作废重生成**；当前策略钉 c469 指纹，样例 manifest 用它签
+- **上游跟进结论（2026-08-24 查）**：master 停在 `b150a551b8`（0.1.1-rc.2，8/21），与我们钉的完全一致，零新提交；最新 release 同版（图像 Files API 体验向，无安装器改动）；issues 公开列表为空。**安装耗时问题无新上游可拉**——若再复现慢装，方向转本机 EDR/杀软扫描与 NSIS 逐文件解压特性
+- **Blocked on**: 无
 
 ## Phase 1 · L1 客户端策略锁定
 - 6 卡 + 接线（见上表）。锁定语义：策略资产构建期内嵌（dev/release 双变体，release=locked 为默认）；effective provider 钉死 `community-market`（本仓市场壳）；source 锁死公司源；安装 reject-all（P2 前全拒绝）；CLI add 拒绝；home patch 拒启。
