@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { archivedAsarPath, isPackagedApplicationPath } from './packaged-runtime-path.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const POLICY_DIRECTORY_NAME = 'policy'
@@ -149,16 +150,37 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   })
 }
 
-/** Resolve the policy asset shipped beside a built module inside `lib/`. */
+/**
+ * Resolve the policy asset shipped beside a built module inside `lib/`.
+ *
+ * Resolution prefers the in-archive copy: when this module was loaded from the
+ * physical `app.asar.unpacked` tree (profile-fallback symlinks resolve package
+ * exports there, even inside the Electron process), the returned path points
+ * at the virtual `app.asar` entry instead of the user-writable physical file.
+ * Only the Electron process can read that path, which is exactly the main
+ * process — the only caller allowed to read the policy asset directly; the
+ * bundled-Node CLI child receives the policy through the environment hand-off
+ * below instead of re-reading any file.
+ *
+ * Advisory positioning: `lib/**` is dual-homed (in `app.asar` and physically
+ * under `app.asar.unpacked`), and Electron serves in-archive reads of unpacked
+ * entries from the physical file, so this pins the resolution to the packaged
+ * layout rather than adding a new boundary — it removes the trivially
+ * editable-JSON channel for main-process consumers and leaves the higher-cost
+ * tampering surfaces (rewriting application code or the archive) to code
+ * signing.
+ * @param moduleUrl - URL of a module emitted below the package's `lib` directory.
+ * @returns the policy asset path, in-archive when a packaged layout is detected.
+ */
 export function desktopPolicyAssetPath(moduleUrl: string): string {
   if (typeof moduleUrl !== 'string' || moduleUrl.length === 0) {
     throw new TypeError(`${BIN_NAME}: desktop policy module URL must be a non-empty file URL`)
   }
-  return join(
+  return archivedAsarPath(join(
     dirname(fileURLToPath(new URL(moduleUrl))),
     POLICY_DIRECTORY_NAME,
     POLICY_FILENAME,
-  )
+  ))
 }
 
 /** Read and strictly parse one policy asset; failures throw instead of degrading. */
@@ -192,3 +214,125 @@ export const desktopPolicyConstants = Object.freeze({
   policyRelativeAssetPath: `${POLICY_DIRECTORY_NAME}/${POLICY_FILENAME}`,
   maxPolicyBytes: MAX_POLICY_BYTES,
 })
+
+/**
+ * Environment names of the policy hand-off the Electron launcher injects into
+ * bundled-Node CLI children (P3 fix: the CLI process cannot read inside
+ * `app.asar`, and the physical `app.asar.unpacked` policy copy is
+ * user-writable, so the CLI must not re-read it).
+ *
+ * Format: four case-insensitive environment keys carrying a JSON-free
+ * encoding of the policy — `1`/`0` for `locked`, the bare https origin or an
+ * empty string for content mode, the manifest URL verbatim, and
+ * comma-separated `keyId:fingerprint` trust-root pairs (both components are
+ * constrained to alphabets without commas, colons inside keyIds, or any
+ * quoting characters, so the values stay safe inside generated POSIX and
+ * batch shims). The decoding side re-parses through the strict policy
+ * parser, so any tampered or malformed hand-off fails closed.
+ *
+ * Advisory positioning: the parent that sets these variables is trusted, so an
+ * actor who can rewrite the physical `desktop-cli.js` under
+ * `app.asar.unpacked` can change how they are consumed — the same permission
+ * as rewriting any shipped JavaScript. The hand-off removes the cheaper
+ * channel of editing a plain JSON file with a text editor; the remaining
+ * surface is code-level tampering, which the asar-integrity fuse and code
+ * signing (release builds) address at their own advisory level.
+ */
+export const DESKTOP_POLICY_ENVIRONMENT = Object.freeze({
+  locked: 'DSH_DESKTOP_POLICY_LOCKED',
+  catalogOrigin: 'DSH_DESKTOP_POLICY_CATALOG_ORIGIN',
+  manifestUrl: 'DSH_DESKTOP_POLICY_MANIFEST_URL',
+  trustRoots: 'DSH_DESKTOP_POLICY_TRUST_ROOTS',
+})
+
+/** Decode one `keyId:fingerprint` trust-root pair of the environment hand-off. */
+function parseTrustRootPair(pair: string): DesktopPolicyTrustRoot {
+  const separator = pair.lastIndexOf(':')
+  if (separator <= 0) {
+    throw invalidPolicy(`trust-root environment pairs must be keyId:fingerprint (got ${JSON.stringify(pair)})`)
+  }
+  return { keyId: pair.slice(0, separator), fingerprint: pair.slice(separator + 1) }
+}
+
+/**
+ * Encode one policy as the environment hand-off injected into CLI children.
+ * @param policy - the policy the Electron main process already read and parsed.
+ * @returns environment entries safe for POSIX assignments and batch `set` lines.
+ */
+export function desktopPolicyEnvironmentEntries(
+  policy: DesktopPolicy,
+): Record<string, string> {
+  return {
+    [DESKTOP_POLICY_ENVIRONMENT.locked]: policy.locked ? '1' : '0',
+    [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: policy.companyCatalogOrigin ?? '',
+    [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: policy.companyManifestUrl,
+    [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: policy.trustRoots
+      .map(trustRoot => `${trustRoot.keyId}:${trustRoot.fingerprint}`)
+      .join(','),
+  }
+}
+
+/** Remove and return one case-insensitive environment hand-off value. */
+function takeEnvironmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
+  let result: string | undefined
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() !== name) continue
+    const value = environment[key]
+    if (value !== undefined && result !== undefined && value !== result) {
+      throw invalidPolicy(`conflicting ${name} environment values`)
+    }
+    result ??= value
+    delete environment[key]
+  }
+  return result
+}
+
+/**
+ * Consume the launcher-injected policy hand-off and decode it strictly.
+ *
+ * The four hand-off keys are removed from the environment so the upstream CLI
+ * and its children never inherit Desktop-owned policy markers. Behavior by
+ * layout:
+ *
+ * - hand-off present — decoded and strictly re-parsed; any malformed value
+ *   throws (fail closed, never a silent downgrade);
+ * - hand-off absent in a packaged layout (`app.asar` beside this module) —
+ *   throws instead of falling back to the user-writable physical asset;
+ * - hand-off absent in an unpackaged development checkout — returns
+ *   `undefined` so the caller keeps reading the shipped `lib/` asset.
+ *
+ * @param environment - mutable process environment of the CLI child.
+ * @param moduleUrl - URL of the module deciding the packaged-layout check.
+ * @returns the decoded policy, or undefined when a dev run must fall back to the asset.
+ */
+export function desktopPolicyFromEnvironment(
+  environment: NodeJS.ProcessEnv,
+  moduleUrl: string = import.meta.url,
+): DesktopPolicy | undefined {
+  const locked = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.locked)
+  const catalogOrigin = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.catalogOrigin)
+  const manifestUrl = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.manifestUrl)
+  const trustRoots = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.trustRoots)
+  const present = [locked, catalogOrigin, manifestUrl, trustRoots].filter(value => value !== undefined)
+  if (present.length === 0) {
+    if (isPackagedApplicationPath(fileURLToPath(new URL(moduleUrl)))) {
+      throw invalidPolicy(
+        'the desktop launcher did not inject the policy environment hand-off;'
+        + ' a packaged CLI child refuses to read the user-writable policy asset',
+      )
+    }
+    return undefined
+  }
+  if (present.length !== 4) {
+    throw invalidPolicy('the policy environment hand-off must carry all four entries')
+  }
+  const trustRootPairs = trustRoots!.length === 0 ? [] : trustRoots!.split(',')
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: catalogOrigin!.length === 0 ? null : catalogOrigin,
+    companyManifestUrl: manifestUrl!,
+    locked: locked === '1' ? true : locked === '0' ? false : undefined,
+    trustRoots: trustRootPairs.map(pair => parseTrustRootPair(pair)),
+  })
+}

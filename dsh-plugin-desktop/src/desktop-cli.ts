@@ -10,7 +10,7 @@ import {
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
-import { readDesktopPolicy } from './desktop-policy.ts'
+import { desktopPolicyFromEnvironment, readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
@@ -233,7 +233,15 @@ export async function runDesktopDshCli(
   const homeDir = environment[DSH_HOME]
   const installCommand = pluginAddCommand(argv.slice(2))
   if (installCommand !== undefined) {
-    const effectivePolicy = policy ?? readDesktopPolicy()
+    // Locked state and trust roots arrive through the launcher-injected
+    // environment hand-off: this process runs under the bundled Node binary,
+    // which cannot read inside app.asar, and the physical policy copy under
+    // app.asar.unpacked is user-writable. A packaged launch without the
+    // hand-off fails closed inside `desktopPolicyFromEnvironment`; only an
+    // unpackaged development checkout falls back to the shipped asset.
+    const effectivePolicy = policy
+      ?? desktopPolicyFromEnvironment(environment)
+      ?? readDesktopPolicy()
     if (effectivePolicy.locked) {
       // Signed-catalog channel (P2-5): only a verified, unrevoked, exact
       // `<package>@<version>` entry may proceed; every denial stays here.

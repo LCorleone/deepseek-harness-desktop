@@ -43,6 +43,25 @@ export function unpackedAsarPath(filename: string): string {
 }
 
 /**
+ * Map one physical `app.asar.unpacked` path back to its in-archive virtual path.
+ *
+ * Only an Electron process can read the returned path: its patched filesystem
+ * serves in-archive entries transparently, while plain Node children (the
+ * bundled-Node CLI bootstrap) cannot. Callers handing paths to such children
+ * must keep using {@link unpackedAsarPath} instead.
+ * @param filename - absolute runtime path with native or POSIX separators.
+ * @returns the in-archive virtual path, or the original path outside a package.
+ */
+export function archivedAsarPath(filename: string): string {
+  return filename.replace(/([\\/])app\.asar\.unpacked\1/u, '$1app.asar$1')
+}
+
+/** Whether one absolute path sits inside a packaged application tree. */
+export function isPackagedApplicationPath(filename: string): boolean {
+  return /([\\/])app\.asar(\.unpacked)?([\\/]|$)/u.test(filename)
+}
+
+/**
  * Resolve one dependency entry from a built desktop module.
  * @param moduleUrl - URL of a module emitted below the package's `lib` directory.
  * @param dependencyEntry - package subpath resolved through Node module lookup.

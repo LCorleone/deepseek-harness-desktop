@@ -3,8 +3,11 @@
  *
  * The hook runs before `extraResources` are copied, so the staged command at
  * `build/node-runtime` lands beside `app.asar` as `resources/node-runtime`.
- * A universal macOS build packs one temporary application per architecture;
- * each pass stages its own architecture at the same path and `@electron/universal`
+ * The same run writes `lib/node-runtime-sha256.json` — the digest manifest the
+ * packaged runtime verifies the bundled command against — before Electron
+ * Builder collects `lib/**` into the application archive. A universal macOS
+ * build packs one temporary application per architecture; each pass stages its
+ * own architecture at the same path and `@electron/universal`
  * merges the two Node commands with `lipo` into a universal binary.
  */
 

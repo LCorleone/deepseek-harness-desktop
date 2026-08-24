@@ -326,6 +326,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       if (electronVersion === undefined) {
         throw new Error('dsh-plugin-desktop: terminal requires the Electron runtime version')
       }
+      const terminalSpec: DesktopTerminalSpec = spec
       openDesktopTerminal({
         platform: this.platform,
         nodeExecutable: resolveDesktopNodeExecutable(import.meta.url, {
@@ -335,6 +336,9 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         dshBootstrapPath: unpackedAsarPath(
           fileURLToPath(new URL('./desktop-cli.js', import.meta.url)),
         ),
+        ...(terminalSpec.cliPolicyEnvironment === undefined
+          ? {}
+          : { cliPolicyEnvironment: terminalSpec.cliPolicyEnvironment }),
         pnpmBinPath: packagedDependencyPath(import.meta.url, 'pnpm/bin/pnpm.mjs'),
         electronVersion,
         profileName: spec.profileName,

@@ -7,10 +7,13 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   desktopPolicyAssetPath,
+  desktopPolicyEnvironmentEntries,
+  desktopPolicyFromEnvironment,
+  DESKTOP_POLICY_ENVIRONMENT,
   parseDesktopPolicy,
   readDesktopPolicy,
 } from '../src/desktop-policy.ts'
@@ -184,6 +187,26 @@ describe('desktop policy asset location', () => {
     expect(assetPath.endsWith(join('policy', 'desktop-policy.json'))).toBe(true)
   })
 
+  it('prefers the in-archive asset when the module loads from the unpacked tree', () => {
+    const unpackedModuleUrl = pathToFileURL(join(
+      '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+      'app.asar.unpacked', 'lib', 'desktop-policy.js',
+    )).href
+    const archiveModuleUrl = pathToFileURL(join(
+      '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+      'app.asar', 'lib', 'desktop-policy.js',
+    )).href
+
+    expect(desktopPolicyAssetPath(unpackedModuleUrl)).toBe(join(
+      '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+      'app.asar', 'lib', 'policy', 'desktop-policy.json',
+    ))
+    expect(desktopPolicyAssetPath(archiveModuleUrl)).toBe(join(
+      '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+      'app.asar', 'lib', 'policy', 'desktop-policy.json',
+    ))
+  })
+
   it('rejects module URLs that are not file URLs', () => {
     expect(() => desktopPolicyAssetPath('lib/index.js')).toThrow()
     expect(() => desktopPolicyAssetPath('')).toThrow()
@@ -257,5 +280,101 @@ describe('shipped desktop policy assets', () => {
     expect(policy.allowHomePatch).toBe(false)
     expect(policy.allowManualPluginAdd).toBe(false)
     expect(policy.trustRoots).toEqual([])
+  })
+})
+
+describe('desktop policy environment hand-off', () => {
+  const packagedModuleUrl = pathToFileURL(join(
+    '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+    'app.asar.unpacked', 'lib', 'desktop-cli.js',
+  )).href
+  const devModuleUrl = pathToFileURL(join('/workspace', 'dsh-plugin-desktop', 'lib', 'desktop-cli.js')).href
+
+  it('round-trips a locked content-mode policy through the four entries', () => {
+    const policy = parseDesktopPolicy({
+      ...companyPolicy(),
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+      trustRoots: [{ keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) }],
+    })
+
+    const environment: NodeJS.ProcessEnv = { KEEP: 'value', ...desktopPolicyEnvironmentEntries(policy) }
+    const decoded = desktopPolicyFromEnvironment(environment, devModuleUrl)
+
+    expect(decoded).toEqual(policy)
+    // The hand-off is consumed: the upstream CLI never inherits the markers.
+    expect(environment).toEqual({ KEEP: 'value' })
+  })
+
+  it('round-trips an unlocked network-catalog policy with several trust roots', () => {
+    const policy = parseDesktopPolicy({
+      ...companyPolicy(),
+      locked: false,
+      trustRoots: [
+        { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
+        { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
+      ],
+    })
+
+    expect(desktopPolicyFromEnvironment(
+      desktopPolicyEnvironmentEntries(policy),
+      devModuleUrl,
+    )).toEqual(policy)
+  })
+
+  it('decodes case-insensitive keys and rejects conflicting duplicates', () => {
+    const entries = desktopPolicyEnvironmentEntries(parseDesktopPolicy(companyPolicy()))
+    const cased: NodeJS.ProcessEnv = {
+      dsh_desktop_policy_locked: entries[DESKTOP_POLICY_ENVIRONMENT.locked]!,
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: entries[DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]!,
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: entries[DESKTOP_POLICY_ENVIRONMENT.manifestUrl]!,
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: entries[DESKTOP_POLICY_ENVIRONMENT.trustRoots]!,
+    }
+
+    expect(desktopPolicyFromEnvironment(cased, devModuleUrl)?.locked).toBe(true)
+    expect(Object.keys(cased)).toEqual([])
+
+    expect(() => desktopPolicyFromEnvironment({
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      dsh_desktop_policy_locked: '0',
+    }, devModuleUrl)).toThrow('conflicting DSH_DESKTOP_POLICY_LOCKED environment values')
+  })
+
+  it('fails closed without a hand-off in the packaged layout', () => {
+    expect(() => desktopPolicyFromEnvironment({}, packagedModuleUrl))
+      .toThrow('did not inject the policy environment hand-off')
+    expect(() => desktopPolicyFromEnvironment({ KEEP: 'value' }, packagedModuleUrl))
+      .toThrow('refuses to read the user-writable policy asset')
+  })
+
+  it('returns undefined without a hand-off in a development layout', () => {
+    expect(desktopPolicyFromEnvironment({}, devModuleUrl)).toBeUndefined()
+  })
+
+  it.each([
+    ['a partial hand-off', { [DESKTOP_POLICY_ENVIRONMENT.locked]: '1' }],
+    ['a non-boolean locked flag', {
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: 'yes',
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
+    }],
+    ['a tampered trust root', {
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: 'company-2026-a:not-a-fingerprint',
+    }],
+    ['a tampered catalog origin', {
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: 'http://market.company.example',
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'https://market.company.example/catalog-manifest.json',
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
+    }],
+  ])('fails closed on %s', (_label, environment) => {
+    expect(() => desktopPolicyFromEnvironment(
+      environment as NodeJS.ProcessEnv,
+      devModuleUrl,
+    )).toThrow()
   })
 })

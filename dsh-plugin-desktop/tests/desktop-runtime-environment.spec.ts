@@ -365,6 +365,48 @@ describe('desktop Host pnpm runtime', () => {
 })
 
 describe('desktop Host dsh runtime', () => {
+  it('bakes the policy environment hand-off into the generated dsh command', () => {
+    const root = temporaryDirectory()
+    const stateDir = join(root, 'runtime')
+
+    const installation = installDesktopDshRuntime({
+      platform: 'win32',
+      nodeExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe',
+      dshBootstrapPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-cli.js',
+      cliPolicyEnvironment: {
+        DSH_DESKTOP_POLICY_LOCKED: '1',
+        DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '',
+        DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
+        DSH_DESKTOP_POLICY_TRUST_ROOTS: 'company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      profileName: 'desktop',
+      homeDir: join(root, 'home'),
+      installRecoveryStatePath: join(root, 'state.json'),
+      stateDir,
+      environment: { PATH: '/usr/bin' },
+    })
+
+    const shim = readFileSync(installation.dshShimPath, 'utf8')
+    expect(shim).toContain('set "DSH_DESKTOP_POLICY_LOCKED=1"')
+    expect(shim).toContain('set "DSH_DESKTOP_POLICY_CATALOG_ORIGIN="')
+    expect(shim).toContain('set "DSH_DESKTOP_POLICY_MANIFEST_URL=company-market/catalog-manifest.json"')
+    expect(shim).toContain(
+      'set "DSH_DESKTOP_POLICY_TRUST_ROOTS=company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+    )
+    // Values the batch escaper rejects fail loud instead of reaching the shim.
+    expect(() => installDesktopDshRuntime({
+      platform: 'win32',
+      nodeExecutable: 'C:\\node.exe',
+      dshBootstrapPath: 'C:\\desktop-cli.js',
+      cliPolicyEnvironment: { DSH_DESKTOP_POLICY_LOCKED: '"injected"' },
+      profileName: 'desktop',
+      homeDir: join(root, 'home'),
+      installRecoveryStatePath: join(root, 'state.json'),
+      stateDir: join(root, 'unsafe'),
+      environment: { PATH: '/usr/bin' },
+    })).toThrow('must not contain quotes or newlines')
+  })
+
   it.runIf(process.platform === 'win32')('makes the active profile available to Host plugin child processes', () => {
     const root = temporaryDirectory()
     const stateDir = join(root, 'runtime')

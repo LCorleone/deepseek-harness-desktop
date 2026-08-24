@@ -118,6 +118,12 @@ export interface DesktopTerminalSpec {
   profileDir: string
   /** Active DSH home shared with the desktop launcher. */
   homeDir: string
+  /**
+   * Policy environment hand-off baked into the generated terminal `dsh` shim;
+   * the launcher encodes the already-read company policy here because the
+   * bundled-Node CLI child cannot read the in-archive policy asset.
+   */
+  cliPolicyEnvironment?: Readonly<Record<string, string>>
 }
 
 /** Values the desktop-shell plugin hands to the Electron adapter. */

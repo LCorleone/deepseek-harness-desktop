@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import AdmZip from 'adm-zip'
+import { FuseV1Options } from '@electron/fuses'
 import {
   afterPack,
   BUNDLED_NODE_RESOURCE_DIRECTORY,
@@ -16,6 +17,7 @@ import {
   REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES,
   resolveBundledNodeResourcePath,
   resolvePackagedAsarPath,
+  resolvePackagedExecutablePath,
   resolvePackagedResourcesDirectory,
   resolvePackagedUnpackedRoot,
   readCompanyReleaseChecklistSources,
@@ -27,6 +29,8 @@ import {
   verifyBundledNodeRuntime,
   verifyCompanyReleaseChecklist,
   verifyElectronFuseStage,
+  verifyElectronFuseWire,
+  verifyPackagedFuseWire,
   verifyRunAsNodeFuseStage,
   verifyUnpackedArchiveMirror,
   verifyPackagedRuntime,
@@ -49,6 +53,26 @@ function context(
     electronPlatformName,
     ...(arch === undefined ? {} : { arch }),
     packager: { appInfo: { productFilename: 'DSH Desktop' } },
+  }
+}
+
+/** Fuse wire bytes: `'0'` disabled, `'1'` enabled (see @electron/fuses). */
+const FUSE_DISABLED = 0x30
+const FUSE_ENABLED = 0x31
+const FUSE_REMOVED = 0x72
+
+/** Fuse wire a correctly staged binary carries, keyed by `FuseV1Options`. */
+function requiredFuseWire(): Record<string, unknown> {
+  return {
+    version: '1',
+    [FuseV1Options.RunAsNode]: FUSE_DISABLED,
+    [FuseV1Options.EnableCookieEncryption]: FUSE_ENABLED,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: FUSE_DISABLED,
+    [FuseV1Options.EnableNodeCliInspectArguments]: FUSE_DISABLED,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: FUSE_ENABLED,
+    [FuseV1Options.OnlyLoadAppFromAsar]: FUSE_ENABLED,
+    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: FUSE_DISABLED,
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: FUSE_DISABLED,
   }
 }
 
@@ -134,6 +158,14 @@ describe('packaged desktop runtime verification', () => {
           calls.push('fuse')
           return REQUIRED_ELECTRON_FUSES
         },
+        readFuseWire: async executablePath => {
+          calls.push(`wire:${executablePath}`)
+          return requiredFuseWire()
+        },
+        flipFuseWire: async executablePath => {
+          calls.push(`flip:${executablePath}`)
+          return 0
+        },
       },
       () => { calls.push('checklist') },
     )
@@ -142,6 +174,8 @@ describe('packaged desktop runtime verification', () => {
       'static',
       join('/build', 'resources', BUNDLED_NODE_RESOURCE_DIRECTORY, 'node.exe'),
       'fuse',
+      `flip:${join('/build', 'DSH Desktop.exe')}`,
+      `wire:${join('/build', 'DSH Desktop.exe')}`,
       'checklist',
       resolvePackagedUnpackedRoot(runtimeContext),
     ])
@@ -155,9 +189,69 @@ describe('packaged desktop runtime verification', () => {
       runtimeContext,
       () => {},
       async () => {},
-      { exists: () => true, readFuses: () => REQUIRED_ELECTRON_FUSES },
+      { exists: () => true, readFuses: () => REQUIRED_ELECTRON_FUSES, flipFuseWire: async () => 0, readFuseWire: async () => requiredFuseWire() },
       failing,
     )).rejects.toThrow('checklist rejected this build')
+  })
+
+  it('rejects the package when the binary fuse wire deviates from the release posture', async () => {
+    const runtimeContext = context('/build', 'win32')
+
+    await expect(afterPack(
+      runtimeContext,
+      () => {},
+      async () => {},
+      {
+        exists: () => true,
+        readFuses: () => REQUIRED_ELECTRON_FUSES,
+        flipFuseWire: async () => 0,
+        readFuseWire: async () => ({
+          ...requiredFuseWire(),
+          [FuseV1Options.RunAsNode]: FUSE_ENABLED,
+        }),
+      },
+      () => {},
+    )).rejects.toThrow('runAsNode: binary=ENABLE required=false')
+  })
+
+  it('reads and verifies the fuse wire of the packaged application binary', async () => {
+    expect(resolvePackagedExecutablePath(context('/build', 'darwin'))).toBe(
+      join('/build', 'DSH Desktop.app', 'Contents', 'MacOS', 'DSH Desktop'),
+    )
+    expect(resolvePackagedExecutablePath(context('/build', 'win32'))).toBe(
+      join('/build', 'DSH Desktop.exe'),
+    )
+    expect(resolvePackagedExecutablePath(context('/build', 'linux'))).toBe(
+      join('/build', 'dsh-plugin-desktop'),
+    )
+
+    expect(() => verifyElectronFuseWire(requiredFuseWire())).not.toThrow()
+    expect(() => verifyElectronFuseWire({
+      ...requiredFuseWire(),
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: FUSE_DISABLED,
+    })).toThrow('enableEmbeddedAsarIntegrityValidation: binary=DISABLE required=true')
+    // REMOVED and INHERIT are not acceptable wire states either.
+    expect(() => verifyElectronFuseWire({
+      ...requiredFuseWire(),
+      [FuseV1Options.OnlyLoadAppFromAsar]: FUSE_REMOVED,
+    })).toThrow('onlyLoadAppFromAsar: binary=REMOVED required=true')
+    expect(() => verifyElectronFuseWire({ ...requiredFuseWire(), version: '2' }))
+      .toThrow('fuse wire version')
+
+    // The hook stages the required wire itself (Electron Builder flips only
+    // after custom afterPack hooks) and then reads it back.
+    const flip = vi.fn(async () => 0)
+    const read = vi.fn(async () => requiredFuseWire())
+    await verifyPackagedFuseWire(context('/build', 'win32'), read, flip)
+    expect(flip).toHaveBeenCalledWith(join('/build', 'DSH Desktop.exe'))
+    expect(read).toHaveBeenCalledWith(join('/build', 'DSH Desktop.exe'))
+
+    await expect(verifyPackagedFuseWire(context('/build', 'win32'), async () => {
+      throw new Error('sentinel missing')
+    }, async () => 0)).rejects.toThrow('failed to read the fuse wire')
+    await expect(verifyPackagedFuseWire(context('/build', 'win32'), async () => requiredFuseWire(), async () => {
+      throw new Error('readonly filesystem')
+    })).rejects.toThrow('failed to stage the required fuse wire')
   })
 
   it('requires the bundled Node command beside the packaged app.asar', () => {
@@ -241,34 +335,50 @@ describe('packaged desktop runtime verification', () => {
   })
 
   it('accepts the current repository as a company release candidate', () => {
+    const runtimeContext = context('/build', 'win32')
+    const readPackagedFile = (filename: string) => {
+      expect(filename).toBe(join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json'))
+      return readFileSync(new URL('../src/policy/desktop-policy.release.json', import.meta.url), 'utf8')
+    }
+
     expect(() => verifyCompanyReleaseChecklist(
-      readCompanyReleaseChecklistSources({ appInfo: { productFilename: 'DSH Desktop' } }),
+      readCompanyReleaseChecklistSources(runtimeContext, undefined, readPackagedFile),
     )).not.toThrow()
   })
 
-  it('reads the checklist sources from injectable repository files', () => {
+  it('reads the checklist sources from injectable repository and packaged files', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-release-checklist-'))
     try {
       mkdirSync(join(root, 'src', 'policy'), { recursive: true })
+      mkdirSync(join(root, 'app.asar.unpacked', 'lib', 'policy'), { recursive: true })
       writeFileSync(
         join(root, 'package.json'),
         JSON.stringify({ build: { electronFuses: REQUIRED_ELECTRON_FUSES } }),
       )
+      const releasePolicyText = `${JSON.stringify({ locked: true, trustRoots: [] })}\n`
+      writeFileSync(join(root, 'src', 'policy', 'desktop-policy.release.json'), releasePolicyText)
       writeFileSync(
-        join(root, 'src', 'policy', 'desktop-policy.release.json'),
-        JSON.stringify({ locked: true, trustRoots: [] }),
+        join(root, 'app.asar.unpacked', 'lib', 'policy', 'desktop-policy.json'),
+        releasePolicyText,
       )
       writeFileSync(join(root, 'src', 'update-verification.ts'), '// placeholder source\n')
       writeFileSync(join(root, 'src', 'electron-runtime.ts'), '// placeholder source\n')
       writeFileSync(join(root, 'src', 'update-lifecycle.ts'), '// placeholder source\n')
       const read = (relativePath: string) => readFileSync(join(root, relativePath), 'utf8')
+      const packagedPolicyPath = join(root, 'app.asar.unpacked', 'lib', 'policy', 'desktop-policy.json')
+      const readPackagedFile = (filename: string) => {
+        expect(filename).toBe(join('/build', 'resources', 'app.asar.unpacked', 'lib', 'policy', 'desktop-policy.json'))
+        return readFileSync(packagedPolicyPath, 'utf8')
+      }
 
       const sources = readCompanyReleaseChecklistSources(
-        { appInfo: { productFilename: 'DSH Desktop' } },
+        context('/build', 'win32'),
         read,
+        readPackagedFile,
       )
       expect(sources.manifestFuses).toEqual(REQUIRED_ELECTRON_FUSES)
       expect(sources.releasePolicy).toEqual({ locked: true, trustRoots: [] })
+      expect(sources.packagedPolicy).toEqual({ locked: true, trustRoots: [] })
       expect(sources.updateVerificationSource).toBe('// placeholder source\n')
       expect(sources.electronRuntimeSource).toBe('// placeholder source\n')
       expect(sources.updateLifecycleSource).toBe('// placeholder source\n')
@@ -294,6 +404,7 @@ describe('packaged desktop runtime verification', () => {
     const complete = (): CompanyReleaseChecklistSources => ({
       manifestFuses: { ...REQUIRED_ELECTRON_FUSES },
       releasePolicy: { locked: true },
+      packagedPolicy: { locked: true },
       updateVerificationSource: markedTrustRootsSource,
       electronRuntimeSource: wiredRuntimeSource,
       updateLifecycleSource: wiredLifecycleSource,
@@ -306,6 +417,25 @@ describe('packaged desktop runtime verification', () => {
       ...complete(),
       updateVerificationSource: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: \'release-2026\', fingerprint: \'a\'.repeat(64) }]',
     })).not.toThrow()
+
+    // A multi-line pinned array passes, and a multi-line empty array without
+    // the marker fails — the declaration matcher must cross line boundaries.
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateVerificationSource: [
+        '/** doc */',
+        'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [',
+        "  { keyId: 'release-2026', fingerprint: 'a'.repeat(64) },",
+        ']',
+      ].join('\n'),
+    })).not.toThrow()
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateVerificationSource: [
+        'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [',
+        '] as const',
+      ].join('\n'),
+    })).toThrow(`must carry the explicit "${UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER}" marker`)
 
     // A mistyped or missing fuse key fails even when every staged value matches.
     expect(() => verifyCompanyReleaseChecklist({
@@ -321,6 +451,22 @@ describe('packaged desktop runtime verification', () => {
       .toThrow('desktop-policy.release.json must exist with locked=true')
     expect(() => verifyCompanyReleaseChecklist({ ...complete(), releasePolicy: null }))
       .toThrow('desktop-policy.release.json must exist with locked=true')
+
+    // The packaged tree must carry the same locked release policy (P3 fix).
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), packagedPolicy: { locked: false } }))
+      .toThrow('app.asar.unpacked/lib/policy/desktop-policy.json must exist with locked=true')
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), packagedPolicy: null }))
+      .toThrow('app.asar.unpacked/lib/policy/desktop-policy.json must exist with locked=true')
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      releasePolicy: { trustRoots: [], locked: true },
+      packagedPolicy: { locked: true, trustRoots: [] },
+    })).not.toThrow()
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      releasePolicy: { locked: true, trustRoots: [{ keyId: 'company-2026', fingerprint: 'a'.repeat(64) }] },
+      packagedPolicy: { locked: true, trustRoots: [] },
+    })).toThrow('the packaged policy asset differs from src/policy/desktop-policy.release.json')
 
     expect(() => verifyCompanyReleaseChecklist({
       ...complete(),
@@ -480,6 +626,8 @@ describe('packaged desktop runtime verification', () => {
   it.each([
     'lib/client.js',
     'lib/desktop-runtime-environment.js',
+    'lib/policy/desktop-policy.json',
+    'lib/node-runtime-sha256.json',
     'lib/profile-service.js',
     'lib/diagnostics.js',
     'lib/diagnostic-export-worker.js',

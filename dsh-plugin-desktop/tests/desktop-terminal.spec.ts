@@ -215,6 +215,46 @@ describe('desktop terminal environment', () => {
     })
   })
 
+  it('bakes the policy environment hand-off into the generated dsh shims', () => {
+    const macStateDir = join(temporaryDirectory(), 'terminal-policy-mac')
+    const macHarness = spawnHarness()
+    const macLaunch = openDesktopTerminal({
+      ...macOptions(macStateDir, macHarness.spawn),
+      cliPolicyEnvironment: {
+        DSH_DESKTOP_POLICY_LOCKED: '1',
+        DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '',
+        DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
+        DSH_DESKTOP_POLICY_TRUST_ROOTS: 'company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    })
+
+    const macShim = readFileSync(macLaunch.dshShimPath, 'utf8')
+    expect(macShim).toContain(
+      "DSH_DESKTOP_POLICY_TRUST_ROOTS='company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+    )
+    expect(macShim).toContain("DSH_DESKTOP_POLICY_LOCKED='1'")
+    expect(spawnSync('/bin/sh', ['-n', macLaunch.dshShimPath]).status).toBe(0)
+
+    const windowsStateDir = join(temporaryDirectory(), 'terminal-policy-win')
+    const windowsHarness = spawnHarness()
+    const windowsLaunch = openDesktopTerminal({
+      ...windowsOptions(windowsStateDir, windowsHarness.spawn),
+      cliPolicyEnvironment: {
+        DSH_DESKTOP_POLICY_LOCKED: '0',
+        DSH_DESKTOP_POLICY_CATALOG_ORIGIN: 'https://market.company.example',
+        DSH_DESKTOP_POLICY_MANIFEST_URL: 'https://market.company.example/catalog-manifest.json',
+        DSH_DESKTOP_POLICY_TRUST_ROOTS: '',
+      },
+    })
+
+    const windowsShim = readFileSync(windowsLaunch.dshShimPath, 'utf8')
+    expect(windowsShim).toContain('set "DSH_DESKTOP_POLICY_LOCKED=0"')
+    expect(windowsShim).toContain('set "DSH_DESKTOP_POLICY_CATALOG_ORIGIN=https://market.company.example"')
+    expect(windowsShim).toContain('set "DSH_DESKTOP_POLICY_MANIFEST_URL=https://market.company.example/catalog-manifest.json"')
+    expect(windowsShim).toContain('set "DSH_DESKTOP_POLICY_TRUST_ROOTS="')
+    expect(windowsShim).toContain('"%DSH_DESKTOP_NODE_EXECUTABLE%" --expose-internals')
+  })
+
   it('generates Windows batch shims and opens PowerShell through a visible-console broker', () => {
     const stateDir = join(temporaryDirectory(), 'terminal-state')
     const harness = spawnHarness()

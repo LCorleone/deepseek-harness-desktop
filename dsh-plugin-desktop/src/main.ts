@@ -70,7 +70,7 @@ import {
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
-import { readDesktopPolicy } from './desktop-policy.ts'
+import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
@@ -666,6 +666,7 @@ async function start(): Promise<void> {
           platform: process.platform,
           nodeExecutable,
           dshBootstrapPath,
+          cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
           profileName: activeProfileName,
           homeDir,
           stateDir: join(app.getPath('userData'), 'host-commands', activeProfileName),
@@ -799,6 +800,9 @@ async function start(): Promise<void> {
       profileName: activeProfileName,
       profileDir: prepared.profile.dir,
       homeDir: prepared.homeDir,
+      // The bundled-Node CLI child cannot read the in-archive policy asset, so
+      // the locked state and trust roots ride the generated shim (P3 fix).
+      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
     })
     recoveryTerminalAvailable = true
     const ctx = await boot(

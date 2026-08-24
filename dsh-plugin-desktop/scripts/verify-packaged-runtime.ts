@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { listPackage } from '@electron/asar'
+import { getCurrentFuseWire, flipFuses, FuseV1Options, FuseVersion, type FuseConfig } from '@electron/fuses'
 import AdmZip from 'adm-zip'
 import {
   FORBIDDEN_MACOS_UNIVERSAL_ENTRIES,
@@ -25,6 +26,8 @@ export interface PackagedRuntimeContext {
   readonly packager: {
     readonly appInfo: {
       readonly productFilename: string
+      /** Sanitized package name; the Linux executable name defaults to it. */
+      readonly sanitizedName?: string
     }
     /** Effective Electron Builder configuration; the packaged manifest omits `build`. */
     readonly config?: {
@@ -38,7 +41,14 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'package.json',
   'lib/main.js',
   'lib/client.js',
+  // The in-archive policy entry the Electron main process reads through the
+  // virtual path (P3 fix): policy resolution prefers the archive copy, and the
+  // CLI child receives locked state and trust roots through the launcher's
+  // environment hand-off instead of re-reading any file.
   'lib/policy/desktop-policy.json',
+  // Build-time digest manifest the packaged runtime verifies the bundled Node
+  // command against (`beforePack` generates it from the pinned archives).
+  'lib/node-runtime-sha256.json',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
   'lib/profile.js',
@@ -70,6 +80,11 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'cordis.patch.yml',
   'lib/main.js',
   'lib/client.js',
+  // The physical policy mirror ships because `lib/**` stays dual-homed
+  // (P3-2): the unpacked tree is what profile-fallback consumers load, and the
+  // packaged-policy checklist below asserts its bytes equal the release
+  // variant. No runtime consumer may trust it as policy — the main process
+  // reads the in-archive entry and the CLI reads its environment hand-off.
   'lib/policy/desktop-policy.json',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
@@ -420,6 +435,176 @@ export function verifyRunAsNodeFuseStage(
 }
 
 /**
+ * Resolve the platform application binary Electron Builder produced.
+ *
+ * The fuse wire and the embedded ASAR-integrity hash live inside this binary,
+ * so the binary-level checks below read it directly instead of trusting the
+ * build configuration.
+ * @param context - completed application directory and target platform.
+ * @returns the absolute path of the packaged application executable.
+ */
+export function resolvePackagedExecutablePath(context: PackagedRuntimeContext): string {
+  const productFilename = context.packager.appInfo.productFilename
+  if (context.electronPlatformName === 'darwin') {
+    return join(context.appOutDir, `${productFilename}.app`, 'Contents', 'MacOS', productFilename)
+  }
+  if (context.electronPlatformName === 'win32') {
+    return join(context.appOutDir, `${productFilename}.exe`)
+  }
+  if (context.electronPlatformName === 'linux') {
+    // Electron Builder's LinuxPackager names the executable after the sanitized
+    // package name when no explicit executableName is configured.
+    return join(context.appOutDir, context.packager.appInfo.sanitizedName ?? 'dsh-plugin-desktop')
+  }
+  throw new Error(
+    `dsh-plugin-desktop: unsupported Electron afterPack platform ${JSON.stringify(context.electronPlatformName)}`,
+  )
+}
+
+/** camelCase fuse names in `FuseV1Options` wire order. */
+const FUSE_WIRE_NAMES = [
+  'runAsNode',
+  'enableCookieEncryption',
+  'enableNodeOptionsEnvironmentVariable',
+  'enableNodeCliInspectArguments',
+  'enableEmbeddedAsarIntegrityValidation',
+  'onlyLoadAppFromAsar',
+  'loadBrowserProcessSpecificV8Snapshot',
+  'grantFileProtocolExtraPrivileges',
+] as const satisfies readonly (keyof typeof REQUIRED_ELECTRON_FUSES)[]
+
+/**
+ * Fuse wire state bytes Electron writes into the binary sentinel, mirroring
+ * the wire format of `@electron/fuses` (the package does not export its
+ * `FuseState` enum): `'0'` disabled, `'1'` enabled, `'r'` removed, and the
+ * inherit marker.
+ */
+const FUSE_WIRE_STATE = Object.freeze({
+  disable: 0x30,
+  enable: 0x31,
+  removed: 0x72,
+  inherit: 0x90,
+})
+
+/** Human-readable state names for fuse-wire mismatch messages. */
+const FUSE_WIRE_STATE_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  [FUSE_WIRE_STATE.disable]: 'DISABLE',
+  [FUSE_WIRE_STATE.enable]: 'ENABLE',
+  [FUSE_WIRE_STATE.removed]: 'REMOVED',
+  [FUSE_WIRE_STATE.inherit]: 'INHERIT',
+})
+
+/** Fuse wire read from the packaged application binary, keyed by `FuseV1Options`. */
+export type PackagedFuseWire = Readonly<Record<string, unknown>>
+
+/** Fuse-wire reader seam used by focused tests; production reads the binary. */
+export type PackagedFuseWireReader = (
+  executablePath: string,
+) => Promise<PackagedFuseWire>
+
+/** Fuse-wire flipper seam used by focused tests; production flips via `@electron/fuses`. */
+export type PackagedFuseFlipper = (executablePath: string) => Promise<number>
+
+/** Translate the required fuse map into the `@electron/fuses` flip configuration. */
+function requiredFuseFlipConfig(): FuseConfig {
+  return {
+    version: FuseVersion.V1,
+    [FuseV1Options.RunAsNode]: REQUIRED_ELECTRON_FUSES.runAsNode,
+    [FuseV1Options.EnableCookieEncryption]: REQUIRED_ELECTRON_FUSES.enableCookieEncryption,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: REQUIRED_ELECTRON_FUSES.enableNodeOptionsEnvironmentVariable,
+    [FuseV1Options.EnableNodeCliInspectArguments]: REQUIRED_ELECTRON_FUSES.enableNodeCliInspectArguments,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: REQUIRED_ELECTRON_FUSES.enableEmbeddedAsarIntegrityValidation,
+    [FuseV1Options.OnlyLoadAppFromAsar]: REQUIRED_ELECTRON_FUSES.onlyLoadAppFromAsar,
+    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: REQUIRED_ELECTRON_FUSES.loadBrowserProcessSpecificV8Snapshot,
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: REQUIRED_ELECTRON_FUSES.grantFileProtocolExtraPrivileges,
+  }
+}
+
+/**
+ * Require the fuse wire fused into the packaged application binary to match
+ * {@link REQUIRED_ELECTRON_FUSES} exactly (P3 fix).
+ *
+ * The configuration comparison above stays as the fast pre-check — it catches
+ * a mistyped fuse key Electron Builder would silently ignore — while this
+ * readback proves the shipped binary itself carries the release posture: a
+ * packaging regression or a post-pack flip fails here, before signing.
+ * `REMOVED` and `INHERIT` wire states count as mismatches.
+ * @param wire - fuse states decoded from the application binary.
+ * @param required - required release fuse map.
+ */
+export function verifyElectronFuseWire(
+  wire: PackagedFuseWire,
+  required: Readonly<Record<string, unknown>> = REQUIRED_ELECTRON_FUSES,
+): void {
+  if (wire.version !== '1') {
+    throw new Error(
+      `dsh-plugin-desktop: packaged application binary carries fuse wire version ${JSON.stringify(wire.version)} instead of V1`,
+    )
+  }
+  const mismatched = FUSE_WIRE_NAMES
+    .map((name, index) => {
+      const expected = required[name]
+      const expectedState = expected === true
+        ? FUSE_WIRE_STATE.enable
+        : expected === false ? FUSE_WIRE_STATE.disable : undefined
+      if (expectedState === undefined) {
+        return `${name}: required=${String(expected)} is not a boolean fuse stage`
+      }
+      const actual = wire[String(index)]
+      return actual === expectedState
+        ? undefined
+        : `${name}: binary=${FUSE_WIRE_STATE_NAMES[actual as number] ?? JSON.stringify(actual)} required=${String(expected)}`
+    })
+    .filter((entry): entry is string => entry !== undefined)
+  if (mismatched.length > 0) {
+    throw new Error(
+      `dsh-plugin-desktop: the packaged application binary does not carry the required fuse stage: ${mismatched.join(', ')}`,
+    )
+  }
+}
+
+/**
+ * Read and verify the fuse wire fused into the packaged application binary.
+ *
+ * Electron Builder flips the configured fuses only after every custom
+ * `afterPack` hook has run (`platformPackager.doPack`: `emitAfterPack` →
+ * framework.afterPack → `doAddElectronFuses` → signing), so a hook that only
+ * read the wire would always see the untouched distribution defaults. This
+ * hook therefore applies the required fuse configuration itself and reads it
+ * back; the builder's own later flip rewrites the identical states (a no-op
+ * once the values match), and the configuration check above has already
+ * pinned the builder's map to the same posture.
+ * @param context - Electron Builder's afterPack context.
+ * @param read - fuse-wire reader seam; defaults to `@electron/fuses`.
+ * @param flip - fuse-wire flipper seam; defaults to `@electron/fuses`.
+ */
+export async function verifyPackagedFuseWire(
+  context: PackagedRuntimeContext,
+  read: PackagedFuseWireReader = path => getCurrentFuseWire(path),
+  flip: PackagedFuseFlipper = path => flipFuses(path, requiredFuseFlipConfig()),
+): Promise<void> {
+  const executablePath = resolvePackagedExecutablePath(context)
+  try {
+    await flip(executablePath)
+  } catch (cause) {
+    throw new Error(
+      `dsh-plugin-desktop: failed to stage the required fuse wire into the packaged application binary at ${executablePath}`,
+      { cause },
+    )
+  }
+  let wire: PackagedFuseWire
+  try {
+    wire = await read(executablePath)
+  } catch (cause) {
+    throw new Error(
+      `dsh-plugin-desktop: failed to read the fuse wire of the packaged application binary at ${executablePath}`,
+      { cause },
+    )
+  }
+  verifyElectronFuseWire(wire)
+}
+
+/**
  * Inline marker that must accompany the empty update-channel trust-root
  * placeholder (P3-4 release gate). Company release builds replace the array
  * with pinned keys and drop the marker; until then the explicit marker keeps
@@ -434,6 +619,11 @@ export interface CompanyReleaseChecklistSources {
   readonly manifestFuses: Readonly<Record<string, unknown>>
   /** Parsed `src/policy/desktop-policy.release.json`. */
   readonly releasePolicy: unknown
+  /**
+   * Parsed `lib/policy/desktop-policy.json` from the packaged tree
+   * (`app.asar.unpacked/lib/policy/desktop-policy.json`).
+   */
+  readonly packagedPolicy: unknown
   /** Text of `src/update-verification.ts`. */
   readonly updateVerificationSource: string
   /** Text of `src/electron-runtime.ts`. */
@@ -447,19 +637,43 @@ function readRepositorySourceFile(relativePath: string): string {
   return readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', relativePath), 'utf8')
 }
 
+/** Canonical JSON text with recursively sorted keys, for value comparison. */
+function canonicalJsonText(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJsonText).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map(key =>
+      `${JSON.stringify(key)}:${canonicalJsonText((value as Record<string, unknown>)[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
 /**
- * Read the checklist sources from the repository tree.
- * @param packager - Electron Builder packager carrying the effective config.
+ * Read the checklist sources from the repository and packaged trees.
+ *
+ * The packaged policy is read from the physical `app.asar.unpacked` mirror:
+ * this verifier is a plain Node script without Electron's patched filesystem,
+ * and byte-for-byte equality with the in-archive entry is guaranteed by the
+ * dual-homing gate (`verifyUnpackedArchiveMirror`) plus the asar header the
+ * integrity fuse pins — the minimal-tooling choice over linking an asar reader.
+ * @param context - completed application directory and target platform.
  * @param readRepositoryFile - repository-file reader seam used by tests.
+ * @param readPackagedFile - packaged-tree file reader seam used by tests.
  * @returns the parsed and textual sources the checklist asserts against.
  */
 export function readCompanyReleaseChecklistSources(
-  packager: PackagedRuntimeContext['packager'],
+  context: PackagedRuntimeContext,
   readRepositoryFile: (relativePath: string) => string = readRepositorySourceFile,
+  readPackagedFile: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
 ): CompanyReleaseChecklistSources {
   return {
-    manifestFuses: readPackagedElectronFuses(packager),
+    manifestFuses: readPackagedElectronFuses(context.packager),
     releasePolicy: JSON.parse(readRepositoryFile('src/policy/desktop-policy.release.json')),
+    packagedPolicy: JSON.parse(readPackagedFile(join(
+      resolvePackagedUnpackedRoot(context),
+      'lib',
+      'policy',
+      'desktop-policy.json',
+    ))),
     updateVerificationSource: readRepositoryFile('src/update-verification.ts'),
     electronRuntimeSource: readRepositoryFile('src/electron-runtime.ts'),
     updateLifecycleSource: readRepositoryFile('src/update-lifecycle.ts'),
@@ -477,7 +691,9 @@ export function readCompanyReleaseChecklistSources(
  *    {@link REQUIRED_ELECTRON_FUSES} with the required value and no extra
  *    keys (a mistyped fuse name is silently ignored by Electron Builder, so
  *    only an exact key-set comparison catches it);
- * 2. the locked release policy asset exists and stays locked (P1-1);
+ * 2. the release policy asset exists and stays locked (P1-1), and the copy
+ *    packaged into the application tree is the exact same locked document —
+ *    a dev-variant or hand-edited policy inside the artifact fails here;
  * 3. the update-channel trust roots are either pinned (non-empty) or carry
  *    the explicit {@link UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER};
  * 4. the P3-3 anti-rollback state file is wired into both Electron call
@@ -507,8 +723,30 @@ export function verifyCompanyReleaseChecklist(sources: CompanyReleaseChecklistSo
     )
   }
 
+  // P3 fix: the checklist no longer takes the repository variant on faith — it
+  // asserts the document actually packaged into the application tree is the
+  // same locked release policy (read from the physical mirror; see
+  // readCompanyReleaseChecklistSources for why that is sufficient).
+  const packagedPolicy = sources.packagedPolicy
+  if (typeof packagedPolicy !== 'object' || packagedPolicy === null || Array.isArray(packagedPolicy)
+    || (packagedPolicy as { locked?: unknown }).locked !== true) {
+    throw new Error(
+      'dsh-plugin-desktop: app.asar.unpacked/lib/policy/desktop-policy.json must exist with locked=true for release builds',
+    )
+  }
+  if (canonicalJsonText(packagedPolicy) !== canonicalJsonText(policy)) {
+    throw new Error(
+      'dsh-plugin-desktop: the packaged policy asset differs from src/policy/desktop-policy.release.json; a release build must embed the locked release variant',
+    )
+  }
+
+  // The declaration may span multiple lines: capture from the `=` up to the
+  // first closing bracket (the type annotation's `[]` is skipped by requiring
+  // the assignment first) plus the rest of that line, so a multi-line
+  // `ARTIFACT_TRUST_ROOTS` array cannot slip past the empty-placeholder marker
+  // check on a line-boundary technicality.
   const trustRootsDeclaration
-    = /^export const ARTIFACT_TRUST_ROOTS.*$/mu.exec(sources.updateVerificationSource)?.[0]
+    = /^export const ARTIFACT_TRUST_ROOTS\b[^\n=]*=[\s\S]*?\][^\n]*$/mu.exec(sources.updateVerificationSource)?.[0]
   if (trustRootsDeclaration === undefined) {
     throw new Error(
       'dsh-plugin-desktop: src/update-verification.ts no longer declares ARTIFACT_TRUST_ROOTS',
@@ -705,14 +943,18 @@ export interface PackagedRuntimeProbe {
   readonly exists?: FileProbe
   /** Fuse map the shipped application configures; defaults to the build configuration. */
   readonly readFuses?: () => Readonly<Record<string, unknown>>
+  /** Fuse-wire reader for the packaged application binary; defaults to `@electron/fuses`. */
+  readonly readFuseWire?: PackagedFuseWireReader
+  /** Fuse-wire flipper for the packaged application binary; defaults to `@electron/fuses`. */
+  readonly flipFuseWire?: PackagedFuseFlipper
 }
 
-/** Run the company release checklist against the repository tree. */
+/** Run the company release checklist against the repository and packaged trees. */
 function defaultCompanyReleaseChecklist(
-  packager: PackagedRuntimeContext['packager'],
+  context: PackagedRuntimeContext,
 ): () => void {
   return () => {
-    verifyCompanyReleaseChecklist(readCompanyReleaseChecklistSources(packager))
+    verifyCompanyReleaseChecklist(readCompanyReleaseChecklistSources(context))
   }
 }
 
@@ -722,7 +964,7 @@ function defaultCompanyReleaseChecklist(
  * @param verify - static archive and physical-tree verifier.
  * @param smoke - diagnostic Worker smoke launcher.
  * @param probe - injectable seams for the bundled-Node and fuse-stage checks.
- * @param checklist - company release-build checklist; defaults to the repository sources.
+ * @param checklist - company release-build checklist; defaults to the repository and packaged sources.
  * @returns A promise that rejects before signing when the runtime is incomplete.
  */
 export async function afterPack(
@@ -730,13 +972,17 @@ export async function afterPack(
   verify: typeof verifyPackagedRuntime = verifyPackagedRuntime,
   smoke: PackagedDiagnosticWorkerSmoke = smokePackagedDiagnosticWorker,
   probe: PackagedRuntimeProbe = {},
-  checklist: () => void = defaultCompanyReleaseChecklist(context.packager),
+  checklist: () => void = defaultCompanyReleaseChecklist(context),
 ): Promise<void> {
   verify(context)
   verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
   verifyElectronFuseStage(
     (probe.readFuses ?? (() => readPackagedElectronFuses(context.packager)))(),
   )
+  // Configuration check above, then the hook stages the required wire itself
+  // (Electron Builder flips only after custom hooks) and reads the shipped
+  // executable back before signing begins.
+  await verifyPackagedFuseWire(context, probe.readFuseWire, probe.flipFuseWire)
   checklist()
   await smoke(resolvePackagedUnpackedRoot(context))
 }

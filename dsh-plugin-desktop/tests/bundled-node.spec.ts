@@ -206,3 +206,111 @@ function existsFileSync(path: string): boolean {
     return false
   }
 }
+
+describe('bundled Node digest manifest', () => {
+  it('writes the platform-scoped digest manifest while staging a single-arch target', async () => {
+    const root = temporaryDirectory()
+    const override = fakeArchive(HOST_TARGET, join(root, 'override-archive'), 'staged-node\n')
+    process.env.DSH_BUNDLED_NODE_ARCHIVE = override
+    const desktopRoot = join(root, 'app')
+    const fetchArchive = vi.fn(async () => {
+      throw new Error('staging a single-arch target must not reach the network beyond the override')
+    })
+    const zipExtract = (source: string, destination: string, member: string) => {
+      new AdmZip(source).extractEntryTo(member, destination, false, true)
+    }
+
+    const staged = await prepareBundledNode({
+      desktopRoot,
+      platform: process.platform,
+      arch: process.arch,
+      stagingDirectory: join(root, 'staging'),
+      cacheDirectory: join(root, 'cache'),
+      fetchArchive: fetchArchive as unknown as typeof fetch,
+      verifyArchive: acceptOnly(readFileSync(override)),
+      runTar: zipExtract,
+    })
+
+    expect(staged.endsWith(HOST_TARGET === 'win-x64' ? 'node.exe' : 'node')).toBe(true)
+    const manifestPath = join(desktopRoot, 'lib', 'node-runtime-sha256.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      version: string
+      platform: string
+      commands: Record<string, string>
+    }
+    expect(manifest.version).toBe(BUNDLED_NODE_VERSION)
+    expect(manifest.platform).toBe(process.platform)
+    expect(Object.keys(manifest.commands)).toEqual([HOST_TARGET])
+    expect(manifest.commands[HOST_TARGET]).toBe(
+      createHash('sha256').update('staged-node\n').digest('hex'),
+    )
+    expect(fetchArchive).not.toHaveBeenCalled()
+  })
+
+  it('pins the universal merge digest for macOS targets', async () => {
+    const root = temporaryDirectory()
+    const desktopRoot = join(root, 'app')
+    const cacheDirectory = join(root, 'cache')
+    const zipExtract = (source: string, destination: string, member: string) => {
+      new AdmZip(source).extractEntryTo(member, destination, false, true)
+    }
+    const runLipo = vi.fn((x64: string, arm64: string, output: string) => {
+      writeFileSync(output, Buffer.concat([
+        readFileSync(x64),
+        readFileSync(arm64),
+      ]))
+    })
+    const verifier = vi.fn((_target: BundledNodeTarget, _path: string) => {})
+
+    await prepareBundledNode({
+      desktopRoot,
+      platform: 'darwin',
+      arch: 'arm64',
+      stagingDirectory: join(root, 'staging'),
+      cacheDirectory,
+      fetchArchive: vi.fn(async (url: string) => {
+        const target = url.includes('darwin-x64') ? 'darwin-x64' : 'darwin-arm64'
+        const archive = fakeArchive(target, join(root, `${target}.zip`), `node-${target}\n`)
+        return new Response(readFileSync(archive))
+      }) as unknown as typeof fetch,
+      verifyArchive: verifier,
+      runTar: zipExtract,
+      runLipo,
+    })
+
+    const manifest = JSON.parse(readFileSync(
+      join(desktopRoot, 'lib', 'node-runtime-sha256.json'),
+      'utf8',
+    )) as { platform: string, commands: Record<string, string> }
+    expect(manifest.platform).toBe('darwin')
+    expect(Object.keys(manifest.commands)).toEqual(['darwin-arm64', 'darwin-universal', 'darwin-x64'])
+    expect(manifest.commands['darwin-arm64']).toBe(
+      createHash('sha256').update('node-darwin-arm64\n').digest('hex'),
+    )
+    expect(manifest.commands['darwin-x64']).toBe(
+      createHash('sha256').update('node-darwin-x64\n').digest('hex'),
+    )
+    expect(manifest.commands['darwin-universal']).toBe(
+      createHash('sha256')
+        .update(Buffer.concat([Buffer.from('node-darwin-x64\n'), Buffer.from('node-darwin-arm64\n')]))
+        .digest('hex'),
+    )
+    expect(runLipo).toHaveBeenCalledOnce()
+    // Deterministic bytes: a second pass rewrites the identical manifest.
+    const first = readFileSync(join(desktopRoot, 'lib', 'node-runtime-sha256.json'), 'utf8')
+    await prepareBundledNode({
+      desktopRoot,
+      platform: 'darwin',
+      arch: 'x64',
+      stagingDirectory: join(root, 'staging'),
+      cacheDirectory,
+      fetchArchive: vi.fn(async () => {
+        throw new Error('the verified archive cache must serve the second pass')
+      }) as unknown as typeof fetch,
+      verifyArchive: verifier,
+      runTar: zipExtract,
+      runLipo,
+    })
+    expect(readFileSync(join(desktopRoot, 'lib', 'node-runtime-sha256.json'), 'utf8')).toBe(first)
+  })
+})

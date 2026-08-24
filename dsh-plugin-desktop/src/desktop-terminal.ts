@@ -83,6 +83,16 @@ export interface DesktopTerminalOptions {
   nodeExecutable: string
   /** Desktop-owned bootstrap that imports the `dsh` CLI under the bundled Node. */
   dshBootstrapPath: string
+  /**
+   * Policy environment hand-off baked into the generated `dsh` shim.
+   *
+   * The bundled-Node CLI child cannot read inside `app.asar`, and the physical
+   * policy copy under `app.asar.unpacked` is user-writable, so the locked
+   * state and trust roots ride the shim instead. Packaged launchers must
+   * inject them; a locked build without the hand-off fails closed inside the
+   * CLI instead of re-reading the physical asset.
+   */
+  cliPolicyEnvironment?: Readonly<Record<string, string>>
   /** Packaged JavaScript entry for the `pnpm` CLI. */
   pnpmBinPath: string
   /** Electron version used by pnpm native dependency installation. */
@@ -182,6 +192,14 @@ function escapeBatchText(value: string): string {
     .replaceAll(')', '^)')
 }
 
+/** Escape a value inside the quoted right-hand side of a batch `set` command. */
+function escapeBatchSetValue(value: string): string {
+  if (/["\r\n]/.test(value)) {
+    throw new Error('dsh-plugin-desktop: terminal Windows environment values must not contain quotes or newlines')
+  }
+  return value.replaceAll('%', '%%')
+}
+
 /** Remove a temporary file while preserving every error except absence. */
 function unlinkTemporaryFile(filename: string): void {
   try {
@@ -235,10 +253,13 @@ function windowsShim(): string {
 
 /** Build the DSH shim with Loader internals and one process-local default profile. */
 function macDshShim(options: DesktopTerminalOptions): string {
+  const policyAssignments = Object.entries(options.cliPolicyEnvironment ?? {})
+    .map(([name, value]) => `${name}=${quoteSh(value)}`)
   return [
     '#!/bin/sh',
     [
       `${DEFAULT_PROFILE}=${quoteSh(options.profileName)}`,
+      ...policyAssignments,
       `exec ${quoteSh(options.nodeExecutable)} --expose-internals ${quoteSh(options.dshBootstrapPath)} "$@"`,
     ].join(' '),
     '',
@@ -246,10 +267,14 @@ function macDshShim(options: DesktopTerminalOptions): string {
 }
 
 /** Build the Windows DSH shim with Loader internals and one local default profile. */
-function windowsDshShim(): string {
+function windowsDshShim(options: DesktopTerminalOptions): string {
+  const policyLines = Object.entries(options.cliPolicyEnvironment ?? {}).map(
+    ([name, value]) => `set "${name}=${escapeBatchSetValue(value)}"`,
+  )
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
+    ...policyLines,
     `"%${WINDOWS_NODE_EXECUTABLE}%" --expose-internals "%${WINDOWS_DSH_BOOTSTRAP}%" %*`,
     'exit /b %errorlevel%',
     '',
@@ -463,7 +488,7 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
       welcomePath: join(options.stateDir, 'welcome.ps1'),
       windowsCmdWelcomePath,
     }
-    replacePrivateFile(files.dshShimPath, windowsDshShim(), PRIVATE_FILE_MODE)
+    replacePrivateFile(files.dshShimPath, windowsDshShim(options), PRIVATE_FILE_MODE)
     replacePrivateFile(files.pnpmShimPath, windowsPnpmShim(), PRIVATE_FILE_MODE)
     replacePrivateFile(files.nodeShimPath, windowsShim(), PRIVATE_FILE_MODE)
     replacePrivateFile(files.welcomePath, windowsWelcome(), PRIVATE_FILE_MODE)

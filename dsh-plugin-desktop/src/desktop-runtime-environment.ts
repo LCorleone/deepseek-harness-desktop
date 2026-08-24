@@ -59,6 +59,16 @@ export interface DesktopDshRuntimeOptions {
   /** Node command the generated shim executes; packaged builds pass the bundled distribution. */
   nodeExecutable: string
   dshBootstrapPath: string
+  /**
+   * Policy environment hand-off baked into the generated `dsh.cmd`.
+   *
+   * The bundled-Node CLI child cannot read inside `app.asar`, and the physical
+   * policy copy under `app.asar.unpacked` is user-writable, so the locked
+   * state and trust roots ride the shim instead. Packaged launches must
+   * inject them; a locked build without the hand-off fails closed inside the
+   * CLI instead of re-reading the physical asset.
+   */
+  cliPolicyEnvironment?: Readonly<Record<string, string>>
   profileName: string
   homeDir: string
   installRecoveryStatePath: string
@@ -259,10 +269,14 @@ function windowsPnpmShim(
 
 /** Build the public Windows DSH command scoped to one active profile. */
 function windowsDshShim(options: DesktopDshRuntimeOptions): string {
+  const policyLines = Object.entries(options.cliPolicyEnvironment ?? {}).map(
+    ([name, value]) => `set "${name}=${escapeBatchSetValue(value)}"`,
+  )
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
     `set "${DEFAULT_PROFILE}=${escapeBatchSetValue(options.profileName)}"`,
+    ...policyLines,
     `set "${DSH_HOME}=${escapeBatchSetValue(options.homeDir)}"`,
     `set "${DESKTOP_INSTALL_RECOVERY_STATE_ENV}=${escapeBatchSetValue(options.installRecoveryStatePath)}"`,
     `${quoteBatchWord(options.nodeExecutable)} --expose-internals ${quoteBatchWord(options.dshBootstrapPath)} %*`,

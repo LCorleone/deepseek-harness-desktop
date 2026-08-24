@@ -13,7 +13,11 @@ import {
   runDesktopDshCli,
   withDefaultDesktopProfile,
 } from '../src/desktop-cli.ts'
-import { parseDesktopPolicy } from '../src/desktop-policy.ts'
+import {
+  desktopPolicyEnvironmentEntries,
+  desktopPolicyFromEnvironment,
+  parseDesktopPolicy,
+} from '../src/desktop-policy.ts'
 import type { DesktopPolicy } from '../src/desktop-policy.ts'
 import {
   DESKTOP_INSTALL_RECOVERY_STATE_ENV,
@@ -680,5 +684,88 @@ describe('packaged dsh bootstrap', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('packaged dsh bootstrap policy hand-off', () => {
+  const packagedModuleUrl = pathToFileURL(join(
+    '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+    'app.asar.unpacked', 'lib', 'desktop-cli.js',
+  )).href
+
+  it('applies a locked policy injected through the environment', async () => {
+    const assetPath = writeCompanyCatalogAsset(mkdtempSync(join(tmpdir(), 'dsh-desktop-env-locked-')), unsignedCatalog())
+    const root = dirname(assetPath)
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const originalExitCode = process.exitCode
+    try {
+      const environment: NodeJS.ProcessEnv = {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        ...desktopPolicyEnvironmentEntries(companyLockedPolicy()),
+      }
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli(environment, load,
+        [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'unapproved-plugin@1.0.0'],
+        undefined, assetPath)
+
+      // The locked hand-off rides the environment; the CLI consumed it and the
+      // unsigned package stays rejected exactly like with an injected policy.
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('not in the signed company plugin catalog')
+      expect(environment).toEqual({})
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a signed terminal add through a locked environment hand-off', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-env-locked-signed-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    try {
+      const environment: NodeJS.ProcessEnv = {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        ...desktopPolicyEnvironmentEntries(companyLockedPolicy()),
+      }
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli(environment, load, argv, undefined, assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
+      expect(environment).toEqual({})
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps plugin adds working through an unlocked environment hand-off', async () => {
+    const load = vi.fn(async () => undefined)
+    const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+    const environment: NodeJS.ProcessEnv = {
+      DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      ...desktopPolicyEnvironmentEntries(desktopPolicy(false)),
+    }
+
+    await runDesktopDshCli(environment, load, argv, undefined)
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(argv.slice(2)).toEqual(['plugin', '--profile', 'desktop', 'add', 'example-plugin@1.0.0'])
+  })
+
+  it('fails closed when the packaged layout receives no policy hand-off', () => {
+    expect(() => desktopPolicyFromEnvironment({}, packagedModuleUrl))
+      .toThrow('did not inject the policy environment hand-off')
+    // A partially injected hand-off is malformed, not a fallback trigger.
+    expect(() => desktopPolicyFromEnvironment(
+      { DSH_DESKTOP_POLICY_LOCKED: '1' },
+      packagedModuleUrl,
+    )).toThrow('must carry all four entries')
   })
 })

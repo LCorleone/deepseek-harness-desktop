@@ -13,12 +13,14 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
+  copyFileSync,
   createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
@@ -78,6 +80,26 @@ const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 
 /** Mode applied to the staged Node command. */
 const NODE_COMMAND_MODE = 0o755
+
+/**
+ * Filename of the digest manifest `beforePack` writes into `lib/`.
+ *
+ * The runtime counterpart lives in `src/desktop-node-runtime.ts`; both sides
+ * treat the file as the single pinned digest table for the bundled Node
+ * commands of one platform, generated at packaging time from the pinned
+ * archives — never hand-edited.
+ */
+export const BUNDLED_NODE_DIGEST_MANIFEST_NAME = 'node-runtime-sha256.json'
+
+/** sha256 of one file's bytes. */
+function sha256File(filename: string): string {
+  return createHash('sha256').update(readFileSync(filename)).digest('hex')
+}
+
+/** Absolute cache path of one target's extracted Node command. */
+function cachedCommandPath(cacheDirectory: string, target: BundledNodeTarget): string {
+  return join(cacheDirectory, 'commands', target, target === 'win-x64' ? 'node.exe' : 'node')
+}
 
 /** Absolute repository location of this script's package. */
 const DESKTOP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -214,6 +236,120 @@ function runTarExtraction(archivePath: string, stagingDirectory: string, member:
   }
 }
 
+/** lipo merge seam used by focused tests; production shells out to macOS lipo. */
+export type BundledNodeLipoMerger = (
+  x64CommandPath: string,
+  arm64CommandPath: string,
+  outputPath: string,
+) => void
+
+/** Merge the two per-architecture Node commands into one universal Mach-O. */
+function runLipoMerge(
+  x64CommandPath: string,
+  arm64CommandPath: string,
+  outputPath: string,
+): void {
+  rmSync(outputPath, { force: true })
+  const result = spawnSync('lipo', ['-create', x64CommandPath, arm64CommandPath, '-output', outputPath])
+  if (result.error !== undefined) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      `dsh-plugin-desktop: lipo merge of the bundled Node commands exited ${String(result.status)}`,
+    )
+  }
+  chmodSync(outputPath, NODE_COMMAND_MODE)
+}
+
+/**
+ * Re-extract one target's Node command into the download cache.
+ *
+ * `downloadBundledNodeArchive` is a no-op while the verified archive cache
+ * holds, and the extraction is deliberately unconditional afterwards: the
+ * digests below are always computed from bytes an archive checksum verified
+ * on this machine, never from a possibly stale cached command.
+ */
+async function ensureCachedBundledNodeCommand(
+  target: BundledNodeTarget,
+  cacheDirectory: string,
+  fetchArchive: (url: string) => Promise<Response>,
+  verify: BundledNodeArchiveVerifier,
+  runTar: (archivePath: string, stagingDirectory: string, member: string) => void,
+): Promise<string> {
+  const commandPath = cachedCommandPath(cacheDirectory, target)
+  const archivePath = join(cacheDirectory, BUNDLED_NODE_DISTRIBUTIONS[target].archive)
+  await downloadBundledNodeArchive(target, archivePath, fetchArchive, verify)
+  return extractBundledNodeCommand(target, archivePath, dirname(commandPath), runTar)
+}
+
+/**
+ * Collect the pinned sha256 digests of every Node command one platform ships.
+ *
+ * Windows and Linux package exactly their own target. A macOS pack — universal
+ * or not — pins all three: `@electron/universal` lipo-merges the two
+ * per-architecture commands into the universal binary the artifact actually
+ * ships, so its digest must be computed here with the same merge. Both passes
+ * of a universal build then write byte-identical manifests, which the merge
+ * step requires (a differing `lib/` file is a merge conflict, not a pick-one).
+ */
+async function collectBundledNodeCommandDigests(
+  options: Pick<BundledNodePreparationOptions, 'platform' | 'fetchArchive' | 'verifyArchive' | 'runTar' | 'runLipo'>,
+  cacheDirectory: string,
+  stagedTarget: BundledNodeTarget,
+): Promise<Record<string, string>> {
+  const fetchArchive = options.fetchArchive ?? fetch
+  const verify = options.verifyArchive
+    ?? ((target: BundledNodeTarget, path: string) => verifyBundledNodeArchive(target, path))
+  const runTar = options.runTar ?? runTarExtraction
+  const runLipo = options.runLipo ?? runLipoMerge
+  const digests: Record<string, string> = {}
+  const targets: readonly BundledNodeTarget[] = options.platform === 'darwin'
+    ? ['darwin-arm64', 'darwin-x64']
+    : [stagedTarget]
+  for (const target of targets) {
+    const commandPath = await ensureCachedBundledNodeCommand(
+      target,
+      cacheDirectory,
+      fetchArchive,
+      verify,
+      runTar,
+    )
+    digests[target] = sha256File(commandPath)
+  }
+  if (options.platform === 'darwin') {
+    const universalCommandPath = join(cacheDirectory, 'commands', 'darwin-universal', 'node')
+    mkdirSync(dirname(universalCommandPath), { recursive: true })
+    runLipo(
+      cachedCommandPath(cacheDirectory, 'darwin-x64'),
+      cachedCommandPath(cacheDirectory, 'darwin-arm64'),
+      universalCommandPath,
+    )
+    digests['darwin-universal'] = sha256File(universalCommandPath)
+  }
+  return digests
+}
+
+/**
+ * Write the platform-scoped digest manifest the packaged runtime verifies
+ * against. Deterministic in field order and key order so repeat packs and both
+ * universal passes emit identical bytes.
+ */
+export function writeBundledNodeDigestManifest(
+  desktopRoot: string,
+  platform: NodeJS.Platform,
+  digests: Readonly<Record<string, string>>,
+): string {
+  const manifest = {
+    version: BUNDLED_NODE_VERSION,
+    platform,
+    commands: Object.fromEntries(Object.entries(digests).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0)),
+  }
+  const manifestPath = join(desktopRoot, 'lib', BUNDLED_NODE_DIGEST_MANIFEST_NAME)
+  mkdirSync(dirname(manifestPath), { recursive: true })
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`)
+  return manifestPath
+}
+
 /** Inputs controlling one staging run. */
 export interface BundledNodePreparationOptions {
   /** Desktop package root containing `build/`. */
@@ -232,6 +368,8 @@ export interface BundledNodePreparationOptions {
   readonly verifyArchive?: BundledNodeArchiveVerifier
   /** tar seam used by focused tests. */
   readonly runTar?: (archivePath: string, stagingDirectory: string, member: string) => void
+  /** lipo merge seam used by focused tests; only macOS packaging runs it. */
+  readonly runLipo?: BundledNodeLipoMerger
   /** Progress reporter. */
   readonly log?: (message: string) => void
 }
@@ -241,6 +379,11 @@ export interface BundledNodePreparationOptions {
  *
  * `DSH_BUNDLED_NODE_ARCHIVE` may point at a pre-downloaded archive for the
  * requested target; its bytes still have to match the pinned checksum.
+ *
+ * Besides staging the command `extraResources` copies, the run also (re)writes
+ * `lib/${BUNDLED_NODE_DIGEST_MANIFEST_NAME}` with the sha256 digests of every
+ * Node command this platform ships — computed from bytes the pinned archive
+ * checksums verified — so the packaged runtime can refuse a swapped command.
  * @param options - target identity and injectable filesystem/network seams.
  * @returns the staged Node command path inside the staging directory.
  */
@@ -267,13 +410,21 @@ export async function prepareBundledNode(
     )
   } else {
     verify(target, archivePath)
+    // A verified override also seeds the shared archive cache, so the digest
+    // collection below never needs the network for the staged target.
+    mkdirSync(cacheDirectory, { recursive: true })
+    copyFileSync(archivePath, join(cacheDirectory, pinned.archive))
   }
-  return extractBundledNodeCommand(
+  const stagedCommandPath = extractBundledNodeCommand(
     target,
     archivePath,
     stagingDirectory,
     options.runTar,
   )
+  const digests = await collectBundledNodeCommandDigests(options, cacheDirectory, target)
+  const manifestPath = writeBundledNodeDigestManifest(options.desktopRoot, options.platform, digests)
+  options.log?.(`dsh-plugin-desktop: pinned bundled Node digests at ${manifestPath}`)
+  return stagedCommandPath
 }
 
 const invokedPath = process.argv[1]
