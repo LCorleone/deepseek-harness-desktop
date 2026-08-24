@@ -143,6 +143,13 @@ export class ElectronShellGeneration {
     this.flushWindowState = persistWindowState
 
     const show = (): void => { this.show() }
+    let startupSurfaceRevealed = false
+    const revealStartupSurface = (): void => {
+      if (window.isDestroyed()) return
+      if (startupSurfaceRevealed && !applicationNeedsReveal(window, platform.platform)) return
+      startupSurfaceRevealed = true
+      this.show()
+    }
     const activate = (): void => {
       if (applicationNeedsReveal(window, platform.platform)) this.show()
     }
@@ -291,7 +298,7 @@ export class ElectronShellGeneration {
       }
       return { action: 'deny' }
     })
-    window.once('ready-to-show', show)
+    window.once('ready-to-show', revealStartupSurface)
     let tray: Tray | undefined
     this.cleanupListeners = () => {
       app.off('activate', activate)
@@ -301,7 +308,7 @@ export class ElectronShellGeneration {
       window.off('move', scheduleWindowStateWrite)
       window.off('resize', scheduleWindowStateWrite)
       window.off('page-title-updated', preserveBlankTitle)
-      window.off('ready-to-show', show)
+      window.off('ready-to-show', revealStartupSurface)
       cleanupFullscreenTransition()
       window.webContents.off('before-input-event', handleZoomShortcut)
       window.webContents.off('will-frame-navigate', navigate)
@@ -316,6 +323,7 @@ export class ElectronShellGeneration {
     }
 
     try {
+      revealStartupSurface()
       await window.loadURL(spec.url)
       tray = new Tray(prepareTrayIcon(spec.trayIcons, platform.platform))
       this.tray = tray

@@ -51,6 +51,7 @@ describe('compatibility BrowserWindow options', () => {
       minWidth: 900,
       minHeight: 640,
       show: false,
+      backgroundColor: '#202124',
       icon,
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 16, y: DESKTOP_FRAME_MACOS_TRAFFIC_LIGHT_TOP },
@@ -70,6 +71,7 @@ describe('compatibility BrowserWindow options', () => {
     const options = compatibilityWindowOptions(spec, {} as NativeImage, 'win32', preload)
 
     expect(options.title).toBe('DeepSeek Harness Desktop')
+    expect(options.backgroundColor).toBe('#202124')
     expect(options.autoHideMenuBar).toBe(true)
     expect(options.titleBarStyle).toBe('hidden')
     expect(options.titleBarOverlay).toEqual(expect.objectContaining({ height: DESKTOP_FRAME_HEIGHT }))
