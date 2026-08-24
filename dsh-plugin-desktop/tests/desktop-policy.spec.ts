@@ -270,7 +270,7 @@ describe('shipped desktop policy assets', () => {
     expect(policy.trustRoots).toEqual([])
   })
 
-  it('ships a locked release policy with the same placeholder defaults', () => {
+  it('ships a locked release policy pinned to the company catalog trust root', () => {
     const text = readFileSync(new URL('../src/policy/desktop-policy.release.json', import.meta.url), 'utf8')
     const policy = parseDesktopPolicy(JSON.parse(text))
 
@@ -279,7 +279,9 @@ describe('shipped desktop policy assets', () => {
     expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
     expect(policy.allowHomePatch).toBe(false)
     expect(policy.allowManualPluginAdd).toBe(false)
-    expect(policy.trustRoots).toEqual([])
+    expect(policy.trustRoots).toEqual([
+      { keyId: 'company-catalog-2026-08', fingerprint: '011b14d1518fa41e07f1d78382ed138107cbef10c0d667b9de91259320cc00fa' },
+    ])
   })
 })
 

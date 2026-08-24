@@ -382,7 +382,7 @@ describe('packaged desktop runtime verification', () => {
     }
   })
 
-  it('rejects the current development tree until the company catalog keys are provisioned', () => {
+  it('rejects a provisioned-roots build that omits the packaged catalog manifest asset', () => {
     const runtimeContext = context('/build', 'win32')
     const readPackagedFile = (filename: string) => {
       if (filename === join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json')) {
@@ -391,13 +391,12 @@ describe('packaged desktop runtime verification', () => {
       throw new Error(`unexpected packaged read: ${filename}`)
     }
 
-    // The checked-in release policy is locked but ships the empty trustRoots
-    // development placeholder, and no manifest asset is packaged: the L2
-    // checklist must stop such a build before signing instead of letting the
-    // locked market die silently at runtime (P0②).
+    // The release policy now ships the pinned company trust root, so the L2
+    // checklist advances past key provisioning and stops at the next gap:
+    // content-mode builds must package the signed manifest asset.
     expect(() => verifyCompanyReleaseChecklist(
       readCompanyReleaseChecklistSources(runtimeContext, undefined, readPackagedFile),
-    )).toThrow('must provision at least one catalog trust root')
+    )).toThrow('content-mode release builds must embed the company catalog manifest')
   })
 
   it('accepts a provisioned repository as a company release candidate', () => {

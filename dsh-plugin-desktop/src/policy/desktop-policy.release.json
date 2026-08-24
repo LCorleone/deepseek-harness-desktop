@@ -4,5 +4,10 @@
   "companyCatalogOrigin": null,
   "companyManifestUrl": "company-market/catalog-manifest.json",
   "locked": true,
-  "trustRoots": []
+  "trustRoots": [
+    {
+      "keyId": "company-catalog-2026-08",
+      "fingerprint": "011b14d1518fa41e07f1d78382ed138107cbef10c0d667b9de91259320cc00fa"
+    }
+  ]
 }
