@@ -302,8 +302,13 @@
     "afterPack": "./scripts/verify-packaged-runtime.ts",
     "electronFuses": {
       "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
-      "onlyLoadAppFromAsar": true
+      "onlyLoadAppFromAsar": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": false
     },
     "directories": {
       "output": "dist",

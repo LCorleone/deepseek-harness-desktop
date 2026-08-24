@@ -96,6 +96,8 @@ export interface DesktopUpdateAdapter {
   readonly currentVersion: string
   /** Private file used for update-prompt history. */
   readonly statePath: string
+  /** Private file persisting the highest verified update-manifest sequence (P3-3 anti-rollback). */
+  readonly sequenceStatePath: string
   /** Request adapter backed by Electron's native network session. */
   readonly request: UpdateRequest
   /** Ask whether one strictly newer version may be downloaded. */

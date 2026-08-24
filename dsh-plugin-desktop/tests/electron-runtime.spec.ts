@@ -10,6 +10,7 @@ const updater = vi.hoisted(() => ({
   pending: vi.fn(),
   record: vi.fn(),
   resolve: vi.fn(),
+  sequenceStatePath: vi.fn(() => '/tmp/dsh-desktop-update-sequence.json'),
 }))
 const childProcess = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void
@@ -53,6 +54,7 @@ vi.mock('../src/diagnostic-export.ts', () => ({
 
 vi.mock('../src/update-download.ts', () => ({
   desktopUpdateFilename: updater.filename,
+  desktopUpdateSequenceStatePath: updater.sequenceStatePath,
   downloadDesktopUpdate: updater.download,
   pendingDesktopUpdateArtifact: updater.pending,
   recordDesktopUpdateArtifact: updater.record,
@@ -1443,6 +1445,7 @@ describe('Electron desktop runtime', () => {
       version: '2.1.0',
       destinationPath: '/tmp/Downloads/DSH-Desktop-2.1.0-mac.dmg',
       request: expect.any(Function),
+      verification: { sequenceStatePath: '/tmp/dsh-desktop-update-sequence.json' },
       signal: controller.signal,
     })
     expect(electron.shell.openPath).toHaveBeenCalledWith('/tmp/DSH-Desktop-2.1.0-mac.dmg')

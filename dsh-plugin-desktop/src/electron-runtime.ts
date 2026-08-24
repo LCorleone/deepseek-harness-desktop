@@ -47,6 +47,7 @@ import {
 } from './tray-locale.ts'
 import {
   desktopUpdateFilename,
+  desktopUpdateSequenceStatePath,
   downloadDesktopUpdate,
   pendingDesktopUpdateArtifact,
   recordDesktopUpdateArtifact,
@@ -139,6 +140,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       get canDownload() { return app.isPackaged && platformStrategy.updateDownloadPlatform !== undefined },
       get currentVersion() { return PRODUCT_VERSION },
       get statePath() { return join(app.getPath('userData'), 'updates', 'state.json') },
+      get sequenceStatePath() { return desktopUpdateSequenceStatePath(app.getPath('userData')) },
       request: (url, init) => net.fetch(url, init),
       confirmDownload: version => this.confirmUpdateDownload(version),
       showManualCheckResult: result => this.showManualUpdateCheckResult(result),
@@ -570,12 +572,18 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     const destinationPath = await this.chooseUpdateDestination(version)
     if (destinationPath === undefined) return
     signal.throwIfAborted()
+    // P3-3 wiring: the strict signed-manifest download path persists the
+    // highest verified sequence under userData so later downloads reject
+    // rolled-back manifests (development builds without trust roots skip
+    // the gate inside downloadDesktopUpdate).
+    const sequenceStatePath = desktopUpdateSequenceStatePath(app.getPath('userData'))
     const artifactPath = await downloadDesktopUpdate({
       platform,
       version,
       destinationPath,
       request: (url, init) => net.fetch(url, init),
       signal,
+      verification: { sequenceStatePath },
     })
     signal.throwIfAborted()
     const artifact: DesktopUpdateArtifact = { platform, version, path: artifactPath }

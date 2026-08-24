@@ -11,9 +11,10 @@ import { startDesktopUpdateLifecycle } from './update-lifecycle.ts'
  * `update-verification.ts` whenever that array is non-empty. Development
  * builds ship the placeholder (empty) array and keep the unsigned legacy
  * endpoints, logging a warning per skipped verification. Company release
- * builds replace the placeholder keys (P3-4 release gate); wiring the
- * user-data `sequenceStatePath` (see `desktopUpdateSequenceStatePath`) into
- * the native adapter's check and download calls belongs to that same gate.
+ * builds replace the placeholder keys (P3-4 release gate). The user-data
+ * `sequenceStatePath` (see `desktopUpdateSequenceStatePath`) is wired into
+ * both Electron call sites: the adapter here feeds the version check, and
+ * the download path passes it through its verification options.
  */
 
 /** Stable Cordis plugin name. */

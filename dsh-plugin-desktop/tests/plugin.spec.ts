@@ -73,6 +73,7 @@ function createHarness(platform: DesktopRuntime['platform'] = 'darwin'): PluginH
       canDownload: platform === 'darwin' || platform === 'win32',
       currentVersion: '2.0.0',
       statePath: '/tmp/dsh-desktop-update-state.json',
+      sequenceStatePath: '/tmp/dsh-desktop-update-manifest-sequence.json',
       request: async () => new Response(null, { status: 304 }),
       confirmDownload: async () => false,
       showManualCheckResult: async () => {},

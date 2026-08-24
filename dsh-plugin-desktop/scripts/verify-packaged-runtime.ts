@@ -129,22 +129,40 @@ export function isArchiveOnlyRuntimeEntry(entry: string): boolean {
 }
 
 /**
- * Fuse stage the packaged application must ship (P3-1, P3-2).
+ * Fuse stage the packaged application must ship (P3-1, P3-2, P3-4).
  *
- * `runAsNode` landed false together with the bundled Node runtime (P3-1).
- * P3-2 adds the ASAR hardening pair: `onlyLoadAppFromAsar` forbids a
- * loose-file app root and `enableEmbeddedAsarIntegrityValidation` makes
- * Electron compare the app.asar header hash against the value Electron
- * Builder embeds in the platform binary (Windows PE resource, macOS
- * Info.plist plus signature). Advisory positioning: without Authenticode or
- * a Developer ID signature the fuse wire itself can be flipped back by a
- * determined actor, so these fuses raise the cost of tampering rather than
- * preventing it.
+ * P3-4 completes the set to every fuse Electron Builder 26 exposes
+ * (verified against `FuseOptionsV1` in `app-builder-lib`): `runAsNode` false
+ * with the bundled Node runtime (P3-1), the ASAR hardening pair (P3-2), plus
+ * the Minke-verified hardening trio — encrypted cookie store,
+ * `NODE_OPTIONS`/`NODE_EXTRA_CA_CERTS` ignored, `--inspect` and `SIGUSR1`
+ * inspector activation ignored. `loadBrowserProcessSpecificV8Snapshot` stays
+ * explicitly false (the application ships no browser-specific V8 snapshot;
+ * pinning the default keeps the map complete) and
+ * `grantFileProtocolExtraPrivileges` is false: the only `file://` documents
+ * are the sandboxed profile-create and recovery windows, whose CSP is
+ * `connect-src 'none'` with no service workers or nested frames.
+ *
+ * Development/release distinction: Electron Builder has no per-mode fuse
+ * profiles, and fuses only apply to packaged binaries. `yarn dev` runs the
+ * unpackaged Electron distribution, where inspector arguments keep working,
+ * so this single map is both the development and the release posture — every
+ * packaged artifact (local `--dir` smoke included) is a release candidate.
+ * Packaged builds cannot use `--inspect`/`--inspect-brk`; debug them through
+ * logs, the diagnostics export, or an unpackaged dev run. Advisory
+ * positioning: without Authenticode or a Developer ID signature the fuse
+ * wire itself can be flipped back by a determined actor, so these fuses
+ * raise the cost of tampering rather than preventing it.
  */
 export const REQUIRED_ELECTRON_FUSES = Object.freeze({
   runAsNode: false,
+  enableCookieEncryption: true,
+  enableNodeOptionsEnvironmentVariable: false,
+  enableNodeCliInspectArguments: false,
   enableEmbeddedAsarIntegrityValidation: true,
   onlyLoadAppFromAsar: true,
+  loadBrowserProcessSpecificV8Snapshot: false,
+  grantFileProtocolExtraPrivileges: false,
 })
 
 /** Back-compatible alias for the P3-1 runAsNode stage constant. */
@@ -401,6 +419,120 @@ export function verifyRunAsNodeFuseStage(
   }
 }
 
+/**
+ * Inline marker that must accompany the empty update-channel trust-root
+ * placeholder (P3-4 release gate). Company release builds replace the array
+ * with pinned keys and drop the marker; until then the explicit marker keeps
+ * the empty development placeholder an affirmative decision instead of a
+ * silent omission.
+ */
+export const UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER = 'development placeholder' as const
+
+/** Repository sources the company release checklist asserts against. */
+export interface CompanyReleaseChecklistSources {
+  /** Effective `build.electronFuses` map of the application manifest. */
+  readonly manifestFuses: Readonly<Record<string, unknown>>
+  /** Parsed `src/policy/desktop-policy.release.json`. */
+  readonly releasePolicy: unknown
+  /** Text of `src/update-verification.ts`. */
+  readonly updateVerificationSource: string
+  /** Text of `src/electron-runtime.ts`. */
+  readonly electronRuntimeSource: string
+  /** Text of `src/update-lifecycle.ts`. */
+  readonly updateLifecycleSource: string
+}
+
+/** Read one file from the desktop package root beside this script. */
+function readRepositorySourceFile(relativePath: string): string {
+  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', relativePath), 'utf8')
+}
+
+/**
+ * Read the checklist sources from the repository tree.
+ * @param packager - Electron Builder packager carrying the effective config.
+ * @param readRepositoryFile - repository-file reader seam used by tests.
+ * @returns the parsed and textual sources the checklist asserts against.
+ */
+export function readCompanyReleaseChecklistSources(
+  packager: PackagedRuntimeContext['packager'],
+  readRepositoryFile: (relativePath: string) => string = readRepositorySourceFile,
+): CompanyReleaseChecklistSources {
+  return {
+    manifestFuses: readPackagedElectronFuses(packager),
+    releasePolicy: JSON.parse(readRepositoryFile('src/policy/desktop-policy.release.json')),
+    updateVerificationSource: readRepositoryFile('src/update-verification.ts'),
+    electronRuntimeSource: readRepositoryFile('src/electron-runtime.ts'),
+    updateLifecycleSource: readRepositoryFile('src/update-lifecycle.ts'),
+  }
+}
+
+/**
+ * Company release-build checklist (security plan P3-4).
+ *
+ * One static assertion group over the repository, run by `afterPack` for
+ * every packaged artifact so local `--dir` smoke builds fail exactly like a
+ * release build would:
+ *
+ * 1. the manifest fuse map is exactly the release posture — every key of
+ *    {@link REQUIRED_ELECTRON_FUSES} with the required value and no extra
+ *    keys (a mistyped fuse name is silently ignored by Electron Builder, so
+ *    only an exact key-set comparison catches it);
+ * 2. the locked release policy asset exists and stays locked (P1-1);
+ * 3. the update-channel trust roots are either pinned (non-empty) or carry
+ *    the explicit {@link UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER};
+ * 4. the P3-3 anti-rollback state file is wired into both Electron call
+ *    sites (version check through the adapter, installer download through
+ *    the verification options).
+ *
+ * @param sources - repository sources to assert against.
+ * @returns Nothing; failure throws before the application is signed.
+ */
+export function verifyCompanyReleaseChecklist(sources: CompanyReleaseChecklistSources): void {
+  const fuseKeys = Object.keys(sources.manifestFuses).sort()
+  const requiredKeys = Object.keys(REQUIRED_ELECTRON_FUSES).sort()
+  const unexpected = fuseKeys.filter(key => !requiredKeys.includes(key))
+  const absent = requiredKeys.filter(key => !fuseKeys.includes(key))
+  if (unexpected.length > 0 || absent.length > 0) {
+    throw new Error(
+      `dsh-plugin-desktop: the release fuse stage must declare exactly ${requiredKeys.join(', ')}; unexpected: ${unexpected.join(', ') || 'none'}; missing: ${absent.join(', ') || 'none'}`,
+    )
+  }
+  verifyElectronFuseStage(sources.manifestFuses)
+
+  const policy = sources.releasePolicy
+  if (typeof policy !== 'object' || policy === null || Array.isArray(policy)
+    || (policy as { locked?: unknown }).locked !== true) {
+    throw new Error(
+      'dsh-plugin-desktop: src/policy/desktop-policy.release.json must exist with locked=true for release builds',
+    )
+  }
+
+  const trustRootsDeclaration
+    = /^export const ARTIFACT_TRUST_ROOTS.*$/mu.exec(sources.updateVerificationSource)?.[0]
+  if (trustRootsDeclaration === undefined) {
+    throw new Error(
+      'dsh-plugin-desktop: src/update-verification.ts no longer declares ARTIFACT_TRUST_ROOTS',
+    )
+  }
+  const emptyTrustRoots = /=\s*\[\s*\]/u.test(trustRootsDeclaration)
+  if (emptyTrustRoots && !trustRootsDeclaration.includes(UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER)) {
+    throw new Error(
+      `dsh-plugin-desktop: the empty ARTIFACT_TRUST_ROOTS placeholder must carry the explicit "${UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER}" marker or pinned release keys`,
+    )
+  }
+
+  const sequenceAdapterWired = sources.electronRuntimeSource.includes('get sequenceStatePath()')
+    && sources.electronRuntimeSource.includes("desktopUpdateSequenceStatePath(app.getPath('userData'))")
+    && sources.electronRuntimeSource.includes('verification: { sequenceStatePath }')
+  const sequenceCheckWired = sources.updateLifecycleSource
+    .includes('updateChannel: { sequenceStatePath: this.options.adapter.sequenceStatePath }')
+  if (!sequenceAdapterWired || !sequenceCheckWired) {
+    throw new Error(
+      'dsh-plugin-desktop: the update-manifest sequence state file must stay wired into the Electron adapter and both update call sites',
+    )
+  }
+}
+
 /** Normalize the host-specific separators emitted by the ASAR reader. */
 function normalizeArchiveEntry(entry: string): string {
   return entry.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
@@ -575,12 +707,22 @@ export interface PackagedRuntimeProbe {
   readonly readFuses?: () => Readonly<Record<string, unknown>>
 }
 
+/** Run the company release checklist against the repository tree. */
+function defaultCompanyReleaseChecklist(
+  packager: PackagedRuntimeContext['packager'],
+): () => void {
+  return () => {
+    verifyCompanyReleaseChecklist(readCompanyReleaseChecklistSources(packager))
+  }
+}
+
 /**
  * Run the static packaged-runtime check as Electron Builder's afterPack hook.
  * @param context - Electron Builder's afterPack context.
  * @param verify - static archive and physical-tree verifier.
  * @param smoke - diagnostic Worker smoke launcher.
  * @param probe - injectable seams for the bundled-Node and fuse-stage checks.
+ * @param checklist - company release-build checklist; defaults to the repository sources.
  * @returns A promise that rejects before signing when the runtime is incomplete.
  */
 export async function afterPack(
@@ -588,12 +730,14 @@ export async function afterPack(
   verify: typeof verifyPackagedRuntime = verifyPackagedRuntime,
   smoke: PackagedDiagnosticWorkerSmoke = smokePackagedDiagnosticWorker,
   probe: PackagedRuntimeProbe = {},
+  checklist: () => void = defaultCompanyReleaseChecklist(context.packager),
 ): Promise<void> {
   verify(context)
   verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
   verifyElectronFuseStage(
     (probe.readFuses ?? (() => readPackagedElectronFuses(context.packager)))(),
   )
+  checklist()
   await smoke(resolvePackagedUnpackedRoot(context))
 }
 

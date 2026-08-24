@@ -571,8 +571,13 @@ describe('published package surface', () => {
     ])
     expect(manifest.build?.electronFuses).toEqual({
       runAsNode: false,
+      enableCookieEncryption: true,
+      enableNodeOptionsEnvironmentVariable: false,
+      enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
+      loadBrowserProcessSpecificV8Snapshot: false,
+      grantFileProtocolExtraPrivileges: false,
     })
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },

@@ -141,6 +141,10 @@ class DesktopUpdateLifecycleOwner implements DesktopUpdateLifecycle {
           currentVersion: this.options.adapter.currentVersion,
           signal: controller.signal,
           request: this.options.adapter.request,
+          // P3-3 wiring: strict manifest checks persist and enforce the
+          // highest verified sequence (development builds without trust
+          // roots stay on the legacy endpoint and ignore the state file).
+          updateChannel: { sequenceStatePath: this.options.adapter.sequenceStatePath },
         })
       } catch {
         return null

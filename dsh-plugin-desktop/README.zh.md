@@ -176,7 +176,26 @@ DSH Desktop 将 UTF-8 日志写入 Electron 用户数据目录：Windows 位于 
 
 `yarn package:dir` 为当前宿主平台创建未封装目录。如果应用归档缺少 desktop 更新与终端模块、DSH CLI bootstrap、内置 pnpm 入口或物理 deployment package，packaged-runtime gate 会拒绝该产物。Electron Builder 会把根 manifest、desktop runtime 与完整依赖树输出到 `app.asar.unpacked`；Host profile boot 与 CLI bootstrap 都会使用这棵物理树，因此 DSH profile fallback 的符号链接不会指向虚拟 ASAR 目录；捆绑 Node 的 `dsh`/pnpm 入口与 native 预编译集（node-pty、koffi、sharp、ripgrep）也保持物理存在，因为普通 Node 子进程无法读取 ASAR 归档内部。只有生成的图标资产留在 `app.asar` 内部：Electron 主进程通过透明的虚拟路径读取它们。`build/app-icon.png` 保持为未经修改的 iOS Default 源图，并继续作为 Windows 与 Linux 应用图标。构建过程会运行 `scripts/generate-mac-app-icon.mjs`，把该图缩放为 824 × 824 像素并居中放入透明的 1024 × 1024 画布；macOS 打包与运行中的 Dock 都使用生成的 `build/app-icon-mac.png`。`build/tray-icon.svg` 是品牌蓝托盘源文件：构建过程会派生由 macOS 系统自动着色的模板图，以及固定品牌蓝的 Windows 与 Linux 托盘图。
 
-打包产物附带 Electron fuse `runAsNode: false`、`onlyLoadAppFromAsar: true` 与 `enableEmbeddedAsarIntegrityValidation: true`。启动时 Electron 会把 `app.asar` 的 header 哈希与构建器嵌入平台二进制的值（Windows 的 PE 资源，或 macOS 中绑定进代码签名的 `Info.plist` 条目）进行比对：任何对归档结构的修改——新增、删除、重命名、改变条目大小，或在归档与物理镜像之间移动文件——都会在应用代码运行前失败，而 `onlyLoadAppFromAsar` 拒绝从松散目录加载应用。该加固是 advisory（成本项）而非强制边界：在没有 Authenticode 签名（Windows）或 Developer ID 签名（macOS）的情况下，有决心的攻击者可以把 fuse 位或嵌入哈希从无签名二进制中改回；有意保留在 `app.asar.unpacked` 中的文件字节也不在本检查范围内。这些 fuse 提高的是脚本化篡改与不知情工具的攻击成本；具有约束力的保证仍需签名发布，这一项仍是“已知限制”中记录的发布门禁。
+打包产物附带完整的 Electron fuse 集：`runAsNode: false`、`enableCookieEncryption: true`、`enableNodeOptionsEnvironmentVariable: false`、`enableNodeCliInspectArguments: false`、`enableEmbeddedAsarIntegrityValidation: true`、`onlyLoadAppFromAsar: true`、`loadBrowserProcessSpecificV8Snapshot: false` 与 `grantFileProtocolExtraPrivileges: false`。启动时 Electron 会把 `app.asar` 的 header 哈希与构建器嵌入平台二进制的值（Windows 的 PE 资源，或 macOS 中绑定进代码签名的 `Info.plist` 条目）进行比对：任何对归档结构的修改——新增、删除、重命名、改变条目大小，或在归档与物理镜像之间移动文件——都会在应用代码运行前失败，而 `onlyLoadAppFromAsar` 拒绝从松散目录加载应用。该加固是 advisory（成本项）而非强制边界：在没有 Authenticode 签名（Windows）或 Developer ID 签名（macOS）的情况下，有决心的攻击者可以把 fuse 位或嵌入哈希从无签名二进制中改回；有意保留在 `app.asar.unpacked` 中的文件字节也不在本检查范围内。这些 fuse 提高的是脚本化篡改与不知情工具的攻击成本；具有约束力的保证仍需签名发布，这一项仍是“已知限制”中记录的发布门禁。
+
+### Electron fuse 全集、发布清单与平台门禁矩阵
+
+Electron Builder 不支持按模式区分的 fuse 配置，而 fuse 只作用于打包后的二进制，因此一份配置同时服务开发与发布：每一个打包产物——包括本地 `--dir` 冒烟构建——都是发布候选。`yarn dev` 运行的是未打包的 Electron 发行版，`--inspect` 调试、`NODE_OPTIONS` 与 Electron-as-Node 在开发态照常可用；打包产物则在 Electron 运行时忽略 `NODE_OPTIONS`/`NODE_EXTRA_CA_CERTS`，并拒绝 `--inspect`、`--inspect-brk` 与 `SIGUSR1` 激活 inspector，因此打包态问题通过日志、诊断导出或未打包 dev 运行来定位。托管子进程使用独立的捆绑 Node 二进制（P3-1），保持自己的运行时语义。`afterPack` 钩子断言实际写入的 fuse 位图与发布态要求完全一致——多余、拼写错误或缺失的 fuse 键都会让构建失败，而不是被静默忽略。
+
+同一个钩子运行公司发布清单：发布策略资产保持 `locked: true`；更新通道信任根要么是已固定的发布公钥，要么是带显式标记的开发占位；更新 manifest 防回滚状态文件（`userData/updates/manifest-sequence.json`，P3-3）保持在两个 Electron 调用点接线——定时版本检查与确认后的安装包下载。
+
+平台门禁矩阵（缺口仅记录给后续加固卡，本卡不实施）：
+
+| 门禁 | macOS | Windows |
+| --- | --- | --- |
+| 代码签名 | Developer ID，由 `release-preflight` 断言，并用 `codesign --verify --deep --strict` 复验 | 无——`dist:win` 固定 `signExecutable=false` 并剥离证书变量 |
+| 公证 / 发布者 | 公证并 staple；`spctl --assess` 与 `stapler validate` 门禁 DMG | NSIS/绿色包无签名；Authenticode 与 SmartScreen 信誉仍空缺 |
+| 运行时加固 | `hardenedRuntime: true` 随公证生效 | 仅 fuse 集；advisory fuse 缺少 Authenticode 锚 |
+| 安装器形态 | 签名 DMG 拖拽安装 | NSIS 按用户安装、辅助提权（`perMachine: false`） |
+
+记录给后续卡的缺口：Windows 完全没有 release preflight（现有脚本仅覆盖 macOS），也没有签名后的签名校验；`perMachine` 全机安装及其 ACL 形态未验证；无签名 macOS 冒烟构建在翻转 fuse 字节后未重新签名，会使 Apple Silicon 的 ad-hoc 签名失效——该门禁只校验文件、从不启动应用，恢复可启动的 ad-hoc 签名（`resetAdHocDarwinSignature` 或冒烟重签步骤）尚未决策。
+
+条件附录（仅记录，明确不排期）：若未来公司预算或 IT 合作提供 Authenticode 证书与 Windows 基础设施，客户端零改动即可从 advisory 升级为强制语义——改用签名变量而非本地剥离配置、把 NSIS 切到 `perMachine`，P3-1/P3-2 的 fuse 位与内嵌 ASAR 哈希即由签名验证锚定。macOS 一列已经完整演示了这一形态。
 
 ### WSL Linux 无界面检查
 

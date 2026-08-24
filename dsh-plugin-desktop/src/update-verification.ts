@@ -41,7 +41,7 @@ export interface UpdateChannelTrustRoot {
  * manifests under the new key, then remove the old root in a later release.
  * `fingerprints` must stay unique so one key can never hide under two ids.
  */
-export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = []
+export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [] // development placeholder — company release builds replace this array (P3-4 gate marker)
 
 /** Detached ed25519 signatures are exactly 64 bytes. */
 export const UPDATE_CHANNEL_SIGNATURE_BYTES = 64

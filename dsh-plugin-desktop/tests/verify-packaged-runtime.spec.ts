@@ -18,16 +18,20 @@ import {
   resolvePackagedAsarPath,
   resolvePackagedResourcesDirectory,
   resolvePackagedUnpackedRoot,
+  readCompanyReleaseChecklistSources,
   readPackagedElectronFuses,
   readPackagedRunAsNodeFuse,
   smokePackagedDiagnosticWorker,
+  UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER,
   verifyArchiveOnlyPartition,
   verifyBundledNodeRuntime,
+  verifyCompanyReleaseChecklist,
   verifyElectronFuseStage,
   verifyRunAsNodeFuseStage,
   verifyUnpackedArchiveMirror,
   verifyPackagedRuntime,
   type ArchiveLister,
+  type CompanyReleaseChecklistSources,
   type FileProbe,
   type PackageResolver,
   type PackagedRuntimeContext,
@@ -113,7 +117,7 @@ describe('packaged desktop runtime verification', () => {
     },
   )
 
-  it('runs the static, bundled-Node, and fuse gates before the diagnostic Worker smoke', async () => {
+  it('runs the static, bundled-Node, fuse, and release-checklist gates before the diagnostic Worker smoke', async () => {
     const runtimeContext = context('/build', 'win32')
     const calls: string[] = []
 
@@ -131,14 +135,29 @@ describe('packaged desktop runtime verification', () => {
           return REQUIRED_ELECTRON_FUSES
         },
       },
+      () => { calls.push('checklist') },
     )
 
     expect(calls).toEqual([
       'static',
       join('/build', 'resources', BUNDLED_NODE_RESOURCE_DIRECTORY, 'node.exe'),
       'fuse',
+      'checklist',
       resolvePackagedUnpackedRoot(runtimeContext),
     ])
+  })
+
+  it('rejects the package when the company release checklist fails', async () => {
+    const runtimeContext = context('/build', 'win32')
+    const failing = () => { throw new Error('checklist rejected this build') }
+
+    await expect(afterPack(
+      runtimeContext,
+      () => {},
+      async () => {},
+      { exists: () => true, readFuses: () => REQUIRED_ELECTRON_FUSES },
+      failing,
+    )).rejects.toThrow('checklist rejected this build')
   })
 
   it('requires the bundled Node command beside the packaged app.asar', () => {
@@ -157,17 +176,32 @@ describe('packaged desktop runtime verification', () => {
   it('reads and enforces the staged Electron fuse map', () => {
     expect(REQUIRED_ELECTRON_FUSES).toEqual({
       runAsNode: false,
+      enableCookieEncryption: true,
+      enableNodeOptionsEnvironmentVariable: false,
+      enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
+      loadBrowserProcessSpecificV8Snapshot: false,
+      grantFileProtocolExtraPrivileges: false,
     })
     expect(REQUIRED_RUN_AS_NODE_FUSE).toBe(false)
     expect(() => verifyElectronFuseStage(REQUIRED_ELECTRON_FUSES)).not.toThrow()
     expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, runAsNode: true }))
       .toThrow('requires electronFuses.runAsNode=false')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, enableCookieEncryption: false }))
+      .toThrow('requires electronFuses.enableCookieEncryption=true')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, enableNodeOptionsEnvironmentVariable: true }))
+      .toThrow('requires electronFuses.enableNodeOptionsEnvironmentVariable=false')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, enableNodeCliInspectArguments: true }))
+      .toThrow('requires electronFuses.enableNodeCliInspectArguments=false')
     expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, enableEmbeddedAsarIntegrityValidation: false }))
       .toThrow('requires electronFuses.enableEmbeddedAsarIntegrityValidation=true')
     expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, onlyLoadAppFromAsar: false }))
       .toThrow('requires electronFuses.onlyLoadAppFromAsar=true')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, loadBrowserProcessSpecificV8Snapshot: true }))
+      .toThrow('requires electronFuses.loadBrowserProcessSpecificV8Snapshot=false')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, grantFileProtocolExtraPrivileges: true }))
+      .toThrow('requires electronFuses.grantFileProtocolExtraPrivileges=false')
     // The P3-1 single-fuse verifier keeps its contract for direct callers.
     expect(() => verifyRunAsNodeFuseStage(REQUIRED_RUN_AS_NODE_FUSE)).not.toThrow()
     expect(() => verifyRunAsNodeFuseStage(!REQUIRED_RUN_AS_NODE_FUSE))
@@ -204,6 +238,107 @@ describe('packaged desktop runtime verification', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it('accepts the current repository as a company release candidate', () => {
+    expect(() => verifyCompanyReleaseChecklist(
+      readCompanyReleaseChecklistSources({ appInfo: { productFilename: 'DSH Desktop' } }),
+    )).not.toThrow()
+  })
+
+  it('reads the checklist sources from injectable repository files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-release-checklist-'))
+    try {
+      mkdirSync(join(root, 'src', 'policy'), { recursive: true })
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ build: { electronFuses: REQUIRED_ELECTRON_FUSES } }),
+      )
+      writeFileSync(
+        join(root, 'src', 'policy', 'desktop-policy.release.json'),
+        JSON.stringify({ locked: true, trustRoots: [] }),
+      )
+      writeFileSync(join(root, 'src', 'update-verification.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'electron-runtime.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'update-lifecycle.ts'), '// placeholder source\n')
+      const read = (relativePath: string) => readFileSync(join(root, relativePath), 'utf8')
+
+      const sources = readCompanyReleaseChecklistSources(
+        { appInfo: { productFilename: 'DSH Desktop' } },
+        read,
+      )
+      expect(sources.manifestFuses).toEqual(REQUIRED_ELECTRON_FUSES)
+      expect(sources.releasePolicy).toEqual({ locked: true, trustRoots: [] })
+      expect(sources.updateVerificationSource).toBe('// placeholder source\n')
+      expect(sources.electronRuntimeSource).toBe('// placeholder source\n')
+      expect(sources.updateLifecycleSource).toBe('// placeholder source\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('enforces every company release checklist item', () => {
+    const wiredRuntimeSource = [
+      "get sequenceStatePath() { return desktopUpdateSequenceStatePath(app.getPath('userData')) }",
+      'verification: { sequenceStatePath },',
+    ].join('\n')
+    const wiredLifecycleSource = [
+      'return await checkForStableUpdate({',
+      'updateChannel: { sequenceStatePath: this.options.adapter.sequenceStatePath },',
+      '})',
+    ].join('\n')
+    const markedTrustRootsSource = [
+      '/** doc */',
+      'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [] // development placeholder',
+    ].join('\n')
+    const complete = (): CompanyReleaseChecklistSources => ({
+      manifestFuses: { ...REQUIRED_ELECTRON_FUSES },
+      releasePolicy: { locked: true },
+      updateVerificationSource: markedTrustRootsSource,
+      electronRuntimeSource: wiredRuntimeSource,
+      updateLifecycleSource: wiredLifecycleSource,
+    })
+
+    expect(() => verifyCompanyReleaseChecklist(complete())).not.toThrow()
+
+    // Pinned (non-empty) trust roots pass without the development marker.
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateVerificationSource: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: \'release-2026\', fingerprint: \'a\'.repeat(64) }]',
+    })).not.toThrow()
+
+    // A mistyped or missing fuse key fails even when every staged value matches.
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      manifestFuses: { ...REQUIRED_ELECTRON_FUSES, enableCookieEncrypton: true },
+    })).toThrow('unexpected: enableCookieEncrypton; missing: none')
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      manifestFuses: { runAsNode: REQUIRED_ELECTRON_FUSES.runAsNode },
+    })).toThrow('missing: enableCookieEncryption')
+
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), releasePolicy: { locked: false } }))
+      .toThrow('desktop-policy.release.json must exist with locked=true')
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), releasePolicy: null }))
+      .toThrow('desktop-policy.release.json must exist with locked=true')
+
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateVerificationSource: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = []',
+    })).toThrow(`must carry the explicit "${UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER}" marker`)
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateVerificationSource: 'export const OTHER = []',
+    })).toThrow('no longer declares ARTIFACT_TRUST_ROOTS')
+
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      electronRuntimeSource: 'get statePath() { return join(app.getPath(\'userData\'), \'updates/state.json\') }',
+    })).toThrow('sequence state file must stay wired')
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      updateLifecycleSource: 'return await checkForStableUpdate({ currentVersion })',
+    })).toThrow('sequence state file must stay wired')
   })
 
   it('tracks the ConPTY-only native surface shipped by node-pty 1.2', () => {
