@@ -21,6 +21,15 @@ describe('company release configuration checklist', () => {
     readFileSync(resolve(packageRoot(), 'package.json'), 'utf8'),
   ).build.electronFuses as Record<string, unknown>
 
+  /** Provisioned release-policy override: locked with one pinned catalog trust root. */
+  const provisionedPolicy = (): { locked: boolean; trustRoots: unknown[] } => ({
+    locked: true,
+    trustRoots: [{
+      keyId: 'company-catalog-2026.01',
+      fingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    }],
+  })
+
   it('reports the missing company keys as the actionable preflight failure', () => {
     // The development tree ships empty placeholders by design; the preflight
     // must stop a company release until real keys are provisioned.
@@ -29,14 +38,30 @@ describe('company release configuration checklist', () => {
     )
   })
 
+  it('fails until the release policy provisions catalog trust roots', () => {
+    // A locked policy without catalog trust roots cannot construct the signed
+    // company catalog: the locked market would browse a placeholder and
+    // reject every install (the P0② blind spot this gate closes).
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
+      policy: { locked: true, trustRoots: [] },
+    })).toThrow('must provision at least one catalog trust root')
+    expect(() => assertCompanyReleaseConfiguration({
+      updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
+      policy: { locked: true },
+    })).toThrow('must provision at least one catalog trust root')
+  })
+
   it('passes once policy, keys, and fuses are provisioned', () => {
     expect(() => assertCompanyReleaseConfiguration({
+      policy: provisionedPolicy(),
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: "k", fingerprint: "f" }] // marker',
     })).not.toThrow()
   })
 
   it('accepts a naturally formatted multi-line trust-root array', () => {
     expect(() => assertCompanyReleaseConfiguration({
+      policy: provisionedPolicy(),
       updateRoots: [
         'export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [',
         '  { keyId: \'company-update-2026.01\', fingerprint: \'0123\' },',
@@ -76,6 +101,7 @@ describe('company release configuration checklist', () => {
 
   it('fails when a required fuse is missing or flipped', () => {
     const provisioned = {
+      policy: provisionedPolicy(),
       updateRoots: 'export const ARTIFACT_TRUST_ROOTS = [{ keyId: "k", fingerprint: "f" }]',
     }
     expect(() => assertCompanyReleaseConfiguration({ ...provisioned, fuses: { runAsNode: true } })).toThrow(

@@ -4,15 +4,18 @@
  *
  * The channel replaces the P1-5 blanket denial: one `dsh plugin add
  * <package>@<exact version>` command is allowed through exactly when the
- * embedded company catalog manifest — verified by the market signing library
- * against the policy trust roots — carries a matching, unrevoked entry. Any
- * failed step (unreadable asset, bad signature, expired manifest, absent or
- * revoked entry, non-exact spec) is fail-closed: the command is rejected with
- * a reason and the upstream DSH CLI is never imported.
+ * company catalog manifest — verified by the market signing library against
+ * the policy trust roots — carries a matching, unrevoked entry. Any failed
+ * step (unreadable or unfetchable manifest, bad signature, expired manifest,
+ * absent or revoked entry, non-exact spec) is fail-closed: the command is
+ * rejected with a reason and the upstream DSH CLI is never imported.
  *
- * Timing: the manifest asset is embedded in the application bundle, so the
- * read and the ed25519 verification are synchronous local operations without
- * network I/O; the whole gate completes in milliseconds and needs no timeout.
+ * Acquisition modes: content-mode builds read the manifest asset embedded in
+ * the application bundle synchronously (milliseconds, no network); origin-
+ * mode builds fetch the manifest once over the shared restricted client with
+ * the policy origin pinned, redirects refused, and a multi-second whole-
+ * request bound (`company-manifest-origin.ts`). The verification chain after
+ * acquisition is byte-identical for both modes.
  *
  * Anti-rollback: the sequence floor comes from the local receipts ratchet —
  * the caller derives `lastSeenSequence` from the highest manifest sequence
@@ -37,6 +40,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fetchCompanyManifestText, type CompanyManifestFetchOptions } from './company-manifest-origin.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
@@ -69,6 +73,11 @@ export type LockedPluginAddDecision =
 export interface LockedPluginAddOptions {
   /** Absolute path of the embedded manifest asset; defaults to the file bundled beside this module. */
   readonly assetPath?: string
+  /**
+   * Origin-mode manifest acquisition overrides (request boundary, timeout,
+   * body bound); defaults to the shared restricted policy-pinned fetch.
+   */
+  readonly fetch?: CompanyManifestFetchOptions
   /**
    * Highest manifest sequence this machine has already verified through an
    * install (the receipts ratchet); the manifest must strictly exceed it. A
@@ -132,7 +141,7 @@ export function companyManifestAssetPath(moduleUrl: string, companyManifestUrl: 
  * locked plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
- * @param options - the manifest asset path, the receipts sequence floor, and test clock overrides.
+ * @param options - the manifest asset path, origin fetch overrides, the receipts sequence floor, and test clock overrides.
  * @returns the allow decision with the resolved targets, or the denial reason.
  */
 export async function authorizeLockedPluginAdd(
@@ -152,21 +161,28 @@ export async function authorizeLockedPluginAdd(
   if (target === undefined) {
     return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
   }
-  if (policy.companyCatalogOrigin !== null) {
-    return denied(`the terminal plugin-add channel only reads the company catalog embedded in the application; this build serves its catalog from ${policy.companyCatalogOrigin}. ${MARKET_GUIDANCE}`)
-  }
-  const assetPath = options.assetPath ?? companyManifestAssetPath(import.meta.url, policy.companyManifestUrl)
-  if (typeof assetPath !== 'string' || !isAbsolute(assetPath) || assetPath.includes('\0')) {
-    throw new TypeError(`${BIN_NAME}: company manifest asset path must be absolute without NUL`)
-  }
   let raw: string
-  try {
-    raw = readFileSync(assetPath, 'utf8')
-  } catch (cause) {
-    return denied(`unreadable company catalog manifest asset ${assetPath}: ${messageOf(cause)}`)
+  if (policy.companyCatalogOrigin === null) {
+    const assetPath = options.assetPath ?? companyManifestAssetPath(import.meta.url, policy.companyManifestUrl)
+    if (typeof assetPath !== 'string' || !isAbsolute(assetPath) || assetPath.includes('\0')) {
+      throw new TypeError(`${BIN_NAME}: company manifest asset path must be absolute without NUL`)
+    }
+    try {
+      raw = readFileSync(assetPath, 'utf8')
+    } catch (cause) {
+      return denied(`unreadable company catalog manifest asset ${assetPath}: ${messageOf(cause)}`)
+    }
+  } else {
+    // Origin mode: one restricted fetch of the pinned manifest URL; any
+    // transport failure denies the command without importing the CLI.
+    try {
+      raw = await fetchCompanyManifestText(policy, options.fetch)
+    } catch (cause) {
+      return denied(`the company catalog manifest could not be fetched from ${policy.companyCatalogOrigin}: ${messageOf(cause)}. ${MARKET_GUIDANCE}`)
+    }
   }
   if (raw.length > MAX_MANIFEST_ASSET_BYTES) {
-    return denied(`company catalog manifest asset ${assetPath} exceeds ${String(MAX_MANIFEST_ASSET_BYTES)} bytes`)
+    return denied(`the company catalog manifest exceeds ${String(MAX_MANIFEST_ASSET_BYTES)} bytes`)
   }
   const { findCompanyManifestPackage, verifyCompanyManifest } = await import('dsh-community-market')
   // The sequence floor rides the receipts ratchet (see module docs): a

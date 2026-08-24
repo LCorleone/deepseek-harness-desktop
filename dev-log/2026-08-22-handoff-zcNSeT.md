@@ -50,6 +50,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **评审与修复**（`b5ef752291`，用户拍板**方向 B**）：3 High 全修——① 门禁接线真实发布路径（mac 无条件/win `DSH_COMPANY_RELEASE=1`，CI smoke 免疫）；② 删除客户端签名路径（「客户端持私钥」与防伪造主张矛盾），报告恒定 `unsigned+reason`，检测模型=「报告缺失即信号 + 内容比对」（与已签收上限自洽）；③ 手册 exit 码/命令名/字段实形勘误。+5 Medium/6 Low（正则多行兼容、三对双语 i18n 入册、验签脚本加固等）。
 
 ## 部署侧待办（运营项，代码已备）
+- **终审（2026-08-23）**：整体评价工程质量高，但发现 P0 交付完整性缺口：① **L2 主链路未接线**（Phase 1 放的 dshfind 占位 + rejectAll 在 P2 建成后没换——公司 provider/签名 authority/receipt v2 生产零构造点，锁定构建出厂=目录只读+全拒装，origin 模式完全不可用；责任=我 Phase 1 接线分工后忘了 Phase 2 回接）② 发布门禁盲区（catalog trustRoots 与 manifest 资产无门禁，clean.mjs 会洗掉手工拷贝）→ 已派 worker「L2 接线迭代」（ed7b32d5）：策略 ADR + market 接线 + origin 补齐 + 门禁补盲 + boot 树摘要缓存（P1④）+ wired 集成测试；③ 签收单「已执行」表述由我在修复后同步勘正；P1 余项（⑥signing subpath 根治门面/⑦E2E 链路/⑧清单对账）与 P2 四条已记入优化清单待后续迭代
 1. P4-3 签收单管理层签字归档
 2. 密钥生成（catalog + update 各一对）→ P2-7 演练：轮换（双钥→收回）+ 吊销各一次
 3. P2-6 管线真实密钥跑通 + selftest 完整段（含真实 registry）+ 托管/内嵌发布选型

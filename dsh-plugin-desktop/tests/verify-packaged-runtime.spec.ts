@@ -1,9 +1,15 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { generateKeyPairSync } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import AdmZip from 'adm-zip'
 import { FuseV1Options } from '@electron/fuses'
+import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from 'dsh-community-market'
 import {
   afterPack,
   BUNDLED_NODE_RESOURCE_DIRECTORY,
@@ -91,6 +97,48 @@ function completePackageResolver(unpackedRoot: string): PackageResolver {
 function completeFileProbe(unpackedRoot: string): FileProbe {
   return filename => !REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES
     .some(entry => filename === join(unpackedRoot, entry))
+}
+
+const catalogKeyId = 'company-catalog-2026.01'
+const catalogKeys = generateKeyPairSync('ed25519')
+const catalogTrustRoots = [{
+  keyId: catalogKeyId,
+  fingerprint: ed25519PublicKeyFingerprint(catalogKeys.publicKey),
+}]
+
+/** Real signed catalog manifest text for the checklist's embedded-asset gate. */
+function signedCatalogManifest(overrides: Record<string, unknown> = {}): string {
+  const manifest = {
+    manifestVersion: '1.0.0',
+    sequence: 7,
+    expiresAt: '2030-01-01T00:00:00Z',
+    packages: [{
+      packageName: 'dsh-plugin-safe',
+      version: '1.0.0',
+      integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
+      bundlePatch: './cordis.patch.yml',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    }],
+    ...overrides,
+  }
+  const signature = createCompanyManifestSignature(
+    manifest as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+    catalogKeys.privateKey,
+    catalogKeyId,
+  )
+  return canonicalJsonText({ ...manifest, signature })
+}
+
+/** Fully provisioned release policy for checklist success fixtures. */
+function provisionedReleasePolicy(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    locked: true,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    trustRoots: catalogTrustRoots,
+    ...overrides,
+  }
 }
 
 describe('packaged desktop runtime verification', () => {
@@ -334,16 +382,39 @@ describe('packaged desktop runtime verification', () => {
     }
   })
 
-  it('accepts the current repository as a company release candidate', () => {
+  it('rejects the current development tree until the company catalog keys are provisioned', () => {
     const runtimeContext = context('/build', 'win32')
     const readPackagedFile = (filename: string) => {
-      expect(filename).toBe(join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json'))
-      return readFileSync(new URL('../src/policy/desktop-policy.release.json', import.meta.url), 'utf8')
+      if (filename === join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json')) {
+        return readFileSync(new URL('../src/policy/desktop-policy.release.json', import.meta.url), 'utf8')
+      }
+      throw new Error(`unexpected packaged read: ${filename}`)
     }
 
+    // The checked-in release policy is locked but ships the empty trustRoots
+    // development placeholder, and no manifest asset is packaged: the L2
+    // checklist must stop such a build before signing instead of letting the
+    // locked market die silently at runtime (P0②).
     expect(() => verifyCompanyReleaseChecklist(
       readCompanyReleaseChecklistSources(runtimeContext, undefined, readPackagedFile),
-    )).not.toThrow()
+    )).toThrow('must provision at least one catalog trust root')
+  })
+
+  it('accepts a provisioned repository as a company release candidate', () => {
+    const manifestText = signedCatalogManifest()
+
+    expect(() => verifyCompanyReleaseChecklist({
+      manifestFuses: REQUIRED_ELECTRON_FUSES,
+      releasePolicy: provisionedReleasePolicy(),
+      packagedPolicy: provisionedReleasePolicy(),
+      packagedManifestText: manifestText,
+      updateVerificationSource: `export const ARTIFACT_TRUST_ROOTS: readonly UpdateChannelTrustRoot[] = [{ keyId: 'release-2026', fingerprint: '${'a'.repeat(64)}' }]`,
+      electronRuntimeSource: [
+        "get sequenceStatePath() { return desktopUpdateSequenceStatePath(app.getPath('userData')) }",
+        'verification: { sequenceStatePath },',
+      ].join('\n'),
+      updateLifecycleSource: 'updateChannel: { sequenceStatePath: this.options.adapter.sequenceStatePath },',
+    })).not.toThrow()
   })
 
   it('reads the checklist sources from injectable repository and packaged files', () => {
@@ -379,9 +450,46 @@ describe('packaged desktop runtime verification', () => {
       expect(sources.manifestFuses).toEqual(REQUIRED_ELECTRON_FUSES)
       expect(sources.releasePolicy).toEqual({ locked: true, trustRoots: [] })
       expect(sources.packagedPolicy).toEqual({ locked: true, trustRoots: [] })
+      expect(sources.packagedManifestText).toBeUndefined()
       expect(sources.updateVerificationSource).toBe('// placeholder source\n')
       expect(sources.electronRuntimeSource).toBe('// placeholder source\n')
       expect(sources.updateLifecycleSource).toBe('// placeholder source\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reads the packaged company manifest for content-mode release policies', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-release-checklist-manifest-'))
+    try {
+      const manifestText = signedCatalogManifest()
+      mkdirSync(join(root, 'src', 'policy'), { recursive: true })
+      mkdirSync(join(root, 'app.asar.unpacked', 'lib', 'company-market'), { recursive: true })
+      writeFileSync(
+        join(root, 'app.asar.unpacked', 'lib', 'company-market', 'catalog-manifest.json'),
+        manifestText,
+      )
+      writeFileSync(
+        join(root, 'src', 'policy', 'desktop-policy.release.json'),
+        `${JSON.stringify(provisionedReleasePolicy())}\n`,
+      )
+      writeFileSync(join(root, 'src', 'update-verification.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'electron-runtime.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'update-lifecycle.ts'), '// placeholder source\n')
+      const sources = readCompanyReleaseChecklistSources(
+        context('/build', 'win32'),
+        relativePath => readFileSync(join(root, relativePath), 'utf8'),
+        filename => {
+          if (filename === join('/build', 'resources', 'app.asar.unpacked', 'lib', 'company-market', 'catalog-manifest.json')) {
+            return manifestText
+          }
+          if (filename === join('/build', 'resources', 'app.asar.unpacked', 'lib', 'policy', 'desktop-policy.json')) {
+            return `${JSON.stringify(provisionedReleasePolicy())}\n`
+          }
+          throw new Error(`unexpected packaged read: ${filename}`)
+        },
+      )
+      expect(sources.packagedManifestText).toBe(manifestText)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -403,8 +511,9 @@ describe('packaged desktop runtime verification', () => {
     ].join('\n')
     const complete = (): CompanyReleaseChecklistSources => ({
       manifestFuses: { ...REQUIRED_ELECTRON_FUSES },
-      releasePolicy: { locked: true },
-      packagedPolicy: { locked: true },
+      releasePolicy: provisionedReleasePolicy(),
+      packagedPolicy: provisionedReleasePolicy(),
+      packagedManifestText: signedCatalogManifest(),
       updateVerificationSource: markedTrustRootsSource,
       electronRuntimeSource: wiredRuntimeSource,
       updateLifecycleSource: wiredLifecycleSource,
@@ -457,16 +566,51 @@ describe('packaged desktop runtime verification', () => {
       .toThrow('app.asar.unpacked/lib/policy/desktop-policy.json must exist with locked=true')
     expect(() => verifyCompanyReleaseChecklist({ ...complete(), packagedPolicy: null }))
       .toThrow('app.asar.unpacked/lib/policy/desktop-policy.json must exist with locked=true')
+    // Empty placeholder roots now fail: a locked market without catalog
+    // trust roots would browse a placeholder and reject every install.
     expect(() => verifyCompanyReleaseChecklist({
       ...complete(),
-      releasePolicy: { trustRoots: [], locked: true },
-      packagedPolicy: { locked: true, trustRoots: [] },
-    })).not.toThrow()
+      releasePolicy: provisionedReleasePolicy({ trustRoots: [] }),
+      packagedPolicy: provisionedReleasePolicy({ trustRoots: [] }),
+    })).toThrow('must provision at least one catalog trust root')
     expect(() => verifyCompanyReleaseChecklist({
       ...complete(),
       releasePolicy: { locked: true, trustRoots: [{ keyId: 'company-2026', fingerprint: 'a'.repeat(64) }] },
       packagedPolicy: { locked: true, trustRoots: [] },
     })).toThrow('the packaged policy asset differs from src/policy/desktop-policy.release.json')
+
+    // The catalog chain must be provisioned and verifiable (L2 / P0②).
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      releasePolicy: provisionedReleasePolicy({ trustRoots: [] }),
+      packagedPolicy: provisionedReleasePolicy({ trustRoots: [] }),
+    })).toThrow('must provision at least one catalog trust root')
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      releasePolicy: provisionedReleasePolicy({ trustRoots: 'nope' }),
+      packagedPolicy: provisionedReleasePolicy({ trustRoots: 'nope' }),
+    })).toThrow('must declare a trustRoots array')
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), packagedManifestText: undefined }))
+      .toThrow('content-mode release builds must embed the company catalog manifest at app.asar.unpacked/lib/company-market/catalog-manifest.json')
+    expect(() => verifyCompanyReleaseChecklist({ ...complete(), packagedManifestText: 'not a manifest' }))
+      .toThrow('did not verify against the policy trust roots (malformed-json)')
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      packagedManifestText: signedCatalogManifest({ expiresAt: '2026-01-01T00:00:00Z' }),
+    })).toThrow('did not verify against the policy trust roots (expired)')
+    // Origin-mode policies need no embedded asset, but still need the roots.
+    expect(() => verifyCompanyReleaseChecklist({
+      ...complete(),
+      releasePolicy: provisionedReleasePolicy({
+        companyCatalogOrigin: 'https://catalog.company.example',
+        companyManifestUrl: 'https://catalog.company.example/manifest.json',
+      }),
+      packagedPolicy: provisionedReleasePolicy({
+        companyCatalogOrigin: 'https://catalog.company.example',
+        companyManifestUrl: 'https://catalog.company.example/manifest.json',
+      }),
+      packagedManifestText: undefined,
+    })).not.toThrow()
 
     expect(() => verifyCompanyReleaseChecklist({
       ...complete(),

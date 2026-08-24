@@ -1,10 +1,10 @@
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
 import {
   canonicalJsonText,
@@ -13,13 +13,17 @@ import {
 } from 'dsh-community-market'
 import {
   BOOT_TREE_MAX_PATH_LENGTH,
+  createCachedDesktopBootTreeRootDigestMeasure,
   collectDesktopBootBundles,
   companyManifestAssetPath,
   computeDesktopBootTreeRootDigest,
   desktopBootBundleNames,
   desktopBootLockIntegrity,
   desktopBootReceipts,
+  desktopBootTreeStatFingerprint,
+  desktopBootVerificationInputs,
   desktopBootVerificationInputsFromSettings,
+  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   marketInstallReceiptsFromSettingsDocument,
   readCompanyManifestAsset,
   readDesktopBootLockfile,
@@ -703,6 +707,183 @@ describe('market settings receipt reader', () => {
     })
     expect(decision.manifestTrusted).toBe(true)
     expect(decision.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+  })
+})
+
+describe('boot tree fingerprint cache', () => {
+  it('returns the recorded digest on repeat boots without re-measuring the tree', () => {
+    const packageDir = installedPackage(defaultFiles)
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+
+    const first = cached(packageDir)
+    expect(first).toBe(computeDesktopBootTreeRootDigest(packageDir))
+    // Repeat boots with an unchanged tree skip the full content hash and
+    // return the recorded digest (the cache-hit evidence).
+    expect(cached(packageDir)).toBe(first)
+    expect(cached(packageDir)).toBe(first)
+    expect(measure).toHaveBeenCalledTimes(1)
+
+    // The persisted document records the stat fingerprint with the digest.
+    const persisted = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>
+    expect(Object.keys(persisted)).toEqual([packageDir])
+    const entry = persisted[packageDir] as { mtime: number; size: number; digest: string }
+    const fingerprint = desktopBootTreeStatFingerprint(packageDir)
+    expect(entry).toEqual({
+      mtime: fingerprint.mtime,
+      size: fingerprint.size,
+      digest: first,
+    })
+  })
+
+  it('re-measures and rewrites the entry after any tree change', () => {
+    const packageDir = installedPackage(defaultFiles)
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+
+    const before = cached(packageDir)
+    writeFileSync(join(packageDir, 'lib', 'payload.js'), 'export const marker = 22\n')
+    // Pin the modification time explicitly: filesystems with coarse mtime
+    // granularity could otherwise miss a same-millisecond rewrite.
+    const touched = new Date('2027-06-01T00:00:00.000Z')
+    utimesSync(join(packageDir, 'lib', 'payload.js'), touched, touched)
+    const after = cached(packageDir)
+
+    expect(after).toBe(computeDesktopBootTreeRootDigest(packageDir))
+    expect(after).not.toBe(before)
+    expect(measure).toHaveBeenCalledTimes(2)
+    expect(cached(packageDir)).toBe(after)
+    expect(measure).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a corrupt cache document and rebuilds it', () => {
+    const packageDir = installedPackage(defaultFiles)
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    writeFileSync(cachePath, '{not a json document')
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+
+    expect(cached(packageDir)).toBe(computeDesktopBootTreeRootDigest(packageDir))
+    expect(measure).toHaveBeenCalledTimes(1)
+    // The rebuild replaced the corrupt bytes with a valid document.
+    const persisted = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, { digest: string }>
+    expect(persisted[packageDir]?.digest).toBe(measure.mock.results[0]!.value)
+  })
+
+  it('skips unreadable cache entries and tolerates a failed cache write', () => {
+    const packageDir = installedPackage(defaultFiles)
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    writeFileSync(cachePath, JSON.stringify({
+      [packageDir]: { mtime: 'not a number', size: -1, digest: 'zz' },
+      '': { mtime: 1, size: 1, digest: 'a'.repeat(64) },
+    }))
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, {
+      measure,
+      writeFile: () => { throw new Error('disk full') },
+    })
+
+    // Neither malformed entry counts as a hit, and the failed persist is
+    // skipped rather than failing the boot.
+    expect(cached(packageDir)).toBe(computeDesktopBootTreeRootDigest(packageDir))
+    expect(measure).toHaveBeenCalledTimes(1)
+    expect(cached(packageDir)).toBe(measure.mock.results[0]!.value)
+  })
+
+  it('bounds the remembered directories', () => {
+    const cacheRoot = temporaryDirectory()
+    const cachePath = join(cacheRoot, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure, maxEntries: 2 })
+    const dirs = [installedPackage(defaultFiles), installedPackage(defaultFiles), installedPackage(defaultFiles)]
+
+    for (const dir of dirs) cached(dir)
+    const persisted = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>
+    expect(Object.keys(persisted).sort()).toEqual([dirs[1]!, dirs[2]!].sort())
+  })
+
+  it('keeps the stat fingerprint sensitive to metadata-only tree changes', () => {
+    const packageDir = installedPackage(defaultFiles)
+    const before = desktopBootTreeStatFingerprint(packageDir)
+    const touched = new Date('2027-01-01T00:00:00.000Z')
+    utimesSync(join(packageDir, 'lib', 'payload.js'), touched, touched)
+
+    const after = desktopBootTreeStatFingerprint(packageDir)
+    expect(after.size).toBe(before.size)
+    expect(after.mtime).not.toBe(before.mtime)
+  })
+})
+
+describe('locked boot verification production inputs', () => {
+  const originPolicy = {
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+  }
+
+  function settingsFixture(home: string): string {
+    mkdirSync(home, { recursive: true })
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify({
+      'dsh-community-market': { installReceipts: [marketV2Receipt()] },
+    }))
+    return settingsPath
+  }
+
+  it('fetches origin-mode manifest bytes once before profile composition', async () => {
+    const settingsPath = settingsFixture(join(temporaryDirectory(), 'home'))
+    const manifest = signedManifestText([packageEntry()])
+    const fetchManifestText = vi.fn(async () => manifest)
+    const measureTreeRootDigest = vi.fn(computeDesktopBootTreeRootDigest)
+
+    const inputs = await desktopBootVerificationInputs(
+      originPolicy,
+      settingsPath,
+      pathToFileURL(import.meta.url).href,
+      { fetchManifestText, measureTreeRootDigest },
+    )
+
+    expect(fetchManifestText).toHaveBeenCalledTimes(1)
+    expect(fetchManifestText).toHaveBeenCalledWith(originPolicy)
+    expect(inputs.manifestBytes).toBe(manifest)
+    expect(inputs.receipts).toEqual([{
+      packageName,
+      version,
+      manifestSequence,
+      keyId,
+      rootDigest: 'ab'.repeat(32),
+    }])
+    expect(inputs.measureTreeRootDigest).toBe(measureTreeRootDigest)
+  })
+
+  it('fails closed on origin fetch failures while content mode never fetches', async () => {
+    const settingsPath = settingsFixture(join(temporaryDirectory(), 'home'))
+    const fetchManifestText = vi.fn(async () => { throw new Error('unreachable') })
+
+    const originInputs = await desktopBootVerificationInputs(
+      originPolicy,
+      settingsPath,
+      pathToFileURL(import.meta.url).href,
+      { fetchManifestText },
+    )
+    expect(originInputs.manifestBytes).toBeUndefined()
+    expect(originInputs.receipts).toHaveLength(1)
+    fetchManifestText.mockClear()
+
+    const contentHome = temporaryDirectory()
+    const contentModuleUrl = pathToFileURL(join(contentHome, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', contentModuleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    writeFileSync(assetPath, signedManifestText([packageEntry()]))
+    const contentInputs = await desktopBootVerificationInputs(
+      { companyCatalogOrigin: null, companyManifestUrl: 'company-market/catalog-manifest.json' },
+      settingsFixture(join(temporaryDirectory(), 'content-home')),
+      contentModuleUrl,
+      { fetchManifestText },
+    )
+    expect(contentInputs.manifestBytes).toBe(signedManifestText([packageEntry()]))
+    expect(fetchManifestText).not.toHaveBeenCalled()
   })
 })
 

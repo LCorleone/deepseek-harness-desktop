@@ -1,0 +1,320 @@
+/**
+ * Wired-state integration of the locked company catalog (L2): the plugin
+ * index wiring builder assembles the provider, the settings-backed sequence
+ * ratchet, the catalog source lock record, the catalog-service adapter
+ * registration, and the signed-manifest install whitelist from one policy
+ * projection. The spec drives the real chain: a packaged-layout manifest
+ * asset read through the content provider, a catalog scan that produces
+ * install candidates, install decisions over the signed entries, and the
+ * untrusted-reporting propagation from a failed scan through the adapter
+ * wrapper into the authority.
+ *
+ * Scope note: the market install service derives its preview candidates from
+ * catalog rows carrying `repository`, which the signed company manifest
+ * schema does not pin, so end-to-end preview/execute from company rows needs
+ * a schema or candidate-path decision of its own. This spec therefore
+ * asserts the wired authority decisions over the provider's candidate
+ * stream — the surface the L2 wiring owns.
+ */
+
+import { generateKeyPairSync } from 'node:crypto'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DefaultCatalogService } from '../src/catalog/service.js'
+import {
+  SettingsCatalogSourceStore,
+  type MarketSettingsDocument,
+} from '../src/catalog/source-store.js'
+import { CompanyCatalogUntrustedError } from '../src/catalog/company-provider.js'
+import type { CatalogHttpClient } from '../src/contracts/index.js'
+import { createCommunityMarketCompanyCatalog, type DesktopPolicyView } from '../src/index.js'
+import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from '../src/signing/index.js'
+
+const keyId = 'company-catalog-2026.01'
+const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+const trustRoots = [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }]
+const verifiedAt = Date.parse('2026-09-01T00:00:00.000Z')
+
+const safePackage = 'dsh-plugin-safe'
+const safeVersion = '1.2.3'
+const safeIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`
+const retiredPackage = 'dsh-plugin-retired'
+const retiredVersion = '3.1.4'
+const retiredIntegrity = `sha512-${Buffer.alloc(64, 5).toString('base64')}`
+const absentPackage = 'dsh-plugin-absent'
+
+const roots: string[] = []
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function packageEntry(
+  packageName: string,
+  version: string,
+  integrity: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    packageName,
+    version,
+    integrity,
+    bundlePatch: './cordis.patch.yml',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    ...overrides,
+  }
+}
+
+function signedManifestText(
+  packages: readonly Record<string, unknown>[],
+  sequence = 42,
+): string {
+  const manifest = {
+    manifestVersion: '1.0.0',
+    sequence,
+    expiresAt: '2030-01-01T00:00:00Z',
+    packages,
+  }
+  const signature = createCompanyManifestSignature(
+    manifest as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+    privateKey,
+    keyId,
+  )
+  return canonicalJsonText({ ...manifest, signature })
+}
+
+/** Build the packaged-layout fixture: `<root>/app/lib/company-market/catalog-manifest.json`. */
+function packagedAppFixture(manifestText: string): {
+  policy: DesktopPolicyView
+  moduleUrl: string
+  assetPath: string
+} {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-market-wired-'))
+  roots.push(root)
+  const assetPath = join(root, 'app', 'lib', 'company-market', 'catalog-manifest.json')
+  mkdirSync(join(root, 'app', 'lib', 'company-market'), { recursive: true })
+  writeFileSync(assetPath, manifestText)
+  return {
+    policy: {
+      locked: true,
+      trustRoots,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+    },
+    moduleUrl: pathToFileURL(join(
+      root, 'app', 'node_modules', 'dsh-community-market', 'lib', 'index.js',
+    )).href,
+    assetPath,
+  }
+}
+
+function memoryScope(): SettingsScope<MarketSettingsDocument> & { readonly document: () => MarketSettingsDocument } {
+  let document: MarketSettingsDocument = { sources: [] }
+  return {
+    get: () => document,
+    watch: () => () => {},
+    update: vi.fn(async (patch: Partial<MarketSettingsDocument>) => {
+      document = { ...document, ...patch } as MarketSettingsDocument
+    }),
+    replace: vi.fn(async (section: MarketSettingsDocument) => { document = section }),
+    document: () => document,
+  }
+}
+
+const unusedHttp: CatalogHttpClient = {
+  getJson: vi.fn(async () => { throw new Error('the wired content-mode chain must not fetch') }),
+}
+
+describe('locked company catalog wiring', () => {
+  it('serves the packaged manifest through the full chain: scan, candidates, and install decisions', async () => {
+    const fixture = packagedAppFixture(signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+      packageEntry(retiredPackage, retiredVersion, retiredIntegrity, { revoked: true }),
+    ]))
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    expect(index?.source.sourceRecordId).toBe('018f1f77-a5c4-7b73-a9ae-0242ac130001')
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      `npm:${safePackage}@${safeVersion}`,
+    ])
+    // The settings-backed ratchet recorded the verified sequence.
+    expect(scope.document().companyManifest).toEqual({
+      sequence: 42,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+    })
+
+    // The signed entry is installable, the revoked one is not, and an
+    // unsigned (absent) target never becomes installable.
+    expect(wiring.installTargetAuthority.canInstall({
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+    })).toEqual({ allowed: true, evidence: { manifestSequence: 42, keyId } })
+    const revoked = wiring.installTargetAuthority.canInstall({
+      packageName: retiredPackage,
+      version: retiredVersion,
+      integrity: retiredIntegrity,
+    })
+    expect(revoked.allowed).toBe(false)
+    expect(revoked.reason).toContain('revoked in the signed company manifest')
+    const absent = wiring.installTargetAuthority.canInstall({
+      packageName: absentPackage,
+      version: '1.0.0',
+      integrity: safeIntegrity,
+    })
+    expect(absent.allowed).toBe(false)
+    expect(absent.reason).toContain('is not in the signed company manifest')
+    expect(unusedHttp.getJson).not.toHaveBeenCalled()
+  })
+
+  it('admits a signed catalog entry through the wired install chain', async () => {
+    const fixture = packagedAppFixture(signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+    ]))
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    // The scan produced the install candidates: signed integrity, bundle
+    // patch, and runtime ranges carried verbatim for the install-time check.
+    // (The market install service additionally derives its preview candidates
+    // from catalog rows carrying `repository`, which the signed company
+    // manifest schema does not pin — see the spec module docs.)
+    expect(wiring.provider.verifiedPackages()).toEqual([expect.objectContaining({
+      itemId: `npm:${safePackage}@${safeVersion}`,
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+      bundlePatch: './cordis.patch.yml',
+    })])
+    expect(index?.source.providerId).toBe('com.deepseek.company-catalog')
+    expect(wiring.companySource).toMatchObject({
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac130001',
+      adapterId: 'market.company-manifest-v1',
+      providerId: 'com.deepseek.company-catalog',
+      builtInProviderKey: 'company-catalog',
+      enabled: true,
+    })
+  })
+
+  it('closes the install authority when a later scan fails verification', async () => {
+    const fixture = packagedAppFixture(signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+    ]))
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+    await service.scanCatalog(new AbortController().signal)
+    expect(wiring.installTargetAuthority.canInstall({
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+    }).allowed).toBe(true)
+
+    // Tamper with the packaged asset: the next forced scan must fail closed
+    // and the adapter wrapper must propagate the untrusted verdict.
+    const tampered = JSON.parse(signedManifestText([
+      packageEntry(safePackage, '9.9.9', safeIntegrity),
+    ])) as Record<string, unknown>
+    const packages = tampered.packages as Record<string, unknown>[]
+    packages[0] = { ...packages[0]!, version: safeVersion }
+    writeFileSync(fixture.assetPath, canonicalJsonText(tampered))
+
+    await expect(service.scanCatalog(new AbortController().signal, { force: true }))
+      .rejects.toBeInstanceOf(CompanyCatalogUntrustedError)
+    const denied = wiring.installTargetAuthority.canInstall({
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+    })
+    expect(denied.allowed).toBe(false)
+    expect(denied.reason).toContain('the company catalog is not trusted')
+  })
+
+  it('fails closed when the packaged manifest asset is missing', async () => {
+    const fixture = packagedAppFixture('unused')
+    rmSync(fixture.assetPath)
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    await expect(service.scanCatalog(new AbortController().signal)).rejects.toThrow()
+    expect(wiring.installTargetAuthority.canInstall({
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+    })).toEqual({ allowed: false, reason: 'no verified company manifest is available yet' })
+    expect(scope.document().companyManifest).toBeUndefined()
+  })
+
+  it('requires a locked policy with pinned trust roots', () => {
+    const scope = memoryScope()
+    expect(() => createCommunityMarketCompanyCatalog({
+      locked: false,
+      trustRoots,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+    }, scope)).toThrow(/locked/u)
+    expect(() => createCommunityMarketCompanyCatalog({
+      locked: true,
+      trustRoots: [],
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+    }, scope)).toThrow(/trust roots/u)
+  })
+
+  it('rejects unsafe packaged asset specifiers', () => {
+    expect(() => {
+      createCommunityMarketCompanyCatalog({
+        locked: true,
+        trustRoots,
+        companyCatalogOrigin: null,
+        companyManifestUrl: '../escape.json',
+      }, memoryScope(), { moduleUrl: packagedAppFixture('unused').moduleUrl })
+    }).toThrow(/empty or dot path segments/u)
+  })
+})

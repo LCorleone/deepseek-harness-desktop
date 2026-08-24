@@ -623,6 +623,9 @@ function lockedProfileBootVerification(
       ...(inputs?.receipts === undefined ? {} : { receipts: inputs.receipts }),
       ...(inputs?.lastSeenSequence === undefined ? {} : { lastSeenSequence: inputs.lastSeenSequence }),
       ...(inputs?.now === undefined ? {} : { now: inputs.now }),
+      ...(inputs?.measureTreeRootDigest === undefined
+        ? {}
+        : { measureTreeRootDigest: inputs.measureTreeRootDigest }),
     },
   )
 }

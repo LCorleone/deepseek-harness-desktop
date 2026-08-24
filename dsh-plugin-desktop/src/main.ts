@@ -71,7 +71,11 @@ import {
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
-import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'
+import {
+  createCachedDesktopBootTreeRootDigestMeasure,
+  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
+  desktopBootVerificationInputs,
+} from './boot-verification.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
@@ -608,12 +612,24 @@ async function start(): Promise<void> {
     const marketUserDataDir = app.getPath('userData')
     const policy = readDesktopPolicy()
     const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
-    // Production wiring for locked boot verification (P2-4): the receipts and
-    // manifest bytes come from the shared market settings document and the
-    // embedded catalog asset; without this the receipt reconciliation and the
-    // sequence ratchet would never run outside tests.
+    // Production wiring for locked boot verification (P2-4 + L2): the
+    // receipts and manifest bytes come from the shared market settings
+    // document, the embedded catalog asset (content mode), or one restricted
+    // pre-composition fetch (origin mode); the receipt tree digests are
+    // checked through the persisted stat-fingerprint cache so repeat boots
+    // skip the full content hash. Without this the receipt reconciliation and
+    // the sequence ratchet would never run outside tests.
     const bootVerificationInputs = policy.locked
-      ? desktopBootVerificationInputsFromSettings(policy, join(homeDir, 'settings.yaml'))
+      ? await desktopBootVerificationInputs(
+        policy,
+        join(homeDir, 'settings.yaml'),
+        import.meta.url,
+        {
+          measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(
+            join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME),
+          ),
+        },
+      )
       : undefined
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,

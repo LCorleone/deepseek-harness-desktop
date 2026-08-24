@@ -429,15 +429,20 @@ describe('published package surface', () => {
     expect(ready).toBeGreaterThan(markClean)
   })
 
-  it('feeds locked boot verification with production receipts and manifest bytes', () => {
+  it('feeds locked boot verification with production receipts, manifest bytes, and the fingerprint cache', () => {
     const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
     const inputs = main.indexOf('const bootVerificationInputs = policy.locked')
     const prepare = main.indexOf('const prepared = prepareDesktopProfile(')
 
     expect(main).toContain(
-      "import { desktopBootVerificationInputsFromSettings } from './boot-verification.ts'",
+      "  createCachedDesktopBootTreeRootDigestMeasure,\n"
+        + "  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,\n"
+        + "  desktopBootVerificationInputs,\n"
+        + "} from './boot-verification.ts'",
     )
-    expect(main).toContain("desktopBootVerificationInputsFromSettings(policy, join(homeDir, 'settings.yaml'))")
+    expect(main).toContain('await desktopBootVerificationInputs(')
+    expect(main).toContain('measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(')
+    expect(main).toContain('join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)')
     expect(inputs).toBeGreaterThan(0)
     expect(inputs).toBeLessThan(prepare)
     expect(main.slice(prepare)).toContain('policy,\n      bootVerificationInputs,\n    )')

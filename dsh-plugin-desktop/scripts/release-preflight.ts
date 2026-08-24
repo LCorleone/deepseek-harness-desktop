@@ -252,14 +252,16 @@ if (invokedPath !== undefined && resolve(invokedPath) === fileURLToPath(import.m
 
 /**
  * Company release configuration checklist (P4-4): every company-issued build
- * must embed the locked policy, non-empty update trust roots, and the full
- * fuse set. Diagnostics view keys are deliberately absent from this list:
- * client-side report signing was removed (direction B), so the report's
- * absence — not its signature — is the tamper signal, and a future
- * centralized re-signing service provisions those keys on its own. Mirrors
- * verifyCompanyReleaseChecklist in verify-packaged-runtime.ts, which asserts
- * the update roots and fuses against the packaged tree; this preflight fails
- * before electron-builder runs so a missing piece never reaches packaging.
+ * must embed the locked policy, non-empty catalog trust roots, non-empty
+ * update trust roots, and the full fuse set. Diagnostics view keys are
+ * deliberately absent from this list: client-side report signing was removed
+ * (direction B), so the report's absence — not its signature — is the tamper
+ * signal, and a future centralized re-signing service provisions those keys
+ * on its own. Mirrors verifyCompanyReleaseChecklist in
+ * verify-packaged-runtime.ts, which asserts the update roots, the catalog
+ * roots, and the embedded manifest against the packaged tree; this preflight
+ * fails before electron-builder runs so a missing piece never reaches
+ * packaging.
  *
  * The strict gate must only run for company-issued builds: the development
  * tree ships empty placeholders by design, and CI smoke packaging builds that
@@ -270,7 +272,7 @@ if (invokedPath !== undefined && resolve(invokedPath) === fileURLToPath(import.m
  */
 export interface CompanyReleaseConfigurationOverrides {
   /** Parsed release policy document override (defaults to the checked-in variant). */
-  readonly policy?: { locked?: unknown }
+  readonly policy?: { locked?: unknown; trustRoots?: unknown }
   /** Raw declaration text standing in for the update trust roots constant. */
   readonly updateRoots?: string
   /** Electron fuse map override (defaults to package.json build.electronFuses). */
@@ -298,7 +300,7 @@ export function assertCompanyReleaseConfiguration(
 
   const releasePolicy = overrides.policy ?? JSON.parse(
     readFileSync(resolve(packageRoot, 'src', 'policy', 'desktop-policy.release.json'), 'utf8'),
-  ) as { locked?: unknown }
+  ) as { locked?: unknown; trustRoots?: unknown }
   if (releasePolicy.locked !== true) fail('the release policy variant must be locked')
 
   const readPlaceholder = (file: string, marker: string, override?: string): void => {
@@ -322,6 +324,15 @@ export function assertCompanyReleaseConfiguration(
   }
   readPlaceholder('update-verification.ts', 'ARTIFACT_TRUST_ROOTS', overrides.updateRoots)
 
+  // The company catalog chain must be constructible at runtime: a locked
+  // policy without pinned catalog trust roots browses a placeholder and
+  // rejects every install — the market dying silently (P0②). This preflight
+  // mirrors the packaged-tree checklist, which additionally verifies the
+  // embedded manifest against exactly these roots.
+  if (!Array.isArray(releasePolicy.trustRoots) || releasePolicy.trustRoots.length === 0) {
+    fail('the release policy must provision at least one catalog trust root (desktop-policy.release.json trustRoots); empty roots leave the locked market unusable')
+  }
+
   const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'))
   const fuses = overrides.fuses
     ?? (manifest as { build?: { electronFuses?: Record<string, unknown> } }).build?.electronFuses
@@ -338,5 +349,5 @@ export function assertCompanyReleaseConfiguration(
   for (const [key, expected] of REQUIRED_FUSES) {
     if (fuses?.[key] !== expected) fail(`electronFuses.${key} must be ${String(expected)}`)
   }
-  console.log('company release configuration passed: locked policy, provisioned update trust roots, full fuse set')
+  console.log('company release configuration passed: locked policy, provisioned catalog and update trust roots, full fuse set')
 }

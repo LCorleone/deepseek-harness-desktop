@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads'
 import { listPackage } from '@electron/asar'
 import { getCurrentFuseWire, flipFuses, FuseV1Options, FuseVersion, type FuseConfig } from '@electron/fuses'
 import AdmZip from 'adm-zip'
+import { verifyCompanyManifest } from 'dsh-community-market'
 import {
   FORBIDDEN_MACOS_UNIVERSAL_ENTRIES,
   MACOS_UNIVERSAL_NATIVE_ENTRIES,
@@ -624,6 +625,13 @@ export interface CompanyReleaseChecklistSources {
    * (`app.asar.unpacked/lib/policy/desktop-policy.json`).
    */
   readonly packagedPolicy: unknown
+  /**
+   * Text of the packaged company catalog manifest
+   * (`app.asar.unpacked/lib/<companyManifestUrl>`) for content-mode policies;
+   * undefined when absent or when the policy serves the catalog from an
+   * origin. Verified against the policy trust roots by the checklist.
+   */
+  readonly packagedManifestText: string | undefined
   /** Text of `src/update-verification.ts`. */
   readonly updateVerificationSource: string
   /** Text of `src/electron-runtime.ts`. */
@@ -665,15 +673,17 @@ export function readCompanyReleaseChecklistSources(
   readRepositoryFile: (relativePath: string) => string = readRepositorySourceFile,
   readPackagedFile: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
 ): CompanyReleaseChecklistSources {
+  const releasePolicy = JSON.parse(readRepositoryFile('src/policy/desktop-policy.release.json'))
   return {
     manifestFuses: readPackagedElectronFuses(context.packager),
-    releasePolicy: JSON.parse(readRepositoryFile('src/policy/desktop-policy.release.json')),
+    releasePolicy,
     packagedPolicy: JSON.parse(readPackagedFile(join(
       resolvePackagedUnpackedRoot(context),
       'lib',
       'policy',
       'desktop-policy.json',
     ))),
+    packagedManifestText: readPackagedCompanyManifestText(releasePolicy, context, readPackagedFile),
     updateVerificationSource: readRepositoryFile('src/update-verification.ts'),
     electronRuntimeSource: readRepositoryFile('src/electron-runtime.ts'),
     updateLifecycleSource: readRepositoryFile('src/update-lifecycle.ts'),
@@ -681,7 +691,68 @@ export function readCompanyReleaseChecklistSources(
 }
 
 /**
- * Company release-build checklist (security plan P3-4).
+ * Read the packaged company catalog manifest for a content-mode release
+ * policy. A missing asset reads as undefined — the checklist turns that into
+ * the build failure; origin-mode policies never read a packaged asset.
+ */
+function readPackagedCompanyManifestText(
+  releasePolicy: unknown,
+  context: PackagedRuntimeContext,
+  readPackagedFile: (filename: string) => string,
+): string | undefined {
+  if (typeof releasePolicy !== 'object' || releasePolicy === null || Array.isArray(releasePolicy)) {
+    return undefined
+  }
+  const origin = (releasePolicy as Record<string, unknown>).companyCatalogOrigin
+  const companyManifestUrl = (releasePolicy as Record<string, unknown>).companyManifestUrl
+  if (origin !== null || typeof companyManifestUrl !== 'string') return undefined
+  try {
+    return readPackagedFile(join(resolvePackagedUnpackedRoot(context), 'lib', ...companyManifestUrl.split('/')))
+  } catch {
+    return undefined
+  }
+}
+
+/** Catalog-relevant slice of a release policy document. */
+interface ChecklistCatalogPolicy {
+  readonly trustRoots: readonly { readonly keyId: string; readonly fingerprint: string }[]
+  readonly companyCatalogOrigin: string | null
+  readonly companyManifestUrl: string
+}
+
+/** Validate the catalog fields the checklist gates on; malformed policies fail loud. */
+function checklistCatalogPolicy(policy: unknown, label: string): ChecklistCatalogPolicy {
+  if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) {
+    throw new Error(`dsh-plugin-desktop: ${label} must be an object`)
+  }
+  const object = policy as Record<string, unknown>
+  if (!Array.isArray(object.trustRoots)) {
+    throw new Error(`dsh-plugin-desktop: ${label} must declare a trustRoots array`)
+  }
+  const trustRoots = object.trustRoots.map(entry => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`dsh-plugin-desktop: ${label} trust roots must be objects`)
+    }
+    const { keyId, fingerprint } = entry as Record<string, unknown>
+    if (typeof keyId !== 'string' || typeof fingerprint !== 'string') {
+      throw new Error(`dsh-plugin-desktop: ${label} trust roots must carry keyId and fingerprint strings`)
+    }
+    return { keyId, fingerprint }
+  })
+  const companyCatalogOrigin = object.companyCatalogOrigin
+  if (companyCatalogOrigin !== null && typeof companyCatalogOrigin !== 'string') {
+    throw new Error(`dsh-plugin-desktop: ${label} companyCatalogOrigin must be a bare https origin or null`)
+  }
+  const companyManifestUrl = object.companyManifestUrl
+  if (typeof companyManifestUrl !== 'string' || companyManifestUrl.length === 0
+    || companyManifestUrl.includes('\0') || companyManifestUrl.includes('\\')) {
+    throw new Error(`dsh-plugin-desktop: ${label} companyManifestUrl must be a non-empty string without NUL or backslash`)
+  }
+  return { trustRoots, companyCatalogOrigin, companyManifestUrl }
+}
+
+/**
+ * Company release-build checklist (security plan P3-4, catalog items L2).
  *
  * One static assertion group over the repository, run by `afterPack` for
  * every packaged artifact so local `--dir` smoke builds fail exactly like a
@@ -694,9 +765,19 @@ export function readCompanyReleaseChecklistSources(
  * 2. the release policy asset exists and stays locked (P1-1), and the copy
  *    packaged into the application tree is the exact same locked document —
  *    a dev-variant or hand-edited policy inside the artifact fails here;
- * 3. the update-channel trust roots are either pinned (non-empty) or carry
+ * 3. the policy pins at least one catalog trust root: an empty `trustRoots`
+ *    array cannot construct the signed company catalog at runtime, so the
+ *    locked market would browse a placeholder and reject every install —
+ *    the gate fails the build instead of shipping that silent placeholder;
+ * 4. a content-mode policy must embed the company catalog manifest inside
+ *    the packaged tree (`lib/<companyManifestUrl>`), and that exact file must
+ *    verify against the policy trust roots through the market signing
+ *    library (expired or badly signed assets fail; the sequence ratchet is
+ *    intentionally not consulted because build time has no persisted
+ *    state) — a hand-copied manifest is a verified build step, not a hope;
+ * 5. the update-channel trust roots are either pinned (non-empty) or carry
  *    the explicit {@link UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER};
- * 4. the P3-3 anti-rollback state file is wired into both Electron call
+ * 6. the P3-3 anti-rollback state file is wired into both Electron call
  *    sites (version check through the adapter, installer download through
  *    the verification options).
  *
@@ -738,6 +819,45 @@ export function verifyCompanyReleaseChecklist(sources: CompanyReleaseChecklistSo
     throw new Error(
       'dsh-plugin-desktop: the packaged policy asset differs from src/policy/desktop-policy.release.json; a release build must embed the locked release variant',
     )
+  }
+
+  // The signed company catalog must be constructible: empty policy trust
+  // roots leave the locked market browsing a placeholder with every install
+  // rejected, so an unprovisioned release candidate fails here (P0②).
+  const catalogPolicy = checklistCatalogPolicy(
+    policy,
+    'src/policy/desktop-policy.release.json',
+  )
+  if (catalogPolicy.trustRoots.length === 0) {
+    throw new Error(
+      'dsh-plugin-desktop: src/policy/desktop-policy.release.json must provision at least one catalog trust root; empty trustRoots leave the locked market unusable',
+    )
+  }
+  if (catalogPolicy.companyCatalogOrigin === null) {
+    const segments = catalogPolicy.companyManifestUrl.split('/')
+    if (catalogPolicy.companyManifestUrl.startsWith('/')
+      || segments.some(segment => segment.length === 0 || segment === '.' || segment === '..')) {
+      throw new Error(
+        'dsh-plugin-desktop: content-mode release policies must pin companyManifestUrl to a relative bundled asset path',
+      )
+    }
+    const relativeAsset = `lib/${catalogPolicy.companyManifestUrl}`
+    if (sources.packagedManifestText === undefined) {
+      throw new Error(
+        `dsh-plugin-desktop: content-mode release builds must embed the company catalog manifest at app.asar.unpacked/${relativeAsset}`,
+      )
+    }
+    // Verify the embedded manifest against the policy roots through the
+    // market signing library: expiry and signature failures fail the build;
+    // the sequence ratchet is build-time stateless and stays unchecked.
+    const verification = verifyCompanyManifest(sources.packagedManifestText, {
+      trustRoots: catalogPolicy.trustRoots,
+    })
+    if (!verification.ok) {
+      throw new Error(
+        `dsh-plugin-desktop: the packaged company catalog manifest (${relativeAsset}) did not verify against the policy trust roots (${verification.code}): ${verification.reason}`,
+      )
+    }
   }
 
   // The declaration may span multiple lines: capture from the `=` up to the

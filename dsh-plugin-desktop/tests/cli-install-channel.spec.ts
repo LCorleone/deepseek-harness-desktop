@@ -1,9 +1,9 @@
 import { generateKeyPairSync } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   canonicalJsonText,
   createCompanyManifestSignature,
@@ -14,6 +14,7 @@ import {
   companyManifestAssetPath,
   parseExactPluginAddSpec,
 } from '../src/cli-install-channel.ts'
+import { fetchCompanyManifestText } from '../src/company-manifest-origin.ts'
 import { parseDesktopPolicy } from '../src/desktop-policy.ts'
 import type { DesktopPolicy } from '../src/desktop-policy.ts'
 
@@ -220,23 +221,63 @@ describe('locked plugin-add authorization', () => {
     }
   })
 
-  it('denies network-catalog policies that have no embedded asset', async () => {
-    const policy = parseDesktopPolicy({
-      allowHomePatch: false,
-      allowManualPluginAdd: false,
+  it('allows an exact target fetched from the policy-pinned origin', async () => {
+    const policy = lockedCatalogPolicy({
       companyCatalogOrigin: 'https://market.company.example',
       companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
-      locked: true,
-      trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    const request = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://market.company.example/catalog-manifest.json')
+      expect(init.redirect).toBe('error')
+      return new Response(manifestText)
     })
 
-    const decision = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy)
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: (url, init) => request(url, init) } },
+    )
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+  })
+
+  it('denies the plugin add when the origin fetch fails', async () => {
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: async () => new Response('gone', { status: 503 }) } },
+    )
 
     expect(decision.allowed).toBe(false)
     if (!decision.allowed) {
-      expect(decision.reason).toContain('embedded in the application')
+      expect(decision.reason).toContain('could not be fetched from https://market.company.example')
       expect(decision.reason).toContain('company plugin market')
     }
+  })
+
+  it('denies origin policies whose manifest URL escapes the pinned origin before any request', async () => {
+    // The strict policy parser refuses such documents itself; this guards
+    // the shared fetch helper against non-parsed callers (defense in depth).
+    const request = vi.fn(async () => new Response('never read'))
+    const policy = {
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://evil.example/catalog-manifest.json',
+    } as const
+
+    await expect(fetchCompanyManifestText(policy, { request })).rejects.toThrow(
+      'must stay inside the pinned https catalog origin',
+    )
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('denies an unreadable manifest asset', async () => {

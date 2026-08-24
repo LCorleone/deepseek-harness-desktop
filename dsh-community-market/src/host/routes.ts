@@ -6,7 +6,7 @@ import z from '@deepseek-ai/schemastery'
 import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CatalogSourceManifest } from '../contracts/index.js'
 import { parseCatalogSnapshot, parseCatalogSource, validateLocalSourceRecords } from '../contracts/validate.js'
-import type { CatalogHttpClient } from '../contracts/types.js'
+import type { CatalogAdapter, CatalogHttpClient } from '../contracts/types.js'
 import type {
   MarketBuiltInProvider,
   MarketCatalogErrorCode,
@@ -540,6 +540,19 @@ export interface MarketDesktopPluginsProvider {
   get(): MarketDesktopPlugins | undefined
 }
 
+/**
+ * Locked-deployment catalog wiring the route layer registers with the catalog
+ * service: the signed company adapter plus any adapter-specific HTTP clients
+ * (origin mode pins a body-bounded client). Pure data — the construction and
+ * the untrusted-reporting wrapper live in the plugin index.
+ */
+export interface MarketCompanyCatalogRouteWiring {
+  /** Deployment-injected adapters layered over the built-ins (the signed company provider). */
+  readonly adapters: readonly CatalogAdapter[]
+  /** Adapter-specific HTTP clients merged over the built-in client map. */
+  readonly adapterHttpClients?: ReadonlyMap<string, CatalogHttpClient>
+}
+
 function validDesktopBundle(value: unknown): value is MarketDesktopPluginBundle {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
   const bundle = value as Record<string, unknown>
@@ -730,6 +743,7 @@ export function registerMarketRoutes(
   desktopActionsProvider?: MarketDesktopActionsProvider,
   desktopPluginsProvider?: MarketDesktopPluginsProvider,
   sourceLock?: CatalogSourceLockOptions,
+  companyCatalog?: MarketCompanyCatalogRouteWiring,
 ): () => void {
   const expectedPort = ctx.webServer.port
   const generationController = new AbortController()
@@ -811,10 +825,12 @@ export function registerMarketRoutes(
     }),
   })
   const service = new DefaultCatalogService(store, restrictedHttpClient, {
-    adapterHttpClients: new Map([
+    adapterHttpClients: new Map<string, CatalogHttpClient>([
       [DSH_1024STORE_ADAPTER_ID, dsh1024StoreHttpClient],
       [DSHFIND_ADAPTER_ID, dshfindHttpClient],
+      ...(companyCatalog?.adapterHttpClients ?? []),
     ]),
+    ...(companyCatalog === undefined ? {} : { adapters: companyCatalog.adapters }),
     media,
     observeSnapshot: snapshot => installProvider?.get()?.observeCatalog(snapshot),
   })

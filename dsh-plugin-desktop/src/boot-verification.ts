@@ -48,7 +48,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
@@ -60,6 +60,7 @@ import {
   type CompanyManifestVerificationCode,
   type MarketInstallReceipt,
 } from 'dsh-community-market'
+import { fetchCompanyManifestText } from './company-manifest-origin.ts'
 import { DESKTOP_MARKET_IDENTITIES } from './desktop-market.ts'
 import { desktopPluginBundleMutable } from './desktop-plugins.ts'
 import { resolveOverlayPackage } from './package-overlay.ts'
@@ -104,8 +105,9 @@ export interface DesktopBootReceipt {
 export interface DesktopBootVerificationInputs {
   /**
    * Signed manifest bytes. Defaults to the embedded content-mode asset when
-   * the policy pins one; origin-mode deployments must inject cached bytes
-   * because profile composition never performs network I/O.
+   * the policy pins one; origin-mode deployments fetch through
+   * {@link desktopBootVerificationInputs} (profile composition itself never
+   * performs network I/O).
    */
   readonly manifestBytes?: string | Uint8Array
   /** Market install receipts; absent receipts degrade matching bundles to manifest-only. */
@@ -119,6 +121,12 @@ export interface DesktopBootVerificationInputs {
   readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Installed-tree measurement override for focused tests and the persisted
+   * fingerprint cache (see {@link createCachedDesktopBootTreeRootDigestMeasure});
+   * defaults to the full synchronous measurement.
+   */
+  readonly measureTreeRootDigest?: (packageDir: string) => string
 }
 
 export interface DesktopBootVerificationOptions {
@@ -227,6 +235,161 @@ export function computeDesktopBootTreeRootDigest(packageDir: string): string {
   return root.digest('hex')
 }
 
+/** Persisted fingerprint of one measured package directory (L2 P1④). */
+export interface DesktopBootTreeFingerprintEntry {
+  /** Aggregate modification-time fingerprint over the sorted tree entries. */
+  readonly mtime: number
+  /** Aggregate size fingerprint over the sorted tree entries. */
+  readonly size: number
+  /** Full `rootDigest` measured when the stat fingerprint was recorded. */
+  readonly digest: string
+}
+
+/** Persisted cache document: absolute package directory to its fingerprint entry. */
+export type DesktopBootTreeFingerprintDocument = Record<string, DesktopBootTreeFingerprintEntry>
+
+/** Filename of the persisted boot tree fingerprint cache inside `<userData>`. */
+export const DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME = 'boot-tree-fingerprints.json'
+
+const SHA256_HEX_ENTRY_PATTERN = /^[0-9a-f]{64}$/u
+const MAX_BOOT_TREE_FINGERPRINT_ENTRIES = 64
+
+/** Aggregated stat fingerprint of one installed tree (no file content is read). */
+export interface DesktopBootTreeStatFingerprint {
+  readonly mtime: number
+  readonly size: number
+}
+
+const byName = (left: { readonly name: string }, right: { readonly name: string }): number =>
+  left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+
+function collectBootTreeStatFingerprint(
+  dir: string,
+  aggregate: { mtime: number; size: number; entries: number },
+): void {
+  // Same traversal shape as the digest walk (sorted names, symlinks never
+  // followed, foreign entry types refused), but reading only stat data: the
+  // aggregate is the cheap change detector for the fingerprint cache below.
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort(byName)) {
+    const stats = lstatSync(join(dir, entry.name))
+    aggregate.mtime += stats.mtimeMs
+    aggregate.size += stats.size
+    aggregate.entries += 1
+    if (aggregate.entries > BOOT_TREE_MAX_FILES) {
+      throw new Error('installed tree digest exceeded the file limit')
+    }
+    if (entry.isDirectory()) {
+      collectBootTreeStatFingerprint(join(dir, entry.name), aggregate)
+    } else if (!entry.isFile() && !entry.isSymbolicLink()) {
+      throw new Error(`installed tree entry ${entry.name} is not a file, directory, or symbolic link`)
+    }
+  }
+}
+
+/**
+ * Compute the stat-level change fingerprint of one installed package tree.
+ * Reads directory entries and metadata only — never file content — and throws
+ * on the same unmeasurable trees the full digest rejects.
+ */
+export function desktopBootTreeStatFingerprint(packageDir: string): DesktopBootTreeStatFingerprint {
+  const aggregate = { mtime: 0, size: 0, entries: 0 }
+  collectBootTreeStatFingerprint(packageDir, aggregate)
+  return { mtime: aggregate.mtime, size: aggregate.size }
+}
+
+function validFingerprintEntry(value: unknown): value is DesktopBootTreeFingerprintEntry {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  return typeof entry.mtime === 'number' && Number.isFinite(entry.mtime)
+    && typeof entry.size === 'number' && Number.isSafeInteger(entry.size) && entry.size >= 0
+    && typeof entry.digest === 'string' && SHA256_HEX_ENTRY_PATTERN.test(entry.digest)
+}
+
+/** Injectable file seams for focused tests of the fingerprint cache. */
+export interface CachedBootTreeDigestMeasureOptions {
+  /** Full measurement; defaults to {@link computeDesktopBootTreeRootDigest}. */
+  readonly measure?: (packageDir: string) => string
+  /** Cache file reader; defaults to `readFileSync(utf8)`. */
+  readonly readFile?: (path: string) => string
+  /** Cache file writer; defaults to `writeFileSync`. */
+  readonly writeFile?: (path: string, body: string) => void
+  /** Remembered package directories; defaults to 64. */
+  readonly maxEntries?: number
+}
+
+/**
+ * Wrap the full tree measurement with the persisted stat-fingerprint cache
+ * (`<userData>/boot-tree-fingerprints.json`). Per package directory the cache
+ * records `{mtime, size, digest}`: two aggregates over the sorted stat walk
+ * plus the root digest measured when they were recorded. A repeat boot whose
+ * stat fingerprint still matches skips the full content hash and returns the
+ * recorded digest — which the receipt comparison then accepts exactly when
+ * the receipt still pins that digest; any divergence keeps rejecting. A
+ * changed tree (different sizes or modification times anywhere in it)
+ * recomputes the full digest and rewrites the entry. A corrupt or unreadable
+ * cache file is ignored and rebuilt; a failed write is skipped (the next boot
+ * simply re-measures).
+ *
+ * Advisory positioning: the cache lives in user-writable `<userData>` beside
+ * the user-writable receipt store the tamper check compares against, so it
+ * adds no new authority — it trades the repeat-boot content hash for
+ * stat-level change detection on those already-advisory surfaces. The first
+ * boot after any tree change always performs the full measurement.
+ */
+export function createCachedDesktopBootTreeRootDigestMeasure(
+  cachePath: string,
+  options: CachedBootTreeDigestMeasureOptions = {},
+): (packageDir: string) => string {
+  const measure = options.measure ?? computeDesktopBootTreeRootDigest
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
+  const writeFile = options.writeFile ?? ((path: string, body: string) => { writeFileSync(path, body) })
+  const maxEntries = options.maxEntries ?? MAX_BOOT_TREE_FINGERPRINT_ENTRIES
+  let records: Map<string, DesktopBootTreeFingerprintEntry> | undefined
+  const load = (): Map<string, DesktopBootTreeFingerprintEntry> => {
+    if (records !== undefined) return records
+    records = new Map()
+    try {
+      const parsed: unknown = JSON.parse(readFile(cachePath))
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [packageDir, entry] of Object.entries(parsed as Record<string, unknown>)) {
+          if (packageDir.length > 0 && validFingerprintEntry(entry)) {
+            records.set(packageDir, entry)
+          }
+        }
+      }
+    } catch {
+      // A corrupt or missing cache is not a boot failure: rebuild from empty.
+    }
+    return records
+  }
+  const persist = (): void => {
+    try {
+      writeFile(cachePath, `${JSON.stringify(Object.fromEntries(load()), null, 2)}\n`)
+    } catch {
+      // A failed write only costs the next boot a full measurement.
+    }
+  }
+  return (packageDir: string) => {
+    const cache = load()
+    const fingerprint = desktopBootTreeStatFingerprint(packageDir)
+    const cached = cache.get(packageDir)
+    if (cached !== undefined
+      && cached.mtime === fingerprint.mtime
+      && cached.size === fingerprint.size) {
+      return cached.digest
+    }
+    const digest = measure(packageDir)
+    cache.set(packageDir, { mtime: fingerprint.mtime, size: fingerprint.size, digest })
+    while (cache.size > maxEntries) {
+      const oldest = cache.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+    persist()
+    return digest
+  }
+}
+
 /**
  * Resolve the bundled company manifest asset path for content-mode policies.
  * The policy parser already confines `companyManifestUrl` to a safe relative
@@ -330,13 +493,12 @@ export function readDesktopBootReceiptsFromSettings(settingsPath: string): reado
 }
 
 /**
- * Assemble the production inputs for locked boot verification: normalized
- * install receipts from the shared market settings document, plus the
- * embedded manifest bytes for content-mode policies. Origin-mode deployments
- * have no locally cached manifest bytes, so none are injected and boot
- * verification fails closed for third-party content by design. The sequence
- * floor is intentionally left to the receipt-derived default inside
- * {@link verifyDesktopBootBundles}.
+ * Assemble the settings-derived slice of the production inputs for a locked
+ * boot: normalized install receipts from the shared market settings document,
+ * plus the embedded manifest bytes for content-mode policies. Origin-mode
+ * policies contribute no bytes here — the async {@link desktopBootVerificationInputs}
+ * adds the one pre-composition fetch. The sequence floor is intentionally
+ * left to the receipt-derived default inside {@link verifyDesktopBootBundles}.
  */
 export function desktopBootVerificationInputsFromSettings(
   policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
@@ -349,6 +511,53 @@ export function desktopBootVerificationInputsFromSettings(
   return {
     receipts: readDesktopBootReceiptsFromSettings(settingsDocumentPath),
     ...(manifestBytes === undefined ? {} : { manifestBytes }),
+  }
+}
+
+/** Options for {@link desktopBootVerificationInputs}. */
+export interface DesktopBootVerificationInputOptions {
+  /**
+   * Origin-mode manifest acquisition boundary; defaults to the shared
+   * restricted policy-pinned fetch with its multi-second timeout.
+   */
+  readonly fetchManifestText?: (
+    policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
+  ) => Promise<string>
+  /** Installed-tree measurement override (the persisted fingerprint cache). */
+  readonly measureTreeRootDigest?: (packageDir: string) => string
+}
+
+/**
+ * Assemble the production inputs for a locked boot (L2): the settings-derived
+ * receipts and content-mode asset bytes of
+ * {@link desktopBootVerificationInputsFromSettings}, plus the origin-mode
+ * manifest fetch profile composition itself must never perform. The fetch
+ * runs once, before composition; any failure leaves the bytes unset so boot
+ * verification fails closed for third-party content while the upstream
+ * client keeps booting. The receipt-derived sequence floor stays with the
+ * default inside {@link verifyDesktopBootBundles}.
+ */
+export async function desktopBootVerificationInputs(
+  policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
+  settingsDocumentPath: string,
+  moduleUrl: string = import.meta.url,
+  options: DesktopBootVerificationInputOptions = {},
+): Promise<DesktopBootVerificationInputs> {
+  const inputs = desktopBootVerificationInputsFromSettings(policy, settingsDocumentPath, moduleUrl)
+  let manifestBytes = inputs.manifestBytes
+  if (manifestBytes === undefined && policy.companyCatalogOrigin !== null) {
+    try {
+      manifestBytes = await (options.fetchManifestText ?? fetchCompanyManifestText)(policy)
+    } catch {
+      manifestBytes = undefined
+    }
+  }
+  return {
+    ...inputs,
+    ...(manifestBytes === undefined ? {} : { manifestBytes }),
+    ...(options.measureTreeRootDigest === undefined
+      ? {}
+      : { measureTreeRootDigest: options.measureTreeRootDigest }),
   }
 }
 
