@@ -280,7 +280,7 @@ describe('shipped desktop policy assets', () => {
     expect(policy.allowHomePatch).toBe(false)
     expect(policy.allowManualPluginAdd).toBe(false)
     expect(policy.trustRoots).toEqual([
-      { keyId: 'company-catalog-2026-08', fingerprint: '011b14d1518fa41e07f1d78382ed138107cbef10c0d667b9de91259320cc00fa' },
+      { keyId: 'company-catalog-2026-08', fingerprint: 'c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6' },
     ])
   })
 })
