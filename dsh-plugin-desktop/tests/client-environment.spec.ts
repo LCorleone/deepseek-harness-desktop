@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { apply } from '../src/client/index.ts'
@@ -89,6 +90,19 @@ describe('desktop client environment', () => {
 })
 
 describe('advanced desktop layout', () => {
+  it('orders the Windows drag region after scrollable content and before overlays', () => {
+    const frame = readFileSync(new URL('../src/client/AdvancedFrame.tsx', import.meta.url), 'utf8')
+    const conversation = frame.indexOf('className="dshDesktopConversationSurface"')
+    const details = frame.indexOf('className="dshDesktopDetailsSurface"')
+    const caption = frame.indexOf('className="dshDesktopWindowsCaptionRow"')
+    const overlay = frame.indexOf('className="dshDesktopOverlay"')
+
+    expect([conversation, details, caption, overlay]).not.toContain(-1)
+    expect(caption).toBeGreaterThan(conversation)
+    expect(caption).toBeGreaterThan(details)
+    expect(caption).toBeLessThan(overlay)
+  })
+
   it('owns native caption geometry without targeting feature headers', () => {
     expect(MACOS_TITLEBAR_HEIGHT).toBe(20)
     expect(MACOS_DRAG_REGION_HEIGHT).toBe(32)
