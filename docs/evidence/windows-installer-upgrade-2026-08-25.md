@@ -7,6 +7,16 @@
 - 真实安装链路：`2.0.2 -> 2.0.3` 运行中升级通过，`2.0.3 -> 2.0.3` 运行中覆盖安装通过。
 - 清理：测试安装目录、卸载注册表项、快捷方式、测试进程、临时目录和活动运行标记均无残留。
 
+## 图像摘要
+
+### #469 误判复现
+
+![Windows 安装器运行状态误判复现](./assets/windows-installer-reproduction.png)
+
+### 真实升级与覆盖安装
+
+![Windows 运行中升级与同版本覆盖安装验证](./assets/windows-installer-upgrade-smoke.png)
+
 ## 关联问题
 
 - Issue: [#469 Windows 更新安装器误判应用仍在运行](https://github.com/anywhere-labs/dsh-desktop/issues/469)
