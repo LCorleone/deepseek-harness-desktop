@@ -28,6 +28,12 @@ import {
   DSH_1024STORE_ADAPTER_ID,
   DSH_1024STORE_HOSTNAME,
 } from '../adapters/dsh-1024store.js'
+import {
+  DSH_MARKETPLACE_ADAPTER_ID,
+  DSH_MARKETPLACE_HOSTNAME,
+  DSH_MARKETPLACE_KEY,
+  isDshMarketplaceSourceUrl,
+} from '../adapters/dsh-marketplace.js'
 import { DSHFIND_ADAPTER_ID, DSHFIND_HOSTNAME } from '../adapters/dshfind.js'
 import { assertStandardSourceTrustRoot } from '../adapters/standard-http.js'
 import { BUILT_IN_PROVIDERS, DefaultCatalogService, type CatalogFetchScope, type CatalogFullIndex } from '../catalog/service.js'
@@ -79,6 +85,7 @@ const MAX_BODY_BYTES = 16 * 1024
 // The full registry was already about 6.7 MiB in August 2026. Keep bounded
 // headroom without relaxing the 2 MiB default used by user-added sources.
 const MAX_DSH_1024STORE_BODY_BYTES = 16 * 1024 * 1024
+const MAX_DSHFIND_BODY_BYTES = 16 * 1024 * 1024
 const CATALOG_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 const dsh1024StoreHttpClient = createCachedCatalogHttpClient(
@@ -93,6 +100,13 @@ const dshfindHttpClient = createCachedCatalogHttpClient(
     // This exact hostname is compiled into the reviewed adapter. User-added
     // source hostnames must never inherit this local-proxy exception.
     syntheticProxyHostnames: [DSHFIND_HOSTNAME],
+    maxBodyBytes: MAX_DSHFIND_BODY_BYTES,
+  }),
+)
+
+const dshMarketplaceHttpClient = createCachedCatalogHttpClient(
+  createRestrictedHttpClient({
+    syntheticProxyHostnames: [DSH_MARKETPLACE_HOSTNAME],
   }),
 )
 
@@ -553,16 +567,21 @@ async function mutateSources(
   const records = [...await store.load()]
   const unavailableSourceRecordIds = new Set<string>()
   const nextOrder = records.reduce((maximum, record) => Math.max(maximum, record.order), -1) + 1
-  if (mutation.action === 'add-builtin') {
-    const provider = BUILT_IN_PROVIDERS.find(candidate => candidate.key === mutation.key)
+  const builtInKey = mutation.action === 'add-builtin'
+    ? mutation.key
+    : mutation.action === 'add-standard' && isDshMarketplaceSourceUrl(mutation.manifestUrl)
+      ? DSH_MARKETPLACE_KEY
+      : undefined
+  if (builtInKey !== undefined) {
+    const provider = BUILT_IN_PROVIDERS.find(candidate => candidate.key === builtInKey)
     if (provider === undefined) throw new Error('built-in source unavailable')
-    if (records.some(record => record.builtInProviderKey === mutation.key)) throw new Error('source already added')
+    if (records.some(record => record.builtInProviderKey === builtInKey)) throw new Error('source already added')
     records.push({
       sourceRecordId: randomUUID(),
       registrationKind: 'built-in',
       adapterId: provider.adapterId,
       providerId: provider.providerId,
-      builtInProviderKey: provider.key,
+      builtInProviderKey: builtInKey,
       enabled: false,
       order: nextOrder,
     })
@@ -595,7 +614,7 @@ async function mutateSources(
         records[recordIndex] = { ...record, enabled }
       }
     }
-  } else {
+  } else if (mutation.action === 'move') {
     const ordered = [...records].sort((left, right) => left.order - right.order)
     const index = ordered.findIndex(record => record.sourceRecordId === mutation.sourceRecordId)
     if (index < 0) throw new Error('source not found')
@@ -607,6 +626,8 @@ async function mutateSources(
     const targetRecordIndex = records.findIndex(record => record.sourceRecordId === target.sourceRecordId)
     records[currentRecordIndex] = { ...current, order: target.order }
     records[targetRecordIndex] = { ...target, order: current.order }
+  } else {
+    throw new Error('source mutation is invalid')
   }
   validateLocalSourceRecords(records)
   signal.throwIfAborted()
@@ -646,12 +667,18 @@ export function registerMarketRoutes(
   const media = createMarketMediaService({
     fetchImage: createRestrictedImageFetcher({
       // These are compiled-in adapter hosts, not names supplied by a remote source.
-      syntheticProxyHostnames: [DSH_1024STORE_HOSTNAME, 'github.com', 'avatars.githubusercontent.com'],
+      syntheticProxyHostnames: [
+        DSH_1024STORE_HOSTNAME,
+        DSH_MARKETPLACE_HOSTNAME,
+        'github.com',
+        'avatars.githubusercontent.com',
+      ],
     }),
   })
   const service = new DefaultCatalogService(store, restrictedHttpClient, {
     adapterHttpClients: new Map([
       [DSH_1024STORE_ADAPTER_ID, dsh1024StoreHttpClient],
+      [DSH_MARKETPLACE_ADAPTER_ID, dshMarketplaceHttpClient],
       [DSHFIND_ADAPTER_ID, dshfindHttpClient],
     ]),
     media,
@@ -767,8 +794,9 @@ export function registerMarketRoutes(
         if (scope !== undefined && activeSource?.sourceRecordId !== scope.sourceRecordId) {
           throw new Error('catalog source is not active')
         }
-        const providerQuery = activeSource?.adapterId === DSH_1024STORE_ADAPTER_ID
-          && (q !== undefined || categories.length === 1)
+        const providerQuery = activeSource?.adapterId === DSHFIND_ADAPTER_ID
+          || (activeSource?.adapterId === DSH_MARKETPLACE_ADAPTER_ID && categories.length <= 1)
+          || (activeSource?.adapterId === DSH_1024STORE_ADAPTER_ID && (q !== undefined || categories.length === 1))
         if (providerQuery) {
           let results
           try {
