@@ -17,8 +17,8 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 | 评审修复 ×4 | 详见各 Phase 段 | 894e82223f, c9e8c773e4, e9c2785877, b5ef752291 |
 
 ## Current State
-- **Working on**: 计划交付 + L2 接线迭代完成；Windows Package CI 全绿（run 32708698357，8m28s，安装包含 L2 全链 + 真签名 manifest）
-- **密钥状态**：会话内生成过两对演示钥，均已暴露于会话输出——**生产前必须作废重生成**；当前策略钉 c469 指纹，样例 manifest 用它签
+- **Working on**: 试点反馈全链修复完成并已 push（fork master = `097537d254`）；Windows Package 打包中（run 32838490544，含全部 8/25-26 修复）；待用户验收新包
+- **密钥状态**：会话内生成过两对演示钥，均已暴露于会话输出——**生产前必须作废重生成**；当前策略钉 c469 指纹，样例 manifest 用它签（sequence 2）
 - **上游跟进结论（2026-08-24 查）**：master 停在 `b150a551b8`（0.1.1-rc.2，8/21），与我们钉的完全一致，零新提交；最新 release 同版（图像 Files API 体验向，无安装器改动）；issues 公开列表为空。**安装耗时问题无新上游可拉**——若再复现慢装，方向转本机 EDR/杀软扫描与 NSIS 逐文件解压特性
 - **Blocked on**: 无
 
@@ -53,7 +53,8 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **P4-1**（`8c713a4fae`）：boot 快照持久化 `<userData>/boot-verification.json`（unlocked 写 null 清除）→ 诊断导出内嵌 self-check-report.json（allowed/refused 全量 + RFC 0004 词汇 + 策略 sha256 + node 自检状态 + manifest sequence/keyId）+ 零依赖验签脚本。
 - **P4-2/3/4**（`bd7e9e7eba`）：双语篡改证据链手册（字段→能证明/不能证明表、取样流程）；双语残余风险签收单（R1-R7 + 零改动 IT 升级点，**待管理层签字**）；release-preflight 公司门禁。
 - **Windows Package CI 修复链（2026-08-24）**：① `5e7090bad9` zip member 加版本目录前缀（nodejs.org win zip 嵌套结构，本地 fixture 掩盖、CI 干净环境炸 ADM-ZIP Entry doesn't exist）；② `2322954f6a` 真钥匙指纹钉入 release 策略 + embed-company-manifest.mjs 构建步骤（管线产物/assets 样例双候选入 lib/company-market/）+ files 白名单补 lib/company-market/*.json；③ 门禁 spec 对齐新缺口顺序。run 32708698357 绿（8m28s），安装包含 L2 全链 + 真签名 manifest（样例条目 ms@2.1.3）。用户问询「怎么装插件」已答：用户=市场 UI / CLI 精确版本两路；管理员=allowlist→管线 build→内嵌或托管发布；限制=仅 npmjs 公开包、审核责任在公司
-- **终审 HIGH 修复**（`2b634ab224`，已 commit 未 push，待用户人工检查）：manifest 条目 repository 改为**必填**（schema+签名类型+provider 断言），管线从同一 packument 抓取真实仓库 URL（去 git+/.git）写入签名；catalogItem 直通 normalize 后身份 → 安装期回链比对通过；样例资产重签 sequence 2；端到端断言（真实 github URL 候选→preview+execute 成功、attacker/mirror 拒）；selftest 新增 repository-identity 段（在线 9/9）
+- **终审 HIGH 修复**（`2b634ab224`，已 push）：manifest 条目 repository 改为**必填**（schema+签名类型+provider 断言），管线从同一 packument 抓取真实仓库 URL（去 git+/.git）写入签名；catalogItem 直通 normalize 后身份 → 安装期回链比对通过；样例资产重签 sequence 2；端到端断言（真实 github URL 候选→preview+execute 成功、attacker/mirror 拒）；selftest 新增 repository-identity 段（在线 9/9）
+- **8/25 评审收尾**（`097537d254`，已 push）：管线 repository 推导支持对象形式 packument（npm 主流写法，dsh-better-sidebar 实测）+ directory→subdirectory 映射；管线复用 market `normalizeRepositoryIdentity` 中止坏覆盖（签不出炸目录的 manifest）；shim spec 改用真实编码器展开（去 bug 形态字面量）；示例 manifest 回规范形+monorepo 条目；devlog 兼容性记录与归属勘误。8/25 评审结论：客户端修复全部验证通过，发布条件（2b634ab224 必须在包内）已满足；根 check 全绿 desktop 1099 / market 366
 - **兼容性记录（2026-08-25 评审补记，对应 `2b634ab224`）**：repository 必填化是 schema 级**双向不兼容**变更——旧代码拒新 manifest（旧 schema `additionalProperties:false` 无 repository 字段，新条目多出的 repository 是未知字段）、新代码拒旧 manifest（新 schema 缺必填 repository）；两方向均 fail-closed（目录不可用 ≠ 不安全），无静默降级路径。**content 模式升级安全**：内嵌资产与验证代码同批原子分发；已扫过的机器棘轮 1→2 严格递增直接通过，全新/从未扫成功的机器无持久化记录（空记录过渡）首扫即过。**origin 模式需重签重发**：托管 manifest 必须用管线重出带 repository 字段的版本并重新上传；因新旧客户端互拒对方清单且单一 URL 只能服务一版，无交错兼容窗口——必须客户端整批升级与清单切换同批完成，混合期必有一侧目录不可用直至对齐（若需分流只能按 URL 分）。**下次破坏性变更改升版本号**：任何增删必填字段的 schema 变更都必须升 `manifestVersion`（1.0.0 → 1.1.0/2.0.0）并按版本分派验证逻辑，禁止同版本号内改契约（本次已同步入 `tools/company-catalog/README.md`）
 - **试点条目 + 裸 cordis 放行**（`ad7fba2cf7`，已 push）：首条正式 allowlist 条目 `dsh-better-sidebar@0.15.2`（替换 ms 样例）；裸 cordis 共存放行（试点期放宽，见试点期安全决策）——裸 `cordis` 4.x 且同时存在 `@deepseek-ai/cordis` 依赖时放行，裸 cordis 作为唯一宿主仍拒（归属勘误 2026-08-25：此改动在 `ad7fba2cf7`，非 `32d999a037`）
 - **试点反馈修复**（`32d999a037`，已 push）：① 内容模式同 sequence 重放被棘轮误拒（「一会能显示一会 unavailable」+「company-catalog 一直 Not checked yet」的根因——内嵌资产 sequence 固定，第二次扫描必 stale）→ 新语义：同字节同号放行、同号不同字节拒、回退拒；② 锁定时 settings 页隐藏 partner providers（viewBuiltIns 按锁定态过滤）
