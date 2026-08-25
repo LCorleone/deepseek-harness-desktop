@@ -70,7 +70,8 @@ export function formatRecoveryPluginRemoveFailure(cause: unknown): string {
   }
   return [
     'DSH plugin uninstall failed.',
-    `Command: dsh plugin --profile ${cause.result.profileName} ${PNPM_IGNORE_MINIMUM_RELEASE_AGE} remove ${cause.result.packageName}`,
+    `Command: dsh plugin --profile ${cause.result.profileName} remove ${cause.result.packageName}`,
+    `Package-manager policy: ${PNPM_IGNORE_MINIMUM_RELEASE_AGE}`,
     `Exit status: ${String(cause.result.exitCode)}`,
     `Signal: ${cause.result.signal ?? 'none'}`,
     diagnosticStream('stderr', cause.result.stderr),
@@ -107,13 +108,15 @@ export async function removeRecoveryPlugin(
   }
   options.signal?.throwIfAborted()
   const path = inheritedPath()
+  // Do not forward the pnpm policy here. The packaged pnpm command shim adds
+  // it at the actual package-manager boundary; forwarding it too makes pnpm
+  // parse the numeric option as an array and produces an invalid cutoff date.
   const args = [
     '--expose-internals',
     options.dshBootstrapPath,
     'plugin',
     '--profile',
     options.profileName,
-    PNPM_IGNORE_MINIMUM_RELEASE_AGE,
     'remove',
     options.packageName,
   ] as const

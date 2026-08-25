@@ -38,14 +38,7 @@ describe('pre-Host recovery plugin uninstall command', () => {
     const options = fixture(`process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), home: process.env.DSH_HOME }))\n`)
     const result = await removeRecoveryPlugin(options)
     expect(JSON.parse(result.stdout)).toEqual({
-      argv: [
-        'plugin',
-        '--profile',
-        'desktop',
-        '--config.minimumReleaseAge=0',
-        'remove',
-        'third-party-plugin',
-      ],
+      argv: ['plugin', '--profile', 'desktop', 'remove', 'third-party-plugin'],
       home: options.homeDir,
     })
     expect(result).toMatchObject({
@@ -61,7 +54,8 @@ describe('pre-Host recovery plugin uninstall command', () => {
     try { await removeRecoveryPlugin(options) } catch (cause) { failure = cause }
     expect(failure).toBeInstanceOf(RecoveryPluginUninstallError)
     const detail = formatRecoveryPluginRemoveFailure(failure)
-    expect(detail).toContain('dsh plugin --profile desktop --config.minimumReleaseAge=0 remove third-party-plugin')
+    expect(detail).toContain('dsh plugin --profile desktop remove third-party-plugin')
+    expect(detail).toContain('Package-manager policy: --config.minimumReleaseAge=0')
     expect(detail).toContain('Exit status: 7')
     expect(detail).toContain('simulated remove failure')
   })
