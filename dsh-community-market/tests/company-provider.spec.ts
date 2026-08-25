@@ -170,6 +170,7 @@ describe('company catalog provider (content mode)', () => {
       name: 'dsh-plugin-safe',
       displayName: 'dsh-plugin-safe',
       summary: 'Company signed catalog entry dsh-plugin-safe@1.2.3',
+      repository: { url: 'https://registry.npmjs.org/dsh-plugin-safe' },
       package: { registry: 'npm', name: 'dsh-plugin-safe' },
       latestVersion: '1.2.3',
       provenance: {

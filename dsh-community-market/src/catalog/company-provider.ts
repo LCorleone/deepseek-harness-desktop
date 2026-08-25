@@ -29,6 +29,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CatalogQuery } from '../contracts/generated/catalog-query.js'
 import type { CatalogSnapshot } from '../contracts/generated/catalog-snapshot.js'
 import { parseCatalogSnapshot } from '../contracts/validate.js'
+import { normalizeRepositoryIdentity } from '../contracts/identity.js'
 import type { CatalogAdapter, CatalogFetchContext, LocalSourceRecord } from '../contracts/types.js'
 import {
   canonicalJsonText,
@@ -212,6 +213,11 @@ function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): 
     summary: `Company signed catalog entry ${entry.packageName}@${entry.version}`,
     package: { registry: 'npm', name: entry.packageName },
     latestVersion: entry.version,
+    // observeCatalog requires a repository identity before an item becomes an
+    // install candidate; npm packages resolve to the registry package page.
+    repository: normalizeRepositoryIdentity({
+      url: `https://registry.npmjs.org/${entry.packageName}`,
+    }),
     provenance: {
       sourceRecordId: source.sourceRecordId,
       providerId: source.providerId,
