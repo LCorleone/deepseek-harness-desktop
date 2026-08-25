@@ -259,16 +259,23 @@ function parseTrustRootPair(pair: string): DesktopPolicyTrustRoot {
  * @param policy - the policy the Electron main process already read and parsed.
  * @returns environment entries safe for POSIX assignments and batch `set` lines.
  */
+/** Sentinel for an absent value: Windows `set "VAR="` deletes the variable, so empty strings cannot survive the batch shim. */
+const ENVIRONMENT_ABSENT = '-'
+
 export function desktopPolicyEnvironmentEntries(
   policy: DesktopPolicy,
 ): Record<string, string> {
   return {
     [DESKTOP_POLICY_ENVIRONMENT.locked]: policy.locked ? '1' : '0',
-    [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: policy.companyCatalogOrigin ?? '',
+    // A real origin is always a bare https URL, so `-` can never collide.
+    [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: policy.companyCatalogOrigin ?? ENVIRONMENT_ABSENT,
     [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: policy.companyManifestUrl,
-    [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: policy.trustRoots
-      .map(trustRoot => `${trustRoot.keyId}:${trustRoot.fingerprint}`)
-      .join(','),
+    // Real entries are `keyId:fingerprint` pairs; `-` cannot collide either.
+    [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: policy.trustRoots.length === 0
+      ? ENVIRONMENT_ABSENT
+      : policy.trustRoots
+        .map(trustRoot => `${trustRoot.keyId}:${trustRoot.fingerprint}`)
+        .join(','),
   }
 }
 
@@ -326,11 +333,13 @@ export function desktopPolicyFromEnvironment(
   if (present.length !== 4) {
     throw invalidPolicy('the policy environment hand-off must carry all four entries')
   }
-  const trustRootPairs = trustRoots!.length === 0 ? [] : trustRoots!.split(',')
+  const trustRootPairs = trustRoots === ENVIRONMENT_ABSENT
+    ? []
+    : trustRoots!.split(',')
   return parseDesktopPolicy({
     allowHomePatch: false,
     allowManualPluginAdd: false,
-    companyCatalogOrigin: catalogOrigin!.length === 0 ? null : catalogOrigin,
+    companyCatalogOrigin: catalogOrigin === ENVIRONMENT_ABSENT ? null : catalogOrigin,
     companyManifestUrl: manifestUrl!,
     locked: locked === '1' ? true : locked === '0' ? false : undefined,
     trustRoots: trustRootPairs.map(pair => parseTrustRootPair(pair)),

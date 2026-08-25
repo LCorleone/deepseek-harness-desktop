@@ -408,6 +408,7 @@ describe('company catalog provider verification failures', () => {
       sequence: 42,
       keyId,
       verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     }])
 
     const rolled = signedText(unsignedManifest({ sequence: 41 }))

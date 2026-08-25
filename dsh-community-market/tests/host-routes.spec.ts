@@ -601,6 +601,8 @@ describe('community market Host routes', () => {
         name: 'DSH 1024Store',
       })
       expect(settings.document.sources).toEqual([stored])
+      // Locked deployments hide the partner providers from the addable list.
+      expect((body as { builtIns?: unknown[] }).builtIns).toEqual([])
     } finally {
       await server.close()
     }

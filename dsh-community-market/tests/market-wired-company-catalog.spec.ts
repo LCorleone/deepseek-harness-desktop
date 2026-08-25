@@ -157,11 +157,12 @@ describe('locked company catalog wiring', () => {
     expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
       `npm:${safePackage}@${safeVersion}`,
     ])
-    // The settings-backed ratchet recorded the verified sequence.
+    // The settings-backed ratchet recorded the verified sequence and bytes.
     expect(scope.document().companyManifest).toEqual({
       sequence: 42,
       keyId,
       verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
 
     // The signed entry is installable, the revoked one is not, and an

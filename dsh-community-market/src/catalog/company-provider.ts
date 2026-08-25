@@ -135,10 +135,20 @@ export interface CompanyCatalogProviderOptions {
 function validCompanyManifestRecord(value: unknown): value is MarketCompanyManifestRecord {
   if (value === null || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
-  return Number.isSafeInteger(record.sequence) && (record.sequence as number) >= 1
+  if (!(Number.isSafeInteger(record.sequence) && (record.sequence as number) >= 1
     && isCompanyManifestKeyId(record.keyId)
     && typeof record.verifiedAt === 'string'
-    && !Number.isNaN(Date.parse(record.verifiedAt as string))
+    && !Number.isNaN(Date.parse(record.verifiedAt as string)))) {
+    return false
+  }
+  // A corrupted bytes digest would make every same-sequence scan fail with a
+  // misleading stale-sequence; treat it like the other invalid state and let
+  // the caller's loud-invalid path surface it instead.
+  if (record.bytesSha256 !== undefined
+    && !/^[0-9a-f]{64}$/u.test(record.bytesSha256 as string)) {
+    throw new Error('company manifest anti-rollback state is invalid: bytesSha256 must be lowercase sha256 hex')
+  }
+  return true
 }
 
 /**
@@ -436,18 +446,22 @@ export class CompanyCatalogProvider implements CatalogAdapter {
         : {}),
       now: this.now,
     })
-    if (this.mode === 'content' && previous !== undefined && verification.ok) {
+    // Content-mode verification always persists the verified bytes digest:
+    // a regressed or mutated same-sequence re-observation is rejected on the
+    // very first comparison (not only from the second scan onward).
+    if (this.mode === 'content' && verification.ok) {
       const bytesSha256 = createHash('sha256').update(
         typeof loaded.raw === 'string' ? Buffer.from(loaded.raw, 'utf8') : Buffer.from(loaded.raw),
       ).digest('hex')
-      if (verification.manifest.sequence < previous.sequence) {
+      const sameSequence = previous?.sequence === verification.manifest.sequence
+      if (previous !== undefined && verification.manifest.sequence < previous.sequence) {
         throw new CompanyCatalogUntrustedError(
           'stale-sequence',
           `embedded manifest sequence ${verification.manifest.sequence} regressed below the persisted ratchet ${previous.sequence}`,
         )
       }
       if (
-        verification.manifest.sequence === previous.sequence
+        sameSequence
         && previous.bytesSha256 !== undefined
         && previous.bytesSha256 !== bytesSha256
       ) {
