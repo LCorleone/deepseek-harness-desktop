@@ -94,5 +94,5 @@
   box-sizing: border-box;
   padding-top: calc(var(--spacing) * 5);
 }
-.dshNativeFrame + .dshNativeContent { padding-top: calc(36px + var(--spacing) * 5); }
+.dshNativeFrame ~ .dshNativeContent { padding-top: calc(36px + var(--spacing) * 5); }
 button, a, input, textarea, select { -webkit-app-region: no-drag; }
