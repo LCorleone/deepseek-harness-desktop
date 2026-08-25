@@ -68,19 +68,9 @@ export function apply(ctx: Context): void {
     const pnpm = desktopCtx.get('desktopPnpm') as MarketDesktopPnpm
     desktopCtx.effect(() => {
       const service = new MarketInstallService(
-        scope,
         () => profiles.current,
         pnpm,
         createNpmRegistryVerifier(npmRegistryHttp),
-        {
-          disabledPackageNames: () => {
-            const plugins = desktopPlugins
-            if (plugins === undefined) {
-              throw new Error('desktop plugin policy unavailable')
-            }
-            return plugins.disabledPackageNames()
-          },
-        },
       )
       installService = service
       return () => {

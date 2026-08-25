@@ -65,7 +65,6 @@ interface MediaCandidate {
 const GITHUB_OWNER_PATTERN = /^[a-z0-9][a-z0-9-]{0,99}$/iu
 const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9._-]{1,100}$/iu
 const NPM_PACKAGE_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
-const STABLE_SEMVER_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u
 
 function plainText(value: unknown, max: number, fallback: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > max
@@ -90,29 +89,31 @@ function providerTotal(meta: Dsh1024StoreMeta, receivedPackages: number): number
 }
 
 /**
- * Convert only one provider-reviewed npm target into non-executable catalog
- * identity. The Host still revalidates the exact version against the npm
- * registry before it can create an install intent.
+ * Convert one unambiguous npm target into non-executable catalog identity.
+ * Provider verification flags, commands, and revisions are deliberately
+ * ignored: npm's `latest` manifest is the only install authority.
  */
-function reviewedNpmTarget(item: Dsh1024StoreRawItem): { name: string; version: string } | undefined {
+function reviewedNpmTarget(item: Dsh1024StoreRawItem): { name: string } | undefined {
   if (!Array.isArray(item.installMethods)) return undefined
-  const targets = new Map<string, { name: string; version: string }>()
+  const targets = new Map<string, { name: string }>()
   for (const value of item.installMethods) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
     const method = value as Dsh1024StoreInstallMethod
     if (
       method.kind !== 'npm'
-      || method.verification !== 'verified'
-      || method.code !== 'repository_backlink'
-      || method.requiresBuildAllowance !== false
       || typeof method.spec !== 'string'
-      || typeof method.revision !== 'string'
       || !NPM_PACKAGE_PATTERN.test(method.spec)
-      || !STABLE_SEMVER_PATTERN.test(method.revision)
     ) continue
-    targets.set(`${method.spec}@${method.revision}`, { name: method.spec, version: method.revision })
+    targets.set(method.spec, { name: method.spec })
   }
   return targets.size === 1 ? targets.values().next().value : undefined
+}
+
+function providerEndpoint(query: CatalogQuery): string {
+  const url = new URL(DSH_1024STORE_ENDPOINT)
+  if (query.q !== undefined) url.searchParams.set('q', query.q)
+  if (query.category?.length === 1) url.searchParams.set('category', query.category[0]!)
+  return url.href
 }
 
 function repositoryFromItem(item: Dsh1024StoreRawItem): { url: string; subdirectory?: string } | undefined {
@@ -267,7 +268,6 @@ function normalizedItem(
       ...(category === undefined ? {} : { categories: [category] }),
       repository,
       ...(npmTarget === undefined ? {} : {
-        latestVersion: npmTarget.version,
         package: { registry: 'npm' as const, name: npmTarget.name },
       }),
       ...(owner === undefined ? {} : { publisher: { name: owner, url: `https://github.com/${owner}` } }),
@@ -378,7 +378,6 @@ function buildCatalogScanSnapshots(
     seen.add(candidate.item.id)
     if (
       candidate.item.package?.registry === 'npm'
-      && candidate.item.latestVersion !== undefined
       && candidate.item.repository !== undefined
     ) {
       // Registration creates only an opaque Host reference. It does not fetch
@@ -388,7 +387,6 @@ function buildCatalogScanSnapshots(
       const item: CatalogSnapshot['items'][number] = {
         ...candidate.item,
         repository: candidate.item.repository,
-        latestVersion: candidate.item.latestVersion,
         package: candidate.item.package,
         ...(media === undefined ? {} : { media }),
       }
@@ -451,9 +449,10 @@ export const dsh1024StoreAdapter: CatalogAdapter = {
   adapterId: DSH_1024STORE_ADAPTER_ID,
   async fetch(queryValue, context) {
     const query = { ...queryValue, limit: Math.min(queryValue.limit ?? 50, 50) }
+    const endpoint = providerEndpoint(query)
     const expectedOrigin = new URL(DSH_1024STORE_ENDPOINT).origin
     const response = await context.http.getJson(
-      DSH_1024STORE_ENDPOINT,
+      endpoint,
       context.signal,
       { allowedOrigin: expectedOrigin },
     )

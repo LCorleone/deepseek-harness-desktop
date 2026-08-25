@@ -233,7 +233,7 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 
 dshfind 文档说明匿名配额为每分钟 30 次、突发 10 次，而当前目录以每页 100 条读取时需要超过 30 个 page。因此 adapter 会使用低于已公布持续速率的固定串行间隔，并把较慢的首次同步表现为来源加载状态，不能通过并发绕过 provider 限制。限流 response 会使整轮扫描失败，用户可以通过普通来源“重试”重新开始。完成的本地索引仍遵循普通有界 cache；明确刷新会启动一轮新的、一致的完整扫描。
 
-dshfind response 可能包含 `install.cmd`、其他安装 claim 和 `install.methods`。命令文本与普通 claim 都不是执行权限：adapter 会在标准化前丢弃 `install.cmd`，不展示、不执行，也绝不从中解析 package 身份。只有 `install.methods` 恰好包含一个不同目标，并且其 `kind` 为 `npm`、`verification` 为 `verified`、`code` 为 `repository_backlink`、`requiresBuildAllowance` 为 false、`spec` 是有界合法 npm 名称、`revision` 是有界精确稳定版本，而且 `spec` 与已提供的 `install.pkg_name` 一致时，adapter 才会输出 `package` 与 `latestVersion`。同一目标的重复副本不会造成歧义；出现多个不同目标时会 fail closed。缺少这些证据的条目仍然只能浏览。符合条件的结果也只是不可执行的规范化身份，不代表安全审核或安装授权；preview 与执行阶段仍会独立复核官方 npm metadata、规范仓库、integrity、lifecycle script、runtime、bundle 和当前 profile 状态。
+dshfind response 可能包含 `install.cmd`、其他安装 claim 和 `install.methods`。命令文本与普通 claim 都不是执行权限：adapter 会在标准化前丢弃 `install.cmd`，不展示、不执行，也绝不从中解析 package 身份。Adapter 可以输出结构化 npm package 身份和只作信息展示的 provider 版本，但自动安装 preview 会忽略该版本并解析 npm 官方 `latest` manifest。Preview 要求 npm identity 一致、latest 是精确稳定版本、DSH bundle 声明合法，并且当前 Profile 可以安装。
 
 Adapter 可以标准化有界纯文本身份、描述、标签/分类、更新时间，以及规范、无凭据的 `https://github.com/owner/repository` 链接。当前 API 没有插件图标或 README 字段。任何 owner 头像 fallback 都必须标记为 `publisher-avatar` 并通过 Host 媒体边界解析；adapter 不获取或渲染远程 README 内容。dshfind 的分数、等级、`official`/精选标记、风险标记和安装结论仍是 provider 自有运营声明，绝不会成为 Anywhere Labs 的安全审核、推荐或验证信号。
 
@@ -245,9 +245,9 @@ Adapter 可以标准化有界纯文本身份、描述、标签/分类、更新�
 
 - 获取 manifest 或 snapshot 是只读操作，绝不会调用 pnpm、DSH、shell 或 lifecycle script。
 - 远程数据不能提供 install command、自定义包管理器参数、环境变量或工作目录。
-- 浏览记录还不是安装目标。当前受管路径只接受具有经过审核的 provider 验证、规范 repository backlink 和精确稳定版本的 npm 结构候选。
-- Preview 会根据权威本地与 registry 状态独立复核 npm identity、repository、integrity、runtime、lifecycle script、DSH bundle 证据和当前 profile。声明冲突或无法验证时，安装保持禁用。
-- 执行时会重新检查可变证据，并拒绝 package 或 profile 已改变的操作。
+- 浏览记录还不是安装目标。当前路径要求一个明确且合法的 npm package 身份。
+- Preview 解析 npm `latest`，并要求 identity 一致、版本精确稳定、DSH bundle 声明合法且当前 Profile 可以安装。
+- 执行阶段消费一次性 preview，并拒绝目录或 Profile 身份已经变化的操作。
 - 最终确认展示精确来源记录、锁定的 npm package 与版本、当前 profile 和本地代码风险提示。
 - 只有用户明确操作后才开始安装，并使用现有的受管当前 profile 服务。
 

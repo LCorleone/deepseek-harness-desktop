@@ -17,7 +17,7 @@ Provider 能在同一个 origin 发布两个匿名 HTTPS JSON 资源时，选择
 
 用户只登记 manifest URL。可以从[最小 manifest](examples/catalog-source.example.json)、[最小 query](examples/catalog-query.example.json)和[最小 page](examples/catalog-provider-page.minimal.example.json)开始。建议的最小能力只包含 `q`、`category`、`cursor` 和 `limit`，示例中的 `defaultLimit` 与 `maxLimit` 都是 50。这个值不是全局上限；标准来源可以在 Schema 安全上限 100 以内声明。重复 `category` 使用 OR 语义。以后可以增加可选元数据和媒体，不需要改变 transport。
 
-当前 Desktop Host 会先建立完整本地索引，再提供 UI。它按照来源的有效网络 page limit 跟随当前已选来源的 cursor，之后在本地执行可见搜索、多分类 OR 筛选、分类枚举和每页 50 条的 UI 分页。Endpoint query 契约仍可供其他 consumer 和 adapter 测试使用，但当前 Desktop 全量扫描不会把用户的 `q` 或 `category` filter 发给 provider。标准来源每次可以返回不超过其声明有效 page limit 的条目；50 是 UI 可见 page size，不是通用 provider response 上限。
+Desktop Host 通常会建立有界本地索引，按照来源的有效网络 page limit 跟随 cursor，并在本地执行可见筛选和每页 50 条的分页。如果 provider 的无筛选响应刻意小于目录总量，经过审查的 adapter 可以转发用户查询。1024Store adapter 会针对 `q` 和恰好一个 `category` 使用这条例外；结果仍然通过相同的标准化、provenance、origin 和 cursor 边界。标准来源每次可以返回不超过其声明有效 page limit 的条目；50 是 UI 可见 page size，不是通用 provider response 上限。
 
 ### B. 已有 API：受审 Host adapter
 

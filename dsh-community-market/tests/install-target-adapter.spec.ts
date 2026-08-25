@@ -45,7 +45,7 @@ async function adapt(installMethods: readonly unknown[], itemOverrides: Record<s
 }
 
 describe('1024Store install target normalization', () => {
-  it('projects one reviewed exact npm target without exposing the provider command', async () => {
+  it('projects one unambiguous npm package identity without trusting version or provider command', async () => {
     const snapshot = await adapt([{
       kind: 'npm',
       spec: 'dsh-better-sidebar',
@@ -57,31 +57,48 @@ describe('1024Store install target normalization', () => {
     }])
 
     expect(snapshot.items[0]).toMatchObject({
-      latestVersion: '0.12.3',
       package: { registry: 'npm', name: 'dsh-better-sidebar' },
     })
+    expect(snapshot.items[0]).not.toHaveProperty('latestVersion')
     expect(JSON.stringify(snapshot)).not.toContain('attacker-controlled-text')
   })
 
   it.each([
-    ['unverified', { verification: 'unverified' }],
-    ['wrong verification code', { code: 'unlinked_package' }],
-    ['build allowance required', { requiresBuildAllowance: true }],
     ['mutable GitHub target', { kind: 'github', spec: 'github:omdsh-dev/DSH-better-sidebar', revision: null }],
-    ['prerelease version', { revision: '0.13.0-rc.1' }],
-    ['tag instead of version', { revision: 'latest' }],
+    ['invalid npm package name', { spec: 'npm install attacker-controlled-text' }],
   ] as const)('does not expose an install identity for a %s method', async (_label, overrides) => {
-    const snapshot = await adapt([{
+    const snapshot = await adapt([Object.assign({
       kind: 'npm',
       spec: 'dsh-better-sidebar',
       verification: 'verified',
       code: 'repository_backlink',
       requiresBuildAllowance: false,
       revision: '0.12.3',
-      ...overrides,
-    }])
+    }, overrides)])
 
     expect(snapshot.items[0]).not.toHaveProperty('package')
+    expect(snapshot.items[0]).not.toHaveProperty('latestVersion')
+  })
+
+  it.each([
+    ['unverified', { verification: 'unverified' }],
+    ['wrong verification code', { code: 'unlinked_package' }],
+    ['build allowance required', { requiresBuildAllowance: true }],
+    ['prerelease provider revision', { revision: '0.13.0-rc.1' }],
+    ['provider tag', { revision: 'latest' }],
+  ] as const)('ignores %s metadata and keeps only the npm identity', async (_label, overrides) => {
+    const snapshot = await adapt([Object.assign({
+      kind: 'npm',
+      spec: 'dsh-better-sidebar',
+      verification: 'verified',
+      code: 'repository_backlink',
+      requiresBuildAllowance: false,
+      revision: '0.12.3',
+    }, overrides)])
+
+    expect(snapshot.items[0]).toMatchObject({
+      package: { registry: 'npm', name: 'dsh-better-sidebar' },
+    })
     expect(snapshot.items[0]).not.toHaveProperty('latestVersion')
   })
 
@@ -131,9 +148,9 @@ describe('1024Store install target normalization', () => {
     ])
 
     expect(snapshot.items[0]).toMatchObject({
-      latestVersion: '0.12.3',
       package: { registry: 'npm', name: 'dsh-better-sidebar' },
     })
+    expect(snapshot.items[0]).not.toHaveProperty('latestVersion')
     expect(JSON.stringify(snapshot)).not.toContain('still ignored')
   })
 
@@ -224,7 +241,6 @@ describe('1024Store install target normalization', () => {
       summary: '插件 150 摘要。',
       categories: ['tools'],
       repository: { url: 'https://github.com/example/plugin-150' },
-      latestVersion: '1.0.150',
       package: { registry: 'npm', name: 'dsh-plugin-150' },
       media: {
         icon: {
@@ -256,5 +272,25 @@ describe('1024Store install target normalization', () => {
       sourceRecordId: source.sourceRecordId,
       allowedHostnames: ['github.com', 'avatars.githubusercontent.com'],
     }))
+  })
+
+  it('forwards search and one category to the provider query endpoint', async () => {
+    const getJson = vi.fn(async (url: string) => ({
+      value: { meta: { total: 0 }, packages: [] },
+      finalUrl: url,
+    }))
+
+    await dsh1024StoreAdapter.fetch({ q: 'context menu', category: ['ui'] }, {
+      source,
+      signal: new AbortController().signal,
+      http: { getJson },
+      media: { register: () => 'mktimg_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    })
+
+    expect(getJson).toHaveBeenCalledWith(
+      'https://deepseek1024.com/api/v1/plugins?q=context+menu&category=ui',
+      expect.any(AbortSignal),
+      { allowedOrigin: 'https://deepseek1024.com' },
+    )
   })
 })

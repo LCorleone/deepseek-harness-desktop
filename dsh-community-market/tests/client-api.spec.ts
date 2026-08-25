@@ -116,50 +116,6 @@ describe('community market client API', () => {
     })
   })
 
-  it('previews disable with only the Host-issued opaque bundle id', async () => {
-    const fetch = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        action: 'disable',
-        profileName: 'web',
-        packageName: 'dsh-plugin-external',
-        displayName: 'dsh-plugin-external',
-        expiresAt: '2099-08-18T00:05:00.000Z',
-        previewId: 'disable-preview',
-      }),
-    } as Response))
-    vi.stubGlobal('fetch', fetch)
-
-    await previewMarketOperation({ action: 'disable', bundleId: 'opaque-bundle-id' })
-
-    expect(fetch).toHaveBeenCalledWith('/api/community-market/operations/preview', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ action: 'disable', bundleId: 'opaque-bundle-id' }),
-    }))
-  })
-
-  it('previews enable with only the Host-issued opaque bundle id', async () => {
-    const fetch = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        action: 'enable',
-        profileName: 'web',
-        packageName: 'dsh-plugin-external',
-        displayName: 'dsh-plugin-external',
-        expiresAt: '2099-08-18T00:05:00.000Z',
-        previewId: 'enable-preview',
-      }),
-    } as Response))
-    vi.stubGlobal('fetch', fetch)
-
-    await previewMarketOperation({ action: 'enable', bundleId: 'opaque-disabled-bundle-id' })
-
-    expect(fetch).toHaveBeenCalledWith('/api/community-market/operations/preview', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ action: 'enable', bundleId: 'opaque-disabled-bundle-id' }),
-    }))
-  })
-
   it('reads the independent verified index and sends refresh only for an explicit rescan', async () => {
     const fetch = vi.fn(async (_input: RequestInfo | URL) => ({
       ok: true,

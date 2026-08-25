@@ -52,6 +52,8 @@ export interface DesktopPluginBundle {
   readonly status: 'active' | 'disabled'
   /** Whether Desktop permits this exact bundle to be disabled. */
   readonly mutable: boolean
+  /** Whether this bundle is a direct Profile dependency removable by the package manager. */
+  readonly uninstallable: boolean
 }
 
 /** Short-lived confirmation minted for one exact direct bundle. */
