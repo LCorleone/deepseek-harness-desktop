@@ -53,6 +53,8 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **P4-1**（`8c713a4fae`）：boot 快照持久化 `<userData>/boot-verification.json`（unlocked 写 null 清除）→ 诊断导出内嵌 self-check-report.json（allowed/refused 全量 + RFC 0004 词汇 + 策略 sha256 + node 自检状态 + manifest sequence/keyId）+ 零依赖验签脚本。
 - **P4-2/3/4**（`bd7e9e7eba`）：双语篡改证据链手册（字段→能证明/不能证明表、取样流程）；双语残余风险签收单（R1-R7 + 零改动 IT 升级点，**待管理层签字**）；release-preflight 公司门禁。
 - **Windows Package CI 修复链（2026-08-24）**：① `5e7090bad9` zip member 加版本目录前缀（nodejs.org win zip 嵌套结构，本地 fixture 掩盖、CI 干净环境炸 ADM-ZIP Entry doesn't exist）；② `2322954f6a` 真钥匙指纹钉入 release 策略 + embed-company-manifest.mjs 构建步骤（管线产物/assets 样例双候选入 lib/company-market/）+ files 白名单补 lib/company-market/*.json；③ 门禁 spec 对齐新缺口顺序。run 32708698357 绿（8m28s），安装包含 L2 全链 + 真签名 manifest（样例条目 ms@2.1.3）。用户问询「怎么装插件」已答：用户=市场 UI / CLI 精确版本两路；管理员=allowlist→管线 build→内嵌或托管发布；限制=仅 npmjs 公开包、审核责任在公司
+- **试点反馈修复**（`32d999a037`，已 push，CI 打包中）：① 内容模式同 sequence 重放被棘轮误拒（「一会能显示一会 unavailable」+「company-catalog 一直 Not checked yet」的根因——内嵌资产 sequence 固定，第二次扫描必 stale）→ 新语义：同字节同号放行、同号不同字节拒、回退拒；② 锁定时 settings 页隐藏 partner providers（viewBuiltIns 按锁定态过滤）；③ 裸 cordis 共存放行（试点期放宽，见试点期安全决策）
+- **启动崩溃修复链**（`485d74fb02`，已 push）：P3-2 图标收进 asar 后 lib 模块仍按 unpacked URL 相对解析 → nativeImage 失败 → 启动即挂 → 恢复窗 loadFile 又拿 asar 虚拟路径二次失败（双击无反应的根因）；修复=图标 archivedAsarPath 进 asar 区、recovery/profile-create 文档 unpackedAsarPath 钉物理区；全部模块相对资产消费点已审计（12 处）
 - **评审与修复**（`b5ef752291`，用户拍板**方向 B**）：3 High 全修——① 门禁接线真实发布路径（mac 无条件/win `DSH_COMPANY_RELEASE=1`，CI smoke 免疫）；② 删除客户端签名路径（「客户端持私钥」与防伪造主张矛盾），报告恒定 `unsigned+reason`，检测模型=「报告缺失即信号 + 内容比对」（与已签收上限自洽）；③ 手册 exit 码/命令名/字段实形勘误。+5 Medium/6 Low（正则多行兼容、三对双语 i18n 入册、验签脚本加固等）。
 
 ## 部署侧待办（运营项，代码已备）
