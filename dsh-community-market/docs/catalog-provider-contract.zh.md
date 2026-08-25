@@ -193,7 +193,7 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 
 当前 Desktop 产品会先完整扫描已选来源。对于标准来源，Host 只发送 `cursor`、`limit` 和 locale 偏好等来源支持的扫描字段，跟随 `page.nextCursor` 直到结束，并使用来源的有效 page limit，而不是把 50 当成网络上限。扫描不会把用户搜索文本或已选分类发给 provider。经过审核的 1024Store adapter 则通过一次请求下载完整 registry，并输出每块最多 100 条的标准化分块。
 
-搜索、排序、多分类 OR 筛选、分类枚举和分页随后都在完整本地索引上运行。目录 response 中的分类选项覆盖索引中存在的全部分类，每个 UI 可见页面最多包含 50 条匹配结果。**加载更多**只推进 Host 拥有的本地 cursor，不会再次发送带筛选的 provider 请求。
+对于没有已评审远程查询能力的 adapter，搜索、排序、多分类 OR 筛选、分类枚举和分页在有界完整本地索引上运行；已评审 adapter 可以把这些操作转发给 provider。两种情况下 Renderer 都只会收到一个可见 page 和 Host 拥有的不透明 cursor。
 
 标准来源只有返回通过 provider-page schema 的成功 JSON response 才能接受。Adapter 随后注入 Host provenance，再校验标准化 snapshot schema。超时、非 200、错误 content type、响应过大、解析失败、不支持的 schema version 或任一校验错误只会让该来源请求失败，不影响应用启动。标准 response 条目数超过有效 `limit` 时也必须拒绝。
 
@@ -202,12 +202,12 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 已保存来源彼此隔离，但产品只读取当前已选来源：
 
 - 同一时间最多只有一条已保存来源记录被选择，并且只有该来源会收到目录请求。
-- 已选来源拥有自己的 timeout、cancellation、完整索引 cache、本地 cursor、loading state 和 error state。
+- 已选来源拥有自己的 timeout、cancellation、不透明 cursor、loading state、error state，以及适合该 adapter 的有界 cache。
 - 标准来源网络 page 遵守有效请求值或声明的 `defaultLimit`，Schema 安全上限为 100；本地可见页面最多包含 50 条。
-- 1024Store adapter 用一次请求取得 registry，把完整结果标准化成有界分块，再提供相同的本地 50 条 UI page。
-- 可选目录 metadata 会报告完整扫描完成时间（`scannedAt`）、cache 截止时间（`expiresAt`）、可选且整次扫描一致的来源 revision（`providerRevision`），以及索引是新扫描还是复用（`cacheStatus`）。
+- 1024Store adapter 远程请求 v2 page，转发受支持的查询参数，只标准化当前请求的 page，并为下一页提供 Host 不透明 cursor。
+- 可选目录 metadata 只适用于构建有界完整索引的 adapter，并报告扫描完成时间（`scannedAt`）、cache 截止时间（`expiresAt`）、可选且整次扫描一致的来源 revision（`providerRevision`），以及索引是新扫描还是复用（`cacheStatus`）。
 - 失败只归属于已选来源，并提供重试；Host 绝不退回或暗中请求另一个已保存来源。
-- 明确刷新会使当前索引失效，并绕过目录 HTTP cache 后重新建立。切换或删除已选来源会取消 in-flight 工作并清空浏览会话，不需要重启 DSH。
+- 明确刷新会绕过相关目录 HTTP cache，并使适用的本地索引失效。切换或删除已选来源会取消 in-flight 工作并清空浏览会话，不需要重启 DSH。
 - 每个 card、详情、搜索结果和安装确认都保留当前已选来源的可见声明。
 
 条目的规范身份是 `{ sourceRecordId, itemId }`。即使属于同一 provider，两条注册也保持独立，并且完全可以对同一个插件给出不同描述。当前单一来源 UI 不会跨已保存来源分组或合并记录。切换来源会替换整个浏览会话，任何来源都不能静默覆盖另一个来源的 cache 或身份。仅名称、repository 名称或描述相似绝不足以在当前来源内去重。
@@ -216,13 +216,14 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 
 [DSH 1024Store](https://github.com/imsai-sh/awesome-deepseek-harness-plugins) 是当前与 DSH Community Market 合作的提供方之一。它现有的 registry API 不需要改成标准 wire 结构，而是通过公开的受审 adapter 路径接入，并随 Market 提供一份内置 provider adapter。它会：
 
-- 在相同 Host 网络限制下请求该 provider 公开文档中的 API；
-- 把其分类和插件元数据映射成标准化快照；
+- 在相同 Host 网络限制下请求 provider 当前分页的 `/api/v2/plugins` API，绝不再把冻结在 500 条的 v1 兼容 feed 当作目录；
+- 把 v2 的完整分类 facet 和分页插件元数据映射成标准化 response；
 - 只把 provider item `id` 当作来源内部身份，并从经过校验的 repository URL 推导规范 GitHub 仓库与 publisher 身份，避免仓库改名或转移后继续指向旧名称；
 - 由于当前 1024Store 数据集没有直接插件图标，仅把 GitHub owner/avatar 候选作为经过审核的 fallback，通过 Host 媒体边界解析，并将结果标为 `role: "publisher-avatar"`；
-- 把完整下载的 registry 标准化为每块最多 100 条的 Schema 有界分块，再由 Host 通过自己的 cursor 和**加载更多**提供每页最多 50 条的本地结果；
+- 普通发现、搜索、排序和单分类查询直接使用 v2 page；多分类 OR 查询会合并有界的 provider 排序前缀，并隐藏在 Host 不透明 cursor 后；
+- 从每个请求到的 v2 page 中筛选直接 npm 目标用于“可安装”，并继续携带不透明 provider cursor，使 Host 和 Renderer 都不会一次收到完整目录；
 - 注入并校验 DSH 1024Store 的 provenance 和来源声明；
-- 永远不把远程 command 文本或安装提示当作可执行输入；
+- 永远不把远程 command 文本或安装提示当作可执行输入；adapter 只接受严格的惰性 `dsh plugin --profile … add <npm-package>` 形状作为 package name 证据，随即丢弃命令，并由安装 preview 独立解析 npm `latest`；
 - Provider 不可用或数据非法时，把当前已选来源报告为不可用，绝不退回另一个已保存来源。
 
 这一合作关系使 1024Store 成为一个受到支持的来源选项，但**不会**使它成为默认、优先、官方、推荐、已审核或兜底来源。Adapter 不会自动选择它；没有选择或当前来源失败也不会触发对它的隐藏请求。它的目录仍属于独立项目，收录某个插件不等于完成了该插件的安全审核。
@@ -270,7 +271,7 @@ Adapter 可以标准化有界纯文本身份、描述、标签/分类、更新�
 | 边界 | Body 与 redirect 预算 | Deadline | 其他规则 |
 | --- | --- | --- | --- |
 | 标准来源 manifest 与 provider page | 每个 JSON response 最大 2 MiB，最多 3 次 redirect | connect 8 秒、first-byte 12 秒、total 30 秒 | Manifest request 与每次目录 request 分别应用这些限制。 |
-| DSH 1024Store 内置 adapter | 完整目录 JSON response 最大 16 MiB，最多 3 次 redirect | connect 8 秒、first-byte 12 秒、total 30 秒 | 更大的 body 预算仅是这份经审核 adapter 的编译期例外，不会放宽标准来源的 2 MiB 限制。 |
+| DSH 1024Store 内置 adapter | 每个 v2 JSON page 最大 2 MiB，最多 3 次 redirect | connect 8 秒、first-byte 12 秒、total 30 秒 | 发现页和“可安装”都保留远程分页边界，不会把完整目录返回给 Client。 |
 | 图标 asset service | 每个图片 response 最大 2 MiB，最多 2 次 redirect | connect 8 秒、first-byte 12 秒、total 30 秒 | 输入必须是单帧 PNG、JPEG 或 WebP，解码后最多 `16 * 1024 * 1024` 像素；Host 输出移除 metadata 的 128 × 128 PNG。 |
 
 Host 只为当前已选来源执行目录 I/O。图标 asset service 同时最多执行两个网络请求与解码任务；这个上限作用于单个 Market plugin generation 的全局范围。
@@ -316,10 +317,10 @@ Provider 与 adapter 作者可以直接使用对应的[最小来源 manifest](ex
 1. 加载本地来源设置，不联系任何 provider。
 2. 解析内置 adapter 记录，并校验保存的标准 manifest。
 3. 等待 UI 或 Host consumer 请求目录数据，不进行阻塞启动的 fetch。
-4. 解析唯一已选来源，扫描其全部目录 page，校验并标准化每个分块，再为当前 locale 缓存一份完整本地索引。
-5. 在本地推导搜索结果、完整索引分类集合、多分类 OR filter 和每次 50 条的可见页面。
-6. 从同一完整索引推导 fail-closed 的本地**可安装**结构候选；只有用户预览某个候选时才执行官方 registry 权威复核，并在执行前重新检查可变证据。在整个流程中保持来源与条目 provenance 可见。
-7. 在有界有效期内复用完成的索引；明确刷新会使其失效，并绕过目录 HTTP cache 后重新扫描。
+4. 解析唯一已选来源，并优先使用其已评审的远程查询和分页能力；每个请求到的 page 都必须先校验和标准化再返回。
+5. 把受支持的搜索、分类和排序参数转发给 provider，并只暴露 Host 不透明 cursor。没有已评审远程查询能力的 adapter 仍可使用有界本地索引。
+6. 从每个可见 page 中筛选 fail-closed 的**可安装**结构候选；只有用户预览某个候选时才执行官方 registry 权威复核，并在执行前重新检查可变证据。在整个流程中保持来源与条目 provenance 可见。
+7. 在适用时复用有界 HTTP cache 和本地索引 cache；明确刷新会绕过相关目录 HTTP cache。
 8. 已选来源变化、清空选择、plugin generation 被 dispose 或 DSH 关闭时，取消自己拥有的请求并重置会话。
 
 ## 已实现的 v1 清单
@@ -344,11 +345,11 @@ Provider 与 adapter 作者可以直接使用对应的[最小来源 manifest](ex
 ### 请求与单一已选来源会话
 
 - [x] 标准 adapter 与受审 provider adapter 共用一个受限 HTTP client。
-- [x] 实现标准 GET `/v1/plugins`、精确 query 序列化、完整 cursor 扫描和本地完整索引。
+- [x] 实现标准 GET `/v1/plugins`、精确 query 序列化、必要时使用的有界完整索引，以及可用时采用的已评审远程分页。
 - [x] 提供经过审核的可选 DSH 1024Store 与 dshfind adapter，并对结构安装证据 fail closed。
-- [x] 实施取消、deadline、有界 cache、强制刷新、Schema 有界网络分页和每页最多 50 条的本地 UI 分页。
+- [x] 实施取消、deadline、有界 cache、强制刷新、Schema 有界网络分页和每页最多 50 条的 Client 分页。
 - [x] 在标准化前校验不可信 wire 数据，并再次校验每份标准化 snapshot。
-- [x] 在扫描、本地筛选、分页、cache、详情和安装确认中始终保留 provenance。
+- [x] 在远程或本地分页、筛选、cache、详情和安装确认中始终保留 provenance。
 
 ### 安装交接
 
@@ -383,9 +384,9 @@ Provider 与 adapter 作者可以直接使用对应的[最小来源 manifest](ex
 | Query | 标准 response 超过有效请求值，或来源不支持 `limit` 时超过声明的 `defaultLimit` | 在更新 cache 或 UI 前拒绝 response |
 | Query | 标准来源在有效 manifest limit 内合法返回 51–100 个条目 | 接受 response；50 只是当前 UI 默认值，不是全局 contract 上限 |
 | 完整索引 | 标准来源返回多个 cursor page | 每个 page 只校验一次；本地搜索与多分类 OR 筛选可以找到首个网络 page 之后的条目 |
-| 完整索引 | 1024Store 有超过 100 个合法条目 | 一次 registry 请求被标准化为每块最多 100 条的分块；query 交互不会重新请求 |
-| 分页 | 完整本地索引有超过 50 个匹配条目 | 首个可见 page 包含 50 条；**加载更多**通过 Host 自有本地 cursor 继续，不发送带筛选的 provider 请求 |
-| 刷新 | 完整索引已被 cache，随后用户明确刷新 | Cache read 报告复用；刷新绕过目录 HTTP cache 并替换完整索引 |
+| 远程分页 | 1024Store 有超过 100 个合法条目 | 每次请求最多标准化一个 provider page；**加载更多**使用下一枚不透明 cursor，绝不返回完整目录 |
+| 分页 | 有界本地索引有超过 50 个匹配条目 | 首个可见 page 包含 50 条；**加载更多**通过 Host 自有本地 cursor 继续 |
+| 刷新 | Page 或完整本地索引已被 cache，随后用户明确刷新 | 刷新绕过相关目录 HTTP cache，并替换适用的本地状态 |
 | Schema | 合法 manifest、query、provider-page 和 snapshot fixture | 接受并 round-trip，不丢失已定义数据 |
 | Schema | 包含未知字段或不支持的 major version | 拒绝对应 manifest/request/snapshot |
 | Schema | Provider page 尝试提供 Host provenance | Strict wire schema 拒绝响应 |

@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import https from 'node:https'
 import { describe, expect, it, vi } from 'vitest'
-import { dsh1024StoreAdapter, DSH_1024STORE_ADAPTER_ID, DSH_1024STORE_KEY, DSH_1024STORE_PROVIDER_ID } from '../src/adapters/dsh-1024store.js'
+import {
+  dsh1024StoreAdapter,
+  DSH_1024STORE_ADAPTER_ID,
+  DSH_1024STORE_KEY,
+  DSH_1024STORE_LEGACY_ADAPTER_ID,
+  DSH_1024STORE_PROVIDER_ID,
+} from '../src/adapters/dsh-1024store.js'
 import { DSH_MARKETPLACE_ADAPTER_ID, DSH_MARKETPLACE_KEY, DSH_MARKETPLACE_PROVIDER_ID } from '../src/adapters/dsh-marketplace.js'
 import { DSHFIND_ADAPTER_ID, DSHFIND_KEY, DSHFIND_PROVIDER_ID } from '../src/adapters/dshfind.js'
 import { standardHttpAdapter } from '../src/adapters/standard-http.js'
@@ -21,6 +27,7 @@ import {
   marketMutationAllowed,
   marketRequestAllowed,
   marketRoutes,
+  type MarketInstallServiceProvider,
   readStandardSourceManifest,
   registerMarketRoutes,
 } from '../src/host/routes.js'
@@ -48,39 +55,64 @@ const pluginAssetRef = 'mktimg_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
 const renamedAssetRef = 'mktimg_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD'
 const fixtureAssetRef = 'mktimg_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE'
 
-const rawCatalog = {
-  name: 'dsh-1024store-catalog',
-  meta: {
-    total: 1,
-    generatedAt: '2026-08-17T15:49:53.062Z',
-    revision: 'sha256:fixture',
-  },
-  packages: [{
-    id: 'anywhere-labs/deepseek-harness-desktop/dsh-plugin-desktop',
-    name: 'deepseek-harness-desktop',
-    owner: 'anywhere-labs',
-    url: 'https://github.com/anywhere-labs/deepseek-harness-desktop',
-    category: 'dev',
-    description: { en: 'Desktop shell', zh: '桌面外壳' },
-    pushedAt: '2026-08-17T05:45:19Z',
-    stars: 11_402,
-    installCount: 7,
-    install: 'dsh plugin --profile web add unsafe-value-that-must-be-ignored',
-  }],
+const rawPlugin = {
+  id: 'anywhere-labs/deepseek-harness-desktop/dsh-plugin-desktop',
+  name: 'deepseek-harness-desktop',
+  owner: 'anywhere-labs',
+  url: 'https://github.com/anywhere-labs/deepseek-harness-desktop',
+  category: 'dev',
+  description: { en: 'Desktop shell', zh: '桌面外壳' },
+  pushedAt: '2026-08-17T05:45:19Z',
+  stars: 11_402,
+  installCount: 7,
+  install: 'dsh plugin --profile web add deepseek-harness-desktop',
 }
+
+function catalogPage(
+  plugins: readonly Record<string, unknown>[],
+  limit = 100,
+  options: {
+    readonly page?: number
+    readonly total?: number
+    readonly catalogTotal?: number
+    readonly categories?: readonly { readonly id: string; readonly count: number }[]
+    readonly generatedAt?: string
+  } = {},
+) {
+  const total = options.total ?? plugins.length
+  const catalogTotal = options.catalogTotal ?? total
+  const categories = options.categories ?? [...plugins.reduce((counts, plugin) => {
+    const category = typeof plugin.category === 'string' ? plugin.category : 'unclassified'
+    counts.set(category, (counts.get(category) ?? 0) + 1)
+    return counts
+  }, new Map<string, number>())].map(([id, count]) => ({ id, count }))
+  return {
+    plugins,
+    page: options.page ?? 1,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+    catalogTotal,
+    categories: categories.map(category => ({ ...category, en: category.id, zh: category.id })),
+    generatedAt: options.generatedAt ?? '2026-08-17T15:49:53.062Z',
+    source: 'fixture',
+  }
+}
+
+const rawCatalog = catalogPage([rawPlugin])
 
 function catalogIndex(record: LocalSourceRecord = source()): CatalogFullIndex {
   return {
     source: {
       ...record,
       name: 'DSH 1024Store',
-      endpoint: 'https://deepseek1024.com/api/v1/plugins',
+      endpoint: 'https://deepseek1024.com/api/v2/plugins',
       partnership: true,
     },
     snapshots: [],
     scannedAt: '2026-08-18T00:00:00.000Z',
     expiresAt: '2026-08-18T00:05:00.000Z',
-    providerRevision: 'sha256:fixture',
+    providerRevision: '2026-08-17T15:49:53.062Z',
     cacheStatus: 'fresh',
     scanKey: 'fixture-scan',
     sourceGeneration: 0,
@@ -99,6 +131,8 @@ type MarketRouteHandler = (
 async function requestMarketCatalog(
   records: readonly LocalSourceRecord[],
   url: string,
+  route = marketRoutes.catalog,
+  installProvider?: MarketInstallServiceProvider,
 ): Promise<{ readonly statusCode: number; readonly body: Record<string, any> }> {
   const handlers = new Map<string, MarketRouteHandler>()
   const ctx = {
@@ -114,7 +148,7 @@ async function requestMarketCatalog(
     get: () => ({ sources: records }),
     update: vi.fn(),
   } as unknown as SettingsScope<MarketSettingsDocument>
-  const dispose = registerMarketRoutes(ctx as never, scope)
+  const dispose = registerMarketRoutes(ctx as never, scope, installProvider)
   const request = Object.assign(new EventEmitter(), {
     method: 'GET',
     url,
@@ -135,7 +169,7 @@ async function requestMarketCatalog(
   })
 
   try {
-    await handlers.get(marketRoutes.catalog)!(request, response)
+    await handlers.get(route)!(request, response)
   } finally {
     dispose()
   }
@@ -147,25 +181,26 @@ async function requestMarketCatalog(
 }
 
 describe('1024Store adapter', () => {
-  it('represents a valid empty catalog with one explicit empty snapshot', async () => {
-    const snapshots = await dsh1024StoreAdapter.scanCatalog!({}, {
+  it('represents a valid empty remote page explicitly', async () => {
+    const snapshot = await dsh1024StoreAdapter.fetch({}, {
       source: source(),
       signal: new AbortController().signal,
       http: {
         getJson: vi.fn(async () => ({
-          value: { ...rawCatalog, meta: { ...rawCatalog.meta, total: 0 }, packages: [] },
-          finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+          value: catalogPage([], 50),
+          finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=100',
         })),
       },
       media: { register: vi.fn() },
     })
 
-    expect(snapshots).toHaveLength(1)
-    expect(snapshots[0]).toMatchObject({ items: [], page: { total: 0 } })
+    expect(snapshot).toMatchObject({ items: [], page: { total: 0 } })
   })
 
   it('projects reviewed fields and never forwards remote install strings', async () => {
-    const http: CatalogHttpClient = { getJson: vi.fn(async () => ({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })) }
+    const http: CatalogHttpClient = {
+      getJson: vi.fn(async (url: string) => ({ value: catalogPage([rawPlugin], 50), finalUrl: url })),
+    }
     const register = vi.fn(() => publisherAssetRef)
     const snapshot = await dsh1024StoreAdapter.fetch(
       { locale: 'en-US' },
@@ -173,30 +208,31 @@ describe('1024Store adapter', () => {
     )
 
     expect(snapshot.items[0]).toMatchObject({
-      id: rawCatalog.packages[0]!.id,
+      id: rawPlugin.id,
       summary: 'Desktop shell',
       repository: {
         url: 'https://github.com/anywhere-labs/deepseek-harness-desktop',
         subdirectory: 'dsh-plugin-desktop',
       },
+      package: { registry: 'npm', name: 'deepseek-harness-desktop' },
       media: { icon: { assetRef: publisherAssetRef, role: 'publisher-avatar', alt: 'anywhere-labs' } },
       provenance: { sourceRecordId: source().sourceRecordId },
     })
-    expect(JSON.stringify(snapshot)).not.toContain('unsafe-value')
+    expect(JSON.stringify(snapshot)).not.toContain('dsh plugin --profile')
     expect(snapshot.source).toMatchObject({
       providerGeneratedAt: '2026-08-17T15:49:53.062Z',
-      providerRevision: 'sha256:fixture',
+      providerRevision: '2026-08-17T15:49:53.062Z',
     })
     expect(register).toHaveBeenCalledWith({
       remoteUrl: 'https://github.com/anywhere-labs.png?size=96',
       role: 'publisher-avatar',
       alt: 'anywhere-labs',
       sourceRecordId: source().sourceRecordId,
-      itemId: rawCatalog.packages[0]!.id,
+      itemId: rawPlugin.id,
       allowedHostnames: ['github.com', 'avatars.githubusercontent.com'],
     })
     expect(http.getJson).toHaveBeenCalledWith(
-      'https://deepseek1024.com/api/v1/plugins',
+      'https://deepseek1024.com/api/v2/plugins?page=1&limit=50',
       expect.any(AbortSignal),
       { allowedOrigin: 'https://deepseek1024.com' },
     )
@@ -204,13 +240,13 @@ describe('1024Store adapter', () => {
 
   it('prefers an explicit provider icon over the GitHub publisher avatar fallback', async () => {
     const item = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       media: { icon: { url: 'https://avatars.githubusercontent.com/u/1?v=4', alt: 'Plugin logo' } },
     }
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, packages: [item] },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      getJson: vi.fn(async (url: string) => ({
+        value: catalogPage([item], 50),
+        finalUrl: url,
       })),
     }
     const register = vi.fn(() => pluginAssetRef)
@@ -231,7 +267,7 @@ describe('1024Store adapter', () => {
 
   it('rejects a 1024Store response that leaves the reviewed provider origin', async () => {
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({ value: rawCatalog, finalUrl: 'https://attacker.example/api/v1/plugins' })),
+      getJson: vi.fn(async () => ({ value: catalogPage([rawPlugin], 50), finalUrl: 'https://attacker.example/api/v2/plugins' })),
     }
     await expect(dsh1024StoreAdapter.fetch({}, {
       source: source(),
@@ -243,15 +279,15 @@ describe('1024Store adapter', () => {
 
   it('uses the canonical repository URL after a provider item ID rename', async () => {
     const item = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'former-owner/former-repository',
       owner: 'current-owner',
       url: 'https://github.com/current-owner/current-repository',
     }
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, packages: [item] },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      getJson: vi.fn(async (url: string) => ({
+        value: catalogPage([item], 50),
+        finalUrl: url,
       })),
     }
     const register = vi.fn(() => renamedAssetRef)
@@ -277,15 +313,15 @@ describe('1024Store adapter', () => {
 
   it('keeps legacy GitHub owners that end in a hyphen', async () => {
     const item = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'tianxia--/fixture',
       owner: 'tianxia--',
       url: 'https://github.com/tianxia--/fixture',
     }
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, packages: [item] },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      getJson: vi.fn(async (url: string) => ({
+        value: catalogPage([item], 50),
+        finalUrl: url,
       })),
     }
     const register = vi.fn(() => 'mktimg_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC')
@@ -306,9 +342,9 @@ describe('1024Store adapter', () => {
     }))
   })
 
-  it('browses the complete registry locally with filtering, sorting, and cursor paging', async () => {
+  it('uses v2 provider ordering and page cursors instead of locally browsing a bounded v1 body', async () => {
     const low = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'example/low-plugin',
       name: 'Low Plugin',
       owner: 'example',
@@ -317,7 +353,7 @@ describe('1024Store adapter', () => {
       stars: 1,
     }
     const high = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'example/high-plugin',
       name: 'High Plugin',
       owner: 'example',
@@ -326,10 +362,19 @@ describe('1024Store adapter', () => {
       stars: 100,
     }
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, meta: { ...rawCatalog.meta, total: 3 }, packages: [{ invalid: true }, low, high] },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
-      })),
+      getJson: vi.fn(async (urlValue: string) => {
+        const url = new URL(urlValue)
+        const page = Number(url.searchParams.get('page'))
+        return {
+          value: catalogPage(page === 1 ? [high] : [low], 1, {
+            page,
+            total: 2,
+            catalogTotal: 2,
+            categories: [{ id: 'tools', count: 2 }],
+          }),
+          finalUrl: url.href,
+        }
+      }),
     }
 
     const first = await dsh1024StoreAdapter.fetch(
@@ -348,22 +393,62 @@ describe('1024Store adapter', () => {
     )
 
     expect(first.items.map(item => item.id)).toEqual(['example/high-plugin'])
-    expect(first.page).toEqual({ nextCursor: '1', total: 2 })
+    expect(first.page).toEqual({ nextCursor: 'page:2', total: 2 })
     expect(second.items.map(item => item.id)).toEqual(['example/low-plugin'])
     expect(second.page).toEqual({ total: 2 })
   })
 
-  it('does not silently treat a truncated 1024Store response as the complete catalog', async () => {
-    const packages = Array.from({ length: 51 }, (_, index) => ({
-      ...rawCatalog.packages[0]!,
+  it('rejects a v2 response whose page length does not match its pagination metadata', async () => {
+    const http: CatalogHttpClient = {
+      getJson: vi.fn(async () => ({
+        value: catalogPage([rawPlugin], 50, {
+          total: 7_635,
+          catalogTotal: 7_635,
+          categories: [{ id: 'dev', count: 7_635 }],
+        }),
+        finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=50',
+      })),
+    }
+
+    await expect(dsh1024StoreAdapter.fetch(
+      { limit: 100 },
+      { source: source(), signal: new AbortController().signal, http, media: { register: () => fixtureAssetRef } },
+    )).rejects.toThrow(/page limit|page length/u)
+  })
+
+  it('fails a v2 page when the provider omits catalog entries', async () => {
+    const http: CatalogHttpClient = {
+      getJson: vi.fn(async () => ({
+        value: catalogPage([rawPlugin], 100, {
+          total: 2,
+          catalogTotal: 2,
+          categories: [{ id: 'dev', count: 2 }],
+        }),
+        finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=100',
+      })),
+    }
+
+    await expect(dsh1024StoreAdapter.fetch(
+      { limit: 100 },
+      { source: source(), signal: new AbortController().signal, http, media: { register: () => fixtureAssetRef } },
+    )).rejects.toThrow(/page length/u)
+  })
+
+  it('uses the v2 page-size ceiling of 100 for discovery', async () => {
+    const plugins = Array.from({ length: 101 }, (_, index) => ({
+      ...rawPlugin,
       id: `anywhere-labs/plugin-${index}`,
       name: `plugin-${index}`,
       url: `https://github.com/anywhere-labs/plugin-${index}`,
     }))
     const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, meta: { ...rawCatalog.meta, total: 7635 }, packages },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      getJson: vi.fn(async (url: string) => ({
+        value: catalogPage(plugins.slice(0, 100), 100, {
+          total: plugins.length,
+          catalogTotal: plugins.length,
+          categories: [{ id: 'dev', count: plugins.length }],
+        }),
+        finalUrl: url,
       })),
     }
 
@@ -372,51 +457,45 @@ describe('1024Store adapter', () => {
       { source: source(), signal: new AbortController().signal, http, media: { register: () => fixtureAssetRef } },
     )
 
-    expect(snapshot.items).toHaveLength(50)
-    expect(snapshot.page).toEqual({ nextCursor: '50', total: 7635 })
+    expect(snapshot.items).toHaveLength(100)
+    expect(snapshot.page).toEqual({ nextCursor: 'page:2', total: 101 })
   })
 
-  it('fails a complete 1024Store scan when provider metadata says more items exist', async () => {
-    const packages = Array.from({ length: 51 }, (_, index) => ({
-      ...rawCatalog.packages[0]!,
-      id: `anywhere-labs/plugin-${index}`,
-      name: `plugin-${index}`,
-      url: `https://github.com/anywhere-labs/plugin-${index}`,
-    }))
-    const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, meta: { ...rawCatalog.meta, total: 7635 }, packages },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
-      })),
+  it('carries the complete v2 category facets through the Host provider result', async () => {
+    const uiPlugin = {
+      ...rawPlugin,
+      id: 'anywhere-labs/ui-plugin',
+      name: 'ui-plugin',
+      url: 'https://github.com/anywhere-labs/ui-plugin',
+      category: 'ui',
     }
+    const plugins = [rawPlugin, uiPlugin]
+    const categories = [{ id: 'dev', count: 1 }, { id: 'ui', count: 1 }]
+    const getJson = vi.fn(async (urlValue: string) => {
+      const url = new URL(urlValue)
+      const limit = Number(url.searchParams.get('limit'))
+      return {
+        value: catalogPage(plugins.slice(0, limit), limit, {
+          total: plugins.length,
+          catalogTotal: plugins.length,
+          categories,
+        }),
+        finalUrl: url.href,
+      }
+    })
+    const store = new MemoryCatalogSourceStore()
+    await store.save([source()])
+    const service = new DefaultCatalogService(store, { getJson })
 
-    await expect(dsh1024StoreAdapter.scanCatalog!(
-      { limit: 100 },
-      { source: source(), signal: new AbortController().signal, http, media: { register: () => fixtureAssetRef } },
-    )).rejects.toThrow(/provider total/u)
-  })
-
-  it('keeps the reviewed 1024Store adapter page size fixed at 50', async () => {
-    const packages = Array.from({ length: 51 }, (_, index) => ({
-      ...rawCatalog.packages[0]!,
-      id: `anywhere-labs/plugin-${index}`,
-      name: `plugin-${index}`,
-      url: `https://github.com/anywhere-labs/plugin-${index}`,
-    }))
-    const http: CatalogHttpClient = {
-      getJson: vi.fn(async () => ({
-        value: { ...rawCatalog, packages },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
-      })),
-    }
-
-    const snapshot = await dsh1024StoreAdapter.fetch(
-      { limit: 100 },
-      { source: source(), signal: new AbortController().signal, http, media: { register: () => fixtureAssetRef } },
+    const [result] = await service.fetchProvider(
+      { limit: 50 },
+      new AbortController().signal,
+      { sourceRecordId: source().sourceRecordId },
     )
 
-    expect(snapshot.items).toHaveLength(50)
-    expect(snapshot.page).toEqual({ nextCursor: '50', total: 51 })
+    expect(getJson).toHaveBeenCalledTimes(2)
+    expect(result?.categories).toEqual(['dev', 'ui'])
+    expect(result?.snapshot?.items).toHaveLength(2)
   })
 })
 
@@ -679,7 +758,7 @@ describe('catalog Host route pagination boundary', () => {
     ['response', 502, 'catalog-invalid-response'],
     ['http', 502, 'catalog-unavailable'],
   ] as const)('returns a bounded %s failure code for catalog diagnostics', async (networkCode, status, code) => {
-    const scanCatalog = vi.spyOn(DefaultCatalogService.prototype, 'scanCatalog')
+    const fetchProvider = vi.spyOn(DefaultCatalogService.prototype, 'fetchProvider')
       .mockRejectedValue(new CatalogNetworkError(networkCode))
     try {
       const response = await requestMarketCatalog(
@@ -695,7 +774,7 @@ describe('catalog Host route pagination boundary', () => {
         code,
       })
     } finally {
-      scanCatalog.mockRestore()
+      fetchProvider.mockRestore()
     }
   })
 
@@ -719,7 +798,7 @@ describe('catalog Host route pagination boundary', () => {
       )
       expect(response.body).toMatchObject({
         categories: [],
-        metadata: { cacheStatus: 'fresh', providerRevision: 'sha256:fixture' },
+        metadata: { cacheStatus: 'fresh', providerRevision: '2026-08-17T15:49:53.062Z' },
       })
     } finally {
       scanCatalog.mockRestore()
@@ -729,9 +808,11 @@ describe('catalog Host route pagination boundary', () => {
 
   it('allows an initial request to bind itself to the current active source', async () => {
     const active = source()
-    const index = catalogIndex(active)
-    const scanCatalog = vi.spyOn(DefaultCatalogService.prototype, 'scanCatalog').mockResolvedValue(index)
-    const queryCatalog = vi.spyOn(DefaultCatalogService.prototype, 'queryCatalog').mockReturnValue([])
+    const fetchProvider = vi.spyOn(DefaultCatalogService.prototype, 'fetchProvider').mockResolvedValue([{
+      source: catalogIndex(active).source,
+      categories: ['ui', 'dev'],
+      stale: false,
+    }])
     try {
       const response = await requestMarketCatalog(
         [active],
@@ -739,14 +820,15 @@ describe('catalog Host route pagination boundary', () => {
       )
 
       expect(response.statusCode).toBe(200)
-      expect(queryCatalog).toHaveBeenCalledWith(
-        index,
+      expect(fetchProvider).toHaveBeenCalledWith(
         { limit: 50 },
+        expect.any(AbortSignal),
         { sourceRecordId: active.sourceRecordId },
+        { force: false },
       )
+      expect(response.body.categories).toEqual(['dev', 'ui'])
     } finally {
-      scanCatalog.mockRestore()
-      queryCatalog.mockRestore()
+      fetchProvider.mockRestore()
     }
   })
 
@@ -777,7 +859,7 @@ describe('catalog Host route pagination boundary', () => {
     ['unknown', [active], '038f1f77-a5c4-7b73-a9ae-0242ac120004'],
     ['inactive', [active, inactive], inactive.sourceRecordId],
   ] as const)('rejects a cursor scoped to an %s source before fetching', async (_label, records, sourceRecordId) => {
-    const scanCatalog = vi.spyOn(dsh1024StoreAdapter, 'scanCatalog')
+    const fetchProvider = vi.spyOn(DefaultCatalogService.prototype, 'fetchProvider')
       .mockRejectedValue(new Error('invalid cursor scope reached the catalog adapter'))
     try {
       const response = await requestMarketCatalog(
@@ -787,14 +869,98 @@ describe('catalog Host route pagination boundary', () => {
 
       expect(response.statusCode).toBe(400)
       expect(response.body).toEqual({ error: 'invalid catalog query' })
-      expect(scanCatalog).not.toHaveBeenCalled()
+      expect(fetchProvider).not.toHaveBeenCalled()
     } finally {
+      fetchProvider.mockRestore()
+    }
+  })
+})
+
+describe('installable Host route pagination boundary', () => {
+  it('filters one provider page without scanning the complete 1024Store catalog', async () => {
+    const active = source()
+    const sourceView = catalogIndex(active).source
+    const snapshot = {
+      schemaVersion: '1.0.0' as const,
+      source: {
+        sourceRecordId: active.sourceRecordId,
+        providerId: active.providerId,
+        adapterId: active.adapterId,
+        registrationKind: active.registrationKind,
+        fetchedAt: '2026-08-26T00:00:00.000Z',
+        finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=50',
+      },
+      items: [],
+      page: { total: 10_681, nextCursor: 'host-page-2' },
+    }
+    const fetchProvider = vi.spyOn(DefaultCatalogService.prototype, 'fetchProvider').mockResolvedValue([{
+      source: sourceView,
+      snapshot,
+      categories: ['dev', 'tools'],
+      stale: false,
+    }])
+    const scanCatalog = vi.spyOn(DefaultCatalogService.prototype, 'scanCatalog')
+      .mockRejectedValue(new Error('complete scan must not run'))
+    const listInstallablePage = vi.fn(() => ({
+      source: sourceView,
+      items: [],
+      categories: ['dev', 'tools'],
+      manualInstall: [],
+      nextCursor: 'host-page-2',
+      fetchedAt: '2026-08-26T00:00:00.000Z',
+    }))
+    const installProvider = {
+      get: () => ({ listInstallablePage } as never),
+    }
+    try {
+      const response = await requestMarketCatalog(
+        [active],
+        `${marketRoutes.installable}?locale=zh-CN&q=sidebar&category=tools`,
+        marketRoutes.installable,
+        installProvider,
+      )
+
+      expect(response.statusCode).toBe(200)
+      expect(response.body).toMatchObject({ nextCursor: 'host-page-2', items: [] })
+      expect(fetchProvider).toHaveBeenCalledWith(
+        { limit: 50, q: 'sidebar', category: ['tools'], locale: 'zh-CN' },
+        expect.any(AbortSignal),
+        { sourceRecordId: active.sourceRecordId },
+        { force: false },
+      )
+      expect(scanCatalog).not.toHaveBeenCalled()
+      expect(listInstallablePage).toHaveBeenCalledWith(
+        sourceView,
+        snapshot,
+        ['dev', 'tools'],
+        expect.any(AbortSignal),
+        undefined,
+      )
+    } finally {
+      fetchProvider.mockRestore()
       scanCatalog.mockRestore()
     }
   })
 })
 
 describe('catalog active-source reads', () => {
+  it('keeps existing v1 adapter records readable through the reviewed v2 implementation', async () => {
+    const legacy = source({ adapterId: DSH_1024STORE_LEGACY_ADAPTER_ID })
+    const store = new MemoryCatalogSourceStore()
+    await store.save([legacy])
+    const getJson = vi.fn(async () => ({
+      value: rawCatalog,
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
+    }))
+    const service = new DefaultCatalogService(store, { getJson })
+
+    const results = await service.fetch({}, new AbortController().signal)
+
+    expect(getJson).toHaveBeenCalledOnce()
+    expect(results[0]?.snapshot?.source.adapterId).toBe(DSH_1024STORE_LEGACY_ADAPTER_ID)
+    expect(results[0]?.snapshot?.items).toHaveLength(1)
+  })
+
   it('exchanges a Host cursor token only for its original active source and query', async () => {
     const first = source()
     const second = source({
@@ -804,14 +970,14 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([first, second])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
     const getJson = vi.fn(async () => ({
-      value: { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] },
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      value: catalogPage([rawPlugin, secondItem]),
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
     }))
     const service = new DefaultCatalogService(store, { getJson })
 
@@ -842,14 +1008,14 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([record])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
     const getJson = vi.fn(async () => ({
-      value: { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] },
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      value: catalogPage([rawPlugin, secondItem]),
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
     }))
     const service = new DefaultCatalogService(store, { getJson })
     const [firstPage] = await service.fetch(
@@ -877,14 +1043,14 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([first, second])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
     const getJson = vi.fn(async () => ({
-      value: { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] },
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      value: catalogPage([rawPlugin, secondItem]),
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
     }))
     const service = new DefaultCatalogService(store, { getJson })
     const [firstPage] = await service.fetch(
@@ -908,14 +1074,14 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([record])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
     const getJson = vi.fn(async () => ({
-      value: { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] },
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      value: catalogPage([rawPlugin, secondItem]),
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
     }))
     let now = 1_000
     const service = new DefaultCatalogService(store, { getJson }, {
@@ -971,7 +1137,7 @@ describe('catalog active-source reads', () => {
       peak = Math.max(peak, active)
       await new Promise<void>(resolve => { releases.push(resolve) })
       active -= 1
-      return { value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' }
+      return { value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' }
     })
     const service = new DefaultCatalogService(store, { getJson }, { maxConcurrentSources: 2 })
 
@@ -1014,7 +1180,7 @@ describe('catalog active-source reads', () => {
       source({ sourceRecordId: '028f1f77-a5c4-7b73-a9ae-0242ac120003', order: 1 }),
     ])
     const getJson = vi.fn()
-      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
     const service = new DefaultCatalogService(store, { getJson })
     const results = await service.fetch({}, new AbortController().signal)
 
@@ -1027,13 +1193,13 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([source()])
     const getJson = vi.fn()
-      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
     const service = new DefaultCatalogService(store, { getJson })
 
     const first = await service.scanCatalog(new AbortController().signal)
     const second = await service.scanCatalog(new AbortController().signal)
 
-    expect(first).toMatchObject({ cacheStatus: 'fresh', providerRevision: 'sha256:fixture' })
+    expect(first).toMatchObject({ cacheStatus: 'fresh', providerRevision: '2026-08-17T15:49:53.062Z' })
     expect(second).toMatchObject({ cacheStatus: 'cached', scanKey: first?.scanKey })
     expect(getJson).toHaveBeenCalledOnce()
   })
@@ -1050,7 +1216,7 @@ describe('catalog active-source reads', () => {
     const firstPending = service.scanCatalog(new AbortController().signal, { locale: 'zh-CN' })
     const secondPending = service.scanCatalog(new AbortController().signal, { locale: 'zh-CN' })
     await vi.waitFor(() => expect(getJson).toHaveBeenCalledOnce())
-    release?.({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+    release?.({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
     const [first, second] = await Promise.all([firstPending, secondPending])
 
     expect(getJson).toHaveBeenCalledOnce()
@@ -1062,15 +1228,15 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([source()])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
     const getJson = vi.fn()
       .mockResolvedValueOnce({
-        value: { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] },
-        finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+        value: catalogPage([rawPlugin, secondItem]),
+        finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
       })
       .mockRejectedValueOnce(new Error('offline'))
     let now = 1_000
@@ -1100,7 +1266,7 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([source()])
     const getJson = vi.fn()
-      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+      .mockResolvedValueOnce({ value: rawCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
       .mockRejectedValueOnce(new Error('offline'))
     const unregisterSource = vi.fn()
     const service = new DefaultCatalogService(store, { getJson }, {
@@ -1154,7 +1320,7 @@ describe('catalog active-source reads', () => {
     const second = source({ sourceRecordId: '028f1f77-a5c4-7b73-a9ae-0242ac120003', order: 1 })
     const getJson = vi.fn(async () => ({
       value: rawCatalog,
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
     }))
     const service = new DefaultCatalogService({ load: async () => [second, first] }, { getJson })
 
@@ -1170,15 +1336,15 @@ describe('catalog active-source reads', () => {
     const store = new MemoryCatalogSourceStore()
     await store.save([first])
     const secondItem = {
-      ...rawCatalog.packages[0]!,
+      ...rawPlugin,
       id: 'anywhere-labs/second-plugin',
       name: 'second-plugin',
       url: 'https://github.com/anywhere-labs/second-plugin',
     }
-    const completeCatalog = { ...rawCatalog, packages: [...rawCatalog.packages, secondItem] }
+    const completeCatalog = catalogPage([rawPlugin, secondItem])
     const getJson = vi.fn()
-      .mockResolvedValueOnce({ value: completeCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
-      .mockResolvedValueOnce({ value: completeCatalog, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+      .mockResolvedValueOnce({ value: completeCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
+      .mockResolvedValueOnce({ value: completeCatalog, finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=200' })
     const service = new DefaultCatalogService(store, { getJson })
 
     const firstIndex = (await service.scanCatalog(new AbortController().signal))!
@@ -1599,7 +1765,7 @@ describe('restricted HTTP boundary', () => {
   it('allows proxy fake-IP DNS only for an exact reviewed hostname', async () => {
     const lookupAddresses = vi.fn(async () => [{ address: '198.18.0.38', family: 4 as const }])
     const request = vi.fn(async () => ({
-      body: Buffer.from('{"packages":[]}'),
+      body: Buffer.from('{"plugins":[]}'),
       headers: { 'content-type': 'application/json' },
       statusCode: 200,
     }))
@@ -1610,22 +1776,22 @@ describe('restricted HTTP boundary', () => {
     })
 
     await expect(trusted.getJson(
-      'https://deepseek1024.com/api/v1/plugins',
+      'https://deepseek1024.com/api/v2/plugins',
       new AbortController().signal,
-    )).resolves.toMatchObject({ value: { packages: [] } })
+    )).resolves.toMatchObject({ value: { plugins: [] } })
     expect(request).toHaveBeenCalledOnce()
 
     const strict = createRestrictedHttpClient({ lookupAddresses, request })
     await expect(strict.getJson(
-      'https://deepseek1024.com/api/v1/plugins',
+      'https://deepseek1024.com/api/v2/plugins',
       new AbortController().signal,
     )).rejects.toMatchObject({ code: 'blocked-address' })
     await expect(trusted.getJson(
-      'https://deepseek1024.com.attacker.example/api/v1/plugins',
+      'https://deepseek1024.com.attacker.example/api/v2/plugins',
       new AbortController().signal,
     )).rejects.toMatchObject({ code: 'blocked-address' })
     await expect(trusted.getJson(
-      'https://198.18.0.38/api/v1/plugins',
+      'https://198.18.0.38/api/v2/plugins',
       new AbortController().signal,
     )).rejects.toMatchObject({ code: 'blocked-address' })
   })
@@ -1636,19 +1802,19 @@ describe('restricted HTTP boundary', () => {
     const pending = new Promise<{ value: object; finalUrl: string }>(resolve => { release = resolve })
     const delegate: CatalogHttpClient = { getJson: vi.fn(async () => await pending) }
     const client = createCachedCatalogHttpClient(delegate, { ttlMs: 300_000, now: () => now })
-    const first = client.getJson('https://deepseek1024.com/api/v1/plugins', new AbortController().signal)
-    const second = client.getJson('https://deepseek1024.com/api/v1/plugins', new AbortController().signal)
+    const first = client.getJson('https://deepseek1024.com/api/v2/plugins', new AbortController().signal)
+    const second = client.getJson('https://deepseek1024.com/api/v2/plugins', new AbortController().signal)
 
     expect(delegate.getJson).toHaveBeenCalledOnce()
-    release?.({ value: { packages: [] }, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+    release?.({ value: { plugins: [] }, finalUrl: 'https://deepseek1024.com/api/v2/plugins' })
     await expect(Promise.all([first, second])).resolves.toHaveLength(2)
-    await client.getJson('https://deepseek1024.com/api/v1/plugins', new AbortController().signal)
+    await client.getJson('https://deepseek1024.com/api/v2/plugins', new AbortController().signal)
     expect(delegate.getJson).toHaveBeenCalledOnce()
 
     now += 300_001
-    const refreshed = client.getJson('https://deepseek1024.com/api/v1/plugins', new AbortController().signal)
+    const refreshed = client.getJson('https://deepseek1024.com/api/v2/plugins', new AbortController().signal)
     expect(delegate.getJson).toHaveBeenCalledTimes(2)
-    await expect(refreshed).resolves.toMatchObject({ value: { packages: [] } })
+    await expect(refreshed).resolves.toMatchObject({ value: { plugins: [] } })
   })
 
   it('aborts a shared fixed-catalog request after its last waiter leaves', async () => {
@@ -1662,8 +1828,8 @@ describe('restricted HTTP boundary', () => {
     const client = createCachedCatalogHttpClient(delegate)
     const firstController = new AbortController()
     const secondController = new AbortController()
-    const first = client.getJson('https://deepseek1024.com/api/v1/plugins', firstController.signal)
-    const second = client.getJson('https://deepseek1024.com/api/v1/plugins', secondController.signal)
+    const first = client.getJson('https://deepseek1024.com/api/v2/plugins', firstController.signal)
+    const second = client.getJson('https://deepseek1024.com/api/v2/plugins', secondController.signal)
     const firstResult = expect(first).rejects.toMatchObject({ name: 'AbortError' })
     const secondResult = expect(second).rejects.toMatchObject({ name: 'AbortError' })
 
@@ -1682,18 +1848,18 @@ describe('restricted HTTP boundary', () => {
     }
     const client = createCachedCatalogHttpClient(delegate)
     const abandonedController = new AbortController()
-    const abandoned = client.getJson('https://deepseek1024.com/api/v1/plugins', abandonedController.signal)
+    const abandoned = client.getJson('https://deepseek1024.com/api/v2/plugins', abandonedController.signal)
     const abandonedResult = expect(abandoned).rejects.toMatchObject({ name: 'AbortError' })
     abandonedController.abort()
     await abandonedResult
 
-    const replacement = client.getJson('https://deepseek1024.com/api/v1/plugins', new AbortController().signal)
+    const replacement = client.getJson('https://deepseek1024.com/api/v2/plugins', new AbortController().signal)
     expect(delegate.getJson).toHaveBeenCalledTimes(2)
-    releases[0]?.({ value: { revision: 'abandoned' }, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
-    releases[1]?.({ value: { revision: 'replacement' }, finalUrl: 'https://deepseek1024.com/api/v1/plugins' })
+    releases[0]?.({ value: { revision: 'abandoned' }, finalUrl: 'https://deepseek1024.com/api/v2/plugins' })
+    releases[1]?.({ value: { revision: 'replacement' }, finalUrl: 'https://deepseek1024.com/api/v2/plugins' })
     await expect(replacement).resolves.toMatchObject({ value: { revision: 'replacement' } })
     await expect(client.getJson(
-      'https://deepseek1024.com/api/v1/plugins',
+      'https://deepseek1024.com/api/v2/plugins',
       new AbortController().signal,
     )).resolves.toMatchObject({ value: { revision: 'replacement' } })
     expect(delegate.getJson).toHaveBeenCalledTimes(2)

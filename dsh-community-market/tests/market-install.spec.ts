@@ -42,7 +42,7 @@ function snapshot(): CatalogSnapshot {
       adapterId: DSH_1024STORE_ADAPTER_ID,
       registrationKind: 'built-in',
       fetchedAt: '2026-08-25T00:00:00.000Z',
-      finalUrl: 'https://deepseek1024.com/api/v1/plugins',
+      finalUrl: 'https://deepseek1024.com/api/v2/plugins',
     },
     items: [{
       id: 'example/dsh-plugin-safe',
@@ -149,6 +149,50 @@ describe('npm latest resolution', () => {
 })
 
 describe('simplified Profile package operations', () => {
+  it('derives install candidates from one provider page and preserves its next cursor', async () => {
+    const profileDir = await createProfile()
+    const service = new MarketInstallService(
+      () => ({ name: 'desktop', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn() },
+    )
+    const page: CatalogSnapshot = {
+      ...snapshot(),
+      items: [
+        ...snapshot().items,
+        {
+          id: 'example/browse-only',
+          name: 'browse-only',
+          displayName: 'Browse only',
+          summary: 'No direct npm target',
+          provenance: {
+            sourceRecordId: 'source-1',
+            providerId: DSH_1024STORE_PROVIDER_ID,
+            itemId: 'example/browse-only',
+          },
+        } as CatalogSnapshot['items'][number],
+      ],
+      page: { total: 10_681, nextCursor: 'host-page-2' },
+    }
+
+    const response = service.listInstallablePage({
+      sourceRecordId: 'source-1',
+      registrationKind: 'built-in',
+      adapterId: DSH_1024STORE_ADAPTER_ID,
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      enabled: true,
+      order: 0,
+      name: 'DSH 1024Store',
+      endpoint: 'https://deepseek1024.com/api/v2/plugins',
+      partnership: true,
+    }, page, ['dev', 'tools'], new AbortController().signal)
+
+    expect(response.items.map(item => item.id)).toEqual(['example/dsh-plugin-safe'])
+    expect(response.categories).toEqual(['dev', 'tools'])
+    expect(response.nextCursor).toBe('host-page-2')
+    expect(response).toHaveProperty('fetchedAt')
+  })
+
   it('installs npm latest with one pnpm add and does not persist a market receipt', async () => {
     const profileDir = await createProfile()
     const calls: string[][] = []

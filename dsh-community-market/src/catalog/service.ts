@@ -4,7 +4,15 @@ import { applyScopedCatalogCursor, normalizeCatalogQuery, scopeCatalogCursor } f
 import { parseCatalogSnapshot } from '../contracts/validate.js'
 import type { CatalogAdapter, CatalogHttpClient, CatalogMediaRegistry, LocalSourceRecord, ScopedCatalogCursor } from '../contracts/types.js'
 import type { MarketCatalogSourceResult, MarketSourceView } from '../api-types.js'
-import { DSH_1024STORE_ADAPTER_ID, DSH_1024STORE_ENDPOINT, DSH_1024STORE_KEY, DSH_1024STORE_PROVIDER_ID, dsh1024StoreAdapter } from '../adapters/dsh-1024store.js'
+import {
+  DSH_1024STORE_ADAPTER_ID,
+  DSH_1024STORE_ENDPOINT,
+  DSH_1024STORE_KEY,
+  DSH_1024STORE_LEGACY_ADAPTER_ID,
+  DSH_1024STORE_PROVIDER_ID,
+  dsh1024StoreAdapter,
+  isDsh1024StoreAdapterId,
+} from '../adapters/dsh-1024store.js'
 import {
   DSH_MARKETPLACE_ADAPTER_ID,
   DSH_MARKETPLACE_KEY,
@@ -78,6 +86,7 @@ export const BUILT_IN_PROVIDERS: readonly BuiltInProviderDefinition[] = [
 const adapters = new Map<string, CatalogAdapter>([
   [standardHttpAdapter.adapterId, standardHttpAdapter],
   [dsh1024StoreAdapter.adapterId, dsh1024StoreAdapter],
+  [DSH_1024STORE_LEGACY_ADAPTER_ID, dsh1024StoreAdapter],
   [dshMarketplaceAdapter.adapterId, dshMarketplaceAdapter],
   [dshfindAdapter.adapterId, dshfindAdapter],
 ])
@@ -139,6 +148,18 @@ function normalizedSearchText(item: CatalogItem): string {
     item.publisher?.name ?? '',
     ...(item.keywords ?? []),
   ].join('\n').toLocaleLowerCase('en-US')
+}
+
+function reviewedAdapterCategories(value: readonly string[]): readonly string[] {
+  if (value.length > 4_096 || value.some(category => (
+    typeof category !== 'string'
+    || category.length === 0
+    || category.length > 64
+    || !/^[a-z0-9][a-z0-9._:-]*$/u.test(category)
+  ))) throw new Error('catalog adapter categories are invalid')
+  const categories = [...new Set(value)]
+  if (categories.length !== value.length) throw new Error('catalog adapter categories contain duplicates')
+  return categories
 }
 
 function matchesCatalogQuery(item: CatalogItem, query: CatalogQuery): boolean {
@@ -551,12 +572,18 @@ export class DefaultCatalogService implements CatalogService {
           options.force === true ? { ...policy, cacheMode: 'reload' } : policy,
         ),
       }
-      const snapshot = parseCatalogSnapshot(await adapter.fetch(query, {
+      const context = {
         signal,
         source,
         http,
         media: this.media,
-      }))
+      }
+      const [snapshotValue, categoryValues] = await Promise.all([
+        adapter.fetch(query, context),
+        adapter.fetchCategories?.(query, context),
+      ])
+      const snapshot = parseCatalogSnapshot(snapshotValue)
+      const categories = categoryValues === undefined ? undefined : reviewedAdapterCategories(categoryValues)
       signal.throwIfAborted()
       if ((this.sourceGenerations.get(source.sourceRecordId) ?? 0) !== generation) {
         throw new Error('catalog source changed during provider query')
@@ -576,6 +603,7 @@ export class DefaultCatalogService implements CatalogService {
       return [{
         source: sourceView(source),
         snapshot: this.exposeSnapshot(snapshot, source.sourceRecordId, baseQuery, generation),
+        ...(categories === undefined ? {} : { categories }),
         stale: false,
       }]
     })
@@ -772,7 +800,7 @@ export class DefaultCatalogService implements CatalogService {
     }
     const limit = Math.min(
       query.limit ?? 50,
-      index.source.adapterId === DSH_1024STORE_ADAPTER_ID ? 50 : 100,
+      isDsh1024StoreAdapterId(index.source.adapterId) ? 50 : 100,
     )
     const end = Math.min(offset + limit, filtered.length)
     const baseSnapshot = index.snapshots[0]

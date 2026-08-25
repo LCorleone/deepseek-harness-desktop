@@ -132,13 +132,23 @@ describe('community market client API', () => {
     vi.stubGlobal('fetch', fetch)
 
     await readMarketInstallable('zh-CN')
-    await readMarketInstallable('zh-CN', true)
+    await readMarketInstallable('zh-CN', {
+      q: 'sidebar',
+      categories: ['tools'],
+      sourceRecordId: 'source-1',
+      cursor: 'page-2',
+      refresh: true,
+    })
 
     const cachedUrl = fetch.mock.calls[0]?.[0] as URL
     const refreshedUrl = fetch.mock.calls[1]?.[0] as URL
     expect(cachedUrl.pathname).toBe('/api/community-market/installable')
     expect(cachedUrl.searchParams.get('locale')).toBe('zh-CN')
     expect(cachedUrl.searchParams.has('refresh')).toBe(false)
+    expect(refreshedUrl.searchParams.get('q')).toBe('sidebar')
+    expect(refreshedUrl.searchParams.getAll('category')).toEqual(['tools'])
+    expect(refreshedUrl.searchParams.get('sourceRecordId')).toBe('source-1')
+    expect(refreshedUrl.searchParams.get('cursor')).toBe('page-2')
     expect(refreshedUrl.searchParams.get('refresh')).toBe('1')
   })
 

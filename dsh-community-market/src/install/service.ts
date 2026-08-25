@@ -3,8 +3,11 @@ import { lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
 import { prerelease, valid } from 'semver'
-import type { MarketInstallableResponse } from '../api-types.js'
-import type { CatalogFullIndex } from '../catalog/service.js'
+import type {
+  MarketCatalogMetadata,
+  MarketInstallableResponse,
+  MarketSourceView,
+} from '../api-types.js'
 import type { CatalogHttpClient } from '../contracts/types.js'
 import type { CatalogSnapshot } from '../contracts/index.js'
 import { manualInstallHints } from './manual.js'
@@ -407,38 +410,31 @@ export class MarketInstallService {
     }
   }
 
-  async listInstallable(
-    index: CatalogFullIndex,
+  listInstallablePage(
+    source: MarketSourceView,
+    snapshot: CatalogSnapshot,
+    categories: readonly string[],
     signal: AbortSignal,
-  ): Promise<MarketInstallableResponse> {
+    metadata?: MarketCatalogMetadata,
+  ): MarketInstallableResponse {
     const operationSignal = this.operationSignal(signal)
     operationSignal.throwIfAborted()
     this.purge()
-    const currentKeys = new Set(index.snapshots.flatMap(snapshot => (
-      snapshot.items.map(item => candidateKey(index.source.sourceRecordId, item.id))
-    )))
-    for (const [key, candidate] of this.candidates) {
-      if (candidate.sourceRecordId === index.source.sourceRecordId && !currentKeys.has(key)) {
-        this.candidates.delete(key)
-      }
-    }
-    for (const snapshot of index.snapshots) this.observeCatalog(snapshot)
-    operationSignal.throwIfAborted()
-    const items = index.snapshots.flatMap(snapshot => snapshot.items).filter(item => {
-      const candidate = this.candidates.get(candidateKey(index.source.sourceRecordId, item.id))
+    this.observeCatalog(snapshot)
+    const items = snapshot.items.filter(item => {
+      const candidate = this.candidates.get(candidateKey(source.sourceRecordId, item.id))
       return candidate !== undefined
         && candidate.providerId === item.provenance.providerId
     })
+    operationSignal.throwIfAborted()
     return {
-      source: index.source,
+      source,
       items,
+      categories,
       manualInstall: manualInstallHints(items),
-      metadata: {
-        scannedAt: index.scannedAt,
-        expiresAt: index.expiresAt,
-        ...(index.providerRevision === undefined ? {} : { providerRevision: index.providerRevision }),
-        cacheStatus: index.cacheStatus,
-      },
+      ...(snapshot.page.nextCursor === undefined ? {} : { nextCursor: snapshot.page.nextCursor }),
+      ...(metadata === undefined ? {} : { metadata }),
+      fetchedAt: new Date(this.now()).toISOString(),
     }
   }
 

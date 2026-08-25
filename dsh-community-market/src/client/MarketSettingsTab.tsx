@@ -50,7 +50,6 @@ import {
 
 type MarketItem = CatalogSnapshot['items'][number]
 export type MarketView = 'discover' | 'installable' | 'installed' | 'sources'
-const INSTALLABLE_PAGE_SIZE = 50
 const INSTALL_REQUIREMENTS_DOCS = {
   en: 'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/install-and-uninstall.md',
   zh: 'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/install-and-uninstall.zh.md',
@@ -183,28 +182,6 @@ function selectedSource(sources: readonly MarketSourceView[]): MarketSourceView 
     .at(0)
 }
 
-function categoriesFromItems(items: readonly MarketItem[]): readonly string[] {
-  const categories = new Set<string>()
-  for (const item of items) {
-    for (const category of item.categories ?? []) categories.add(category)
-  }
-  return [...categories].sort((left, right) => left.localeCompare(right, 'en', { sensitivity: 'base' }))
-}
-
-function matchesInstallableQuery(item: MarketItem, query: string): boolean {
-  const needle = query.trim().toLocaleLowerCase()
-  if (!needle) return true
-  return [
-    item.displayName,
-    item.name,
-    item.summary,
-    item.description,
-    item.publisher?.name,
-    item.package?.name,
-    ...(item.categories ?? []),
-  ].some(value => value?.toLocaleLowerCase().includes(needle) === true)
-}
-
 function mergeCatalogPages(
   catalog: MarketCatalogResponse | undefined,
   pages: readonly MarketCatalogSourceResult[],
@@ -234,6 +211,29 @@ function mergeCatalogPages(
   return { ...catalog, results, manualInstall: [...hints.values()], fetchedAt: new Date().toISOString() }
 }
 
+function mergeInstallablePages(
+  current: MarketInstallableResponse | undefined,
+  next: MarketInstallableResponse,
+): MarketInstallableResponse {
+  if (current === undefined || current.source.sourceRecordId !== next.source.sourceRecordId) return next
+  const seen = new Set<string>()
+  const items = [...current.items, ...next.items].filter(item => {
+    if (seen.has(item.id)) return false
+    seen.add(item.id)
+    return true
+  })
+  const hints = new Map([...current.manualInstall, ...next.manualInstall].map(hint => [
+    `${hint.sourceRecordId}:${hint.itemId}`,
+    hint,
+  ]))
+  return {
+    ...next,
+    items,
+    categories: next.categories.length === 0 ? current.categories : next.categories,
+    manualInstall: [...hints.values()],
+  }
+}
+
 export function MarketSurface({ initialView = 'installable', readLocale, t, showHeader = true }: MarketSurfaceProps) {
   const [view, setView] = useState<MarketView>(initialView)
   const [state, setState] = useState<MarketStateResponse>()
@@ -256,9 +256,9 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
   const [installableQuery, setInstallableQuery] = useState('')
   const [appliedInstallableQuery, setAppliedInstallableQuery] = useState('')
   const [installableCategories, setInstallableCategories] = useState<readonly string[]>([])
-  const [installableLimit, setInstallableLimit] = useState(INSTALLABLE_PAGE_SIZE)
   const [installableLoaded, setInstallableLoaded] = useState(false)
   const [installableLoading, setInstallableLoading] = useState(false)
+  const [installableLoadingMore, setInstallableLoadingMore] = useState(false)
   const [installableUnavailable, setInstallableUnavailable] = useState(false)
   const [installableError, setInstallableError] = useState<string>()
   const [installationsLoaded, setInstallationsLoaded] = useState(false)
@@ -436,32 +436,51 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     }
   }, [t])
 
-  const loadInstallable = useCallback(async (refresh = false) => {
+  const loadInstallable = useCallback(async (
+    refresh = false,
+    q = '',
+    categories: readonly string[] = [],
+    page?: { readonly sourceRecordId: string; readonly cursor: string },
+  ) => {
     installableRequest.current?.abort()
     const request = new AbortController()
     installableRequest.current = request
-    setInstallableIndex(undefined)
-    setInstallableLoaded(false)
-    setInstallableLoading(true)
+    const append = page !== undefined
+    if (append) {
+      setInstallableLoadingMore(true)
+    } else {
+      setInstallableIndex(undefined)
+      setInstallableLoaded(false)
+      setInstallableLoading(true)
+    }
     setInstallableError(undefined)
     setInstallableUnavailable(false)
     try {
-      const response = await readMarketInstallable(readLocale(), refresh, request.signal)
+      const response = await readMarketInstallable(readLocale(), {
+        ...(q.trim() === '' ? {} : { q: q.trim() }),
+        ...(categories.length === 0 ? {} : { categories }),
+        ...(page === undefined ? {} : page),
+        refresh,
+      }, request.signal)
       if (request.signal.aborted || installableRequest.current !== request) return
-      setInstallableIndex(response)
+      setInstallableIndex(current => append ? mergeInstallablePages(current, response) : response)
       setInstallableLoaded(true)
       setInstallableUnavailable(false)
-      setInstallableLimit(INSTALLABLE_PAGE_SIZE)
+      setAppliedInstallableQuery(q.trim())
+      setInstallableCategories([...categories])
     } catch (cause) {
       if (request.signal.aborted || installableRequest.current !== request) return
-      setInstallableIndex(undefined)
-      setInstallableLoaded(false)
+      if (!append) {
+        setInstallableIndex(undefined)
+        setInstallableLoaded(false)
+      }
       setInstallableUnavailable(isDesktopUnavailable(cause))
       setInstallableError(isDesktopUnavailable(cause) ? t('desktopUnavailable') : t('installableError'))
     } finally {
       if (installableRequest.current === request) {
         installableRequest.current = undefined
-        setInstallableLoading(false)
+        if (append) setInstallableLoadingMore(false)
+        else setInstallableLoading(false)
       }
     }
   }, [readLocale, t])
@@ -470,7 +489,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setQuery('')
     if (viewRef.current === 'installable') {
       void loadState('', [], false, false)
-      void loadInstallable()
+      void loadInstallable(false, '', [])
     } else {
       void loadState('', [])
     }
@@ -494,22 +513,10 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
 
   const items = useMemo(() => catalog?.results.flatMap(result =>
     (result.snapshot?.items ?? []).map(item => ({ item, source: result.source, stale: result.stale }))) ?? [], [catalog])
-  const installableCategoryOptions = useMemo(
-    () => categoriesFromItems(installableIndex?.items ?? []),
-    [installableIndex],
-  )
-  const filteredInstallableItems = useMemo(() => (installableIndex?.items ?? [])
-    .filter(item => matchesInstallableQuery(item, appliedInstallableQuery))
-    .filter(item => installableCategories.length === 0
-      || item.categories?.some(category => installableCategories.includes(category)) === true)
-    .map(item => ({ item, source: installableIndex!.source, stale: false })), [
-    appliedInstallableQuery,
-    installableCategories,
-    installableIndex,
-  ])
+  const installableCategoryOptions = installableIndex?.categories ?? []
   const installableItems = useMemo(
-    () => filteredInstallableItems.slice(0, installableLimit),
-    [filteredInstallableItems, installableLimit],
+    () => (installableIndex?.items ?? []).map(item => ({ item, source: installableIndex!.source, stale: false })),
+    [installableIndex],
   )
   const pageTarget = useMemo(() => catalog?.results.flatMap(result => {
     const cursor = result.snapshot?.page?.nextCursor
@@ -563,12 +570,12 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         setInstallableIndex(undefined)
         setInstallableLoaded(false)
         setInstallableLoading(false)
+        setInstallableLoadingMore(false)
         setInstallableUnavailable(false)
         setInstallableError(undefined)
         setInstallableQuery('')
         setAppliedInstallableQuery('')
         setInstallableCategories([])
-        setInstallableLimit(INSTALLABLE_PAGE_SIZE)
         setQuery('')
         setAppliedQuery('')
         setCategoryOptions([])
@@ -647,11 +654,12 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       installationsRequest.current?.abort()
       installationsRequest.current = undefined
       setInstallationsLoading(false)
-      void loadInstallable()
+      void loadInstallable(false, appliedInstallableQuery, installableCategories)
     } else if (next === 'installed') {
       installableRequest.current?.abort()
       installableRequest.current = undefined
       setInstallableLoading(false)
+      setInstallableLoadingMore(false)
       void loadInstallations()
     } else if (next === 'discover') {
       installableRequest.current?.abort()
@@ -659,6 +667,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       installableRequest.current = undefined
       installationsRequest.current = undefined
       setInstallableLoading(false)
+      setInstallableLoadingMore(false)
       setInstallationsLoading(false)
       if (state !== undefined && catalog === undefined && readRequest.current === undefined) {
         void loadCatalog(state, appliedQuery, selectedCategories)
@@ -803,7 +812,9 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       selectedKeyRef.current = undefined
       setSelected(undefined)
       setOperationSuccess({ preview, restartToken: result.restartToken })
-      if (result.action === 'install' && viewRef.current === 'installable') void loadInstallable()
+      if (result.action === 'install' && viewRef.current === 'installable') {
+        void loadInstallable(false, appliedInstallableQuery, installableCategories)
+      }
       if (result.action === 'uninstall' && viewRef.current === 'installed') {
         void loadInstallations()
       }
@@ -918,30 +929,35 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           <InstallableView
             state={state}
             items={installableItems}
-            totalItems={filteredInstallableItems.length}
+            totalItems={installableItems.length}
             query={installableQuery}
             categoryOptions={installableCategoryOptions}
             selectedCategories={installableCategories}
             metadata={installableIndex?.metadata}
             loaded={installableLoaded}
             loading={installableLoading}
+            loadingMore={installableLoadingMore}
+            hasMore={installableIndex?.nextCursor !== undefined}
             unavailable={installableUnavailable}
             error={installableError}
             operationPending={operationPending}
             onQuery={setInstallableQuery}
-            onSearch={() => {
-              setAppliedInstallableQuery(installableQuery.trim())
-              setInstallableLimit(INSTALLABLE_PAGE_SIZE)
-            }}
-            onRefresh={() => { void loadInstallable(true) }}
+            onSearch={() => { void loadInstallable(false, installableQuery, installableCategories) }}
+            onRefresh={() => { void loadInstallable(true, appliedInstallableQuery, installableCategories) }}
             onToggleCategory={category => {
-              setInstallableCategories(current => current.includes(category)
-                ? current.filter(value => value !== category)
-                : [...current, category])
-              setInstallableLimit(INSTALLABLE_PAGE_SIZE)
+              const nextCategories = installableCategories.includes(category)
+                ? installableCategories.filter(value => value !== category)
+                : [...installableCategories, category]
+              void loadInstallable(false, appliedInstallableQuery, nextCategories)
             }}
-            onLoadMore={() => setInstallableLimit(current => current + INSTALLABLE_PAGE_SIZE)}
-            onRetry={() => { void loadInstallable() }}
+            onLoadMore={() => {
+              if (installableIndex?.nextCursor === undefined) return
+              void loadInstallable(false, appliedInstallableQuery, installableCategories, {
+                sourceRecordId: installableIndex.source.sourceRecordId,
+                cursor: installableIndex.nextCursor,
+              })
+            }}
+            onRetry={() => { void loadInstallable(false, appliedInstallableQuery, installableCategories) }}
             onSources={() => selectMarketView('sources')}
             onInstall={openItem}
             t={t}
@@ -1197,6 +1213,8 @@ function InstallableView(props: {
   metadata: MarketInstallableResponse['metadata'] | undefined
   loaded: boolean
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
   unavailable: boolean
   error?: string | undefined
   operationPending: boolean
@@ -1297,7 +1315,7 @@ function InstallableView(props: {
           <span>{props.error}</span>
         </div>
       )}
-      {props.items.length === 0 && (
+      {props.items.length === 0 && !props.hasMore && (
         <div className="dshMarketEmpty"><h2>{props.t('noInstallable')}</h2><p>{props.t('noInstallableBody')}</p></div>
       )}
       <div className="dshMarketGrid">
@@ -1312,14 +1330,14 @@ function InstallableView(props: {
           />
         ))}
       </div>
-      {props.items.length < props.totalItems && (
+      {props.hasMore && (
         <div className="dshMarketPagination">
           <Button
             type="button"
             variant="outline"
-            disabled={props.operationPending}
+            disabled={props.operationPending || props.loadingMore}
             onClick={props.onLoadMore}
-          >{props.t('loadMore')}</Button>
+          >{props.loadingMore ? props.t('loadingMore') : props.t('loadMore')}</Button>
         </div>
       )}
     </div>

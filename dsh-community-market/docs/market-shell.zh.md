@@ -24,9 +24,9 @@ Client 只接收标准化数据和不透明 operation 身份，永远不会获�
 
 标准 cursor 来源和 dshfind 会被扫描为有界本地索引，搜索、分类筛选和可见分页使用该索引。
 
-DSH 1024Store 的公开基础响应数量小于其目录总量。无筛选发现可以复用有界基础响应；文本搜索或单分类筛选会通过经过审查的 provider adapter 发送 `q` 和 `category`，避免只在基础响应中本地过滤。远端结果仍经过相同 Schema 与 provenance 边界标准化。
+DSH 1024Store 的发现页对所有查询都使用 provider 当前的分页 v2 API，包括无筛选目录。单分类筛选直接转发；多分类 OR 筛选会合并有界的 provider 排序前缀，并使用本地不透明 cursor。可安装结果复用相同的远程 page，并只保留每页里的直接 npm 目标；Client 通过下一枚不透明 cursor 继续加载，而不会在 Host 或 Renderer 中物化完整目录。
 
-Provider 命令会被丢弃。来源可以提供目录身份，但不能提供可执行 argv、凭据、adapter 代码、来源选择或安装权限。
+Provider 命令会被丢弃。经过审查的 1024Store adapter 只会解析一种严格的惰性命令形状来取得 npm package name，绝不会转发或执行该命令。来源可以提供目录身份，但不能提供可执行 argv、凭据、adapter 代码、来源选择或安装权限。
 
 ## 安装行为
 

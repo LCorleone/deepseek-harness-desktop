@@ -54,6 +54,8 @@ export interface MarketManualInstallHint {
 export interface MarketCatalogSourceResult {
   readonly source: MarketSourceView
   readonly snapshot?: CatalogSnapshot
+  /** Complete provider categories when a reviewed paginated adapter exposes them. */
+  readonly categories?: readonly string[]
   readonly error?: string
   readonly stale: boolean
 }
@@ -108,12 +110,15 @@ export interface MarketInstallationsResponse {
   readonly installations: readonly MarketInstallationView[]
 }
 
-/** Complete Host-derived structural subset; local install state never changes catalog membership. */
+/** One Host-filtered provider page; local install state never changes catalog membership. */
 export interface MarketInstallableResponse {
   readonly source: MarketSourceView
   readonly items: CatalogSnapshot['items']
+  readonly categories: readonly string[]
   readonly manualInstall: readonly MarketManualInstallHint[]
-  readonly metadata: MarketCatalogMetadata
+  readonly nextCursor?: string
+  readonly metadata?: MarketCatalogMetadata
+  readonly fetchedAt: string
 }
 
 /** Renderer input for the non-mutating verification stage. */

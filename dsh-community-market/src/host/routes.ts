@@ -12,6 +12,7 @@ import type {
   MarketCatalogErrorCode,
   MarketCatalogMetadata,
   MarketCatalogResponse,
+  MarketCatalogSourceResult,
   MarketInstallationView,
   MarketManualInstallHint,
   MarketSourceMutation,
@@ -27,6 +28,8 @@ import {
 import {
   DSH_1024STORE_ADAPTER_ID,
   DSH_1024STORE_HOSTNAME,
+  DSH_1024STORE_LEGACY_ADAPTER_ID,
+  isDsh1024StoreAdapterId,
 } from '../adapters/dsh-1024store.js'
 import {
   DSH_MARKETPLACE_ADAPTER_ID,
@@ -82,9 +85,9 @@ const ROUTE_REQUEST_RESTART = '/api/community-market/desktop/request-restart'
 const ROUTE_OPERATION_PREVIEW = '/api/community-market/operations/preview'
 const ROUTE_OPERATION_EXECUTE = '/api/community-market/operations/execute'
 const MAX_BODY_BYTES = 16 * 1024
-// The full registry was already about 6.7 MiB in August 2026. Keep bounded
-// headroom without relaxing the 2 MiB default used by user-added sources.
-const MAX_DSH_1024STORE_BODY_BYTES = 16 * 1024 * 1024
+// v2 is paginated, so the reviewed provider no longer needs the old full-body
+// exception. Keep a per-page ceiling independent of the complete catalog size.
+const MAX_DSH_1024STORE_BODY_BYTES = 2 * 1024 * 1024
 const MAX_DSHFIND_BODY_BYTES = 16 * 1024 * 1024
 const CATALOG_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
@@ -678,6 +681,7 @@ export function registerMarketRoutes(
   const service = new DefaultCatalogService(store, restrictedHttpClient, {
     adapterHttpClients: new Map([
       [DSH_1024STORE_ADAPTER_ID, dsh1024StoreHttpClient],
+      [DSH_1024STORE_LEGACY_ADAPTER_ID, dsh1024StoreHttpClient],
       [DSH_MARKETPLACE_ADAPTER_ID, dshMarketplaceHttpClient],
       [DSHFIND_ADAPTER_ID, dshfindHttpClient],
     ]),
@@ -796,9 +800,9 @@ export function registerMarketRoutes(
         }
         const providerQuery = activeSource?.adapterId === DSHFIND_ADAPTER_ID
           || (activeSource?.adapterId === DSH_MARKETPLACE_ADAPTER_ID && categories.length <= 1)
-          || (activeSource?.adapterId === DSH_1024STORE_ADAPTER_ID && (q !== undefined || categories.length === 1))
+          || isDsh1024StoreAdapterId(activeSource?.adapterId)
         if (providerQuery) {
-          let results
+          let results: readonly MarketCatalogSourceResult[]
           try {
             results = await service.fetchProvider(query, signal, scope, { force })
           } catch (cause) {
@@ -817,7 +821,9 @@ export function registerMarketRoutes(
             query: responseQuery,
             results,
             categories: [...new Set(results.flatMap(result => (
-              result.snapshot?.items.flatMap(item => item.categories ?? []) ?? []
+              result.categories
+                ?? result.snapshot?.items.flatMap(item => item.categories ?? [])
+                ?? []
             )))].sort((left, right) => left.localeCompare(right, 'en', { sensitivity: 'base' })),
             manualInstall: catalogManualInstall(results),
             fetchedAt: new Date().toISOString(),
@@ -991,31 +997,67 @@ export function registerMarketRoutes(
           const requestUrl = new URL(req.url ?? '/', 'http://localhost')
           const localeValues = requestUrl.searchParams.getAll('locale')
           const refreshValues = requestUrl.searchParams.getAll('refresh')
+          const queryValues = requestUrl.searchParams.getAll('q')
+          const sourceRecordIds = requestUrl.searchParams.getAll('sourceRecordId')
+          const cursors = requestUrl.searchParams.getAll('cursor')
+          const categories = requestUrl.searchParams.getAll('category')
           if (
             localeValues.length > 1
+            || queryValues.length > 1
+            || sourceRecordIds.length > 1
+            || cursors.length > 1
+            || cursors.length > sourceRecordIds.length
             || refreshValues.length > 1
             || refreshValues.length === 1 && refreshValues[0] !== '1'
           ) throw new MarketInstallError('invalid-request', 'The installable catalog query was invalid.')
           const force = refreshValues.length === 1
           const localeKey = localeValues[0] ?? ''
-          const index = await service.scanCatalog(signal, {
-            force,
-            ...(localeKey === '' ? {} : { locale: localeKey }),
-          })
-          if (index === undefined) {
+          const activeSource = (await service.listSources()).find(source => source.enabled)
+          if (activeSource === undefined) {
             throw new MarketInstallError('not-available', 'No catalog source is active.')
           }
-          const response = await install.listInstallable(index, signal)
-          if (!signal.aborted && !res.destroyed) sendJson(res, 200, response)
-          if (!generationController.signal.aborted) {
-            servedCatalogPreviews.add(catalogPreviewKey(index.source.sourceRecordId, localeKey))
-            const preview = buildCatalogResponse(
-              index,
-              { limit: 50, ...(localeKey === '' ? {} : { locale: localeKey }) },
-              { sourceRecordId: index.source.sourceRecordId },
-            )
-            void persistCatalogResponse(preview, index.source.sourceRecordId, localeKey)
+          if (sourceRecordIds[0] !== undefined && sourceRecordIds[0] !== activeSource.sourceRecordId) {
+            throw new MarketInstallError('invalid-request', 'The installable catalog source is not active.')
           }
+          const query = {
+            limit: 50,
+            ...(queryValues[0]?.trim() ? { q: queryValues[0].trim() } : {}),
+            ...(categories.length === 0 ? {} : { category: categories }),
+            ...(localeKey === '' ? {} : { locale: localeKey }),
+          }
+          const scope: CatalogFetchScope = {
+            sourceRecordId: activeSource.sourceRecordId,
+            ...(cursors[0] === undefined ? {} : { cursor: cursors[0] }),
+          }
+          const providerQuery = activeSource.adapterId === DSHFIND_ADAPTER_ID
+            || (activeSource.adapterId === DSH_MARKETPLACE_ADAPTER_ID && categories.length <= 1)
+            || isDsh1024StoreAdapterId(activeSource.adapterId)
+          let results: readonly MarketCatalogSourceResult[]
+          let metadata: MarketCatalogMetadata | undefined
+          if (providerQuery) {
+            results = await service.fetchProvider(query, signal, scope, { force })
+          } else {
+            const index = await service.scanCatalog(signal, {
+              force,
+              ...(localeKey === '' ? {} : { locale: localeKey }),
+              expectedSourceRecordId: activeSource.sourceRecordId,
+            })
+            results = index === undefined ? [] : service.queryCatalog(index, query, scope)
+            if (index !== undefined) metadata = catalogMetadata(index)
+          }
+          const result = results.find(value => value.source.sourceRecordId === activeSource.sourceRecordId)
+          if (result?.snapshot === undefined || result.error !== undefined) {
+            throw new MarketInstallError('not-available', 'The installable catalog page is unavailable.')
+          }
+          const response = install.listInstallablePage(
+            result.source,
+            result.snapshot,
+            result.categories ?? [...new Set(result.snapshot.items.flatMap(item => item.categories ?? []))]
+              .sort((left, right) => left.localeCompare(right, 'en', { sensitivity: 'base' })),
+            signal,
+            metadata,
+          )
+          if (!signal.aborted && !res.destroyed) sendJson(res, 200, response)
         } catch (cause) {
           if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
         } finally {

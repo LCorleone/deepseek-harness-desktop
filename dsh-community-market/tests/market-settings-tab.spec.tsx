@@ -190,12 +190,14 @@ function makeOperationTarget(overrides: Partial<PackageOperationTarget> = {}): P
 function installableResponse(
   items: readonly CatalogSnapshot['items'][number][],
   source: MarketSourceView = firstSource,
-  overrides: Partial<MarketInstallableResponse['metadata']> = {},
+  overrides: Partial<NonNullable<MarketInstallableResponse['metadata']>> = {},
 ): MarketInstallableResponse {
   return {
     source,
     items: [...items],
+    categories: [...new Set(items.flatMap(item => item.categories ?? []))],
     manualInstall: [],
+    fetchedAt: '2026-08-18T01:00:00.000Z',
     metadata: {
       scannedAt: '2026-08-18T01:00:00.000Z',
       expiresAt: '2026-08-18T01:05:00.000Z',
@@ -422,7 +424,7 @@ describe('MarketSettingsTab', () => {
     })
   })
 
-  it('uses a complete verified index with local OR filters, local pages of 50, metadata, and explicit rescans', async () => {
+  it('loads verified installable items by remote page and forwards filters and refreshes', async () => {
     const availableItem = makeInstallableItem(
       firstSource,
       'available-plugin',
@@ -447,8 +449,20 @@ describe('MarketSettingsTab', () => {
       '3.0.0',
       ['interface'],
     )
-    const initialIndex = installableResponse([availableItem, ...filler, secondInstallable])
-    const freshIndex = installableResponse(initialIndex.items, firstSource, {
+    const initialIndex = {
+      ...installableResponse([availableItem, ...filler]),
+      categories: ['interface', 'tools', 'utility'],
+      nextCursor: 'page-2',
+    }
+    const secondPage = {
+      ...installableResponse([secondInstallable]),
+      categories: initialIndex.categories,
+    }
+    const combinedFilter = {
+      ...installableResponse([availableItem, secondInstallable]),
+      categories: initialIndex.categories,
+    }
+    const freshIndex = installableResponse([secondInstallable], firstSource, {
       scannedAt: '2026-08-18T02:00:00.000Z',
       cacheStatus: 'fresh',
     })
@@ -456,9 +470,17 @@ describe('MarketSettingsTab', () => {
     vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [
       makeItem(firstSource, 'browse-only', 'Browse Only', ['interface']),
     ]))
-    vi.mocked(readMarketInstallable)
-      .mockResolvedValueOnce(initialIndex)
-      .mockResolvedValue(freshIndex)
+    vi.mocked(readMarketInstallable).mockImplementation(async (_locale, options = {}) => {
+      if (options.refresh === true) return freshIndex
+      if (options.cursor === 'page-2') return secondPage
+      if (options.q === 'Second') return secondPage
+      if (options.categories?.includes('interface') === true) return combinedFilter
+      if (options.categories?.includes('tools') === true) return {
+        ...installableResponse([availableItem]),
+        categories: initialIndex.categories,
+      }
+      return initialIndex
+    })
     render(<MarketSettingsTab {...props} />)
 
     expect(await screen.findByRole('button', { name: /Browse Only/u })).toBeTruthy()
@@ -470,32 +492,47 @@ describe('MarketSettingsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: en.installable }))
     expect(await screen.findByRole('button', { name: `${en.install}: Available Plugin` })).toBeTruthy()
     expect(screen.queryByRole('button', { name: `${en.install}: Second Installable` })).toBeNull()
-    expect(screen.getByText(`${en.scannedAt}: ${initialIndex.metadata.scannedAt}`)).toBeTruthy()
-    expect(screen.getByText(`${en.providerRevision}: ${initialIndex.metadata.providerRevision}`)).toBeTruthy()
+    expect(screen.getByText(`${en.scannedAt}: ${initialIndex.metadata!.scannedAt}`)).toBeTruthy()
+    expect(screen.getByText(`${en.providerRevision}: ${initialIndex.metadata!.providerRevision}`)).toBeTruthy()
     expect(screen.getByText(en.cachedScan)).toBeTruthy()
-    expect(readMarketInstallable).toHaveBeenCalledWith('en', false, expect.any(AbortSignal))
+    expect(readMarketInstallable).toHaveBeenCalledWith('en', { refresh: false }, expect.any(AbortSignal))
     expect(readMarketInstallations).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: en.loadMore }))
-    expect(screen.getByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
+    expect(readMarketInstallable).toHaveBeenLastCalledWith('en', {
+      sourceRecordId: firstSource.sourceRecordId,
+      cursor: 'page-2',
+      refresh: false,
+    }, expect.any(AbortSignal))
     expect(readMoreMarketCatalog).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'tools' }))
-    expect(screen.getByRole('button', { name: `${en.install}: Available Plugin` })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: `${en.install}: Available Plugin` })).toBeTruthy()
     expect(screen.queryByRole('button', { name: `${en.install}: Second Installable` })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'interface' }))
-    expect(screen.getByRole('button', { name: `${en.install}: Available Plugin` })).toBeTruthy()
-    expect(screen.getByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
+    expect(readMarketInstallable).toHaveBeenLastCalledWith('en', {
+      categories: ['tools', 'interface'],
+      refresh: false,
+    }, expect.any(AbortSignal))
 
     fireEvent.change(screen.getByPlaceholderText(en.search), { target: { value: 'Second' } })
     fireEvent.click(screen.getByRole('button', { name: en.searchAction }))
-    expect(screen.queryByRole('button', { name: `${en.install}: Available Plugin` })).toBeNull()
-    expect(screen.getByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
-    expect(readMarketInstallable).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('button', { name: `${en.install}: Available Plugin` })).toBeNull())
+    expect(readMarketInstallable).toHaveBeenLastCalledWith('en', {
+      q: 'Second',
+      categories: ['tools', 'interface'],
+      refresh: false,
+    }, expect.any(AbortSignal))
 
     fireEvent.click(screen.getByRole('button', { name: en.rescanInstallable }))
     expect(await screen.findByText(en.freshScan)).toBeTruthy()
-    expect(readMarketInstallable).toHaveBeenNthCalledWith(2, 'en', true, expect.any(AbortSignal))
+    expect(readMarketInstallable).toHaveBeenLastCalledWith('en', {
+      q: 'Second',
+      categories: ['tools', 'interface'],
+      refresh: true,
+    }, expect.any(AbortSignal))
   })
 
   it('previews an exact package and profile before install, executes only its preview id, and prompts for restart', async () => {
