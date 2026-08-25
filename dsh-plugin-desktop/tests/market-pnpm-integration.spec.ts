@@ -219,6 +219,7 @@ describe('desktop pnpm and community market integration', () => {
           '--import',
           pathToFileURL(selectedBootstrap.clearEnvironmentPath).href,
           selectedBootstrap.pnpmBinPath,
+          '--config.minimumReleaseAge=0',
           'remove',
           PACKAGE_NAME,
         ],

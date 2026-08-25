@@ -3,6 +3,7 @@
 import { execFile } from 'node:child_process'
 import { delimiter, isAbsolute } from 'node:path'
 import { assertDesktopProfileName } from './profile-manager.ts'
+import { PNPM_IGNORE_MINIMUM_RELEASE_AGE } from './pnpm-policy.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
@@ -69,7 +70,7 @@ export function formatRecoveryPluginRemoveFailure(cause: unknown): string {
   }
   return [
     'DSH plugin uninstall failed.',
-    `Command: dsh plugin --profile ${cause.result.profileName} remove ${cause.result.packageName}`,
+    `Command: dsh plugin --profile ${cause.result.profileName} ${PNPM_IGNORE_MINIMUM_RELEASE_AGE} remove ${cause.result.packageName}`,
     `Exit status: ${String(cause.result.exitCode)}`,
     `Signal: ${cause.result.signal ?? 'none'}`,
     diagnosticStream('stderr', cause.result.stderr),
@@ -112,6 +113,7 @@ export async function removeRecoveryPlugin(
     'plugin',
     '--profile',
     options.profileName,
+    PNPM_IGNORE_MINIMUM_RELEASE_AGE,
     'remove',
     options.packageName,
   ] as const

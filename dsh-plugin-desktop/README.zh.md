@@ -26,7 +26,7 @@ Cordis 的裸插件导入从持久化 profile 解析。一个范围受限的 Nod
 
 Login-shell 恢复完成后，Launcher 才创建 layered launch-environment snapshot。随后，它会把只包含固定版本内置 `pnpm` 命令的私有命令目录前置到当前 Electron main 进程的 `PATH`。因此 Host 与第三方插件从启动开始即可发现该 package manager，也可以通过普通 DSH subprocess provider 使用它，而无需系统安装 Node.js。该 ambient path 是兼容 surface，不是正式的插件管理 contract。
 
-`desktop-pnpm` Host row 只提供一个针对不可变激活 Profile 的 package-manager 能力：`ctx.desktopPnpm.run(argv, signal?)`。它以激活 Profile 目录作为 `cwd`，直接执行内置 pnpm entry。命令构造、Profile bundle reconcile、receipt、结果验证和用户界面进度都由调用方负责。Desktop 不会在该接口中加入插件专用 rewrite、重试、快照或回滚；恢复统一由三个健康启动 checkpoint 处理。
+`desktop-pnpm` Host row 只提供一个针对不可变激活 Profile 的 package-manager 能力：`ctx.desktopPnpm.run(argv, signal?)`。它以激活 Profile 目录作为 `cwd`，直接执行内置 pnpm entry。所有 Desktop 发起的 pnpm 操作都会仅在当前进程中加入 `--config.minimumReleaseAge=0`，不会修改用户的 pnpm 配置。其余命令构造、Profile bundle reconcile、receipt、结果验证和用户界面进度都由调用方负责。Desktop 不会在该接口中加入插件专用重试、快照或回滚；恢复统一由三个健康启动 checkpoint 处理。
 
 `run()` 会返回实时 stdout 与 stderr stream、在完整 process tree 退出后才 settle 的 `done` promise，以及 `cancel()`。每个 generation 同时最多运行一个 operation。Service 使用普通 DSH subprocess provider、准确的已打包 JavaScript entry、无 shell argv，以及只属于 child 的 DSH home、Electron-backed Node、CI 与 native-module ABI 值。公开 runtime path 仍不会暴露 `node` 或 `dsh`；其中私有 helper、`ELECTRON_RUN_AS_NODE` 与 npm ABI 变量只存在于 package-manager subprocess tree 内。Launcher 不会修改系统 `PATH`、shell 启动文件、profile 配置或 `.env` 文档。
 

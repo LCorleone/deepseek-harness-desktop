@@ -67,6 +67,7 @@ describe('profile materializer', () => {
       '--import',
       pathToFileURL('/private/clear-env.mjs').href,
       '/private/pnpm/bin/pnpm.mjs',
+      '--config.minimumReleaseAge=0',
       'install',
       '--frozen-lockfile',
     ])
@@ -107,35 +108,9 @@ describe('profile materializer', () => {
       '--import',
       pathToFileURL('/private/clear-env.mjs').href,
       '/private/pnpm/bin/pnpm.mjs',
-      'install',
-      '--no-frozen-lockfile',
-    ])
-  })
-
-  it('allows young versions only while replaying a frozen healthy checkpoint lockfile', async () => {
-    const child = fakeChild()
-    let args: readonly string[] = []
-    const spawn = vi.fn((_command: string, selectedArgs: readonly string[]) => {
-      args = selectedArgs
-      return child as unknown as ChildProcess
-    }) as unknown as ProfileMaterializerSpawn
-
-    const resultPromise = materializeProfile({
-      ...options(spawn),
-      allowYoungLockedDependencies: true,
-    })
-    child.stdout.end('restored\n')
-    child.stderr.end('')
-    child.emit('close', 0, null)
-    await resultPromise
-
-    expect(args).toEqual([
-      '--import',
-      pathToFileURL('/private/clear-env.mjs').href,
-      '/private/pnpm/bin/pnpm.mjs',
       '--config.minimumReleaseAge=0',
       'install',
-      '--frozen-lockfile',
+      '--no-frozen-lockfile',
     ])
   })
 
@@ -161,7 +136,7 @@ describe('profile materializer', () => {
     const cause = await resultPromise.catch((error: unknown) => error)
 
     const detail = formatProfileMaterializationFailure(cause)
-    expect(detail).toContain('Command: pnpm install --frozen-lockfile')
+    expect(detail).toContain('Command: pnpm --config.minimumReleaseAge=0 install --frozen-lockfile')
     expect(detail).toContain('Exit status: 1')
     expect(detail).toContain('stderr:\nERR_PNPM_OUTDATED_LOCKFILE')
     expect(detail).toContain('stdout:\nresolution completed')

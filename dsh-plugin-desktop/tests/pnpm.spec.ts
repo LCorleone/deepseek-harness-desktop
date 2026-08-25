@@ -91,6 +91,7 @@ describe('desktop pnpm execution service', () => {
         '--import',
         pathToFileURL(bootstrap().clearEnvironmentPath).href,
         bootstrap().pnpmBinPath,
+        '--config.minimumReleaseAge=0',
         'add',
         '--save-exact',
         'example@1.2.3',

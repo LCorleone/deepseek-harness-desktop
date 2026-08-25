@@ -4,6 +4,7 @@ import { spawn as childSpawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { delimiter, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { PNPM_IGNORE_MINIMUM_RELEASE_AGE } from './pnpm-policy.ts'
 
 const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -26,12 +27,6 @@ export interface ProfileMaterializerOptions {
   readonly maxOutputBytes?: number
   /** Permit a one-time Profile migration to reconcile stale lockfile settings. */
   readonly updateLockfile?: boolean
-  /**
-   * Permit already-locked young releases while rebuilding a user-selected,
-   * hash-verified healthy checkpoint. New resolutions keep the ordinary
-   * minimumReleaseAge policy because this does not update the frozen lockfile.
-   */
-  readonly allowYoungLockedDependencies?: boolean
   /** Injectable only for headless tests; production uses node:child_process.spawn. */
   readonly spawn?: ProfileMaterializerSpawn
 }
@@ -171,7 +166,7 @@ export async function materializeProfile(
     '--import',
     pathToFileURL(options.clearEnvironmentPath).href,
     options.pnpmBinPath,
-    ...(options.allowYoungLockedDependencies === true ? ['--config.minimumReleaseAge=0'] : []),
+    PNPM_IGNORE_MINIMUM_RELEASE_AGE,
     'install',
     options.updateLockfile === true ? '--no-frozen-lockfile' : '--frozen-lockfile',
   ] as const

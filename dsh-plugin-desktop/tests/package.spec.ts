@@ -426,16 +426,12 @@ describe('published package surface', () => {
     expect(main).not.toContain('disposeDshRuntime')
   })
 
-  it('bypasses release age only for a user-selected healthy checkpoint replay', () => {
+  it('keeps the release-age override in the shared process-local pnpm policy', () => {
+    const policy = readFileSync(new URL('src/pnpm-policy.ts', packageRoot), 'utf8')
     const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
-    const restoreCallback = main.indexOf('afterCheckpointRestore: async result =>')
-    const bypass = main.indexOf('allowYoungLockedDependencies: true')
-    const recoveryMode = main.indexOf('if (recoveryModeRequested)')
 
-    expect(restoreCallback).toBeGreaterThanOrEqual(0)
-    expect(bypass).toBeGreaterThan(restoreCallback)
-    expect(bypass).toBeLessThan(recoveryMode)
-    expect(main.match(/allowYoungLockedDependencies: true/gu)).toHaveLength(1)
+    expect(policy).toContain("'--config.minimumReleaseAge=0'")
+    expect(main).not.toContain('allowYoungLockedDependencies')
   })
 
   it('injects profile creation into the generation-scoped Host service without selecting it', () => {

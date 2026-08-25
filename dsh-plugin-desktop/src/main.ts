@@ -521,10 +521,6 @@ async function start(): Promise<void> {
               homeDir,
               profileDir: activeProfileDir,
               electronVersion,
-              // This lockfile came from a hash-verified healthy checkpoint.
-              // Permit its already-selected young versions without weakening
-              // minimumReleaseAge for ordinary installs or new resolutions.
-              allowYoungLockedDependencies: true,
             })
           } catch (cause) {
             const detail = maskSecrets(formatProfileMaterializationFailure(cause))
