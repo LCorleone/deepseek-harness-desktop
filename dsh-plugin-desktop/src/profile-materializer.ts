@@ -26,6 +26,12 @@ export interface ProfileMaterializerOptions {
   readonly maxOutputBytes?: number
   /** Permit a one-time Profile migration to reconcile stale lockfile settings. */
   readonly updateLockfile?: boolean
+  /**
+   * Permit already-locked young releases while rebuilding a user-selected,
+   * hash-verified healthy checkpoint. New resolutions keep the ordinary
+   * minimumReleaseAge policy because this does not update the frozen lockfile.
+   */
+  readonly allowYoungLockedDependencies?: boolean
   /** Injectable only for headless tests; production uses node:child_process.spawn. */
   readonly spawn?: ProfileMaterializerSpawn
 }
@@ -74,11 +80,12 @@ export function formatProfileMaterializationFailure(cause: unknown): string {
   }
   const result = cause.result
   if (result === undefined) return cause.stack ?? cause.message
+  const pnpmCommand = `pnpm ${result.argv.slice(4).join(' ')}`
   const sections = [
-    cause.message,
-    'Command: pnpm install --frozen-lockfile',
+    'Profile dependency materialization failed.',
+    `Command: ${pnpmCommand}`,
     `Working directory: ${result.cwd}`,
-    `Exit code: ${String(result.exitCode)}`,
+    `Exit status: ${String(result.exitCode)}`,
     `Signal: ${result.signal ?? 'none'}`,
     diagnosticStream('stderr', result.stderr),
     diagnosticStream('stdout', result.stdout),
@@ -164,6 +171,7 @@ export async function materializeProfile(
     '--import',
     pathToFileURL(options.clearEnvironmentPath).href,
     options.pnpmBinPath,
+    ...(options.allowYoungLockedDependencies === true ? ['--config.minimumReleaseAge=0'] : []),
     'install',
     options.updateLockfile === true ? '--no-frozen-lockfile' : '--frozen-lockfile',
   ] as const
