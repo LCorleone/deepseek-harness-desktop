@@ -86,6 +86,10 @@ import {
   materializeProfile,
   ProfileMaterializationError,
 } from './profile-materializer.ts'
+import {
+  formatRecoveryPluginRemoveFailure,
+  removeRecoveryPlugin,
+} from './recovery-plugin-uninstall.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import {
   createDesktopExitCoordinator,
@@ -403,10 +407,10 @@ async function start(): Promise<void> {
       stateDir: join(app.getPath('userData'), 'runtime-commands'),
       environment: process.env,
     })
+    const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
     const releasePnpmRuntime = generation.own(() => { pnpmRuntime.dispose() })
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')
     const pluginManagementStatePath = join(app.getPath('userData'), 'plugin-management', 'state.json')
-    const startupRecoveryStatePath = join(app.getPath('userData'), 'startup-recovery', 'state.json')
     startupStage = 'profile-selection'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const profileStartup = beginDesktopProfileStartup(selectionStatePath, homeDir)
@@ -470,13 +474,36 @@ async function start(): Promise<void> {
         pluginState: {
           profileName: activeProfileName,
           homeDir,
-          statePath: startupRecoveryStatePath,
+          statePath: pluginManagementStatePath,
         },
         generationId,
         currentGeneration: () => ({
           profileName: readDesktopProfileState(selectionStatePath).active,
           generationId,
         }),
+        uninstallPlugin: async packageName => {
+          try {
+            await removeRecoveryPlugin({
+              appExecutable: process.execPath,
+              dshBootstrapPath,
+              profileName: activeProfileName,
+              profileDir: activeProfileDir,
+              homeDir,
+              nodeBinDir: pnpmRuntime.nodeBinDir,
+              nodeShimPath: pnpmRuntime.nodeShimPath,
+              electronVersion,
+              packageName,
+            })
+          } catch (cause) {
+            const detail = maskSecrets(formatRecoveryPluginRemoveFailure(cause))
+            electronLogger.error(`${BIN_NAME}: recovery plugin uninstall failed:\n${detail}`)
+            throw new DesktopStartupRecoveryControllerError(
+              'operation-failed',
+              'The plugin could not be removed from the current Profile.',
+              { operationStage: 'plugin-change', diagnosticDetail: detail },
+            )
+          }
+        },
         checkpoints: profileCheckpoint,
         openCheckpointDirectory: async path => {
           const error = await shell.openPath(path)
@@ -546,7 +573,6 @@ async function start(): Promise<void> {
       activeProfileName,
       pluginManagementStatePath,
       marketSelection,
-      startupRecoveryStatePath,
       preparationHooks,
     )
     if (profileCheckpoint === undefined) {
@@ -566,7 +592,6 @@ async function start(): Promise<void> {
     }
     startupStage = 'runtime-bootstrap'
     lifecycleRecorder.transitionStartupStage(startupStage)
-    const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
     const dshRuntime = process.platform === 'win32'
       ? installDesktopDshRuntime({
           platform: process.platform,
@@ -600,7 +625,6 @@ async function start(): Promise<void> {
           activeProfileName,
           pluginManagementStatePath,
           marketSelection,
-          startupRecoveryStatePath,
           preparationHooks,
         )
         if (prepared.requiresDependencyMigration) {
@@ -673,7 +697,6 @@ async function start(): Promise<void> {
             profileName: activeProfileName,
             homeDir,
             statePath: pluginManagementStatePath,
-            recoveryStatePath: startupRecoveryStatePath,
             installAnchor: desktopInstallAnchor(),
           })
         }

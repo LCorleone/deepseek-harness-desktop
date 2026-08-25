@@ -87,3 +87,18 @@ operations:
     faultContracts:
       - { id: diagnostics-export.worker.timeout, test: tests/diagnostic-export.spec.ts, title: terminates a diagnostic Worker that does not respond before its deadline }
       - { id: diagnostics-export.worker.cancelled, test: tests/diagnostic-export.spec.ts, title: terminates a diagnostic Worker when its owning operation is cancelled }
+  - id: recovery-plugin-remove
+    owner: DesktopStartupRecoveryController and removeRecoveryPlugin (src/startup-recovery-controller.ts, src/recovery-plugin-uninstall.ts)
+    entrypoints: [previewUninstall, executeUninstall, removeRecoveryPlugin]
+    deadline: { owner: removeRecoveryPlugin, maximum: 120000ms }
+    cancellation: { owner: removeRecoveryPlugin, behavior: optional abort signal or deadline terminates the packaged DSH child process }
+    exclusivity: Recovery serializes plugin removal with every other mutating recovery operation
+    idempotency: confirmation is one-shot; success removes the bundle target so it cannot be previewed again
+    persistedState: { owner: official dsh plugin remove, scope: current Profile package manifest, lockfile, modules, and reconciled bundle list }
+    retry: { policy: explicit, authority: user after a failed command returns to Recovery }
+    recovery: no market receipt or disable state is required; failure keeps Recovery open and shows bounded command diagnostics
+    evidence: masked Desktop log entry, bounded stdout and stderr, and post-command Profile inventory revalidation
+    faultContracts:
+      - { id: recovery-plugin-remove.command.argv, test: tests/recovery-plugin-uninstall.spec.ts, title: runs the packaged official dsh plugin remove argv for the selected Profile }
+      - { id: recovery-plugin-remove.command.failure, test: tests/recovery-plugin-uninstall.spec.ts, title: retains bounded command diagnostics when dsh plugin remove fails }
+      - { id: recovery-plugin-remove.confirmation.one-shot, test: tests/startup-recovery-controller.spec.ts, title: uninstalls a direct Profile dependency with a one-shot preview }

@@ -22,7 +22,7 @@ import {
   DesktopStartupRecoveryController,
   DesktopStartupRecoveryControllerError,
   type DesktopStartupRecoveryCheckpointPreview,
-  type DesktopStartupRecoveryDisablePreview,
+  type DesktopStartupRecoveryUninstallPreview,
   type DesktopStartupRecoverySnapshot,
 } from './startup-recovery-controller.ts'
 
@@ -186,7 +186,7 @@ export function parseDesktopStartupRecoveryAction(
     || url.hash.length > 0) return undefined
   const action = url.hostname
   const allowed = new Set([
-    'preview-disable',
+    'preview-uninstall',
     'preview-checkpoint',
     'open-checkpoint',
     'export-diagnostics',
@@ -304,16 +304,16 @@ export class DesktopStartupRecoveryWindow {
     if (this.busy || this.settled) return
     const copy = desktopRecoveryCopy(this.options.locale)
     try {
-      if (action.action === 'preview-disable' && action.id !== undefined) {
+      if (action.action === 'preview-uninstall' && action.id !== undefined) {
         this.activeTab = 'plugins'
-        const preview = await this.requireController().previewDisable(action.id)
-        if (await this.confirmRecoveryAction('disable', preview)) {
+        const preview = await this.requireController().previewUninstall(action.id)
+        if (await this.confirmRecoveryAction('uninstall', preview)) {
           await this.runBusy(async () => {
-            const result = await this.requireController().executeDisable(preview.previewId)
+            const result = await this.requireController().executeUninstall(preview.previewId)
             this.notice = {
               tone: 'success',
               title: result.packageName,
-              body: copy.disabledSuccess,
+              body: copy.uninstalledSuccess,
             }
             this.restartReady = true
             await this.refreshSnapshot()
@@ -408,14 +408,17 @@ export class DesktopStartupRecoveryWindow {
         title: copy.title,
         body: copy.actionFailed,
       }
-      if (action.action === 'preview-checkpoint') {
-        await this.showCheckpointFailure(cause).catch(() => {})
+      if (action.action === 'preview-checkpoint' || action.action === 'preview-uninstall') {
+        await this.showOperationFailure(cause, action.action).catch(() => {})
       }
     }
     await this.render()
   }
 
-  private async showCheckpointFailure(cause: unknown): Promise<void> {
+  private async showOperationFailure(
+    cause: unknown,
+    action: 'preview-checkpoint' | 'preview-uninstall',
+  ): Promise<void> {
     const window = this.window
     if (window === undefined || window.isDestroyed()) return
     const copy = desktopRecoveryCopy(this.options.locale)
@@ -433,8 +436,8 @@ export class DesktopStartupRecoveryWindow {
     ].join('\n')
     await showDesktopDialog({
       type: 'error',
-      title: copy.rollbackFailedTitle,
-      message: copy.rollbackFailedMessage,
+      title: action === 'preview-checkpoint' ? copy.rollbackFailedTitle : copy.uninstallFailedTitle,
+      message: action === 'preview-checkpoint' ? copy.rollbackFailedMessage : copy.uninstallFailedMessage,
       detail,
       buttons: [copy.close],
       defaultId: 0,
@@ -444,8 +447,8 @@ export class DesktopStartupRecoveryWindow {
   }
 
   private async confirmRecoveryAction(
-    kind: 'disable' | 'checkpoint',
-    preview: DesktopStartupRecoveryDisablePreview | DesktopStartupRecoveryCheckpointPreview,
+    kind: 'uninstall' | 'checkpoint',
+    preview: DesktopStartupRecoveryUninstallPreview | DesktopStartupRecoveryCheckpointPreview,
   ): Promise<boolean> {
     const window = this.window
     if (window === undefined || window.isDestroyed()) return false
@@ -458,16 +461,16 @@ export class DesktopStartupRecoveryWindow {
       ? new Date(preview.capturedAt).toLocaleString(this.options.locale === 'zh' ? 'zh-CN' : 'en-US')
       : copy.unknown
     const result = await showDesktopMessageBox({
-      type: kind === 'disable' ? 'warning' : 'question',
-      title: kind === 'disable'
-        ? copy.confirmDisable
+      type: kind === 'uninstall' ? 'warning' : 'question',
+      title: kind === 'uninstall'
+        ? copy.confirmUninstall
         : copy.confirmRollback,
       message,
-      detail: kind === 'disable'
-        ? copy.confirmDisableBody
+      detail: kind === 'uninstall'
+        ? copy.confirmUninstallBody
         : copy.confirmRollbackBody(checkpointTime),
       buttons: [
-        kind === 'disable' ? copy.disable : copy.confirmRollbackAction,
+        kind === 'uninstall' ? copy.uninstall : copy.confirmRollbackAction,
         copy.cancel,
       ],
       defaultId: 1,

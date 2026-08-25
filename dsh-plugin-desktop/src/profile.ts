@@ -702,7 +702,6 @@ export function prepareDesktopProfile(
   profileName: string = DESKTOP_PROFILE_NAME,
   pluginStatePath?: string,
   marketSelection: DesktopMarketSnapshot = DEFAULT_DESKTOP_MARKET_SNAPSHOT,
-  recoveryStatePath?: string,
   hooks: DesktopProfilePreparationHooks = {},
 ): PreparedDesktopProfile {
   const profileDir = profileName === DESKTOP_PROFILE_NAME
@@ -711,24 +710,15 @@ export function prepareDesktopProfile(
   const workspaceChanged = reconcileProfilePnpmWorkspace(profileDir)
   const requiresDependencyMigration = profileDependencyMigrationRequired(profileDir, workspaceChanged, platform)
   healProfilesModuleFallback(INSTALL_ANCHOR, home)
-  // `plugin-management` is the community market's user-facing scope. Startup
-  // recovery has its own state file so switching to another provider cannot
-  // reapply a stale community-market disable, while a recovery disable always
-  // remains effective regardless of the selected provider. Keep the legacy
-  // five-argument call compatible for tests/older embedders.
+  // `plugin-management` remains the community market's user-facing scope.
+  // Recovery mode no longer reads or writes an independent disable policy:
+  // package removal goes through the provider-neutral `dsh plugin remove`.
   const managedDisabledBundles = pluginStatePath === undefined
     ? new Set<string>()
     : readDesktopDisabledBundles(pluginStatePath, profileName)
-  const recoveryDisabledBundles = recoveryStatePath === undefined
-    ? (marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider
-      ? new Set<string>()
-      : new Set(managedDisabledBundles))
-    : readDesktopDisabledBundles(recoveryStatePath, profileName)
-  const disabledBundles = new Set(recoveryDisabledBundles)
-  if (recoveryStatePath === undefined
-    || marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider) {
-    for (const packageName of managedDisabledBundles) disabledBundles.add(packageName)
-  }
+  const disabledBundles = marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider
+    ? new Set(managedDisabledBundles)
+    : new Set<string>()
   const loadedProfile = loadRecoveryFilteredProfile(
     profileName,
     profileDir,
