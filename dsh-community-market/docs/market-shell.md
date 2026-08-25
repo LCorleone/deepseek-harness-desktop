@@ -24,7 +24,7 @@ The Client receives normalized data and opaque operation identities. It never re
 
 Standard cursor-based sources and dshfind are scanned into a bounded local index. Search, category filters, and visible pagination use that index.
 
-DSH 1024Store discovery uses the provider's current paginated v2 API for every query, including the unfiltered directory. Single-category filters are forwarded directly. Multi-category OR filters merge bounded provider-ranked prefixes and retain an opaque local cursor. Installable results use the same remote pages and keep only direct npm targets from each page; the Client requests the next opaque cursor instead of materializing the complete directory in the Host or Renderer.
+DSH 1024Store discovery uses the provider's current paginated v2 API for every query, including the unfiltered directory. Single-category filters are forwarded directly. Multi-category OR filters merge bounded provider-ranked prefixes and retain an opaque local cursor. Installable requests 200 remote registry entries per batch and keeps only direct npm targets from that page; the Client requests the next opaque cursor instead of materializing the complete directory in the Host or Renderer.
 
 Provider commands are discarded. The reviewed 1024Store adapter may parse one exact inert command shape solely to recover an npm package name; it never forwards or executes that command. A source can supply catalog identity but cannot supply executable argv, credentials, adapter code, source selection, or install authority.
 

@@ -97,7 +97,7 @@ Manifest 描述 provider 能力，不控制本地策略。公开 v1 标准来源
 
 来源 manifest URL 与目录 endpoint 是两个不同地址。添加 manifest URL 必须来自用户明确操作。Host 生成全新 `sourceRecordId`，校验 manifest 后将注册时副本与该本地用户来源记录一起保存，在来源管理中展示其披露字段，并且只有用户选择后才把它设为当前来源。
 
-标准直接接入时，用户只需要登记 manifest URL。建议的最小 manifest 只使用一个公开 GET endpoint，只声明 `q`、`category`、`cursor` 和 `limit`，把示例中的两个 page limit 都设为 50，并将 `sorts` 留空。50 是方便起步的值，不是标准来源上限；manifest 可以在 Schema 安全上限 100 以内声明 limit。Capability、sort、locale、图标和更丰富的展示字段仍是可选扩展。参见[最小来源 manifest](examples/catalog-source.example.json)与[最小 provider page](examples/catalog-provider-page.minimal.example.json)。
+标准直接接入时，用户只需要登记 manifest URL。建议的最小 manifest 只使用一个公开 GET endpoint，只声明 `q`、`category`、`cursor` 和 `limit`，把示例中的两个 page limit 都设为 50，并将 `sorts` 留空。50 是方便起步的值，不是标准来源上限；manifest 可以在 Schema 安全上限 200 以内声明 limit。Capability、sort、locale、图标和更丰富的展示字段仍是可选扩展。参见[最小来源 manifest](examples/catalog-source.example.json)与[最小 provider page](examples/catalog-provider-page.minimal.example.json)。
 
 注册同时固定 provider 声明与网络 origin。每次请求都必须重新确认 manifest 的 `providerId` 与本地来源记录保存的值完全一致。用户确认的 manifest URL、manifest 请求的最终 URL、`transport.endpoint` 和 provider-page 请求的最终 URL 必须始终属于同一个无凭据 HTTPS origin。公开 v1 的网络 URL 和 manifest 只允许标准 HTTPS 443 端口，不把自定义端口纳入标准来源契约。允许同源 redirect；即使两个地址都使用 HTTPS，也必须拒绝跨 origin。确实需要独立 API origin 或端口的部署，应使用经过审核的 provider adapter 接入路径，除非后续契约修订明确描述这种关系。
 
@@ -179,7 +179,7 @@ Host 先构造并校验 [`CatalogQuery`](schemas/catalog-query.schema.json)，�
 | `category` | 0 或多个 | 稳定 category ID。重复参数表示“匹配任意一个请求分类”；不允许重复值。 |
 | `capability` | 0 或多个 | Fabric/host capability ID。重复参数表示条目必须声明全部请求 capability；不允许重复值。 |
 | `cursor` | 0 或 1 个 | 同一来源在相同有效 filter 和 sort 下返回的不透明 continuation value，最长 2048 字符。 |
-| `limit` | 0 或 1 个 | 1 到 100 的整数。Host 标准化 query 默认值为 50；有效请求值不能超过 manifest `maxLimit`。 |
+| `limit` | 0 或 1 个 | 1 到 200 的整数。Host 标准化 query 默认值为 50；有效请求值不能超过 manifest `maxLimit`。 |
 | `sort` | 0 或 1 个 | `relevance`、`updated`、`name` 或 `downloads` 之一，并且来源 manifest 也必须声明支持该值。 |
 | `locale` | 0 或 1 个 | 类 BCP 47 语言标签，例如 `zh-CN` 或 `en`。它只是偏好，provider 仍必须返回稳定 ID。 |
 
@@ -187,11 +187,11 @@ Host 先构造并校验 [`CatalogQuery`](schemas/catalog-query.schema.json)，�
 
 对发送 provider 侧 filter 的 consumer 来说，重复 `category` 是多选 OR 过滤：条目属于任一已选分类即算匹配。只有来源 manifest 在 `query.supported` 中声明支持 `category` 时，标准 adapter 才会发送该字段；否则会省略该字段，不擅自创造 provider 语义。
 
-Host 标准化 query 默认值和 provider 默认值是两个概念。合法 consumer 可以请求不超过 100 的值，Host 会在需要时收窄到 manifest 的 `maxLimit`。Response 条目数不能超过这个有效请求值。来源不支持 `limit` 时，Host 省略该参数，并接受不超过来源声明 `defaultLimit` 的条目。Manifest 必须保证 `defaultLimit` 小于或等于 `maxLimit`，且两者都不能超过 100。
+Host 标准化 query 默认值和 provider 默认值是两个概念。合法 consumer 可以请求不超过 200 的值，Host 会在需要时收窄到 manifest 的 `maxLimit`。Response 条目数不能超过这个有效请求值。来源不支持 `limit` 时，Host 省略该参数，并接受不超过来源声明 `defaultLimit` 的条目。Manifest 必须保证 `defaultLimit` 小于或等于 `maxLimit`，且两者都不能超过 200。
 
 Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝不能把一个来源的 cursor 发送给另一个来源，也不能在 wire query 改变后复用。
 
-当前 Desktop 产品会先完整扫描已选来源。对于标准来源，Host 只发送 `cursor`、`limit` 和 locale 偏好等来源支持的扫描字段，跟随 `page.nextCursor` 直到结束，并使用来源的有效 page limit，而不是把 50 当成网络上限。扫描不会把用户搜索文本或已选分类发给 provider。经过审核的 1024Store adapter 则通过一次请求下载完整 registry，并输出每块最多 100 条的标准化分块。
+对于标准来源，当前 Desktop 会通过只发送 `cursor`、`limit` 和 locale 偏好等受支持字段来扫描有界完整来源，并跟随 `page.nextCursor` 直到结束。扫描不会把用户搜索文本或已选分类发给 provider。经过审核的 1024Store adapter 则把发现页查询转发给 v2 远程 page；“可安装”每批请求 200 条 registry 记录，再只保留直接 npm 目标。
 
 对于没有已评审远程查询能力的 adapter，搜索、排序、多分类 OR 筛选、分类枚举和分页在有界完整本地索引上运行；已评审 adapter 可以把这些操作转发给 provider。两种情况下 Renderer 都只会收到一个可见 page 和 Host 拥有的不透明 cursor。
 
@@ -203,7 +203,7 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 
 - 同一时间最多只有一条已保存来源记录被选择，并且只有该来源会收到目录请求。
 - 已选来源拥有自己的 timeout、cancellation、不透明 cursor、loading state、error state，以及适合该 adapter 的有界 cache。
-- 标准来源网络 page 遵守有效请求值或声明的 `defaultLimit`，Schema 安全上限为 100；本地可见页面最多包含 50 条。
+- 标准来源网络 page 遵守有效请求值或声明的 `defaultLimit`，Schema 安全上限为 200；发现页可见页面最多包含 50 条。
 - 1024Store adapter 远程请求 v2 page，转发受支持的查询参数，只标准化当前请求的 page，并为下一页提供 Host 不透明 cursor。
 - 可选目录 metadata 只适用于构建有界完整索引的 adapter，并报告扫描完成时间（`scannedAt`）、cache 截止时间（`expiresAt`）、可选且整次扫描一致的来源 revision（`providerRevision`），以及索引是新扫描还是复用（`cacheStatus`）。
 - 失败只归属于已选来源，并提供重试；Host 绝不退回或暗中请求另一个已保存来源。
@@ -379,10 +379,10 @@ Provider 与 adapter 作者可以直接使用对应的[最小来源 manifest](ex
 | 选择 | 首次运行时存在 DSH 1024Store adapter | 它作为选项可见，但在用户选择前保持未选择 |
 | Query | 填充全部受支持参数 | URL encode 正确；`category`/`capability` 重复出现；其他字段只出现一次 |
 | Query | 参数合法但不在 `query.supported` 中 | Host 针对该来源省略参数 |
-| Query | `limit` 为 0、大于 100、非整数或超过 provider maximum | 拒绝非法值；合法但超过 `maxLimit` 的值在网络请求前收窄 |
+| Query | `limit` 为 0、大于 200、非整数或超过 provider maximum | 拒绝非法值；合法但超过 `maxLimit` 的值在网络请求前收窄 |
 | Query | Cursor 用于另一个来源或 filter 已改变 | 本地拒绝 cursor，不发送请求 |
 | Query | 标准 response 超过有效请求值，或来源不支持 `limit` 时超过声明的 `defaultLimit` | 在更新 cache 或 UI 前拒绝 response |
-| Query | 标准来源在有效 manifest limit 内合法返回 51–100 个条目 | 接受 response；50 只是当前 UI 默认值，不是全局 contract 上限 |
+| Query | 标准来源在有效 manifest limit 内合法返回 51–200 个条目 | 接受 response；50 只是当前发现页 UI 默认值，不是全局 contract 上限 |
 | 完整索引 | 标准来源返回多个 cursor page | 每个 page 只校验一次；本地搜索与多分类 OR 筛选可以找到首个网络 page 之后的条目 |
 | 远程分页 | 1024Store 有超过 100 个合法条目 | 每次请求最多标准化一个 provider page；**加载更多**使用下一枚不透明 cursor，绝不返回完整目录 |
 | 分页 | 有界本地索引有超过 50 个匹配条目 | 首个可见 page 包含 50 条；**加载更多**通过 Host 自有本地 cursor 继续 |

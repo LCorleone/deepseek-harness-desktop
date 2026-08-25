@@ -61,7 +61,7 @@ export interface CatalogSnapshot {
   schemaVersion: '1.0.0'
   source: Source
   /**
-   * @maxItems 100
+   * @maxItems 200
    */
   items: Item[]
   page: Page

@@ -97,7 +97,7 @@ The manifest describes provider capability; it does not control local policy. Pu
 
 The source manifest URL and catalog endpoint are distinct. Adding the manifest URL is an explicit user action. The Host generates a fresh `sourceRecordId`, validates and stores a registration-time copy of the manifest with that local user-added record, exposes its disclosure fields in source management, and does not select it until the user chooses it.
 
-For direct standard integration, the user registers only the manifest URL. The smallest recommended manifest uses one public GET endpoint, advertises only `q`, `category`, `cursor`, and `limit`, sets both example page limits to 50, and leaves `sorts` empty. Fifty is a convenient starter value, not a standard-source ceiling: a manifest may declare limits through the Schema safety maximum of 100. Capability, sort, locale, icons, and richer display fields remain optional extensions. See the [minimal source manifest](examples/catalog-source.example.json) and [minimal provider page](examples/catalog-provider-page.minimal.example.json).
+For direct standard integration, the user registers only the manifest URL. The smallest recommended manifest uses one public GET endpoint, advertises only `q`, `category`, `cursor`, and `limit`, sets both example page limits to 50, and leaves `sorts` empty. Fifty is a convenient starter value, not a standard-source ceiling: a manifest may declare limits through the Schema safety maximum of 200. Capability, sort, locale, icons, and richer display fields remain optional extensions. See the [minimal source manifest](examples/catalog-source.example.json) and [minimal provider page](examples/catalog-provider-page.minimal.example.json).
 
 Registration also pins the provider claim and network origin. On every fetch, the manifest `providerId` must still equal the value saved in the local source record. The user-approved manifest URL, the manifest request's final URL, `transport.endpoint`, and the provider-page request's final URL must all remain on the same credential-free HTTPS origin. Public v1 network URLs and manifests use only standard HTTPS port 443; custom ports are not part of the standard-source contract. Same-origin redirects are allowed; crossing to another origin is rejected even when both origins use HTTPS. A deployment that requires a separate API origin or port uses the reviewed provider-adapter path unless a later contract revision defines that relationship explicitly.
 
@@ -179,7 +179,7 @@ The Host first builds and validates a [`CatalogQuery`](schemas/catalog-query.sch
 | `category` | zero or more | Stable category IDs. Repeated values mean “match any requested category”. Duplicates are invalid. |
 | `capability` | zero or more | Fabric/host capability IDs. Repeated values mean the item must declare all requested capabilities. Duplicates are invalid. |
 | `cursor` | zero or one | Opaque continuation value returned by the same source for the same effective filters and sort. Maximum 2048 characters. |
-| `limit` | zero or one | Integer from 1 through 100. The normalized Host query defaults to 50; the effective requested value cannot exceed the manifest's `maxLimit`. |
+| `limit` | zero or one | Integer from 1 through 200. The normalized Host query defaults to 50; the effective requested value cannot exceed the manifest's `maxLimit`. |
 | `sort` | zero or one | One of `relevance`, `updated`, `name`, or `downloads`, and also declared by the source manifest. |
 | `locale` | zero or one | A BCP 47-like language tag such as `zh-CN` or `en`. It is a preference, not permission to omit stable IDs. |
 
@@ -187,11 +187,11 @@ The Host first builds and validates a [`CatalogQuery`](schemas/catalog-query.sch
 
 Repeated `category` values are a multi-select OR filter for consumers that send provider-side filters: an item matches when it belongs to any selected category. The standard adapter sends this field only when the source manifest advertises `category` in `query.supported`; otherwise it omits the field instead of inventing provider semantics.
 
-The normalized Host query default and the provider default are separate. A valid consumer may request any value through 100, and the Host reduces it to the manifest's `maxLimit` when needed. The response must not contain more items than that effective requested limit. When a source does not support `limit`, the Host omits the parameter and accepts up to the source's declared `defaultLimit`. A manifest must keep `defaultLimit` less than or equal to `maxLimit`, and both values remain bounded by 100.
+The normalized Host query default and the provider default are separate. A valid consumer may request any value through 200, and the Host reduces it to the manifest's `maxLimit` when needed. The response must not contain more items than that effective requested limit. When a source does not support `limit`, the Host omits the parameter and accepts up to the source's declared `defaultLimit`. A manifest must keep `defaultLimit` less than or equal to `maxLimit`, and both values remain bounded by 200.
 
 A provider cursor is scoped to one selected source and one effective wire query. The Host never sends a cursor from one source to another or reuses it after that wire query changes.
 
-The current Desktop product first scans the complete selected source. For a standard source, the Host sends only supported scan fields such as `cursor`, `limit`, and locale preference, follows `page.nextCursor` until exhaustion, and uses the source's effective page limit rather than treating 50 as a network cap. It does not send the user's search text or selected categories during this scan. The reviewed 1024Store adapter instead downloads its full registry in one request and emits normalized chunks of at most 100 items.
+For a standard source, the current Desktop scans the bounded complete source by sending only supported scan fields such as `cursor`, `limit`, and locale preference, following `page.nextCursor` until exhaustion. It does not send the user's search text or selected categories during this scan. The reviewed 1024Store adapter instead forwards discovery queries to v2 remote pages and requests 200 registry entries per Installable batch before retaining only direct npm targets.
 
 For adapters without reviewed remote-query support, search, sorting, multi-category OR filtering, category enumeration, and pagination run over a bounded complete local index. Reviewed adapters may instead forward those operations to the provider. In both cases the Renderer receives at most one visible page and only Host-owned opaque cursors.
 
@@ -203,7 +203,7 @@ Saved sources remain independent, but the product reads only the selected one:
 
 - At most one saved source record is selected, and only that source receives catalog requests.
 - The selected source has its own timeout, cancellation, opaque cursor, loading state, error state, and any adapter-appropriate bounded cache.
-- Standard-source network pages follow the effective requested limit or declared `defaultLimit`, through the safety maximum of 100; visible local pages contain at most 50 items.
+- Standard-source network pages follow the effective requested limit or declared `defaultLimit`, through the safety maximum of 200; visible discovery pages contain at most 50 items.
 - The 1024Store adapter requests v2 pages remotely, forwards supported query parameters, normalizes only the requested page, and exposes a Host-owned cursor for the next page.
 - Optional catalog metadata applies to adapters that build a bounded complete index and reports when that scan finished (`scannedAt`), when its cache expires (`expiresAt`), an optional consistent source revision (`providerRevision`), and whether the index was freshly scanned or reused (`cacheStatus`).
 - A failure stays attached to the selected source and offers Retry; the Host never falls back to or silently requests another saved source.
@@ -379,10 +379,10 @@ The current automated contract, adapter, Host, Client, media, and installation s
 | Selection | DSH 1024Store adapter is available on first run | It is visible as a choice but remains unselected until the user chooses it |
 | Query | All supported parameters are populated | Correct URL encoding; repeated `category`/`capability`; other fields appear once |
 | Query | A parameter is valid but absent from `query.supported` | Host omits it for that source |
-| Query | `limit` is zero, above 100, non-integer, or above provider maximum | Invalid values are rejected; a valid value above `maxLimit` is reduced before network I/O |
+| Query | `limit` is zero, above 200, non-integer, or above provider maximum | Invalid values are rejected; a valid value above `maxLimit` is reduced before network I/O |
 | Query | Cursor is reused with another source or changed filters | Cursor rejected locally; no request sent |
 | Query | Standard response exceeds the effective requested limit, or its declared `defaultLimit` when `limit` is unsupported | Response rejected before cache or UI update |
-| Query | Standard source validly returns 51–100 items within its effective manifest limit | Response accepted; 50 is only the current UI default, not a global contract cap |
+| Query | Standard source validly returns 51–200 items within its effective manifest limit | Response accepted; 50 is only the current discovery UI default, not a global contract cap |
 | Full index | Standard source returns several cursor pages | Every page is validated once; local search and multi-category OR filtering can find items beyond the first network page |
 | Remote pagination | 1024Store has more than 100 valid entries | Each request normalizes at most one provider page; **Load more** uses the next opaque cursor and never returns the complete directory |
 | Pagination | A bounded local index has more than 50 matching entries | First visible page contains 50; **Load more** advances through the Host-owned local cursor |

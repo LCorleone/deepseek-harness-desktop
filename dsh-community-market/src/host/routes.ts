@@ -1020,7 +1020,7 @@ export function registerMarketRoutes(
             throw new MarketInstallError('invalid-request', 'The installable catalog source is not active.')
           }
           const query = {
-            limit: 50,
+            limit: 200,
             ...(queryValues[0]?.trim() ? { q: queryValues[0].trim() } : {}),
             ...(categories.length === 0 ? {} : { category: categories }),
             ...(localeKey === '' ? {} : { locale: localeKey }),

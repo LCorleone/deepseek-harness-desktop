@@ -832,11 +832,11 @@ describe('catalog Host route pagination boundary', () => {
     }
   })
 
-  it('accepts an explicit page size up to the shared 100-item safety cap', async () => {
-    const response = await requestMarketCatalog([], `${marketRoutes.catalog}?limit=100`)
+  it('accepts an explicit page size up to the shared 200-item safety cap', async () => {
+    const response = await requestMarketCatalog([], `${marketRoutes.catalog}?limit=200`)
 
     expect(response.statusCode).toBe(200)
-    expect(response.body.query).toEqual({ limit: 100 })
+    expect(response.body.query).toEqual({ limit: 200 })
   })
 
   it.each([
@@ -923,7 +923,7 @@ describe('installable Host route pagination boundary', () => {
       expect(response.statusCode).toBe(200)
       expect(response.body).toMatchObject({ nextCursor: 'host-page-2', items: [] })
       expect(fetchProvider).toHaveBeenCalledWith(
-        { limit: 50, q: 'sidebar', category: ['tools'], locale: 'zh-CN' },
+        { limit: 200, q: 'sidebar', category: ['tools'], locale: 'zh-CN' },
         expect.any(AbortSignal),
         { sourceRecordId: active.sourceRecordId },
         { force: false },

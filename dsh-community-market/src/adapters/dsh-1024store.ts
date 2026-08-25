@@ -86,7 +86,7 @@ const PROFILE_PATTERN = /^[A-Za-z0-9_-]+$/u
 const COMMAND_TOKEN_PATTERN = /^[A-Za-z0-9@:/._#+=-]+$/u
 const CATEGORY_PATTERN = /^[a-z0-9][a-z0-9._:-]*$/u
 const ITEM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/u
-const BROWSE_PAGE_SIZE = 100
+const BROWSE_PAGE_SIZE = 200
 const MAX_PROVIDER_PAGE_SIZE = 200
 const MAX_PROVIDER_ITEMS = 100_000
 const MAX_PROVIDER_PAGES = MAX_PROVIDER_ITEMS

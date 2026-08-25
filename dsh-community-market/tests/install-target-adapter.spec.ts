@@ -170,7 +170,7 @@ describe('1024Store v2 install target normalization', () => {
     let cursor: string | undefined
     do {
       const snapshot = await dsh1024StoreAdapter.fetch({
-        limit: 100,
+        limit: 200,
         locale: 'zh-CN',
         ...(cursor === undefined ? {} : { cursor }),
       }, {
@@ -185,13 +185,12 @@ describe('1024Store v2 install target normalization', () => {
     const items = snapshots.flatMap(snapshot => snapshot.items)
     const installable = items.filter(item => item.package?.registry === 'npm')
 
-    expect(getJson).toHaveBeenCalledTimes(3)
+    expect(getJson).toHaveBeenCalledTimes(2)
     expect(getJson.mock.calls.map(call => call[0])).toEqual([
-      'https://deepseek1024.com/api/v2/plugins?page=1&limit=100',
-      'https://deepseek1024.com/api/v2/plugins?page=2&limit=100',
-      'https://deepseek1024.com/api/v2/plugins?page=3&limit=100',
+      'https://deepseek1024.com/api/v2/plugins?page=1&limit=200',
+      'https://deepseek1024.com/api/v2/plugins?page=2&limit=200',
     ])
-    expect(snapshots.map(snapshot => snapshot.items.length)).toEqual([100, 100, 5])
+    expect(snapshots.map(snapshot => snapshot.items.length)).toEqual([200, 5])
     expect(snapshots.every(snapshot => snapshot.page.total === 205)).toBe(true)
     expect(items).toHaveLength(205)
     expect(installable).toHaveLength(153)
