@@ -48,6 +48,7 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     "packageName": "ms",                  // npm name, scoped names allowed
     "version": "2.1.3",                   // exact stable semver, no prerelease
     "bundlePatch": "./cordis.patch.yml",  // required, non-empty relative path inside the package
+    "repository": "https://github.com/o/r", // optional https URL override; default derives from npm metadata
     "runtime": {                          // dshRuntimeVersion required; cordis/node optional node-semver ranges
       "dshRuntimeVersion": "^0.1.1"
     },
@@ -59,6 +60,20 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
 `bundlePatch` is **required and non-empty** (schema `minLength: 1`); `ms@2.1.3`
 is a live registry smoke entry, not a real plugin. See
 `allowlist.example.json` for optional runtime fields.
+
+Every signed entry must carry a **repository identity** — it is what the
+desktop install-time verifier back-links against the live npm metadata, so a
+package without one cannot be listed. By default `build` derives the https
+URL from the same registry response that produced the integrity (npm's
+`git+https://….git` spellings are normalized); an explicit allowlist
+`repository` overrides that derivation. If neither yields an https URL, the
+build aborts.
+
+每个签名条目必须携带 **repository 身份**——桌面端安装期验证器用它与真实 npm
+元数据回链比对，没有它的包无法上架。默认情况下 `build` 从产出 integrity 的
+同一 registry 响应推导 https URL（npm 的 `git+https://….git` 写法会被规范化）；
+allowlist 里显式给出的 `repository` 覆盖该推导。两者都得不到 https URL 时
+build 直接报错。
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。

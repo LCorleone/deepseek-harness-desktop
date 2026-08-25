@@ -14,6 +14,7 @@ import {
 } from '../src/catalog/company-provider.js'
 import type { MarketSettingsDocument } from '../src/catalog/source-store.js'
 import type { CatalogHttpClient, CatalogSnapshot, LocalSourceRecord } from '../src/contracts/index.js'
+import { createNpmRegistryVerifier } from '../src/install/service.js'
 import {
   createSignedManifestInstallTargetAuthority,
   type SignedManifestInstallTargetAuthority,
@@ -57,6 +58,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     version,
     integrity: signedIntegrity,
     bundlePatch: './cordis.patch.yml',
+    repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
     runtime: { dshRuntimeVersion: '^0.1.1-rc.2', nodeRuntimeVersion: '>=22.0.0' },
     ...overrides,
@@ -633,5 +635,84 @@ describe('market install service behind the signed manifest', () => {
     const valid = memoryScope([{ ...legacyReceipt, receiptVersion: 1 }])
     const validService = await signedService([packageEntry()], { profileDir, settings: valid, calls })
     await expect(validService.service.listReceipts()).resolves.toHaveLength(1)
+  })
+
+  // End-to-end back-link proof (repo-identity fix): the signed manifest entry
+  // carries the package's true VCS repository; the catalog item inherits it,
+  // observeCatalog admits the row as an install candidate, and previewInstall's
+  // npm registry verifier back-links it against the live metadata — whose raw
+  // spelling differs (`git+https://….git`) but normalizes to the same identity.
+  describe('signed repository identity back-link', () => {
+    const companyRepoUrl = 'https://github.com/omdsh-dev/DSH-better-sidebar'
+    const liveNpmRepository = { type: 'git', url: 'git+https://github.com/omdsh-dev/DSH-better-sidebar.git' }
+    const companySourceRecordId = '018f1f77-a5c4-7b73-a9ae-0242ac120021'
+
+    function npmMetadata(repository: unknown): unknown {
+      return {
+        name: packageName,
+        version,
+        repository,
+        scripts: { test: 'vitest' },
+        dependencies: { '@deepseek-ai/dsh-agent': '^0.1.1-rc.2' },
+        peerDependencies: { '@deepseek-ai/cordis': '^4.0.1' },
+        engines: { node: '>=22.19.0' },
+        dist: { integrity: signedIntegrity, tarball },
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }
+    }
+
+    function npmHttp(metadata: unknown): CatalogHttpClient {
+      return {
+        getJson: vi.fn(async () => ({
+          finalUrl: `https://registry.npmjs.org/${packageName}/${version}`,
+          value: metadata,
+        })),
+      }
+    }
+
+    async function companyWiredService(entryOverrides: Record<string, unknown>, options: {
+      readonly profileDir: string
+      readonly calls: string[][]
+      readonly npmMetadata?: unknown
+    }) {
+      const { provider } = await scannedCompanySource([packageEntry({ repository: { url: companyRepoUrl }, ...entryOverrides })])
+      const snapshots = await provider.scanCatalog!({}, contentContext())
+      const service = new MarketInstallService(
+        memoryScope().scope,
+        () => ({ name: 'web', dir: options.profileDir }),
+        runner(options.profileDir, options.calls),
+        createNpmRegistryVerifier(npmHttp(options.npmMetadata ?? npmMetadata(liveNpmRepository))),
+        { installTargetAuthority: createSignedManifestInstallTargetAuthority(provider) },
+      )
+      for (const snapshot of snapshots) service.observeCatalog(snapshot)
+      return { service, provider }
+    }
+
+    it('admits a signed entry whose repository matches live npm metadata and installs it', async () => {
+      const profileDir = await createProfile()
+      const calls: string[][] = []
+      const { service } = await companyWiredService({}, { profileDir, calls })
+
+      const preview = await service.previewInstall(companySourceRecordId, `npm:${packageName}@${version}`, new AbortController().signal)
+      expect(preview).toMatchObject({ action: 'install', packageName, version })
+
+      const result = await service.executeInstall(preview.intent, new AbortController().signal)
+      expect(calls.map(args => args[0])).toEqual(['add'])
+      expect(result.receipt).toMatchObject({ packageName, version, integrity: signedIntegrity })
+    })
+
+    it('fails preview when the npm metadata points at a different repository', async () => {
+      const profileDir = await createProfile()
+      const calls: string[][] = []
+      const { service } = await companyWiredService({}, {
+        profileDir,
+        calls,
+        npmMetadata: npmMetadata({ ...liveNpmRepository, url: 'git+https://github.com/attacker/mirror.git' }),
+      })
+
+      await expect(service.previewInstall(companySourceRecordId, `npm:${packageName}@${version}`, new AbortController().signal))
+        .rejects.toMatchObject({ code: 'verification-failed', message: 'The npm package repository did not match the catalog.' })
+      expect(calls).toEqual([])
+    })
   })
 })

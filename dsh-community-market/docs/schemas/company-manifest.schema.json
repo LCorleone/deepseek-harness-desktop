@@ -51,6 +51,7 @@
         "version",
         "integrity",
         "bundlePatch",
+        "repository",
         "revoked",
         "runtime"
       ],
@@ -79,12 +80,34 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u202A-\\u202E\\u2066-\\u2069]*$",
           "description": "Relative path of the bundle patch file inside the installed package, for example ./cordis.patch.yml. Absolute paths, backslashes, drive letters, and dot segments are rejected by verification."
         },
+        "repository": {
+          "$ref": "#/$defs/repository"
+        },
         "revoked": {
           "type": "boolean",
           "description": "true withdraws the entry while keeping the signed audit trail intact. Revoked entries stay verifiable and readable but must be treated as uninstallable."
         },
         "runtime": {
           "$ref": "#/$defs/runtimeRanges"
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "description": "The package's true VCS repository identity, signed so the install-time verifier can back-link the candidate against the live npm metadata (package.json repository). Catalog rows without a verifiable repository identity never become install candidates, and an npm metadata mismatch fails preview; therefore every entry must pin it.",
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/httpsUri"
+        },
+        "subdirectory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+$"
         }
       }
     },
@@ -109,6 +132,12 @@
           "description": "Optional semver range of bundled Node.js versions this entry supports."
         }
       }
+    },
+    "httpsUri": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https://(?![^/?#]*@)(?![^/?#]*:)[^#]+$"
     },
     "semverRange": {
       "type": "string",

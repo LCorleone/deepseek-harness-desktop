@@ -28,6 +28,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     version: '1.2.3',
     integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
     bundlePatch: './cordis.patch.yml',
+    repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
     runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
     ...overrides,
@@ -208,6 +209,19 @@ describe('company manifest verification', () => {
     }
   })
 
+  it('round-trips the signed repository identity byte for byte', () => {
+    const repository = { url: 'https://github.com/Example/dsh-plugin-safe.git', subdirectory: 'packages/plugin' }
+    const text = signedText(unsignedManifest({ packages: [packageEntry({ repository })] }))
+    // The nested object participates in canonical serialization (sorted keys,
+    // no whitespace) and survives verification unchanged.
+    expect(text).toContain('"repository":{"subdirectory":"packages/plugin","url":"https://github.com/Example/dsh-plugin-safe.git"}')
+    const result = verify(text)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(findCompanyManifestPackage(result.manifest, 'dsh-plugin-safe', '1.2.3')).toMatchObject({ repository })
+    }
+  })
+
   it('rejects malformed JSON', () => {
     expect(verify('not json')).toMatchObject({ ok: false, code: 'malformed-json' })
     expect(verify('[]')).toMatchObject({ ok: false, code: 'malformed-json' })
@@ -221,6 +235,10 @@ describe('company manifest verification', () => {
       ['missing packages', omit(unsignedManifest(), 'packages')],
       ['prerelease version', unsignedManifest({ packages: [packageEntry({ version: '1.2.3-rc.1' })] })],
       ['missing revoked flag', unsignedManifest({ packages: [omit(packageEntry(), 'revoked')] })],
+      ['missing repository', unsignedManifest({ packages: [omit(packageEntry(), 'repository')] })],
+      ['non-https repository url', unsignedManifest({ packages: [packageEntry({ repository: { url: 'http://github.com/example/dsh-plugin-safe' } })] })],
+      ['repository url with credentials', unsignedManifest({ packages: [packageEntry({ repository: { url: 'https://user:pass@example/dsh-plugin-safe' } })] })],
+      ['unknown repository field', unsignedManifest({ packages: [packageEntry({ repository: { url: 'https://github.com/example/dsh-plugin-safe', type: 'git' } })] })],
       ['wrong integrity algorithm', unsignedManifest({ packages: [packageEntry({ integrity: 'sha1-abc' })] })],
       ['short integrity digest', unsignedManifest({ packages: [packageEntry({ integrity: 'sha512-abc=' })] })],
       ['missing dshRuntimeVersion', unsignedManifest({ packages: [packageEntry({ runtime: {} })] })],

@@ -42,6 +42,7 @@ function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, u
     version: '1.0.0',
     integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
     bundlePatch: './cordis.patch.yml',
+    repository: { url: 'https://github.com/example/example-plugin' },
     revoked: false,
     runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
     ...overrides,

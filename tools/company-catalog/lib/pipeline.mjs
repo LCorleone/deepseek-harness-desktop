@@ -75,6 +75,12 @@ export function expiryFromDays(days = 90) {
  * Assemble the unsigned manifest from allowlist entries and their registry
  * dist values. Entries are sorted by (packageName, version) so output is
  * deterministic for reviewing and diffing.
+ *
+ * Every entry's repository identity is resolved here and signed: an explicit
+ * allowlist `repository` wins; otherwise the https URL is derived from the
+ * same registry response that produced the integrity. An entry with neither
+ * is rejected — packages without a verifiable repository identity can never
+ * pass the install-time back-link check, so they must not be listed.
  */
 export function assembleUnsignedManifest({ sequence, expiresAt, entries, dists }) {
   const packages = [...entries]
@@ -86,11 +92,19 @@ export function assembleUnsignedManifest({ sequence, expiresAt, entries, dists }
       if (dist === undefined) {
         throw new Error(`no registry dist was resolved for ${entryKey(entry)}`)
       }
+      const repositoryUrl = entry.repository ?? dist.repositoryUrl
+      if (repositoryUrl === undefined) {
+        throw new Error(
+          `${entryKey(entry)} has no resolvable repository identity: set repository in the allowlist ` +
+          'or publish the package with an https repository field — packages without one cannot be listed',
+        )
+      }
       return {
         packageName: entry.packageName,
         version: entry.version,
         integrity: dist.integrity,
         bundlePatch: entry.bundlePatch,
+        repository: { url: repositoryUrl },
         revoked: entry.revoked,
         runtime: entry.runtime,
       }

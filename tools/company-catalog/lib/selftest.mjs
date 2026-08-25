@@ -115,6 +115,41 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     assert(first.text === readFileSync(outPath, 'utf8'), 'manifest bytes on disk differ from the canonical serialization')
     assert(readLastSequence(stateDir) === 1, 'persisted sequence was not bumped to 1')
     assert(first.verification.ok, `first verification failed: ${why(first.verification)}`)
+    // Segment: the signed repository identity — every published entry carries
+    // the https repository URL that install-time verification back-links
+    // against live npm metadata.
+    for (const entry of entries) {
+      const expected = entry.repository ?? dists.get(entryKey(entry))?.repositoryUrl
+      const signed = first.manifest.packages.find((pkg) => pkg.packageName === entry.packageName && pkg.version === entry.version)
+      assert(signed !== undefined, `entry ${entryKey(entry)} missing from the published manifest`)
+      assert(
+        typeof signed.repository?.url === 'string' && signed.repository.url.length > 0,
+        `published entry ${entryKey(entry)} carries no repository identity`,
+      )
+      if (expected !== undefined) {
+        assert(
+          signed.repository.url === expected,
+          `published entry ${entryKey(entry)} signed repository ${signed.repository.url} instead of the expected ${expected}`,
+        )
+      }
+    }
+    ok('repository-identity', `${String(entries.length)} signed entr${entries.length === 1 ? 'y' : 'ies'} carry the pinned https repository identity`)
+
+    // Segment: assembly must refuse an entry with no repository identity from
+    // either source — such packages can never pass the install back-link.
+    const anonymous = { ...structuredClone(entries[0]), repository: undefined }
+    let rejected = false
+    try {
+      assembleUnsignedManifest({
+        sequence: 2,
+        expiresAt: new Date(Date.now() + DAY_MS),
+        entries: [anonymous],
+        dists: new Map([[entryKey(anonymous), { integrity: dists.get(entryKey(entries[0])).integrity }]]),
+      })
+    } catch (error) {
+      rejected = error instanceof Error && error.message.includes('no resolvable repository identity')
+    }
+    assert(rejected, 'assembly accepted an entry without any repository identity')
     ok('build-sign-verify', 'sequence 1 manifest signed and verified from disk (canonical bytes, schema, trust root, signature)')
 
     // Segment: sequence strict monotonicity both ways.

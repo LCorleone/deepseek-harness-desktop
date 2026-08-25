@@ -212,6 +212,19 @@ function assertRepresentableEntry(entry: CompanyManifestPackage): void {
       `company manifest entry ${entry.packageName}@${entry.version} cannot be represented in the v1 catalog contract`,
     )
   }
+  // The v1 candidate contract requires a repository identity on every
+  // installable row: observeCatalog drops rows without one, and previewInstall
+  // back-links that identity against the live npm package metadata. The signed
+  // schema pins `repository` on every entry; an identity that still fails to
+  // normalize would surface as a row without an install path, so it fails the
+  // scan like any other unrepresentable entry.
+  try {
+    normalizeRepositoryIdentity(entry.repository)
+  } catch (cause) {
+    throw new Error(
+      `company manifest entry ${entry.packageName}@${entry.version} carries a repository identity that cannot be represented in the v1 catalog contract (${cause instanceof Error ? cause.message : String(cause)})`,
+    )
+  }
 }
 
 function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): CatalogItem {
@@ -224,10 +237,11 @@ function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): 
     package: { registry: 'npm', name: entry.packageName },
     latestVersion: entry.version,
     // observeCatalog requires a repository identity before an item becomes an
-    // install candidate; npm packages resolve to the registry package page.
-    repository: normalizeRepositoryIdentity({
-      url: `https://registry.npmjs.org/${entry.packageName}`,
-    }),
+    // install candidate, and install-time verification back-links it against
+    // the live npm metadata. The manifest signs each entry's true VCS
+    // repository, so the signed identity is carried through verbatim (already
+    // proven normalizable by assertRepresentableEntry).
+    repository: normalizeRepositoryIdentity(entry.repository),
     provenance: {
       sourceRecordId: source.sourceRecordId,
       providerId: source.providerId,

@@ -19,7 +19,7 @@ export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['bundlePatch', 'packageName', 'revoked', 'runtime', 'version']
+const ENTRY_FIELDS = ['bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'version']
 
 /** Mirror of the market's safeBundlePatchPath guard plus the schema character class. */
 export function isSafeBundlePatchPath(value) {
@@ -34,11 +34,34 @@ export function isSafeBundlePatchPath(value) {
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 /**
+ * Normalize one repository URL into the https form the manifest signs and the
+ * market verifier back-links against live npm metadata: strip the npm `git+`
+ * transport prefix and the trailing `.git` suffix, then require a
+ * credential-free https URL. Returns the normalized string or undefined when
+ * the value is unusable.
+ */
+export function normalizeRepositoryUrl(value) {
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const stripped = value.startsWith('git+') ? value.slice(4) : value
+  if (!stripped.startsWith('https://')) return undefined
+  let url
+  try {
+    url = new URL(stripped)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return undefined
+  return stripped.replace(/\.git$/u, '')
+}
+
+/**
  * Validate and normalize one allowlist entry. Returns
- * `{ok: true, value: {packageName, version, bundlePatch, revoked, runtime}}`
+ * `{ok: true, value: {packageName, version, bundlePatch, repository?, revoked, runtime}}`
  * or `{ok: false, reason}`. Optional runtime ranges are kept only when
  * present; their node-semver validity is enforced later by the market
- * verifier, which owns the semver grammar.
+ * verifier, which owns the semver grammar. The optional `repository` override
+ * pins the VCS identity to sign; when absent the build derives it from the
+ * registry metadata.
  */
 export function validateAllowlistEntry(entry, at) {
   if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
@@ -57,6 +80,10 @@ export function validateAllowlistEntry(entry, at) {
   }
   const revoked = entry.revoked ?? false
   if (typeof revoked !== 'boolean') return { ok: false, reason: `${at}.revoked must be a boolean` }
+  const repository = entry.repository === undefined ? undefined : normalizeRepositoryUrl(entry.repository)
+  if (entry.repository !== undefined && repository === undefined) {
+    return { ok: false, reason: `${at}.repository must be a credential-free https URL (npm git+https://…git spellings accepted)` }
+  }
   if (!isPlainObject(runtime)) return { ok: false, reason: `${at}.runtime must be an object` }
   const runtimeUnknown = Object.keys(runtime).filter((key) => !RUNTIME_RANGE_FIELDS.includes(key))
   if (runtimeUnknown.length > 0) {
@@ -76,7 +103,14 @@ export function validateAllowlistEntry(entry, at) {
   }
   return {
     ok: true,
-    value: { packageName, version, bundlePatch, revoked, runtime: normalizedRuntime },
+    value: {
+      packageName,
+      version,
+      bundlePatch,
+      ...(repository === undefined ? {} : { repository }),
+      revoked,
+      runtime: normalizedRuntime,
+    },
   }
 }
 

@@ -982,6 +982,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
       version,
       integrity,
       bundlePatch: './cordis.patch.yml',
+      repository: { url: `https://github.com/example/${packageName}` },
       revoked: false,
       runtime: { dshRuntimeVersion: '*' },
       ...overrides,

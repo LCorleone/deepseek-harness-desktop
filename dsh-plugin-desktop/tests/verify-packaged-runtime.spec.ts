@@ -117,6 +117,7 @@ function signedCatalogManifest(overrides: Record<string, unknown> = {}): string 
       version: '1.0.0',
       integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
       bundlePatch: './cordis.patch.yml',
+      repository: { url: 'https://github.com/example/dsh-plugin-safe' },
       revoked: false,
       runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
     }],

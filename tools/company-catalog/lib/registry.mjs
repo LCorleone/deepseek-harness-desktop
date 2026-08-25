@@ -5,6 +5,8 @@
  * repack tarballs break the integrity-to-tarball binding the manifest signs.
  */
 
+import { normalizeRepositoryUrl } from './allowlist.mjs'
+
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
 
 const FETCH_TIMEOUT_MS = 15_000
@@ -50,9 +52,11 @@ async function registryFetch(url, timeoutMs) {
 }
 
 /**
- * Fetch `dist.integrity` and `dist.tarball` for one exact version from the
- * official registry. Unpublished versions are hard errors: the pipeline must
- * never guess or substitute a closest match.
+ * Fetch `dist.integrity`, `dist.tarball`, and the package's `repository`
+ * identity for one exact version from the official registry — all three come
+ * from the same response, so the signed repository back-link is bound to the
+ * same metadata the integrity is pinned against. Unpublished versions are
+ * hard errors: the pipeline must never guess or substitute a closest match.
  */
 export async function fetchPackageDist(packageName, version) {
   const url = `${NPM_REGISTRY_ORIGIN}/${encodeURIComponent(packageName)}/${version}`
@@ -89,7 +93,14 @@ export async function fetchPackageDist(packageName, version) {
       'bad-dist',
     )
   }
-  return { integrity: dist.integrity, tarball: tarball.href, url }
+  return {
+    integrity: dist.integrity,
+    tarball: tarball.href,
+    url,
+    // The raw npm spellings (`git+https://….git`) are normalized here so the
+    // manifest signs exactly the https URL shape the verifier compares.
+    repositoryUrl: normalizeRepositoryUrl(body.repository),
+  }
 }
 
 /** Whether the official registry is reachable at all (used by the selftest offline notice). */

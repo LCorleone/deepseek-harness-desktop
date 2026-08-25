@@ -3,6 +3,7 @@
     "packageName": "example-company-plugin",
     "version": "1.4.2",
     "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://github.com/example/example-company-plugin",
     "runtime": {
       "dshRuntimeVersion": ">=0.1.1 <0.2.0",
       "cordisRuntimeVersion": "^3.0.0",

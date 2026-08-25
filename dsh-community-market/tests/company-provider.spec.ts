@@ -56,6 +56,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     version: '1.2.3',
     integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
     bundlePatch: './cordis.patch.yml',
+    repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
     runtime: { dshRuntimeVersion: '^0.1.1-rc.2', nodeRuntimeVersion: '>=22.0.0' },
     ...overrides,
@@ -69,7 +70,12 @@ function unsignedManifest(overrides: Record<string, unknown> = {}): Record<strin
     expiresAt: '2030-01-01T00:00:00Z',
     packages: [
       packageEntry(),
-      packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '2.0.0', revoked: false }),
+      packageEntry({
+        packageName: '@deepseek-ai/cool-plugin',
+        version: '2.0.0',
+        revoked: false,
+        repository: { url: 'https://github.com/DeepSeek-AI/Cool-Plugin' },
+      }),
       packageEntry({ packageName: 'dsh-plugin-retired', version: '3.1.4', revoked: true }),
     ],
     ...overrides,
@@ -170,7 +176,7 @@ describe('company catalog provider (content mode)', () => {
       name: 'dsh-plugin-safe',
       displayName: 'dsh-plugin-safe',
       summary: 'Company signed catalog entry dsh-plugin-safe@1.2.3',
-      repository: { url: 'https://registry.npmjs.org/dsh-plugin-safe' },
+      repository: { url: 'https://github.com/example/dsh-plugin-safe' },
       package: { registry: 'npm', name: 'dsh-plugin-safe' },
       latestVersion: '1.2.3',
       provenance: {
@@ -179,6 +185,10 @@ describe('company catalog provider (content mode)', () => {
         itemId: 'npm:dsh-plugin-safe@1.2.3',
       },
     })
+    // The signed VCS identity is carried through verbatim (normalized), not
+    // replaced by a registry page URL: install-time verification back-links it
+    // against the live npm metadata.
+    expect(items[1]?.repository).toEqual({ url: 'https://github.com/deepseek-ai/cool-plugin' })
     expect(items.map(item => item.id)).toEqual([
       'npm:dsh-plugin-safe@1.2.3',
       'npm:@deepseek-ai/cool-plugin@2.0.0',
@@ -465,6 +475,26 @@ describe('company catalog provider verification failures', () => {
     })))
 
     await expect(provider.scanCatalog!({}, context)).rejects.toThrow(/cannot be represented/u)
+  })
+
+  it('rejects entries whose signed repository identity cannot be normalized', async () => {
+    const { provider, context } = contentProviderScan(() => signedText(unsignedManifest({
+      packages: [packageEntry({ repository: { url: 'https://github.com/example/dsh-plugin-safe/tree/main' } })],
+    })))
+
+    await expect(provider.scanCatalog!({}, context)).rejects.toThrow(/repository identity that cannot be represented/u)
+  })
+
+  it('rejects a whole manifest whose entries lack the required repository identity', async () => {
+    const anonymous = { ...packageEntry({ packageName: 'dsh-plugin-anon', version: '5.0.0' }) }
+    delete (anonymous as Record<string, unknown>).repository
+    const { provider, context } = contentProviderScan(() => signedText(unsignedManifest({
+      packages: [packageEntry(), anonymous],
+    })))
+    const error = await untrusted(provider.scanCatalog!({}, context))
+    expect(error.code).toBe('invalid-manifest')
+    expect(error.message).toContain('repository')
+    expect(provider.verifiedPackages()).toHaveLength(0)
   })
 })
 

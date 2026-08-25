@@ -9,12 +9,13 @@
  * untrusted-reporting propagation from a failed scan through the adapter
  * wrapper into the authority.
  *
- * Scope note: the market install service derives its preview candidates from
- * catalog rows carrying `repository`, which the signed company manifest
- * schema does not pin, so end-to-end preview/execute from company rows needs
- * a schema or candidate-path decision of its own. This spec therefore
- * asserts the wired authority decisions over the provider's candidate
- * stream — the surface the L2 wiring owns.
+ * Scope note: the signed company manifest schema pins each entry's true VCS
+ * repository identity; the provider carries it onto the catalog rows so the
+ * install service admits them as preview candidates and the npm verifier can
+ * back-link them against live registry metadata (covered end to end in
+ * signed-manifest-install.spec). This spec asserts the wired authority
+ * decisions over the provider's candidate stream plus the catalog rows'
+ * repository identity — the surface the L2 wiring owns.
  */
 
 import { generateKeyPairSync } from 'node:crypto'
@@ -68,6 +69,7 @@ function packageEntry(
     version,
     integrity,
     bundlePatch: './cordis.patch.yml',
+    repository: { url: `https://github.com/example/${packageName}` },
     revoked: false,
     runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
     ...overrides,
@@ -157,6 +159,13 @@ describe('locked company catalog wiring', () => {
     expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
       `npm:${safePackage}@${safeVersion}`,
     ])
+    // The catalog row inherits the signed repository identity verbatim
+    // (normalized), which is what makes it an install candidate at all.
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items)).toEqual([
+      expect.objectContaining({
+        repository: { url: `https://github.com/example/${safePackage}` },
+      }),
+    ])
     // The settings-backed ratchet recorded the verified sequence and bytes.
     expect(scope.document().companyManifest).toEqual({
       sequence: 42,
@@ -208,9 +217,8 @@ describe('locked company catalog wiring', () => {
 
     // The scan produced the install candidates: signed integrity, bundle
     // patch, and runtime ranges carried verbatim for the install-time check.
-    // (The market install service additionally derives its preview candidates
-    // from catalog rows carrying `repository`, which the signed company
-    // manifest schema does not pin — see the spec module docs.)
+    // (Catalog rows also carry the signed repository identity, so the market
+    // install service admits them as preview candidates — see the module docs.)
     expect(wiring.provider.verifiedPackages()).toEqual([expect.objectContaining({
       itemId: `npm:${safePackage}@${safeVersion}`,
       packageName: safePackage,
