@@ -463,6 +463,7 @@ async function start(): Promise<void> {
       profileCheckpoint = new DesktopProfileCheckpoint({
         userDataDir: app.getPath('userData'),
         profileDir: activeProfileDir,
+        homeDir,
         profileName: activeProfileName,
         provider: 'desktop-profile',
         appVersion,
@@ -585,6 +586,7 @@ async function start(): Promise<void> {
         profileCheckpoint = new DesktopProfileCheckpoint({
           userDataDir: app.getPath('userData'),
           profileDir: prepared.profile.dir,
+          homeDir,
           profileName: activeProfileName,
           provider: 'desktop-profile',
           appVersion,

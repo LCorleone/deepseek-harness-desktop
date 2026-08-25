@@ -36,13 +36,14 @@ operations:
     cancellation: { policy: none, reason: each file publication is durable and atomic }
     exclusivity: startup owns healthy capture; Recovery serializes explicit restore operations
     idempotency: every healthy startup writes one slot; after three slots the oldest is replaced; one post-restore healthy capture is skipped
-    persistedState: { owner: DesktopProfileCheckpoint, slots: 3, manifestVersion: 2, atomic: true, corruption: fail-loud }
+    persistedState: { owner: DesktopProfileCheckpoint, slots: 3, manifestVersion: 3, legacyManifestVersion: 2, files: active Profile plus Harness-home settings.yaml and cordis.patch.yml, atomic: true, corruption: fail-loud }
     retry: { policy: explicit, authority: user selects an exact slot in Recovery }
     recovery: no automatic restore or profile fallback; restore only one user-selected slot
     evidence: checkpoint metadata, file hashes, capture time, Desktop version, browsable slot directory
     faultContracts:
       - { id: profile-health-checkpoints.stage.rotation, test: tests/profile-checkpoint.spec.ts, title: writes every healthy startup and replaces the oldest slot after three captures }
       - { id: profile-health-checkpoints.stage.restore-skip, test: tests/profile-checkpoint.spec.ts, title: restores an explicitly selected slot and skips exactly the next healthy write }
+      - { id: profile-health-checkpoints.stage.global-config, test: tests/profile-checkpoint.spec.ts, title: restores Harness-home settings and patches with the selected Profile slot }
       - { id: profile-health-checkpoints.stage.failed-health, test: tests/profile-checkpoint.spec.ts, title: keeps the post-restore skip marker until a healthy capture actually occurs }
       - { id: profile-health-checkpoints.stage.safety, test: tests/profile-checkpoint.spec.ts, title: 'rejects missing package.json, symlinks, oversized files, and empty restore slots' }
   - id: update-check

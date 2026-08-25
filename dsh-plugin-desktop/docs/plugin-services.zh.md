@@ -173,7 +173,7 @@ interface DesktopPnpmHandle {
 ['install', '--no-frozen-lockfile']
 ```
 
-使用 `run()` 时，package 身份策略、命令构造、`dsh.profile.bundles` reconcile、receipt 和操作后验证均由调用方负责；兼容适配器会把 bundle reconcile 委托给已打包的 DSH CLI。三个方法都不会为 package operation 做快照、回滚、重试、保护或记录。Desktop 恢复与此独立：每次健康启动写入三个轮转 Profile checkpoint 之一，用户可在恢复页面明确选择精确槽位恢复。
+使用 `run()` 时，package 身份策略、命令构造、`dsh.profile.bundles` reconcile、receipt 和操作后验证均由调用方负责；兼容适配器会把 bundle reconcile 委托给已打包的 DSH CLI。三个方法都不会为 package operation 做快照、回滚、重试、保护或记录。Desktop 恢复与此独立：每次健康启动写入三个轮转配置 checkpoint 之一，同时覆盖激活 Profile 与共享 DSH home 设置和补丁；用户可在恢复页面明确选择精确槽位恢复。
 
 Service 在每个 generation 同时最多启动一个 package operation；已有 operation 活跃时再次调用会同步抛错。它只暴露输出，不选择 progress UI，也没有内置 timeout。Consumer 拥有 deadline、读取两个 stream、报告 progress、在需要时调用 `cancel()` 或 abort signal、等待 `done`，并同时检查 `exitCode` 与 `signal`。
 
