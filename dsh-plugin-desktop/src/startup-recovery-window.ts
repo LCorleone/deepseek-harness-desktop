@@ -9,7 +9,7 @@ import {
   auxiliaryWindowChromeOptions,
   auxiliaryWindowHasCustomFrame,
 } from './auxiliary-window-options.ts'
-import { showDesktopMessageBox } from './desktop-dialog-window.ts'
+import { showDesktopDialog, showDesktopMessageBox } from './desktop-dialog-window.ts'
 import type { DesktopLocale } from './runtime.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
 import { desktopRestartConfirmationCopy } from './tray-locale.ts'
@@ -20,6 +20,7 @@ import {
 } from './recovery-copy.ts'
 import {
   DesktopStartupRecoveryController,
+  DesktopStartupRecoveryControllerError,
   type DesktopStartupRecoveryCheckpointPreview,
   type DesktopStartupRecoveryDisablePreview,
   type DesktopStartupRecoverySnapshot,
@@ -401,14 +402,45 @@ export class DesktopStartupRecoveryWindow {
         this.finish('quit')
         return
       }
-    } catch {
+    } catch (cause) {
       this.notice = {
         tone: 'error',
         title: copy.title,
         body: copy.actionFailed,
       }
+      if (action.action === 'preview-checkpoint') {
+        await this.showCheckpointFailure(cause).catch(() => {})
+      }
     }
     await this.render()
+  }
+
+  private async showCheckpointFailure(cause: unknown): Promise<void> {
+    const window = this.window
+    if (window === undefined || window.isDestroyed()) return
+    const copy = desktopRecoveryCopy(this.options.locale)
+    const error = cause instanceof DesktopStartupRecoveryControllerError ? cause : undefined
+    const stage = error?.operationStage ?? 'checkpoint-restore'
+    const message = error?.message ?? (cause instanceof Error ? cause.message : String(cause))
+    const detail = [
+      `${copy.operationStage}: ${copy.operationStageLabels[stage]}`,
+      `${copy.errorCode}: ${error?.code ?? 'operation-failed'}`,
+      '',
+      message,
+      ...(error?.diagnosticDetail === undefined
+        ? []
+        : ['', copy.technicalDetails, error.diagnosticDetail]),
+    ].join('\n')
+    await showDesktopDialog({
+      type: 'error',
+      title: copy.rollbackFailedTitle,
+      message: copy.rollbackFailedMessage,
+      detail,
+      buttons: [copy.close],
+      defaultId: 0,
+      cancelId: 0,
+      presentation: 'diagnostic',
+    }, window)
   }
 
   private async confirmRecoveryAction(

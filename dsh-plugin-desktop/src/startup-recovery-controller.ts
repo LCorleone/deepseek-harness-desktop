@@ -14,6 +14,7 @@ import type {
   ProfileCheckpointSlot,
   RestoreResult,
 } from './profile-checkpoint.ts'
+import { maskSecrets } from './mask-secrets.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
@@ -25,6 +26,7 @@ const DISABLE_PREVIEW_ID_PATTERN = /^disable_[A-Za-z0-9_-]{43}$/u
 const RESTORE_PREVIEW_ID_PATTERN = /^restore_[A-Za-z0-9_-]{43}$/u
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9._:-]{8,160}$/u
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
+const MAX_DIAGNOSTIC_DETAIL_CHARS = 24_000
 
 export interface DesktopStartupRecoveryGeneration {
   readonly profileName: string
@@ -34,6 +36,7 @@ export interface DesktopStartupRecoveryGeneration {
 export interface DesktopStartupRecoveryCheckpointStore {
   listSlots(): readonly ProfileCheckpointSlot[]
   restoreSlot(slotId: DesktopProfileCheckpointSlotId): RestoreResult
+  completeDependencyMaterialization(slotId: DesktopProfileCheckpointSlotId): void
 }
 
 export interface DesktopStartupRecoveryBundle {
@@ -96,10 +99,29 @@ export type DesktopStartupRecoveryControllerErrorCode =
   | 'preview-expired'
   | 'state-unavailable'
 
+export type DesktopStartupRecoveryOperationStage =
+  | 'checkpoint-restore'
+  | 'dependency-materialization'
+  | 'plugin-change'
+
+export interface DesktopStartupRecoveryControllerErrorOptions {
+  readonly operationStage?: DesktopStartupRecoveryOperationStage
+  readonly diagnosticDetail?: string
+}
+
 export class DesktopStartupRecoveryControllerError extends Error {
-  constructor(readonly code: DesktopStartupRecoveryControllerErrorCode, message: string) {
+  readonly operationStage: DesktopStartupRecoveryOperationStage | undefined
+  readonly diagnosticDetail: string | undefined
+
+  constructor(
+    readonly code: DesktopStartupRecoveryControllerErrorCode,
+    message: string,
+    options: DesktopStartupRecoveryControllerErrorOptions = {},
+  ) {
     super(message)
     this.name = 'DesktopStartupRecoveryControllerError'
+    this.operationStage = options.operationStage
+    this.diagnosticDetail = options.diagnosticDetail
   }
 }
 
@@ -292,16 +314,26 @@ export class DesktopStartupRecoveryController {
       throw this.expiredPreview()
     }
     this.operationActive = true
+    let result: RestoreResult
     try {
       const slot = this.requireSlot(preview.slotId)
       if (slot.manifest!.snapshotId !== preview.snapshotId || slot.manifest!.capturedAt !== preview.capturedAt) {
         throw this.expiredPreview()
       }
-      const result = this.options.checkpoints.restoreSlot(preview.slotId)
+      result = this.options.checkpoints.restoreSlot(preview.slotId)
+    } catch (cause) {
+      this.operationActive = false
+      throw this.safeMutationError(cause, 'checkpoint-restore')
+    }
+    try {
       await this.options.afterCheckpointRestore?.(result)
+      this.options.checkpoints.completeDependencyMaterialization(result.slotId)
       return { action: 'restore-checkpoint', slotId: result.slotId, changedFiles: [...result.changedFiles] }
     } catch (cause) {
-      throw this.safeMutationError(cause)
+      throw this.safeMutationError(
+        cause,
+        result.dependencyMaterializationRequired ? 'dependency-materialization' : 'checkpoint-restore',
+      )
     } finally {
       this.operationActive = false
     }
@@ -438,10 +470,29 @@ export class DesktopStartupRecoveryController {
     return new DesktopStartupRecoveryControllerError('state-unavailable', 'Desktop recovery state is unavailable.')
   }
 
-  private safeMutationError(cause: unknown): DesktopStartupRecoveryControllerError {
-    if (cause instanceof DesktopStartupRecoveryControllerError) return cause
+  private safeMutationError(
+    cause: unknown,
+    operationStage: DesktopStartupRecoveryOperationStage = 'plugin-change',
+  ): DesktopStartupRecoveryControllerError {
+    if (cause instanceof DesktopStartupRecoveryControllerError) {
+      if (cause.operationStage !== undefined) return cause
+      return new DesktopStartupRecoveryControllerError(cause.code, cause.message, {
+        operationStage,
+        ...(cause.diagnosticDetail === undefined ? {} : { diagnosticDetail: cause.diagnosticDetail }),
+      })
+    }
     if (cause instanceof DesktopPluginsError) return this.mapDesktopPluginsError(cause)
-    return new DesktopStartupRecoveryControllerError('operation-failed', 'Unable to apply the Desktop recovery operation.')
+    const rendered = maskSecrets(cause instanceof Error ? cause.stack ?? cause.message : String(cause))
+    return new DesktopStartupRecoveryControllerError(
+      'operation-failed',
+      'Unable to apply the Desktop recovery operation.',
+      {
+        operationStage,
+        diagnosticDetail: rendered.length <= MAX_DIAGNOSTIC_DETAIL_CHARS
+          ? rendered
+          : `${rendered.slice(0, MAX_DIAGNOSTIC_DETAIL_CHARS)}\n… output truncated`,
+      },
+    )
   }
 
   private mapDesktopPluginsError(cause: DesktopPluginsError): DesktopStartupRecoveryControllerError {

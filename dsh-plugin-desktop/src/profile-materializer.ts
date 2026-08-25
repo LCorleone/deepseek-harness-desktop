@@ -9,6 +9,7 @@ const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
 const DEFAULT_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 const TERMINATION_GRACE_MS = 3_000
+const DIAGNOSTIC_STREAM_CHARS = 8_000
 
 /** Runtime inputs resolved by the Electron bootstrap. */
 export interface ProfileMaterializerOptions {
@@ -55,6 +56,34 @@ export class ProfileMaterializationError extends Error {
     this.name = 'ProfileMaterializationError'
     if (result !== undefined) this.result = result
   }
+}
+
+function diagnosticStream(label: string, value: string): string | undefined {
+  const normalized = value.trim()
+  if (normalized.length === 0) return undefined
+  const rendered = normalized.length <= DIAGNOSTIC_STREAM_CHARS
+    ? normalized
+    : `${normalized.slice(0, DIAGNOSTIC_STREAM_CHARS)}\n… ${label} truncated`
+  return `${label}:\n${rendered}`
+}
+
+/** Bounded technical context suitable for a local recovery error window. */
+export function formatProfileMaterializationFailure(cause: unknown): string {
+  if (!(cause instanceof ProfileMaterializationError)) {
+    return cause instanceof Error ? cause.stack ?? cause.message : String(cause)
+  }
+  const result = cause.result
+  if (result === undefined) return cause.stack ?? cause.message
+  const sections = [
+    cause.message,
+    'Command: pnpm install --frozen-lockfile',
+    `Working directory: ${result.cwd}`,
+    `Exit code: ${String(result.exitCode)}`,
+    `Signal: ${result.signal ?? 'none'}`,
+    diagnosticStream('stderr', result.stderr),
+    diagnosticStream('stdout', result.stdout),
+  ]
+  return sections.filter((section): section is string => section !== undefined).join('\n\n')
 }
 
 function inheritedPath(): string {

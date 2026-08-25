@@ -1,6 +1,7 @@
 /** Shared recovery copy used by the native page and its main-process actions. */
 
 import type { DesktopLocale } from './runtime.ts'
+import type { DesktopStartupRecoveryOperationStage } from './startup-recovery-controller.ts'
 
 export type DesktopRecoveryTab = 'plugins' | 'rollback' | 'profiles' | 'diagnostics'
 
@@ -79,6 +80,13 @@ export interface DesktopRecoveryCopy {
   readonly rollbackSuccess: (slotId: string) => string
   readonly profileSelectedSuccess: string
   readonly actionFailed: string
+  readonly rollbackFailedTitle: string
+  readonly rollbackFailedMessage: string
+  readonly operationStage: string
+  readonly operationStageLabels: Readonly<Record<DesktopStartupRecoveryOperationStage, string>>
+  readonly errorCode: string
+  readonly technicalDetails: string
+  readonly close: string
 }
 
 const COPY: Record<DesktopLocale, DesktopRecoveryCopy> = {
@@ -156,6 +164,17 @@ const COPY: Record<DesktopLocale, DesktopRecoveryCopy> = {
     rollbackSuccess: slotId => `Rolled back to ${slotId}. Restart DSH Desktop to use this configuration; the first healthy start after rollback will preserve all three existing slots.`,
     profileSelectedSuccess: 'This Profile is now selected. Restart DSH Desktop to use it.',
     actionFailed: 'The recovery action could not be completed. Review the diagnostic archive and try again.',
+    rollbackFailedTitle: 'Rollback failed',
+    rollbackFailedMessage: 'The rollback did not finish. The Recovery Assistant remains open so you can review the details and try again.',
+    operationStage: 'Operation stage',
+    operationStageLabels: {
+      'checkpoint-restore': 'Checkpoint file restore',
+      'dependency-materialization': 'Profile dependency rebuild',
+      'plugin-change': 'Plugin configuration change',
+    },
+    errorCode: 'Error code',
+    technicalDetails: 'Technical details',
+    close: 'Close',
   },
   zh: {
     title: 'DSH Desktop 恢复助手',
@@ -231,6 +250,17 @@ const COPY: Record<DesktopLocale, DesktopRecoveryCopy> = {
     rollbackSuccess: slotId => `已回滚到${slotId}。请重启 DSH Desktop 以使用该配置；回滚后的第一次健康启动会保留现有三个槽位。`,
     profileSelectedSuccess: '已设为当前 Profile。请重启 DSH Desktop 以使用该 Profile。',
     actionFailed: '无法完成恢复操作。请检查诊断包后重试。',
+    rollbackFailedTitle: '回滚失败',
+    rollbackFailedMessage: '回滚未能完成。恢复助手会保持打开，你可以查看详细错误后重试。',
+    operationStage: '操作阶段',
+    operationStageLabels: {
+      'checkpoint-restore': 'Checkpoint 文件恢复',
+      'dependency-materialization': 'Profile 依赖重建',
+      'plugin-change': '插件配置修改',
+    },
+    errorCode: '错误代码',
+    technicalDetails: '技术详情',
+    close: '关闭',
   },
 }
 

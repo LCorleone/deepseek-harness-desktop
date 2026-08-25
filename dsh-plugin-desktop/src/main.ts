@@ -63,7 +63,10 @@ import {
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
-import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
+import {
+  DesktopStartupRecoveryController,
+  DesktopStartupRecoveryControllerError,
+} from './startup-recovery-controller.ts'
 import {
   DesktopStartupRecoveryWindow,
   type DesktopStartupRecoveryConfigurationPaths,
@@ -78,7 +81,11 @@ import {
   type SkippedOptionalEntry,
 } from './profile.ts'
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
-import { materializeProfile, ProfileMaterializationError } from './profile-materializer.ts'
+import {
+  formatProfileMaterializationFailure,
+  materializeProfile,
+  ProfileMaterializationError,
+} from './profile-materializer.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import {
   createDesktopExitCoordinator,
@@ -476,18 +483,30 @@ async function start(): Promise<void> {
           if (error.length > 0) throw new Error(error)
         },
         afterCheckpointRestore: async result => {
-          if (!result.changedFiles.some(name => name === 'package.json'
-            || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml')) return
-          await materializeProfile({
-            appExecutable: process.execPath,
-            clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
-            pnpmBinPath,
-            nodeBinDir: pnpmRuntime.nodeBinDir,
-            nodeShimPath: pnpmRuntime.nodeShimPath,
-            homeDir,
-            profileDir: activeProfileDir,
-            electronVersion,
-          })
+          if (!result.dependencyMaterializationRequired) return
+          try {
+            await materializeProfile({
+              appExecutable: process.execPath,
+              clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
+              pnpmBinPath,
+              nodeBinDir: pnpmRuntime.nodeBinDir,
+              nodeShimPath: pnpmRuntime.nodeShimPath,
+              homeDir,
+              profileDir: activeProfileDir,
+              electronVersion,
+            })
+          } catch (cause) {
+            const detail = maskSecrets(formatProfileMaterializationFailure(cause))
+            electronLogger.error(`${BIN_NAME}: checkpoint dependency materialization failed:\n${detail}`)
+            throw new DesktopStartupRecoveryControllerError(
+              'operation-failed',
+              'The checkpoint files were restored, but Profile dependencies could not be rebuilt.',
+              {
+                operationStage: 'dependency-materialization',
+                diagnosticDetail: detail,
+              },
+            )
+          }
         },
       })
     }

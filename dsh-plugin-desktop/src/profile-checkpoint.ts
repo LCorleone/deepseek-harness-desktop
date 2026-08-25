@@ -130,6 +130,8 @@ export interface RestoreResult {
   readonly status: 'restored'
   readonly slotId: DesktopProfileCheckpointSlotId
   readonly changedFiles: readonly DesktopProfileCheckpointFilename[]
+  /** Remains true across retries until packaged pnpm has reconciled the restored dependency files. */
+  readonly dependencyMaterializationRequired: boolean
   readonly snapshotDirectory: string
 }
 
@@ -137,6 +139,7 @@ interface SkipHealthyMarker {
   readonly version: 1
   readonly restoredSlotId: DesktopProfileCheckpointSlotId
   readonly restoredAt: string
+  readonly dependencyMaterializationPending: boolean
 }
 
 interface FileImage {
@@ -423,13 +426,20 @@ export class DesktopProfileCheckpoint {
     const changedFiles = DESKTOP_PROFILE_CHECKPOINT_FILES.filter(
       (_, index) => !fileEqual(snapshot.manifest.files[index]!, current[index]!),
     )
+    const previousMarker = this.readSkipMarker()
+    const dependencyMaterializationRequired = previousMarker?.dependencyMaterializationPending === true
+      || changedFiles.some(name => name === 'package.json'
+        || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml')
 
     // Persist before mutation. A failed restore must not cause a later healthy
-    // startup to overwrite the selected recovery point accidentally.
+    // startup to overwrite the selected recovery point accidentally. The
+    // materialization bit also makes a failed packaged-pnpm pass retryable even
+    // after the declarative files already match the selected checkpoint.
     writeDurable(join(this.profileRoot, SKIP_MARKER_FILENAME), Buffer.from(`${JSON.stringify({
       version: SKIP_MARKER_VERSION,
       restoredSlotId: resolvedSlot,
       restoredAt: new Date(this.now()).toISOString(),
+      dependencyMaterializationPending: dependencyMaterializationRequired,
     } satisfies SkipHealthyMarker)}\n`, 'utf8'))
 
     for (let index = 0; index < DESKTOP_PROFILE_CHECKPOINT_FILES.length; index += 1) {
@@ -451,7 +461,27 @@ export class DesktopProfileCheckpoint {
         }
       }
     }
-    return { status: 'restored', slotId: resolvedSlot, changedFiles, snapshotDirectory: snapshot.directory }
+    return {
+      status: 'restored',
+      slotId: resolvedSlot,
+      changedFiles,
+      dependencyMaterializationRequired,
+      snapshotDirectory: snapshot.directory,
+    }
+  }
+
+  /** Keep the checkpoint-preservation marker but clear its derived dependency work. */
+  completeDependencyMaterialization(slotId: DesktopProfileCheckpointSlotId): void {
+    const resolvedSlot = assertSlotId(slotId)
+    const marker = this.readSkipMarker()
+    if (marker === undefined || marker.restoredSlotId !== resolvedSlot) {
+      fail('checkpoint materialization completion does not match the active restore')
+    }
+    if (!marker.dependencyMaterializationPending) return
+    writeDurable(join(this.profileRoot, SKIP_MARKER_FILENAME), Buffer.from(`${JSON.stringify({
+      ...marker,
+      dependencyMaterializationPending: false,
+    } satisfies SkipHealthyMarker)}\n`, 'utf8'))
   }
 
   private slotDirectory(slotId: DesktopProfileCheckpointSlotId): string {
@@ -526,13 +556,18 @@ export class DesktopProfileCheckpoint {
       if (value === null || typeof value !== 'object' || Array.isArray(value)) fail('skip healthy marker is invalid')
       const marker = value as Record<string, unknown>
       if (marker.version !== SKIP_MARKER_VERSION || typeof marker.restoredSlotId !== 'string'
-        || typeof marker.restoredAt !== 'string' || !Number.isFinite(Date.parse(marker.restoredAt))) {
+        || typeof marker.restoredAt !== 'string' || !Number.isFinite(Date.parse(marker.restoredAt))
+        || (marker.dependencyMaterializationPending !== undefined
+          && typeof marker.dependencyMaterializationPending !== 'boolean')) {
         fail('skip healthy marker is invalid')
       }
       return {
         version: SKIP_MARKER_VERSION,
         restoredSlotId: assertSlotId(marker.restoredSlotId),
         restoredAt: marker.restoredAt,
+        // Version-1 markers written before retryable materialization did not
+        // carry this optional field and are already safe to treat as complete.
+        dependencyMaterializationPending: marker.dependencyMaterializationPending === true,
       }
     } catch (cause) {
       if (isENOENT(cause)) return undefined

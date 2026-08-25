@@ -62,8 +62,10 @@ function createHarness(root: string, options: {
     status: 'restored',
     slotId,
     changedFiles: ['package.json'],
+    dependencyMaterializationRequired: true,
     snapshotDirectory: join(root, 'private', slotId),
   }))
+  const completeDependencyMaterialization = vi.fn()
   const openCheckpointDirectory = vi.fn(async () => {})
   const controller = new DesktopStartupRecoveryController({
     pluginState: {
@@ -74,12 +76,19 @@ function createHarness(root: string, options: {
     generationId: generation.generationId,
     currentGeneration: () => generation,
     managedPackageNames: () => ['managed-plugin'],
-    checkpoints: { listSlots: () => slots(root), restoreSlot },
+    checkpoints: { listSlots: () => slots(root), restoreSlot, completeDependencyMaterialization },
     openCheckpointDirectory,
     ...(options.afterCheckpointRestore === undefined ? {} : { afterCheckpointRestore: options.afterCheckpointRestore }),
     ...(options.now === undefined ? {} : { now: options.now }),
   })
-  return { controller, generation, manifestPath, restoreSlot, openCheckpointDirectory }
+  return {
+    controller,
+    generation,
+    manifestPath,
+    restoreSlot,
+    completeDependencyMaterialization,
+    openCheckpointDirectory,
+  }
 }
 
 function errorCode(cause: unknown): string | undefined {
@@ -127,12 +136,37 @@ describe('pre-Host Desktop startup recovery controller', () => {
     })
     expect(target.restoreSlot).toHaveBeenCalledWith('slot-2')
     expect(synchronize).toHaveBeenCalledOnce()
+    expect(target.completeDependencyMaterialization).toHaveBeenCalledWith('slot-2')
     await expect(target.controller.executeCheckpointRestore(preview.previewId)).rejects.toSatisfy(
       cause => errorCode(cause) === 'preview-expired',
     )
     await expect(target.controller.previewCheckpointRestore('slot-3')).rejects.toSatisfy(
       cause => errorCode(cause) === 'invalid-target',
     )
+  })
+
+  it('retries dependency materialization after a restored checkpoint reports a failure', async () => {
+    const root = temporaryRoot()
+    const synchronize = vi.fn()
+      .mockRejectedValueOnce(new Error('pnpm install failed with code 1'))
+      .mockResolvedValueOnce(undefined)
+    const target = createHarness(root, { afterCheckpointRestore: synchronize })
+
+    const firstPreview = await target.controller.previewCheckpointRestore('slot-1')
+    await expect(target.controller.executeCheckpointRestore(firstPreview.previewId)).rejects.toMatchObject({
+      code: 'operation-failed',
+      operationStage: 'dependency-materialization',
+      diagnosticDetail: expect.stringContaining('pnpm install failed with code 1'),
+    })
+    expect(target.completeDependencyMaterialization).not.toHaveBeenCalled()
+
+    const retryPreview = await target.controller.previewCheckpointRestore('slot-1')
+    await expect(target.controller.executeCheckpointRestore(retryPreview.previewId)).resolves.toMatchObject({
+      action: 'restore-checkpoint',
+      slotId: 'slot-1',
+    })
+    expect(synchronize).toHaveBeenCalledTimes(2)
+    expect(target.completeDependencyMaterialization).toHaveBeenCalledOnce()
   })
 
   it('opens only the exact available checkpoint directory', async () => {

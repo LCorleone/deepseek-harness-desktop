@@ -145,6 +145,28 @@ describe('Desktop profile health checkpoints', () => {
     expect(target.checkpoint.captureHealthy()).toMatchObject({ status: 'skipped-after-restore' })
   })
 
+  it('keeps dependency materialization pending across restore retries until completion', () => {
+    const target = fixture()
+    target.checkpoint.captureHealthy()
+    writeFileSync(join(target.profile, 'package.json'), '{"name":"with-new-plugin"}\n')
+    writeFileSync(join(target.profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9\nnewPlugin: true\n')
+
+    expect(target.checkpoint.restoreSlot('slot-1')).toMatchObject({
+      dependencyMaterializationRequired: true,
+      changedFiles: expect.arrayContaining(['package.json', 'pnpm-lock.yaml']),
+    })
+    expect(target.checkpoint.restoreSlot('slot-1')).toMatchObject({
+      dependencyMaterializationRequired: true,
+      changedFiles: [],
+    })
+
+    target.checkpoint.completeDependencyMaterialization('slot-1')
+    expect(target.checkpoint.restoreSlot('slot-1')).toMatchObject({
+      dependencyMaterializationRequired: false,
+      changedFiles: [],
+    })
+  })
+
   it('keeps slots browseable when the current Market provider changes', () => {
     const target = fixture()
     target.checkpoint.captureHealthy()
