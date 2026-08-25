@@ -17,6 +17,8 @@ import {
   installDesktopPnpmRuntime,
   type DesktopPnpmRuntimeOptions,
 } from '../src/desktop-runtime-environment.ts'
+import { desktopPolicyEnvironmentEntries } from '../src/desktop-policy.ts'
+import type { DesktopPolicy } from '../src/desktop-policy.ts'
 
 const temporaryDirectories: string[] = []
 
@@ -368,17 +370,27 @@ describe('desktop Host dsh runtime', () => {
   it('bakes the policy environment hand-off into the generated dsh command', () => {
     const root = temporaryDirectory()
     const stateDir = join(root, 'runtime')
+    // Built exactly like production (main.ts): a content-mode policy encoded
+    // through desktopPolicyEnvironmentEntries, so the absent-origin sentinel
+    // — not a raw empty string, which a Windows `set "VAR="` line deletes —
+    // is what reaches the batch shim.
+    const contentModePolicy: DesktopPolicy = {
+      locked: true,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+      allowHomePatch: false,
+      allowManualPluginAdd: false,
+      trustRoots: [{
+        keyId: 'company-2026-a',
+        fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      }],
+    }
 
     const installation = installDesktopDshRuntime({
       platform: 'win32',
       nodeExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe',
       dshBootstrapPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-cli.js',
-      cliPolicyEnvironment: {
-        DSH_DESKTOP_POLICY_LOCKED: '1',
-        DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '',
-        DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
-        DSH_DESKTOP_POLICY_TRUST_ROOTS: 'company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      },
+      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(contentModePolicy),
       profileName: 'desktop',
       homeDir: join(root, 'home'),
       installRecoveryStatePath: join(root, 'state.json'),
@@ -388,7 +400,9 @@ describe('desktop Host dsh runtime', () => {
 
     const shim = readFileSync(installation.dshShimPath, 'utf8')
     expect(shim).toContain('set "DSH_DESKTOP_POLICY_LOCKED=1"')
-    expect(shim).toContain('set "DSH_DESKTOP_POLICY_CATALOG_ORIGIN="')
+    // The sentinel survives the batch `set` line (an empty value would delete
+    // the variable and leave the CLI child without its policy hand-off).
+    expect(shim).toContain('set "DSH_DESKTOP_POLICY_CATALOG_ORIGIN=-"')
     expect(shim).toContain('set "DSH_DESKTOP_POLICY_MANIFEST_URL=company-market/catalog-manifest.json"')
     expect(shim).toContain(
       'set "DSH_DESKTOP_POLICY_TRUST_ROOTS=company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',

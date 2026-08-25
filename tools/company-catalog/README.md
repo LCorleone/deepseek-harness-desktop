@@ -63,17 +63,46 @@ is a live registry smoke entry, not a real plugin. See
 
 Every signed entry must carry a **repository identity** — it is what the
 desktop install-time verifier back-links against the live npm metadata, so a
-package without one cannot be listed. By default `build` derives the https
-URL from the same registry response that produced the integrity (npm's
-`git+https://….git` spellings are normalized); an explicit allowlist
-`repository` overrides that derivation. If neither yields an https URL, the
-build aborts.
+package without one cannot be listed. By default `build` derives it from the
+same registry response that produced the integrity: both npm spellings work,
+the legacy bare string and the dominant object form
+`{"url": …, "directory": …}` (a monorepo `directory` is signed as
+`subdirectory`), with npm's `git+https://….git` spellings normalized. An
+explicit allowlist `repository` overrides that derivation. If neither yields
+an https URL, the build aborts.
+
+Every resolved identity — override or derived — is then run through the
+market identity contract (`normalizeRepositoryIdentity`, the same check the
+desktop applies to every catalog row): a URL carrying a query or fragment, an
+empty path, or a github URL that is not a bare owner/repository pair aborts
+the build with the entry name and the rejected URL. Such an entry would
+verify as a manifest but brick the whole catalog on every desktop, so the
+pipeline refuses to sign it.
+
+Schema evolution: adding or removing required manifest fields is breaking in
+**both** directions — old verifiers reject new manifests (`additionalProperties: false`
+treats the new field as unknown) and new verifiers reject old ones (the
+field is required). The `repository` requirement inside `1.0.0` was exactly
+such a change; the next breaking change must bump `manifestVersion` instead
+of mutating `1.0.0` in place.
 
 每个签名条目必须携带 **repository 身份**——桌面端安装期验证器用它与真实 npm
 元数据回链比对，没有它的包无法上架。默认情况下 `build` 从产出 integrity 的
-同一 registry 响应推导 https URL（npm 的 `git+https://….git` 写法会被规范化）；
-allowlist 里显式给出的 `repository` 覆盖该推导。两者都得不到 https URL 时
-build 直接报错。
+同一 registry 响应推导身份：npm 的两种写法均支持——旧式裸字符串与主流对象形
+`{"url": …, "directory": …}`（monorepo 的 `directory` 以 `subdirectory` 入签名），
+`git+https://….git` 写法会被规范化。allowlist 里显式给出的 `repository` 覆盖该推导。
+两者都得不到 https URL 时 build 直接报错。
+
+每个解析出的身份（覆盖或推导）都会再过一遍 market 身份契约
+（`normalizeRepositoryIdentity`，即桌面端对每个目录行执行的同一检查）：带 query/
+fragment、空路径、或非「owner/repository」两段的 github URL 会让构建带条目名与被拒
+URL 直接中止——这类条目虽能作为 manifest 验签，却会在每台桌面上把整个目录打瘫，
+所以管线拒签。
+
+schema 演进：增删必填字段是**双向不兼容**变更——旧验证器拒新清单（`additionalProperties:
+false` 把新字段当未知字段拒收），新验证器拒旧清单（字段必填）。`1.0.0` 内引入
+`repository` 必填正是这样一次变更；下次破坏性变更必须升 `manifestVersion`，
+禁止原地改 `1.0.0`。
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。
@@ -162,7 +191,11 @@ gitignore）。每次发布必须严格递增；状态文件损坏即中止，�
 ephemeral key in a temp directory: market library resolution, keypair
 fingerprint cross-check, allowlist validation, live registry fetch,
 build→sign→verify with byte-exact canonical output, strict sequence
-monotonicity (both directions), revocation reissue, and expiry. Offline
+monotonicity (both directions), revocation reissue, and expiry. The
+repository-identity segment covers both npm packument forms (object form with
+`directory` → `subdirectory` on a fixed offline fixture) and the
+market-contract refusals (a github tree URL or a query-bearing override
+aborts the build). Offline
 (或 `--force-offline`) it skips only the registry segment with an explicit
 notice and still exercises the whole signing chain. The GitHub Actions
 workflow `.github/workflows/company-catalog.yml` (manual trigger) installs,
@@ -170,7 +203,9 @@ builds the market package, and runs the selftest.
 
 `selftest` 用临时密钥在临时目录跑全链：market 库解析、密钥指纹交叉校验、
 allowlist 校验、真实 registry 抓取、构建→签名→验证（磁盘字节即规范字节）、
-sequence 严格递增（双向断言）、吊销重发、过期断言。离线（或
+sequence 严格递增（双向断言）、吊销重发、过期断言；repository-identity 段覆盖
+npm packument 双形式（对象形式 directory→subdirectory 用固定离线 fixture）与
+market 契约拒绝负例（github tree URL / 带 query 的覆盖会中止构建）。离线（或
 `--force-offline`）时仅跳过 registry 段并明示，核心签名链照跑。
 `.github/workflows/company-catalog.yml`（手动触发）安装、构建 market 包后跑
 selftest。

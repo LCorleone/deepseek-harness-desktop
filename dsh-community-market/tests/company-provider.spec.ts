@@ -231,6 +231,32 @@ describe('company catalog provider (content mode)', () => {
     })
   })
 
+  it('carries a signed repository subdirectory through to catalog items', async () => {
+    // Monorepo packages sign `{url, subdirectory}` (npm `repository.directory`);
+    // install-time verification compares both parts against the live npm
+    // metadata, so the catalog item must keep the subdirectory, not just the URL.
+    const { provider, context } = contentProviderScan(() => signedText(unsignedManifest({
+      packages: [packageEntry({
+        repository: {
+          url: 'https://github.com/example/company-monorepo',
+          subdirectory: 'packages/dsh-plugin-safe',
+        },
+      })],
+    })))
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    expect(snapshots[0]?.items).toHaveLength(1)
+    expect(snapshots[0]?.items[0]?.repository).toEqual({
+      url: 'https://github.com/example/company-monorepo',
+      subdirectory: 'packages/dsh-plugin-safe',
+    })
+    expect(provider.findVerifiedPackage('dsh-plugin-safe', '1.2.3')).toMatchObject({
+      packageName: 'dsh-plugin-safe',
+      version: '1.2.3',
+    })
+  })
+
   it('never emits revoked entries into the candidate stream', async () => {
     const { provider, context } = contentProviderScan(() => signedText())
 
@@ -466,6 +492,26 @@ describe('company catalog provider verification failures', () => {
     const { provider, context } = contentProviderScan(() => signedText(), sequenceStore)
 
     await expect(provider.scanCatalog!({}, context)).rejects.toThrow(/anti-rollback state is invalid/u)
+  })
+
+  it('fails closed when the persisted bytesSha256 is not lowercase sha256 hex', async () => {
+    const sequenceStore: CompanyManifestSequenceStore = {
+      // Otherwise-valid record; only the persisted byte digest is corrupt, so
+      // every same-sequence comparison would misfire were it trusted.
+      async load() {
+        return {
+          sequence: 42,
+          keyId,
+          verifiedAt: '2026-09-01T00:00:00.000Z',
+          bytesSha256: 'nothex',
+        } satisfies MarketCompanyManifestRecord
+      },
+      async save() { throw new Error('unused') },
+    }
+    const { provider, context } = contentProviderScan(() => signedText(), sequenceStore)
+
+    await expect(provider.scanCatalog!({}, context))
+      .rejects.toThrow('bytesSha256 must be lowercase sha256 hex')
   })
 
   it('rejects entries the v1 catalog contract cannot represent', async () => {

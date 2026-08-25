@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyRevocation, entryKey, loadAllowlist } from './allowlist.mjs'
+import { applyRevocation, entryKey, loadAllowlist, repositoryFromPackument } from './allowlist.mjs'
 import { createEphemeralKeyPair, fingerprintOfRawPublicKey, rawPublicKeyBytes } from './keys.mjs'
 import { fetchPackageDist, probeRegistry } from './registry.mjs'
 import {
@@ -116,24 +116,70 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     assert(readLastSequence(stateDir) === 1, 'persisted sequence was not bumped to 1')
     assert(first.verification.ok, `first verification failed: ${why(first.verification)}`)
     // Segment: the signed repository identity — every published entry carries
-    // the https repository URL that install-time verification back-links
-    // against live npm metadata.
+    // the https repository identity that install-time verification back-links
+    // against live npm metadata. Expected values go through the same market
+    // normalization the build applies (github owner/repository lowercased,
+    // git+/.git stripped), so the assertion compares identity, not spelling.
     for (const entry of entries) {
-      const expected = entry.repository ?? dists.get(entryKey(entry))?.repositoryUrl
+      const raw = entry.repository !== undefined
+        ? { url: entry.repository }
+        : dists.get(entryKey(entry))?.repository
       const signed = first.manifest.packages.find((pkg) => pkg.packageName === entry.packageName && pkg.version === entry.version)
       assert(signed !== undefined, `entry ${entryKey(entry)} missing from the published manifest`)
       assert(
         typeof signed.repository?.url === 'string' && signed.repository.url.length > 0,
         `published entry ${entryKey(entry)} carries no repository identity`,
       )
-      if (expected !== undefined) {
+      if (raw !== undefined) {
         assert(
-          signed.repository.url === expected,
-          `published entry ${entryKey(entry)} signed repository ${signed.repository.url} instead of the expected ${expected}`,
+          JSON.stringify(signed.repository) === JSON.stringify(market.normalizeRepositoryIdentity(raw)),
+          `published entry ${entryKey(entry)} signed repository ${JSON.stringify(signed.repository)} instead of the market-normalized identity of ${JSON.stringify(raw)}`,
         )
       }
     }
-    ok('repository-identity', `${String(entries.length)} signed entr${entries.length === 1 ? 'y' : 'ies'} carry the pinned https repository identity`)
+    // Fixed offline fixture (no network): the dominant npm packument object
+    // form ({url, type, directory}) must parse and flow through the whole
+    // assembly chain, with the monorepo `directory` mapped to `subdirectory`.
+    const monoEntry = {
+      packageName: 'company-mono-plugin',
+      version: '1.0.0',
+      bundlePatch: './cordis.patch.yml',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    }
+    const monoDist = {
+      integrity: `sha512-${createHash('sha512').update('company-mono-plugin selftest dist').digest('base64')}`,
+      repository: repositoryFromPackument({
+        type: 'git',
+        url: 'git+https://github.com/Example/Company-Mono.git',
+        directory: 'packages/company-mono-plugin',
+      }),
+    }
+    assert(
+      JSON.stringify(monoDist.repository) === JSON.stringify({
+        url: 'https://github.com/Example/Company-Mono',
+        subdirectory: 'packages/company-mono-plugin',
+      }),
+      'repositoryFromPackument mishandled the object form (directory must map to subdirectory, git+/.git stripped)',
+    )
+    const monoUnsigned = assembleUnsignedManifest({
+      market,
+      sequence: 90,
+      expiresAt: new Date(Date.now() + DAY_MS),
+      entries: [monoEntry],
+      dists: new Map([[entryKey(monoEntry), monoDist]]),
+    })
+    assert(
+      JSON.stringify(monoUnsigned.packages[0].repository) === JSON.stringify({
+        url: 'https://github.com/example/company-mono',
+        subdirectory: 'packages/company-mono-plugin',
+      }),
+      'the object packument form did not flow through assembly with directory→subdirectory',
+    )
+    ok(
+      'repository-identity',
+      `${String(entries.length)} signed entr${entries.length === 1 ? 'y carries' : 'ies carry'} the market-normalized repository identity; object packument form + directory→subdirectory verified on a fixed offline fixture`,
+    )
 
     // Segment: assembly must refuse an entry with no repository identity from
     // either source — such packages can never pass the install back-link.
@@ -141,6 +187,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     let rejected = false
     try {
       assembleUnsignedManifest({
+        market,
         sequence: 2,
         expiresAt: new Date(Date.now() + DAY_MS),
         entries: [anonymous],
@@ -150,7 +197,32 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       rejected = error instanceof Error && error.message.includes('no resolvable repository identity')
     }
     assert(rejected, 'assembly accepted an entry without any repository identity')
-    ok('build-sign-verify', 'sequence 1 manifest signed and verified from disk (canonical bytes, schema, trust root, signature)')
+    // Same refusal for a repository the market identity contract rejects: a
+    // github tree URL or any query string would sign, verify as a manifest,
+    // then brick the whole catalog on every desktop at the representable-entry
+    // check — so the build must abort, naming the entry and the rejected URL.
+    for (const override of ['https://github.com/o/r/tree/main', 'https://github.com/o/r?ref=main']) {
+      const unrepresentable = { ...structuredClone(entries[0]), repository: override }
+      let aborted = false
+      try {
+        assembleUnsignedManifest({
+          market,
+          sequence: 2,
+          expiresAt: new Date(Date.now() + DAY_MS),
+          entries: [unrepresentable],
+          dists,
+        })
+      } catch (error) {
+        aborted = error instanceof Error
+          && error.message.includes(entryKey(unrepresentable))
+          && error.message.includes(override)
+      }
+      assert(aborted, `assembly accepted a repository the market identity contract rejects (${override})`)
+    }
+    ok(
+      'build-sign-verify',
+      'sequence 1 manifest signed and verified from disk (canonical bytes, schema, trust root, signature); assembly aborts on missing and market-unrepresentable repository identities',
+    )
 
     // Segment: sequence strict monotonicity both ways.
     const second = publishManifest({
@@ -195,6 +267,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
 
     // Segment: expiry — expired now fails, an earlier clock still verifies.
     const expiredUnsigned = assembleUnsignedManifest({
+      market,
       sequence: 4,
       expiresAt: new Date(Date.now() - HOUR_MS),
       entries: revokedEntries,

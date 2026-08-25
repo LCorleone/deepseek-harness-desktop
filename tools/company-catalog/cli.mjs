@@ -115,7 +115,7 @@ async function resolveDists(entries) {
   const dists = new Map()
   for (const entry of entries) {
     const dist = await fetchPackageDist(entry.packageName, entry.version)
-    const repository = entry.repository ?? dist.repositoryUrl
+    const repository = entry.repository ?? dist.repository?.url
       ?? 'none resolvable (set repository in the allowlist or fix the npm metadata)'
     console.log(`registry: ${entryKey(entry)} → ${dist.integrity} (tarball ${dist.tarball}; repository ${repository})`)
     dists.set(entryKey(entry), dist)

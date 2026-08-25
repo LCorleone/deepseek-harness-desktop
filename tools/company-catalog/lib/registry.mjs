@@ -5,7 +5,7 @@
  * repack tarballs break the integrity-to-tarball binding the manifest signs.
  */
 
-import { normalizeRepositoryUrl } from './allowlist.mjs'
+import { repositoryFromPackument } from './allowlist.mjs'
 
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
 
@@ -97,9 +97,11 @@ export async function fetchPackageDist(packageName, version) {
     integrity: dist.integrity,
     tarball: tarball.href,
     url,
-    // The raw npm spellings (`git+https://….git`) are normalized here so the
-    // manifest signs exactly the https URL shape the verifier compares.
-    repositoryUrl: normalizeRepositoryUrl(body.repository),
+    // The npm spellings (`git+https://….git`, string or object form with a
+    // monorepo `directory`) are parsed here into the raw identity shape; the
+    // build later runs it through the market identity contract so the
+    // manifest signs exactly the URL the verifier compares.
+    repository: repositoryFromPackument(body.repository),
   }
 }
 

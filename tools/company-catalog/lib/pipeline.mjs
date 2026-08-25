@@ -77,12 +77,24 @@ export function expiryFromDays(days = 90) {
  * deterministic for reviewing and diffing.
  *
  * Every entry's repository identity is resolved here and signed: an explicit
- * allowlist `repository` wins; otherwise the https URL is derived from the
- * same registry response that produced the integrity. An entry with neither
- * is rejected — packages without a verifiable repository identity can never
+ * allowlist `repository` wins; otherwise the identity is derived from the
+ * same registry response that produced the integrity (string or object
+ * packument form, `directory` → `subdirectory`). An entry with neither is
+ * rejected — packages without a verifiable repository identity can never
  * pass the install-time back-link check, so they must not be listed.
+ *
+ * Every resolved identity — override or derived — is then run through the
+ * market's `normalizeRepositoryIdentity`, the exact contract the desktop
+ * verifier applies when re-normalizing the signed row: a URL the market
+ * would refuse (query, fragment, empty path, a github URL that is not a bare
+ * owner/repository pair, …) aborts the build right here. A lax entry that
+ * slipped through would otherwise sign, verify as a manifest, then brick
+ * the whole catalog at `assertRepresentableEntry` on every desktop.
  */
-export function assembleUnsignedManifest({ sequence, expiresAt, entries, dists }) {
+export function assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists }) {
+  if (market === null || typeof market !== 'object' || typeof market.normalizeRepositoryIdentity !== 'function') {
+    throw new TypeError('assembleUnsignedManifest requires the market library (normalizeRepositoryIdentity) — load it with loadMarketLibrary()')
+  }
   const packages = [...entries]
     .sort((a, b) => (a.packageName === b.packageName
       ? (a.version < b.version ? -1 : a.version > b.version ? 1 : 0)
@@ -92,11 +104,23 @@ export function assembleUnsignedManifest({ sequence, expiresAt, entries, dists }
       if (dist === undefined) {
         throw new Error(`no registry dist was resolved for ${entryKey(entry)}`)
       }
-      const repositoryUrl = entry.repository ?? dist.repositoryUrl
-      if (repositoryUrl === undefined) {
+      const rawRepository = entry.repository !== undefined
+        ? { url: entry.repository }
+        : dist.repository
+      if (rawRepository === undefined) {
         throw new Error(
           `${entryKey(entry)} has no resolvable repository identity: set repository in the allowlist ` +
           'or publish the package with an https repository field — packages without one cannot be listed',
+        )
+      }
+      let repository
+      try {
+        repository = market.normalizeRepositoryIdentity(rawRepository)
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(
+          `${entryKey(entry)} repository ${rawRepository.url} is rejected by the market identity contract ` +
+          `(${detail}) — fix the allowlist repository override or the npm repository metadata; the build aborts`,
         )
       }
       return {
@@ -104,7 +128,7 @@ export function assembleUnsignedManifest({ sequence, expiresAt, entries, dists }
         version: entry.version,
         integrity: dist.integrity,
         bundlePatch: entry.bundlePatch,
-        repository: { url: repositoryUrl },
+        repository,
         revoked: entry.revoked,
         runtime: entry.runtime,
       }
@@ -169,7 +193,7 @@ export function publishManifest({
   outPath,
   stateDir,
 }) {
-  const unsigned = assembleUnsignedManifest({ sequence, expiresAt, entries, dists })
+  const unsigned = assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists })
   const { manifest, text, fingerprint } = signUnsignedManifest(market, unsigned, privateKey, keyId, expectedFingerprint)
   const verification = verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence })
   if (!verification.ok) {

@@ -55,6 +55,35 @@ export function normalizeRepositoryUrl(value) {
 }
 
 /**
+ * Parse an npm packument `repository` field into the raw identity shape the
+ * manifest signs: the dominant object form
+ * (`{"url":"https://github.com/o/r","type":"git","directory":"packages/r"}`)
+ * as well as the legacy bare-string spelling. Semantics mirror the market
+ * installer's `npmRepository()`: the `git+` transport prefix and trailing
+ * `.git` suffix are stripped, a credential-free https URL is required, and an
+ * object `directory` (monorepo packages) maps to `subdirectory`. Returns
+ * `{url, subdirectory?}` or undefined when the value cannot yield a usable
+ * https URL; whether the parsed identity is representable in the market
+ * contract is decided later, by the build (never silently dropped).
+ */
+export function repositoryFromPackument(value) {
+  const repository = typeof value === 'string'
+    ? { url: value }
+    : isPlainObject(value)
+      ? value
+      : undefined
+  if (repository === undefined || typeof repository.url !== 'string') return undefined
+  const url = normalizeRepositoryUrl(repository.url)
+  if (url === undefined) return undefined
+  return {
+    url,
+    ...(typeof repository.directory === 'string' && repository.directory.length > 0
+      ? { subdirectory: repository.directory }
+      : {}),
+  }
+}
+
+/**
  * Validate and normalize one allowlist entry. Returns
  * `{ok: true, value: {packageName, version, bundlePatch, repository?, revoked, runtime}}`
  * or `{ok: false, reason}`. Optional runtime ranges are kept only when

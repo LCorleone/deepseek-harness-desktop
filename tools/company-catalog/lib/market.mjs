@@ -1,8 +1,10 @@
 /**
  * Resolve the `dsh-community-market` signing library (P2-1) used by every
  * pipeline stage: canonical JSON serialization, detached ed25519 signing,
- * and full manifest verification. The tool itself has no dependencies
- * beyond Node built-ins; the market package provides the crypto contract.
+ * full manifest verification, and the repository identity contract the build
+ * applies to every resolved repository before signing it. The tool itself
+ * has no dependencies beyond Node built-ins; the market package provides the
+ * crypto and identity contracts.
  */
 
 import { existsSync } from 'node:fs'
@@ -13,6 +15,7 @@ const REQUIRED_EXPORTS = [
   'createCompanyManifestSignature',
   'ed25519PublicKeyFingerprint',
   'findCompanyManifestPackage',
+  'normalizeRepositoryIdentity',
   'verifyCompanyManifest',
 ]
 
