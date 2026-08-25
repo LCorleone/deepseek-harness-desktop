@@ -24,6 +24,7 @@
  * persisted value is rejected as `stale-sequence` in every future process.
  */
 
+import { createHash } from 'node:crypto'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CatalogQuery } from '../contracts/generated/catalog-query.js'
 import type { CatalogSnapshot } from '../contracts/generated/catalog-snapshot.js'
@@ -409,17 +410,48 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     const loaded = await this.loadManifestBytes(context)
     context.signal.throwIfAborted()
     const previous = await this.sequenceStore?.load()
+    let verifiedBytesSha256: string | undefined
     context.signal.throwIfAborted()
     if (previous !== undefined && !validCompanyManifestRecord(previous)) {
       // Defense in depth: never let a corrupt injected store silently reset
       // the anti-rollback ratchet.
       throw new Error('company manifest anti-rollback state is invalid')
     }
+    // Origin mode keeps the strict-increase ratchet: fetched manifests
+    // must always advance past the persisted sequence. Content mode treats a
+    // same-sequence re-observation as a normal replay only when the verified
+    // bytes are identical (the embedded asset is unchanged); the same
+    // sequence with different bytes, or any lower sequence, is rejected as a
+    // rollback/replay attempt.
     const verification = verifyCompanyManifest(loaded.raw, {
       trustRoots: this.trustRoots,
-      ...(previous === undefined ? {} : { lastSeenSequence: previous.sequence }),
+      ...(this.mode === 'origin' && previous !== undefined
+        ? { lastSeenSequence: previous.sequence }
+        : {}),
       now: this.now,
     })
+    if (this.mode === 'content' && previous !== undefined && verification.ok) {
+      const bytesSha256 = createHash('sha256').update(
+        typeof loaded.raw === 'string' ? Buffer.from(loaded.raw, 'utf8') : Buffer.from(loaded.raw),
+      ).digest('hex')
+      if (verification.manifest.sequence < previous.sequence) {
+        throw new CompanyCatalogUntrustedError(
+          'stale-sequence',
+          `embedded manifest sequence ${verification.manifest.sequence} regressed below the persisted ratchet ${previous.sequence}`,
+        )
+      }
+      if (
+        verification.manifest.sequence === previous.sequence
+        && previous.bytesSha256 !== undefined
+        && previous.bytesSha256 !== bytesSha256
+      ) {
+        throw new CompanyCatalogUntrustedError(
+          'stale-sequence',
+          `embedded manifest re-observed at sequence ${previous.sequence} with different bytes`,
+        )
+      }
+      verifiedBytesSha256 = bytesSha256
+    }
     if (!verification.ok) {
       // Verification failure discards the entire catalog for this scan. The
       // last verified scan state below is intentionally kept: it remains the
@@ -435,6 +467,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
       sequence: verification.manifest.sequence,
       keyId: verification.keyId,
       verifiedAt,
+      ...(verifiedBytesSha256 === undefined ? {} : { bytesSha256: verifiedBytesSha256 }),
     })
     context.signal.throwIfAborted()
     const scan = buildScan(verification.manifest, context.source, {

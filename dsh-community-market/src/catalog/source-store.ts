@@ -25,6 +25,8 @@ export interface MarketCompanyManifestRecord {
   readonly sequence: number
   readonly keyId: string
   readonly verifiedAt: string
+  /** sha256 of the verified canonical bytes; content-mode replay detection. */
+  readonly bytesSha256?: string
 }
 
 export interface MarketSettingsDocument {

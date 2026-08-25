@@ -420,9 +420,19 @@ describe('company catalog provider verification failures', () => {
     expect(provider.verification()?.sequence).toBe(42)
     expect(sequenceStore.records).toHaveLength(1)
 
+    // Same-sequence replay of the identical embedded asset is the normal
+    // content-mode every-scan case and must keep verifying; the same
+    // sequence with different bytes is a replay attack and stays rejected.
     const equal = signedText(unsignedManifest({ sequence: 42 }))
     const repeating = contentProviderScan(() => equal, sequenceStore)
-    expect((await untrusted(repeating.provider.scanCatalog!({}, repeating.context))).code).toBe('stale-sequence')
+    await expect(repeating.provider.scanCatalog!({}, repeating.context)).resolves.toBeTruthy()
+
+    const mutated = signedText(unsignedManifest({
+      sequence: 42,
+      packages: [packageEntry(), packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '9.9.9', revoked: false })],
+    }))
+    const replaying = contentProviderScan(() => mutated, sequenceStore)
+    expect((await untrusted(replaying.provider.scanCatalog!({}, replaying.context))).code).toBe('stale-sequence')
   })
 
   it('refuses to adopt a manifest when the sequence ratchet cannot be persisted', async () => {

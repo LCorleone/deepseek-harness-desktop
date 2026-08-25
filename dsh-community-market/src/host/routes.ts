@@ -87,6 +87,7 @@ const SETTINGS_SCHEMA = z.object({
     sequence: z.number().step(1),
     keyId: z.string(),
     verifiedAt: z.string(),
+    bytesSha256: z.string().default(undefined as never),
   }).default(undefined as never),
 }) as unknown as z<MarketSettingsDocument>
 
@@ -619,7 +620,11 @@ function reconcileInstallations(
   })
 }
 
-function viewBuiltIns(): readonly MarketBuiltInProvider[] {
+function viewBuiltIns(locked?: boolean): readonly MarketBuiltInProvider[] {
+  // Locked deployments pin the catalog to the signed company source; the
+  // partner providers are not addable and are hidden from the settings list
+  // (their mutations are already rejected with 403 by the source lock).
+  if (locked === true) return []
   return BUILT_IN_PROVIDERS.map(provider => ({ ...provider }))
 }
 
@@ -885,7 +890,7 @@ export function registerMarketRoutes(
         const desktopActions = desktopActionsProvider?.get()
         const response: MarketStateResponse = {
           sources: await service.listSources(),
-          builtIns: viewBuiltIns(),
+          builtIns: viewBuiltIns(sourceLock?.locked),
           desktopActions: {
             openTerminal: desktopActions !== undefined,
             requestRestart: desktopActions !== undefined
