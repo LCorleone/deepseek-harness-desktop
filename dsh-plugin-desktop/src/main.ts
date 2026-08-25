@@ -416,6 +416,15 @@ async function start(): Promise<void> {
     const profileStartup = beginDesktopProfileStartup(selectionStatePath, homeDir)
     const activeProfileName = profileStartup.profileName
     const activeProfileDir = resolveProfileDir(activeProfileName, homeDir)
+    // Recovery can open before Profile composition and Host boot. Fix the
+    // launcher-owned terminal identity as soon as Profile selection succeeds
+    // so every recovery entry path exposes the same terminal action.
+    runtime.configureTerminal({
+      profileName: activeProfileName,
+      profileDir: activeProfileDir,
+      homeDir,
+    })
+    recoveryTerminalAvailable = true
     const recoveryProfileToken = randomUUID()
     startupRecoveryProfileActions = {
       token: recoveryProfileToken,
@@ -653,14 +662,6 @@ async function start(): Promise<void> {
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const releasePackageResolver = installProfilePackageResolver(prepared.bareModuleBaseUrl)
-    // Configure the launcher-owned terminal before Host boot so the native
-    // recovery window can still open it when profile composition fails.
-    runtime.configureTerminal({
-      profileName: activeProfileName,
-      profileDir: prepared.profile.dir,
-      homeDir: prepared.homeDir,
-    })
-    recoveryTerminalAvailable = true
     const ctx = await boot(
       BIN_NAME,
       prepared.rootConfig,
