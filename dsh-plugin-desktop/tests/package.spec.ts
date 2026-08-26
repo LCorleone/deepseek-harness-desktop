@@ -172,6 +172,28 @@ describe('published package surface', () => {
     expect(installedBoot).toContain(marker)
   })
 
+  it('patches the agent loop to stop after one empty-name tool call', () => {
+    const patchPath = './patches/dsh-agent-loop@0.1.1-rc.2.patch'
+    expect(workspaceManifest.resolutions).toMatchObject({
+      '@deepseek-ai/dsh-agent-loop@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
+      '@deepseek-ai/dsh-agent-loop@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
+    })
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedLoop = readFileSync(new URL(
+      'node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js',
+      packageRoot,
+    ), 'utf8')
+    for (const marker of [
+      'const EMPTY_TOOL_NAME_ERROR = "assistant emitted a tool call with an empty tool name";',
+      'const EMPTY_TOOL_NAME_RESULT = "Error: assistant emitted a tool call with an empty tool name.',
+      'appendEmptyToolCallFailure(session, turn, step, first.block);',
+      'if (hasEmptyToolCallName(candidate.block)) break;',
+    ]) {
+      expect(patch).toContain(marker)
+      expect(installedLoop).toContain(marker)
+    }
+  })
+
   it('patches the browse panel with the Windows native-picker icon bridge', () => {
     const patchPath = './patches/dsh-client-ui-directory-picker-browse@0.1.1-rc.2.patch'
     expect(workspaceManifest.resolutions).toMatchObject({
