@@ -70,6 +70,8 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **C 链（CLI 策略 env 注入）**：`e069eea82a`（pnpm.ts 将 `cliPolicyEnvironment` 注入 spawn 子进程，P3 漏网修复）——**#18 包不含此修复**；下一包（≥2.0.3）才是全修复版
 - **版本标记**：2.0.3 起试点可区分构建（旧包 2.0.2 = 不含 C 链；新包 2.0.3 = A+B+C 全量）
 - 评审其余结论：M5 封闭白名单记待办（见部署侧待办 ⑧）；Top3 风险 = node-pty 首跑 / TLS 真因 / 白名单封闭，均已对应上述跟踪点
+- **D 链（市场 flag 误拒，`a238d27d97` 已 push，构建 #20）**：#19（2.0.3）市场安装报「exactly one package argument (got 2)」——市场链 spawn 的 desktop-cli 带 `--registry=<pinned>` flag，锁定通道把它当第二个包参数拒了（P2-5 只考虑了手输 pkg@ver 场景）。修复：通道精确消费安装器注入的 flag（--save-exact 一次 + 钉值 registry flag 至多两个，与 pnpm 审计同白名单，恶意 registry 值负例覆盖）。至此今日四链 A/B/C/D 全修，下包预期走到 pnpm 真实执行，唯一剩余变数=node-pty 首跑
+- **8/26 评审修复收尾**（`9281384714`，已 push）：M1/M2 回归测试（策略 env 注入+stderr 尾部）、M3 版本 2.0.3、M4 devlog 补记、M6 env 断言 TLS stub、L1 物化前 ensure、L2 原子写、L3 市场回滚带原始错误；桌面 1109/market 367 全绿
 
 ## 部署侧待办（运营项，代码已备）
 - **终审（2026-08-23）**：整体评价工程质量高，但发现 P0 交付完整性缺口：① L2 主链路未接线②发布门禁盲区 → **已全部修复于 `d63c85e88d`（已 push）**：market 锁定+有根时构造签名目录全链（provider content/origin 双模式 + sequence store + 签名 authority + 不可信闭锁，替换 dshfind 占位与 rejectAll；锁定无根 = 占位 + 显式警告 + 门禁拦截，启动永不因市场失败）；desktop CLI/boot 补 origin 模式；boot 树摘要持久化指纹缓存（命中跳过全量哈希，6 用例验证）；门禁补盲（trustRoots 非空 + content 模式打包树 manifest 构建期验签）；策略分发 ADR（main.ts 解析一次=唯一权威，其余通道皆投影，EN+zh+i18n 入册）。worker 被 API 限流打断一次，由第二个 worker 盘点半成品后续完；根 check 全绿 desktop 1100 / market 358
