@@ -22,6 +22,7 @@ function baseWindowOptions(
     minWidth: spec.minWidth,
     minHeight: spec.minHeight,
     show: false,
+    backgroundColor: '#202124',
     icon,
     webPreferences: {
       preload,

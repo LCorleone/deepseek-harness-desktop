@@ -948,9 +948,14 @@ describe('Electron desktop runtime', () => {
     expect(trayClick).toEqual(expect.any(Function))
     expect(close).toEqual(expect.any(Function))
 
-    window?.isMinimized.mockReturnValueOnce(true)
+    expect(window?.show).toHaveBeenCalledOnce()
+    expect(window?.focus).toHaveBeenCalledOnce()
+
+    window?.isVisible.mockReturnValue(true)
     ready()
+    window?.isMinimized.mockReturnValue(true)
     activate()
+    window?.isMinimized.mockReturnValue(false)
     trayClick()
     expect(window?.restore).toHaveBeenCalledOnce()
     expect(window?.show).toHaveBeenCalledTimes(3)
@@ -966,6 +971,29 @@ describe('Electron desktop runtime', () => {
     close(quittingCloseEvent)
     expect(quittingCloseEvent.preventDefault).not.toHaveBeenCalled()
     expect(window?.hide).toHaveBeenCalledOnce()
+
+    await release()
+  })
+
+  it('reveals the startup surface before ready-to-show and does not re-show a visible window', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(spec)
+
+    await runtime.mountScheduled()
+
+    const window = electron.browserWindows[0]
+    const ready = window?.once.mock.calls.find(([event]) => event === 'ready-to-show')?.[1]
+    expect(ready).toEqual(expect.any(Function))
+    expect(window?.show).toHaveBeenCalledOnce()
+    expect(window?.focus).toHaveBeenCalledOnce()
+
+    window?.isVisible.mockReturnValue(true)
+    ready()
+
+    expect(window?.show).toHaveBeenCalledOnce()
+    expect(window?.focus).toHaveBeenCalledOnce()
 
     await release()
   })
@@ -991,8 +1019,8 @@ describe('Electron desktop runtime', () => {
     expect(click).toEqual(expect.any(Function))
     click()
     expect(electron.app.setBadgeCount).toHaveBeenLastCalledWith(0)
-    expect(window?.show).toHaveBeenCalledOnce()
-    expect(window?.focus).toHaveBeenCalledOnce()
+    expect(window?.show).toHaveBeenCalledTimes(2)
+    expect(window?.focus).toHaveBeenCalledTimes(2)
 
     window?.isFocused.mockReturnValue(true)
     runtime.notifyAttention({ title: 'Ignored', body: 'Focused window' })
@@ -1032,8 +1060,8 @@ describe('Electron desktop runtime', () => {
     window?.isFullScreen.mockReturnValue(false)
     runtime.show()
     expect(window?.setFullScreen.mock.calls).toEqual([[false], [true]])
-    expect(window?.show).toHaveBeenCalledOnce()
-    expect(window?.focus).toHaveBeenCalledOnce()
+    expect(window?.show).toHaveBeenCalledTimes(2)
+    expect(window?.focus).toHaveBeenCalledTimes(2)
 
     await release()
   })
@@ -1057,8 +1085,8 @@ describe('Electron desktop runtime', () => {
 
     expect(window?.hide).not.toHaveBeenCalled()
     expect(window?.setFullScreen.mock.calls).toEqual([[false], [true]])
-    expect(window?.show).toHaveBeenCalledOnce()
-    expect(window?.focus).toHaveBeenCalledOnce()
+    expect(window?.show).toHaveBeenCalledTimes(2)
+    expect(window?.focus).toHaveBeenCalledTimes(2)
 
     await release()
   })
@@ -1100,10 +1128,13 @@ describe('Electron desktop runtime', () => {
 
     electron.app.isHidden.mockReturnValue(true)
     window?.isVisible.mockReturnValue(false)
+    const appShowCount = electron.app.show.mock.calls.length
+    const focusCountBeforeReveal = window?.focus.mock.calls.length ?? 0
     didBecomeActive()
-    expect(electron.app.show).toHaveBeenCalledOnce()
-    expect(electron.app.show.mock.invocationCallOrder[0]).toBeLessThan(window?.show.mock.invocationCallOrder[0] ?? Infinity)
-    expect(window?.focus).toHaveBeenCalledOnce()
+    expect(electron.app.show).toHaveBeenCalledTimes(appShowCount + 1)
+    expect((electron.app.show.mock.invocationCallOrder.at(-1) ?? Infinity))
+      .toBeLessThan(window?.show.mock.invocationCallOrder.at(-1) ?? Infinity)
+    expect(window?.focus).toHaveBeenCalledTimes(focusCountBeforeReveal + 1)
 
     electron.app.isHidden.mockReturnValue(false)
     window?.isVisible.mockReturnValue(true)
@@ -1710,8 +1741,8 @@ describe('Electron desktop runtime', () => {
     expect(notification?.once).toHaveBeenCalledWith('click', expect.any(Function))
     const click = notification?.once.mock.calls.find(([event]) => event === 'click')?.[1]
     click()
-    expect(activeWindow?.show).toHaveBeenCalledOnce()
-    expect(activeWindow?.focus).toHaveBeenCalledOnce()
+    expect(activeWindow?.show).toHaveBeenCalledTimes(2)
+    expect(activeWindow?.focus).toHaveBeenCalledTimes(2)
 
     await release()
   })
