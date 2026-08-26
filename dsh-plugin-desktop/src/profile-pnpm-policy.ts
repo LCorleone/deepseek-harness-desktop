@@ -10,10 +10,11 @@ import { join } from 'node:path'
  * script unless it is allowlisted, and pnpm 11 turns "build scripts were
  * ignored" into a nonzero exit that fails the entire `dsh plugin add` (the
  * upstream profile template cannot ship such a list). The spelling moved
- * across pnpm generations: ≤11.22 reads `onlyBuiltDependencies` (a name
- * list) while ≥11.23 reads `allowBuilds` (a name→boolean map) and actively
- * deletes the legacy key, so Desktop maintains BOTH spellings; pnpm keeps
- * the one it knows and ignores the other. node-pty ships prebuilds its
+ * across pnpm generations: pnpm 10.0–10.25 reads `onlyBuiltDependencies`
+ * (a name list), 10.26+ also reads `allowBuilds` (a name→boolean map), and
+ * pnpm 11 silently ignores the legacy key entirely (11.23 additionally
+ * deletes it when writing), so Desktop maintains BOTH spellings; each pnpm
+ * keeps the one it knows and ignores the other. node-pty ships prebuilds its
  * install script merely copies (the terminal panel depends on it), and
  * esbuild/protobufjs are the two most common harmless build-time
  * dependencies — approving these keeps ordinary plugin installs from
@@ -108,12 +109,23 @@ function mergeMapBlock(lines: string[], key: string, names: readonly string[]): 
     else lines.push('', ...block)
     return
   }
+  // Indentation guard: only lines strictly more indented than the key line
+  // belong to this block. Without it, a following top-level key (or a block
+  // appended later in this pass) would match the entry pattern and the
+  // splice would corrupt the file with entries inside the wrong block —
+  // invalid YAML pnpm refuses and ensure does not self-heal.
+  const blockIndent = lines[keyIndex]!.length - lines[keyIndex]!.trimStart().length
   const existing: string[] = []
   let entryIndent = DEFAULT_LIST_INDENT
   let lastEntryIndex = keyIndex
   for (let index = keyIndex + 1; index < lines.length; index += 1) {
-    const match = MAP_ENTRY_PATTERN.exec(lines[index]!)
-    if (match === null) break
+    const line = lines[index]!
+    if (line.trim().length > 0) {
+      const indent = line.length - line.trimStart().length
+      if (indent <= blockIndent) break
+    }
+    const match = MAP_ENTRY_PATTERN.exec(line)
+    if (match === null) continue
     const name = listItemName(match[2] ?? '')
     if (name.length > 0) existing.push(name)
     if (lastEntryIndex === keyIndex) entryIndent = match[1] ?? DEFAULT_LIST_INDENT

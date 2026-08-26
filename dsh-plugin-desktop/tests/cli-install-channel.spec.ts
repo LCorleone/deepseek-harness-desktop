@@ -184,6 +184,21 @@ describe('locked plugin-add authorization', () => {
     )
     expect(hostileRegistry.allowed).toBe(false)
 
+    const thirdRegistryFlag = await authorizeLockedPluginAdd(
+      [
+        '--registry=https://registry.npmjs.org/',
+        '--@scope:registry=https://registry.npmjs.org/',
+        '--@other:registry=https://registry.npmjs.org/',
+        'example-plugin@1.0.0',
+      ],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(thirdRegistryFlag.allowed).toBe(false)
+    if (!thirdRegistryFlag.allowed) {
+      expect(thirdRegistryFlag.reason).toContain('exactly one package argument')
+    }
+
     const otherFlag = await authorizeLockedPluginAdd(
       ['--save-dev', 'example-plugin@1.0.0'],
       lockedCatalogPolicy(),

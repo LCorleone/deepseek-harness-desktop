@@ -124,6 +124,40 @@ strictDepBuilds:
     }
   })
 
+  it('merges missing entries into an existing allowBuilds map without corrupting later blocks', () => {
+    // The pilot population was guided to hand-edit this file, so a partial
+    // allowBuilds map followed by other keys must stay valid YAML.
+    const { root, dir } = profileRoot(
+      `${UPSTREAM_TEMPLATE}allowBuilds:\n  user-dep: true\nstrictDepBuilds:\n  false\n`,
+    )
+
+    try {
+      ensureProfilePnpmBuildApproval(dir)
+
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
+        `${UPSTREAM_TEMPLATE}allowBuilds:\n  user-dep: true\n  node-pty: true\n  esbuild: true\n  protobufjs: true\nstrictDepBuilds:\n  false\n${'onlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs\n'}`,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an explicit strictDepBuilds: true from the user', () => {
+    const { root, dir } = profileRoot(
+      `${UPSTREAM_TEMPLATE}strictDepBuilds:\n  true\n`,
+    )
+
+    try {
+      ensureProfilePnpmBuildApproval(dir)
+
+      const content = readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')
+      expect(content).toContain('strictDepBuilds:\n  true\n')
+      expect(content).not.toContain('strictDepBuilds:\n  false\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('is idempotent: a second run leaves the file untouched', () => {
     const { root, dir } = profileRoot(
       `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - node-pty\n  - user-native-dep\n`,
