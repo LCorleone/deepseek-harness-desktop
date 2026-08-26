@@ -88,10 +88,7 @@ describe('1024Store v2 install target normalization', () => {
   ] as const)('projects the npm identity from a %s without retaining the command', async (_label, install, name) => {
     const snapshot = await adapt(install)
 
-    expect(snapshot.items[0]).toMatchObject({
-      package: { registry: 'npm', name },
-      installPolicy: { mode: 'manual', reason: 'build-policy-unverified' },
-    })
+    expect(snapshot.items[0]).toMatchObject({ package: { registry: 'npm', name } })
     expect(snapshot.items[0]).not.toHaveProperty('latestVersion')
     expect(JSON.stringify(snapshot)).not.toContain(install)
   })
@@ -203,7 +200,6 @@ describe('1024Store v2 install target normalization', () => {
       categories: ['tools'],
       repository: { url: 'https://github.com/example/plugin-150' },
       package: { registry: 'npm', name: 'dsh-plugin-150' },
-      installPolicy: { mode: 'manual', reason: 'build-policy-unverified' },
       media: { icon: { role: 'publisher-avatar', alt: 'example' } },
     })
     expect(register).toHaveBeenCalledTimes(205)

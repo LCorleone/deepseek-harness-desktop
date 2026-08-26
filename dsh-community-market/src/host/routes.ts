@@ -132,10 +132,8 @@ function sendInstallError(res: ServerResponse, cause: unknown): void {
       : cause.code === 'conflict' ? 409
         : cause.code === 'intent-expired' ? 410
           : cause.code === 'verification-failed' ? 422
-            : cause.code === 'build-approval-required' ? 422
-              : cause.code === 'build-policy-changed' ? 422
-                : cause.code === 'operation-failed' ? 502
-                  : 500
+            : cause.code === 'operation-failed' ? 502
+              : 500
   sendJson(res, status, { error: cause.message, code: cause.code })
 }
 

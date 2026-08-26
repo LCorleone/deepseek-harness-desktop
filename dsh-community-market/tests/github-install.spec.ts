@@ -40,27 +40,8 @@ describe('GitHub package verification', () => {
       version: '1.2.3',
       bundlePatch: './patches/plugin.patch',
       source,
-      requiresBuildApproval: false,
     })
     expect(http.getJson).toHaveBeenCalledWith(url, expect.any(AbortSignal), { allowedOrigin: 'https://raw.githubusercontent.com' })
-  })
-
-  it('reports pinned GitHub lifecycle scripts as requiring manual build approval', async () => {
-    const url = githubPackageManifestUrl(source)
-    const http = {
-      getJson: vi.fn(async () => ({
-        finalUrl: url,
-        value: {
-          name: '@example/dsh-plugin',
-          version: '1.2.3',
-          scripts: { prepare: 'node build.js' },
-          dsh: { bundle: { patch: './patches/plugin.patch' } },
-        },
-      })),
-    }
-
-    await expect(createGitHubPackageVerifier(http).verify(source, new AbortController().signal))
-      .resolves.toMatchObject({ requiresBuildApproval: true })
   })
 
   it.each([

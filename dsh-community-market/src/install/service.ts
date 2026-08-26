@@ -19,7 +19,6 @@ import {
   githubPackageTarget,
   type GitHubPackageVerification,
 } from './github.js'
-import { packageRequiresBuildApproval } from './build-policy.js'
 import { manualInstallHints } from './manual.js'
 
 const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
@@ -92,8 +91,6 @@ export type MarketInstallErrorCode =
   | 'conflict'
   | 'intent-expired'
   | 'verification-failed'
-  | 'build-approval-required'
-  | 'build-policy-changed'
   | 'operation-failed'
   | 'persistence-failed'
 
@@ -111,7 +108,6 @@ interface InstallCandidate {
   readonly providerId: string
   readonly itemId: string
   readonly displayName: string
-  readonly reviewedVersion: string
   readonly packageName?: string
   readonly source?: NormalizedGitHubInstallSource
   readonly savedAt: number
@@ -149,7 +145,6 @@ export interface MarketNpmPackageVerifier {
 
 export interface MarketNpmPackageVerification {
   readonly version: string
-  readonly requiresBuildApproval: boolean
 }
 
 export interface MarketPackageVerification extends MarketNpmPackageVerification {
@@ -248,10 +243,7 @@ export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPac
       if (!safeBundlePatch(patch)) {
         throw new MarketInstallError('verification-failed', 'The npm package does not declare a valid DSH bundle.')
       }
-      return {
-        version: manifest.version,
-        requiresBuildApproval: packageRequiresBuildApproval(manifest),
-      }
+      return { version: manifest.version }
     },
   }
 }
@@ -449,8 +441,6 @@ export class MarketInstallService {
         || item.provenance.itemId !== item.id
         || (packageName === undefined && source === undefined)
         || (packageName !== undefined && !marketManagedPackage(packageName))
-        || item.installPolicy?.mode !== 'automatic'
-        || !stableExactVersion(item.installPolicy.reviewedVersion)
       ) {
         continue
       }
@@ -460,7 +450,6 @@ export class MarketInstallService {
         providerId: snapshot.source.providerId,
         itemId: item.id,
         displayName: item.displayName,
-        reviewedVersion: item.installPolicy.reviewedVersion,
         ...(packageName === undefined ? {} : { packageName }),
         ...(source === undefined ? {} : { source }),
         savedAt: this.now(),
@@ -531,18 +520,6 @@ export class MarketInstallService {
       throw cause
     }
     operationSignal.throwIfAborted()
-    if (verification.requiresBuildApproval) {
-      throw new MarketInstallError(
-        'build-approval-required',
-        'This plugin release requires local build-script approval. Use the displayed DSH terminal command to review and install it manually.',
-      )
-    }
-    if (verification.version !== candidate.reviewedVersion) {
-      throw new MarketInstallError(
-        'build-policy-changed',
-        'The registry latest version is not the release covered by the reviewed build policy. Refresh the source or use the displayed DSH terminal command.',
-      )
-    }
     this.assertOpen()
     if (this.candidates.get(key) !== candidate) {
       throw new MarketInstallError('not-available', 'The catalog source changed during verification. Refresh it and try again.')

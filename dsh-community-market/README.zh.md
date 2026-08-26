@@ -11,7 +11,7 @@ DSH Community Market 是 [DSH Desktop](../README.md) 内置的开放插件市场
 Market 包含四个视图：
 
 1. **发现**：浏览当前来源，支持搜索、分类筛选、详情和来源归属信息。
-2. **可安装**：显示能够提供唯一 npm package 身份、且经审核确认无需构建脚本许可的标准化条目；来源提供的版本不会直接成为最终安装目标。
+2. **可安装**：显示能够提供唯一 npm package 身份的标准化条目，不信任来源提供的版本。
 3. **已安装**：读取当前 Profile 的直接插件依赖。无论插件由本 Market、其他市场还是 DSH CLI 安装，都会显示；可移除插件只提供**卸载**，核心 bundle 保持只读。
 4. **来源**：保存、排序和选择目录来源；同一时间只选择一个来源浏览。
 
@@ -22,12 +22,11 @@ Renderer 在安装时不会提交 package name 或 package-manager 命令，只�
 自动安装只保留很小的一组资格条件：
 
 - 当前目录条目提供且只提供一个合法 npm package name；
-- 经过审核的本地 adapter 明确标记一个精确稳定 release 无需构建脚本许可；
 - 该 package 不是 Desktop 自己拥有的产品 bundle；
-- npm 官方 registry 的 `latest` 接口返回相同 package name 和同一个经过审核的精确稳定版本；以及
-- npm manifest 声明合法的 `dsh.bundle.patch` 路径，且没有直接安装生命周期脚本或原生 `gypfile` 要求。
+- npm 官方 registry 的 `latest` 接口返回相同 package name 和一个精确稳定版本；以及
+- npm manifest 声明合法的 `dsh.bundle.patch` 路径。
 
-未审核的来源版本仍只作信息展示；adapter 的受审版本会把 build-allowance 证据绑定到一个 release。Desktop 会独立复查 npm `latest` 和当前 manifest；如果 latest 已变化或 release 新增安装/构建 hook，会在修改 Profile 前停止。仓库是否一致、deprecated metadata、engine 范围和 tarball integrity metadata 仍不在这组窄资格检查内。
+来源版本、验证徽章、仓库是否一致、deprecated metadata、lifecycle script、engine 范围、tarball integrity metadata 和 build-allowance 声明，都不决定 Market 是否允许安装。pnpm 负责解析并安装用户确认的精确 npm 版本。
 
 用户确认后，Host 只调用 `desktopPnpm.run(argv)`，添加精确 npm 版本，并把 package 写入 `dsh.profile.bundles`。Market 不创建安装 receipt、快照、重试、清理或回滚路径；恢复统一交给 Desktop 的三个健康启动 checkpoint 槽位。
 
@@ -41,15 +40,15 @@ Renderer 在安装时不会提交 package name 或 package-manager 命令，只�
 
 任何人都可以发布符合公开 [`catalog-source`](docs/schemas/catalog-source.schema.json) 与 [`catalog-provider-page`](docs/schemas/catalog-provider-page.schema.json) 合同的来源；现有 API 也可以通过经过审查的本地 adapter 接入。远端数据会在 Client 看到前完成标准化，provider 命令永远不会被展示或执行。
 
-[DSH 1024Store](https://github.com/imsai-sh/awesome-deepseek-harness-plugins) 是可选合作来源。Desktop 使用当前分页的 `/api/v2/plugins` 目录完成浏览、搜索、排序和分类，不再依赖冻结在 500 条的 v1 兼容 feed。v2 命令绝不会被执行：只有严格匹配纯文本 `dsh plugin --profile … add <npm-package>` 的形状才会贡献 npm package 身份。由于该来源目前没有携带经过审核的构建策略证据，这些条目使用手动终端流程，不进入自动安装。
+[DSH 1024Store](https://github.com/imsai-sh/awesome-deepseek-harness-plugins) 是可选合作来源。Desktop 使用当前分页的 `/api/v2/plugins` 目录完成浏览、搜索、排序和分类，不再依赖冻结在 500 条的 v1 兼容 feed。v2 命令绝不会被执行：只有严格匹配纯文本 `dsh plugin --profile … add <npm-package>` 的形状才会贡献 npm package 身份，安装 preview 仍以 npm `latest` 为版本权威。仅有 GitHub 目标的条目保持可浏览，但不会被标成可自动安装。
 
-[dshfind](https://dshfind.com) 是另一个可选合作来源。它的 adapter 会遍历带版本的 REST 页面，并从结构化字段标准化 npm 身份，不执行 provider 命令。唯一且经审核、同时声明 `requiresBuildAllowance: false` 的方法可以进入自动 preview；需要构建许可的方法保持手动安装，并保留精确展示命令。
+[dshfind](https://dshfind.com) 是另一个可选合作来源。它的 adapter 会遍历带版本的 REST 页面，并从结构化字段标准化 npm 身份，不执行 provider 命令。Provider 版本只作信息展示；自动安装仍然解析 npm `latest`。
 
 来源请求仅允许 HTTPS，不携带凭据，具备边界限制，并防止不安全重定向和私有网络目标。来源故障不会改变用户选择，也不会阻止 DSH Desktop 启动。
 
 ## 手动安装
 
-需要构建许可或来源没有经过审核的构建策略时，详情弹窗会说明自动安装不可用的原因，并显示 Host 根据标准化身份重建的、有界且只用于展示的命令。**打开 DSH 终端**只打开 Desktop 终端，不会粘贴、执行或批准该命令。
+自动安装不可用时，详情弹窗可以显示 Host 根据标准化身份重建的、有界且只用于展示的 npm 命令。**打开 DSH 终端**只打开 Desktop 终端，不会粘贴或执行该命令。
 
 ## 文档
 

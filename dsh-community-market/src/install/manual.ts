@@ -14,12 +14,6 @@ function identity(item: CatalogItem): Pick<MarketManualInstallHint, 'sourceRecor
   }
 }
 
-function manualReason(item: CatalogItem): MarketManualInstallHint['reason'] {
-  return item.installPolicy?.mode === 'manual'
-    ? item.installPolicy.reason
-    : 'build-policy-unverified'
-}
-
 /**
  * Reconstruct a display-only command from Host-normalized identity.
  * Provider-supplied command strings never enter this function or its result.
@@ -28,20 +22,15 @@ export function manualInstallHint(item: CatalogItem): MarketManualInstallHint | 
   if (
     item.package?.registry === 'npm'
     && NPM_PACKAGE_PATTERN.test(item.package.name)
+    && typeof item.latestVersion === 'string'
+    && STABLE_VERSION_PATTERN.test(item.latestVersion)
   ) {
-    const exactVersion = typeof item.latestVersion === 'string'
-      && STABLE_VERSION_PATTERN.test(item.latestVersion)
-      ? item.latestVersion
-      : undefined
     return {
       ...identity(item),
       kind: 'npm',
-      mutable: exactVersion === undefined,
+      mutable: false,
       desktopVerification: 'not-verified',
-      reason: manualReason(item),
-      displayCommand: exactVersion === undefined
-        ? `dsh plugin add ${item.package.name}`
-        : `dsh plugin add --save-exact ${item.package.name}@${exactVersion}`,
+      displayCommand: `dsh plugin add --save-exact ${item.package.name}@${item.latestVersion}`,
     }
   }
 
@@ -55,7 +44,6 @@ export function manualInstallHint(item: CatalogItem): MarketManualInstallHint | 
         kind: 'github',
         mutable: false,
         desktopVerification: 'not-verified',
-        reason: manualReason(item),
         displayCommand: `dsh plugin add ${target}${subdirectory}`,
       }
     } catch {

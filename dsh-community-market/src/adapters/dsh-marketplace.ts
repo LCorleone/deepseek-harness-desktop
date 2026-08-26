@@ -186,10 +186,7 @@ function normalizeItem(value: unknown, context: CatalogFetchContext): CatalogIte
     publisher: { name: publisher, url: `https://github.com/${identity.owner}` },
     ...(license === undefined ? {} : { license }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
-    ...(packageName === undefined ? {} : {
-      package: { registry: 'npm' as const, name: packageName },
-      installPolicy: { mode: 'manual' as const, reason: 'build-policy-unverified' as const },
-    }),
+    ...(packageName === undefined ? {} : { package: { registry: 'npm' as const, name: packageName } }),
     provenance: {
       sourceRecordId: context.source.sourceRecordId,
       providerId: context.source.providerId,

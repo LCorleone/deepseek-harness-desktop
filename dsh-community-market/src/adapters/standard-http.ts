@@ -89,9 +89,6 @@ export function snapshotFromStandardPage(
         ...plainItem,
         ...(normalizedRepository === undefined ? {} : { repository: normalizedRepository }),
         ...(resolvedMedia === undefined ? {} : { media: resolvedMedia }),
-        ...(plainItem.package === undefined && plainItem.installSource === undefined
-          ? {}
-          : { installPolicy: { mode: 'manual' as const, reason: 'build-policy-unverified' as const } }),
         provenance: {
           sourceRecordId: context.source.sourceRecordId,
           providerId: context.source.providerId,

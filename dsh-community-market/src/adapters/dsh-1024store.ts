@@ -302,10 +302,7 @@ function normalizedItem(
       ...(descriptionValue === undefined ? {} : { description: summary }),
       ...(category === undefined ? {} : { categories: [category] }),
       repository,
-      ...(npmTarget === undefined ? {} : {
-        package: { registry: 'npm' as const, name: npmTarget.name },
-        installPolicy: { mode: 'manual' as const, reason: 'build-policy-unverified' as const },
-      }),
+      ...(npmTarget === undefined ? {} : { package: { registry: 'npm' as const, name: npmTarget.name } }),
       ...(owner === undefined ? {} : { publisher: { name: owner, url: `https://github.com/${owner}` } }),
       ...(pushedAt === undefined ? {} : { updatedAt: pushedAt }),
       provenance: {

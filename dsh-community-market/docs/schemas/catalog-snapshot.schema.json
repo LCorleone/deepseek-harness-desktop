@@ -249,47 +249,6 @@
         }
       }
     },
-    "installPolicy": {
-      "description": "Host-owned automatic-install eligibility. Remote standard sources cannot set this field; reviewed adapters emit it after local normalization.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode",
-            "reviewedVersion"
-          ],
-          "properties": {
-            "mode": {
-              "const": "automatic"
-            },
-            "reviewedVersion": {
-              "$ref": "#/$defs/plainText",
-              "description": "The exact stable package version covered by the reviewed no-build decision. Preview must match it against registry evidence."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode",
-            "reason"
-          ],
-          "properties": {
-            "mode": {
-              "const": "manual"
-            },
-            "reason": {
-              "enum": [
-                "build-approval-required",
-                "build-policy-unverified"
-              ]
-            }
-          }
-        }
-      ]
-    },
     "publisher": {
       "type": "object",
       "additionalProperties": false,
@@ -464,9 +423,6 @@
         },
         "package": {
           "$ref": "#/$defs/package"
-        },
-        "installPolicy": {
-          "$ref": "#/$defs/installPolicy"
         },
         "publisher": {
           "$ref": "#/$defs/publisher"

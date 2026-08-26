@@ -234,7 +234,7 @@ Provider cursor 只属于一个已选来源和一个有效 wire query。Host 绝
 
 dshfind 文档说明匿名配额为每分钟 30 次、突发 10 次，而当前目录以每页 100 条读取时需要超过 30 个 page。因此 adapter 会使用低于已公布持续速率的固定串行间隔，并把较慢的首次同步表现为来源加载状态，不能通过并发绕过 provider 限制。限流 response 会使整轮扫描失败，用户可以通过普通来源“重试”重新开始。完成的本地索引仍遵循普通有界 cache；明确刷新会启动一轮新的、一致的完整扫描。
 
-dshfind response 可能包含 `install.cmd`、其他安装 claim 和 `install.methods`。命令文本与普通 claim 都不是执行权限：adapter 会在标准化前丢弃 `install.cmd`，不展示、不执行，也绝不从中解析 package 身份。唯一且经审核的 `repository_backlink` npm method 会成为结构化身份；`requiresBuildAllowance: false` 输出绑定该精确受审 revision 的自动策略，`true` 则保留精确手动命令并输出需要构建许可的原因。自动 preview 仍解析 npm `latest`，并要求 identity 与受审版本一致、DSH bundle 合法、没有直接 lifecycle build 声明，且当前 Profile 可安装。
+dshfind response 可能包含 `install.cmd`、其他安装 claim 和 `install.methods`。命令文本与普通 claim 都不是执行权限：adapter 会在标准化前丢弃 `install.cmd`，不展示、不执行，也绝不从中解析 package 身份。Adapter 可以输出结构化 npm package 身份和只作信息展示的 provider 版本，但自动安装 preview 会忽略该版本并解析 npm 官方 `latest` manifest。Preview 要求 npm identity 一致、latest 是精确稳定版本、DSH bundle 声明合法，并且当前 Profile 可以安装。
 
 Adapter 可以标准化有界纯文本身份、描述、标签/分类、更新时间，以及规范、无凭据的 `https://github.com/owner/repository` 链接。当前 API 没有插件图标或 README 字段。任何 owner 头像 fallback 都必须标记为 `publisher-avatar` 并通过 Host 媒体边界解析；adapter 不获取或渲染远程 README 内容。dshfind 的分数、等级、`official`/精选标记、风险标记和安装结论仍是 provider 自有运营声明，绝不会成为 Anywhere Labs 的安全审核、推荐或验证信号。
 
@@ -354,7 +354,7 @@ Provider 与 adapter 作者可以直接使用对应的[最小来源 manifest](ex
 ### 安装交接
 
 - [x] 只从标准化 identity 与经过审核的 provider 验证推导候选，永不消费远程 command。
-- [x] 自动候选只来自绑定精确 release 的受审无需构建策略，并在执行前重新校验 npm identity、相同的稳定 latest 版本、直接 lifecycle build metadata 和 DSH bundle 证据。
+- [x] 只接纳精确稳定的 npm 候选，并在 preview 与执行时独立复核 registry identity、repository、integrity、runtime、lifecycle script 和 DSH bundle 证据。
 - [x] 把每个候选绑定到用户当前看见并选择的来源记录。
 - [x] 调用受管安装服务前重新校验所选记录、可变 package 证据和当前 profile。
 - [x] 缺少安装能力或条目只能浏览时，目录浏览仍然完整可用。

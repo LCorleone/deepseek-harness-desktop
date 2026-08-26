@@ -245,7 +245,6 @@ describe('dshfind install target normalization', () => {
       repository: { url: 'https://github.com/owner/plugin-0' },
       package: { registry: 'npm', name: 'dsh-plugin-0' },
       latestVersion: '1.2.3',
-      installPolicy: { mode: 'automatic', reviewedVersion: '1.2.3' },
     })
     expect(JSON.stringify(items)).not.toContain('provider command text')
   })
@@ -255,6 +254,7 @@ describe('dshfind install target normalization', () => {
     ['a non-object install', 'npm install dsh-plugin-0'],
     ['an unverified method', { ...baseInstall, methods: [{ ...reviewedMethod, verification: 'unverified' }] }],
     ['a wrong verification code', { ...baseInstall, methods: [{ ...reviewedMethod, code: 'unlinked_package' }] }],
+    ['a build allowance requirement', { ...baseInstall, methods: [{ ...reviewedMethod, requiresBuildAllowance: true }] }],
     ['a prerelease version', { ...baseInstall, methods: [{ ...reviewedMethod, revision: '1.2.4-rc.1' }] }],
     ['a mutable tag instead of a version', { ...baseInstall, methods: [{ ...reviewedMethod, revision: 'latest' }] }],
     ['an invalid package name', { ...baseInstall, methods: [{ ...reviewedMethod, spec: 'Not A Package!' }] }],
@@ -270,19 +270,5 @@ describe('dshfind install target normalization', () => {
     expect(items).toHaveLength(1)
     expect(items[0]).not.toHaveProperty('package')
     expect(items[0]).not.toHaveProperty('latestVersion')
-  })
-
-  it('keeps a reviewed build-requiring identity manual instead of dropping its terminal instruction', async () => {
-    const items = await scanInstall({
-      ...baseInstall,
-      methods: [{ ...reviewedMethod, requiresBuildAllowance: true }],
-    })
-
-    expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({
-      package: { registry: 'npm', name: 'dsh-plugin-0' },
-      latestVersion: '1.2.3',
-      installPolicy: { mode: 'manual', reason: 'build-approval-required' },
-    })
   })
 })
