@@ -141,6 +141,7 @@ describe('DesktopSetupWizardWindow', () => {
       minWidth: 680,
       minHeight: 560,
       useContentSize: true,
+      show: true,
       webPreferences: expect.objectContaining({
         contextIsolation: true,
         nodeIntegration: false,
@@ -167,6 +168,22 @@ describe('DesktopSetupWizardWindow', () => {
     await expect(result).resolves.toEqual({ action: 'skip' })
     expect(prevented).toHaveBeenCalledOnce()
     expect(window?.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('keeps non-Windows Wizards hidden until Electron reports them ready', async () => {
+    const result = new DesktopSetupWizardWindow({
+      locale: 'en',
+      input: input({ platform: 'darwin' }),
+    }).run()
+    await vi.waitFor(() => { expect(electron.windows).toHaveLength(1) })
+    const window = electron.windows[0]
+    expect(window?.options.show).toBe(false)
+    window?.onceListeners.get('ready-to-show')?.()
+    expect(window?.show).toHaveBeenCalledOnce()
+    expect(window?.focus).toHaveBeenCalledOnce()
+    const prevented = navigate(window!, 'dsh-setup-wizard://skip')
+    await expect(result).resolves.toEqual({ action: 'skip' })
+    expect(prevented).toHaveBeenCalledOnce()
   })
 
   it('returns the full immutable selection after explicit completion', async () => {
