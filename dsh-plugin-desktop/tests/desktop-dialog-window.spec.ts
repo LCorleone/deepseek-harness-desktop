@@ -90,7 +90,13 @@ describe('DesktopDialogWindow', () => {
       resizable: false,
       height: 300,
       useContentSize: true,
-      webPreferences: expect.objectContaining({ enablePreferredSizeMode: true }),
+      webPreferences: expect.objectContaining({
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
+        enablePreferredSizeMode: true,
+      }),
     }))
     expect(window?.options).not.toHaveProperty('minHeight')
     expect(window?.options).not.toHaveProperty('maxHeight')
