@@ -18,9 +18,15 @@ const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
 
 /**
  * Enterprise TLS variables forwarded to pnpm installs so corporate MITM
- * proxies work without disabling verification: the CA bundle locations and
- * proxy settings Node and npm both honor. `NODE_TLS_REJECT_UNAUTHORIZED` is
- * deliberately NOT forwarded — installs must keep verifying certificates.
+ * proxies work. Pilot-era decision (no IT/CA path): when the user's
+ * environment already sets NODE_TLS_REJECT_UNAUTHORIZED=0, forward it to
+ * the install child so Market installs behave exactly like the DSH Terminal
+ * CLI path (which inherits it). This is acceptable ONLY because install
+ * integrity does not rest on TLS: the signed-manifest chain pins the exact
+ * sha512 (verified over the Electron main-process fetcher, which trusts the
+ * Windows store) and boot verification rejects any installed tree whose
+ * lockfile integrity diverges — a MITM can at worst cause a failed or
+ * refused install, never load substituted code. Revisit with a real CA.
  */
 const PNPM_TLS_ENVIRONMENT_KEYS = [
   'NODE_EXTRA_CA_CERTS',
@@ -34,6 +40,7 @@ const PNPM_TLS_ENVIRONMENT_KEYS = [
   'NO_PROXY',
   'npm_config_cafile',
   'npm_config_strict_ssl',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
 ] as const
 
 /** Collect the enterprise TLS/proxy variables present in one environment. */
