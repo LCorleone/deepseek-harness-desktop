@@ -17,4 +17,8 @@ describe('Desktop-owned native UI frame', () => {
     expect(theme).toContain('.dshNativeFrame ~ .dshNativeContent')
     expect(theme).not.toContain('.dshNativeFrame + .dshNativeContent')
   })
+
+  it('isolates the app root so body-level dialogs cover the high native frame layer', () => {
+    expect(theme).toMatch(/#root\s*\{\s*isolation:\s*isolate;/u)
+  })
 })
