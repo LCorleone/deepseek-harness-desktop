@@ -4,11 +4,13 @@ import { spawn as childSpawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { delimiter, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { PNPM_IGNORE_MINIMUM_RELEASE_AGE } from './pnpm-policy.ts'
 
 const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
 const DEFAULT_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 const TERMINATION_GRACE_MS = 3_000
+const DIAGNOSTIC_STREAM_CHARS = 8_000
 
 /** Runtime inputs resolved by the Electron bootstrap. */
 export interface ProfileMaterializerOptions {
@@ -23,6 +25,8 @@ export interface ProfileMaterializerOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
   readonly maxOutputBytes?: number
+  /** Permit a one-time Profile migration to reconcile stale lockfile settings. */
+  readonly updateLockfile?: boolean
   /** Injectable only for headless tests; production uses node:child_process.spawn. */
   readonly spawn?: ProfileMaterializerSpawn
 }
@@ -53,6 +57,35 @@ export class ProfileMaterializationError extends Error {
     this.name = 'ProfileMaterializationError'
     if (result !== undefined) this.result = result
   }
+}
+
+function diagnosticStream(label: string, value: string): string | undefined {
+  const normalized = value.trim()
+  if (normalized.length === 0) return undefined
+  const rendered = normalized.length <= DIAGNOSTIC_STREAM_CHARS
+    ? normalized
+    : `${normalized.slice(0, DIAGNOSTIC_STREAM_CHARS)}\n… ${label} truncated`
+  return `${label}:\n${rendered}`
+}
+
+/** Bounded technical context suitable for a local recovery error window. */
+export function formatProfileMaterializationFailure(cause: unknown): string {
+  if (!(cause instanceof ProfileMaterializationError)) {
+    return cause instanceof Error ? cause.stack ?? cause.message : String(cause)
+  }
+  const result = cause.result
+  if (result === undefined) return cause.stack ?? cause.message
+  const pnpmCommand = `pnpm ${result.argv.slice(4).join(' ')}`
+  const sections = [
+    'Profile dependency materialization failed.',
+    `Command: ${pnpmCommand}`,
+    `Working directory: ${result.cwd}`,
+    `Exit status: ${String(result.exitCode)}`,
+    `Signal: ${result.signal ?? 'none'}`,
+    diagnosticStream('stderr', result.stderr),
+    diagnosticStream('stdout', result.stdout),
+  ]
+  return sections.filter((section): section is string => section !== undefined).join('\n\n')
 }
 
 function inheritedPath(): string {
@@ -104,8 +137,8 @@ function appendOutput(
 
 /**
  * Restore dependencies for an already-restored profile without creating a
- * Host or using a shell. This intentionally performs only the fixed command
- * `pnpm install --frozen-lockfile`.
+ * Host or using a shell. Restores use a frozen lockfile; an explicit Profile
+ * layout migration may reconcile obsolete pnpm settings in that lockfile.
  */
 export async function materializeProfile(
   options: ProfileMaterializerOptions,
@@ -133,8 +166,9 @@ export async function materializeProfile(
     '--import',
     pathToFileURL(options.clearEnvironmentPath).href,
     options.pnpmBinPath,
+    PNPM_IGNORE_MINIMUM_RELEASE_AGE,
     'install',
-    '--frozen-lockfile',
+    options.updateLockfile === true ? '--no-frozen-lockfile' : '--frozen-lockfile',
   ] as const
   const path = inheritedPath()
   const environment: NodeJS.ProcessEnv = {
@@ -155,6 +189,7 @@ export async function materializeProfile(
     shell: false,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
   if (child.stdout === null || child.stderr === null) {
     killProcessTree(child)

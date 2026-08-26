@@ -29,7 +29,23 @@ import { parseDocument } from 'yaml'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
+import {
+  desktopBrowserAccessEnabled,
+  desktopNetworkExposureForBrowserAccess,
+  desktopWebServerHost,
+  parseDesktopNetworkExposure,
+  parseDesktopOpenBrowser,
+  type DesktopNetworkExposure,
+} from './desktop-network.ts'
 import type { DesktopShellMode } from './runtime.ts'
+import {
+  DEFAULT_MACOS_WINDOW_MATERIAL,
+  DEFAULT_WINDOWS_WINDOW_MATERIAL,
+  parseMacosWindowMaterial,
+  parseWindowsWindowMaterial,
+  type MacosWindowMaterial,
+  type WindowsWindowMaterial,
+} from './window-material.ts'
 import {
   activeDesktopProfileLayers,
   desktopPluginBundleMutable,
@@ -100,8 +116,8 @@ const MARKET_PACKAGE_NAMES: ReadonlySet<string> = new Set([
  */
 export function parseDesktopShellMode(value: unknown): DesktopShellMode {
   if (value === undefined) return DEFAULT_DESKTOP_SHELL_MODE
-  if (value === 'compatibility' || value === 'advanced') return value
-  throw new Error(`${BIN_NAME}: ${DESKTOP_SETTINGS_NAMESPACE}.mode must be "compatibility" or "advanced"`)
+  if (value === 'compatibility' || value === 'extended' || value === 'advanced') return value
+  throw new Error(`${BIN_NAME}: ${DESKTOP_SETTINGS_NAMESPACE}.mode must be "compatibility", "extended", or "advanced"`)
 }
 
 /** Parse the requested loopback Web port and reject values Node cannot listen on. */
@@ -115,7 +131,21 @@ export function parseDesktopPort(value: unknown): number {
 export interface DesktopStartupSettings {
   mode: DesktopShellMode
   port: number
+  macosMaterial: MacosWindowMaterial
+  windowsMaterial: WindowsWindowMaterial
+  /** Persisted compatibility key for ordinary-browser access permission. */
+  openBrowser: boolean
+  networkExposure: DesktopNetworkExposure
 }
+
+const DEFAULT_DESKTOP_STARTUP_SETTINGS: DesktopStartupSettings = Object.freeze({
+  mode: DEFAULT_DESKTOP_SHELL_MODE,
+  port: DEFAULT_DESKTOP_PORT,
+  macosMaterial: DEFAULT_MACOS_WINDOW_MATERIAL,
+  windowsMaterial: DEFAULT_WINDOWS_WINDOW_MATERIAL,
+  openBrowser: false,
+  networkExposure: 'loopback',
+})
 
 /**
  * Read Desktop startup settings from one parsed settings document.
@@ -128,15 +158,26 @@ export function desktopStartupSettingsFromSettings(document: unknown): DesktopSt
   }
   const section = (document as Record<string, unknown>)[DESKTOP_SETTINGS_NAMESPACE]
   if (section === undefined) {
-    return { mode: DEFAULT_DESKTOP_SHELL_MODE, port: DEFAULT_DESKTOP_PORT }
+    return { ...DEFAULT_DESKTOP_STARTUP_SETTINGS }
   }
   if (typeof section !== 'object' || section === null || Array.isArray(section)) {
     throw new Error(`${BIN_NAME}: ${DESKTOP_SETTINGS_NAMESPACE} settings must be a map`)
   }
   const values = section as Record<string, unknown>
+  const mode = parseDesktopShellMode(values.mode)
+  const networkExposure = parseDesktopNetworkExposure(values.networkExposure)
+  const openBrowser = desktopBrowserAccessEnabled(
+    mode,
+    parseDesktopOpenBrowser(values.openBrowser),
+    networkExposure,
+  )
   return {
-    mode: parseDesktopShellMode(values.mode),
+    mode,
     port: parseDesktopPort(values.port),
+    macosMaterial: parseMacosWindowMaterial(values.macosMaterial),
+    windowsMaterial: parseWindowsWindowMaterial(values.windowsMaterial),
+    openBrowser,
+    networkExposure: desktopNetworkExposureForBrowserAccess(openBrowser, networkExposure),
   }
 }
 
@@ -157,7 +198,7 @@ export function readDesktopStartupSettings(config: SettingsFileConfig): DesktopS
     text = readFileSync(spec.filename, 'utf8')
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { mode: DEFAULT_DESKTOP_SHELL_MODE, port: DEFAULT_DESKTOP_PORT }
+      return { ...DEFAULT_DESKTOP_STARTUP_SETTINGS }
     }
     throw cause
   }
@@ -204,14 +245,24 @@ export interface PreparedDesktopProfile {
   skippedOptionalEntries: SkippedOptionalEntry[]
   /** Persisted shell mode applied after every user-owned patch. */
   mode: DesktopShellMode
-  /** Persisted loopback Web port applied to every startup consumer. */
+  /** Native translucency preference retained for macOS generations. */
+  macosMaterial: MacosWindowMaterial
+  /** Native backdrop preference retained for Windows generations. */
+  windowsMaterial: WindowsWindowMaterial
+  /** Persisted Web port applied to every startup consumer. */
   port: number
+  /** Whether Desktop advertises the marker-free compatibility client for browser use. */
+  openBrowser: boolean
+  /** Listener scope applied to the Desktop-owned WebServer. */
+  networkExposure: DesktopNetworkExposure
   /** Resolved file-backed settings document used by this generation. */
   settingsDocument: string
   /** Requested provider and the fail-closed provider effective for this generation. */
   market: DesktopMarketSnapshot
   /** Internal boot diagnostic when the requested provider was disabled. */
   marketFailure?: string
+  /** Whether packaged pnpm must rebuild a legacy Profile dependency layout. */
+  requiresDependencyMigration: boolean
 }
 
 /** Optional observations emitted before profile preparation can fail. */
@@ -274,6 +325,106 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
     })
   }
   return dir
+}
+
+interface ParsedProfileYaml {
+  readonly document: ReturnType<typeof parseDocument>
+  readonly value: Record<string, unknown>
+}
+
+/** Parse one Profile-owned pnpm document as a YAML map. */
+function parseProfileYaml(path: string): ParsedProfileYaml {
+  const document = parseDocument(readFileSync(path, 'utf8'), { prettyErrors: true })
+  if (document.errors.length > 0) {
+    throw new Error(`${BIN_NAME}: invalid Profile pnpm document at ${path}: ${document.errors.map(error => error.message).join('; ')}`)
+  }
+  const value = document.toJS()
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${BIN_NAME}: Profile pnpm document ${path} must hold a YAML map`)
+  }
+  return { document, value: value as Record<string, unknown> }
+}
+
+/** Apply the current out-of-tree plugin linker contract while preserving other workspace settings. */
+function reconcileProfilePnpmWorkspace(profileDir: string): boolean {
+  const path = join(profileDir, 'pnpm-workspace.yaml')
+  if (!existsSync(path)) {
+    writeFileSync(path, `packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n`)
+    return true
+  }
+  const { document } = parseProfileYaml(path)
+  let changed = false
+  if (document.get('packages') === undefined) {
+    document.set('packages', ['.'])
+    changed = true
+  }
+  if (document.get('nodeLinker') !== 'hoisted') {
+    document.set('nodeLinker', 'hoisted')
+    changed = true
+  }
+  if (document.get('autoInstallPeers') !== false) {
+    document.set('autoInstallPeers', false)
+    changed = true
+  }
+  if (changed) writeFileSync(path, document.toString())
+  return changed
+}
+
+/** Read the virtual-store path limit pnpm applies to this Profile. */
+function profileVirtualStoreDirMaxLength(profileDir: string, platform: NodeJS.Platform): number {
+  const configured = parseProfileYaml(join(profileDir, 'pnpm-workspace.yaml')).value.virtualStoreDirMaxLength
+  if (configured === undefined) return platform === 'win32' ? 60 : 120
+  if (typeof configured !== 'number' || !Number.isInteger(configured) || configured < 0) {
+    throw new Error(`${BIN_NAME}: pnpm-workspace.yaml virtualStoreDirMaxLength must be a non-negative integer`)
+  }
+  return configured
+}
+
+/** Return whether private module metadata was written by a compatible pnpm generation. */
+function compatiblePnpmPackageManager(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const match = /^pnpm@(\d+)(?:\.|$)/.exec(value)
+  return match !== null && Number(match[1]) >= 10
+}
+
+/** Detect pnpm state that cannot satisfy the current hoisted Profile contract. */
+function profileDependencyMigrationRequired(
+  profileDir: string,
+  workspaceChanged: boolean,
+  platform: NodeJS.Platform,
+): boolean {
+  const manifest = readProfileManifest(BIN_NAME, profileDir)
+  const hasDependencies = Object.keys(manifest.dependencies ?? {}).length > 0
+  const modulesDir = join(profileDir, 'node_modules')
+  const hasModules = existsSync(modulesDir)
+  if (!hasDependencies && !hasModules) return false
+
+  let modulesCompatible = false
+  const modulesStatePath = join(modulesDir, '.modules.yaml')
+  if (existsSync(modulesStatePath)) {
+    try {
+      const modulesState = parseProfileYaml(modulesStatePath).value
+      modulesCompatible = modulesState.nodeLinker === 'hoisted'
+        && compatiblePnpmPackageManager(modulesState.packageManager)
+        && modulesState.virtualStoreDirMaxLength === profileVirtualStoreDirMaxLength(profileDir, platform)
+    } catch {
+      // pnpm can replace malformed or obsolete private module metadata.
+    }
+  }
+
+  const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
+  let lockfileCompatible = !existsSync(lockfilePath) && !hasDependencies
+  if (existsSync(lockfilePath)) {
+    try {
+      const settings = parseProfileYaml(lockfilePath).value.settings
+      lockfileCompatible = typeof settings === 'object' && settings !== null
+        && !Array.isArray(settings)
+        && (settings as Record<string, unknown>).autoInstallPeers === false
+    } catch {
+      // A controlled non-frozen install owns lockfile reconciliation below.
+    }
+  }
+  return workspaceChanged || !modulesCompatible || !lockfileCompatible
 }
 
 interface RecoveryFilteredProfile {
@@ -578,31 +729,23 @@ export function prepareDesktopProfile(
   profileName: string = DESKTOP_PROFILE_NAME,
   pluginStatePath?: string,
   marketSelection: DesktopMarketSnapshot = DEFAULT_DESKTOP_MARKET_SNAPSHOT,
-  recoveryStatePath?: string,
   hooks: DesktopProfilePreparationHooks = {},
 ): PreparedDesktopProfile {
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
     : resolveProfileDir(profileName, home)
+  const workspaceChanged = reconcileProfilePnpmWorkspace(profileDir)
+  const requiresDependencyMigration = profileDependencyMigrationRequired(profileDir, workspaceChanged, platform)
   healProfilesModuleFallback(INSTALL_ANCHOR, home)
-  // `plugin-management` is the community market's user-facing scope. Startup
-  // recovery has its own state file so switching to another provider cannot
-  // reapply a stale community-market disable, while a recovery disable always
-  // remains effective regardless of the selected provider. Keep the legacy
-  // five-argument call compatible for tests/older embedders.
+  // `plugin-management` remains the community market's user-facing scope.
+  // Recovery mode no longer reads or writes an independent disable policy:
+  // package removal goes through the provider-neutral `dsh plugin remove`.
   const managedDisabledBundles = pluginStatePath === undefined
     ? new Set<string>()
     : readDesktopDisabledBundles(pluginStatePath, profileName)
-  const recoveryDisabledBundles = recoveryStatePath === undefined
-    ? (marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider
-      ? new Set<string>()
-      : new Set(managedDisabledBundles))
-    : readDesktopDisabledBundles(recoveryStatePath, profileName)
-  const disabledBundles = new Set(recoveryDisabledBundles)
-  if (recoveryStatePath === undefined
-    || marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider) {
-    for (const packageName of managedDisabledBundles) disabledBundles.add(packageName)
-  }
+  const disabledBundles = marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider
+    ? new Set(managedDisabledBundles)
+    : new Set<string>()
   const loadedProfile = loadRecoveryFilteredProfile(
     profileName,
     profileDir,
@@ -704,19 +847,39 @@ export function prepareDesktopProfile(
   } as SettingsFileConfig)
   const settingsDocument = resolveSettingsFileSpec(settingsConfig).filename
   hooks.onSettingsDocumentResolved?.(settingsDocument)
-  const { mode, port } = readDesktopStartupSettings(settingsConfig)
+  const {
+    mode,
+    port,
+    macosMaterial,
+    windowsMaterial,
+    openBrowser,
+    networkExposure,
+  } = readDesktopStartupSettings(settingsConfig)
   patches.push({
     id: 'settings',
     config: settingsConfig,
   })
-  if (mode === 'advanced') {
+  const webRuntime = rows.get('web-runtime')
+  if (webRuntime === undefined) {
+    throw new Error(`${BIN_NAME}: desktop profile has no web-runtime row`)
+  }
+  patches.push({
+    id: 'web-runtime',
+    config: {
+      ...rowConfig(webRuntime),
+      // Browser access is an advertised Desktop capability, never an
+      // instruction to launch the operating system's default browser.
+      openBrowser: false,
+    },
+  })
+  if (mode === 'advanced' || mode === 'extended') {
     for (const [id, packageName] of [
       ['ui-layout', UI_LAYOUT_PACKAGE],
       ['ui-sidebar', UI_SIDEBAR_PACKAGE],
       ['ui-conversation', UI_CONVERSATION_PACKAGE],
     ] as const) {
       if (rows.get(id)?.name !== packageName) {
-        throw new Error(`${BIN_NAME}: advanced desktop mode must use ${packageName} in the ${id} row`)
+        throw new Error(`${BIN_NAME}: ${mode} desktop mode must use ${packageName} in the ${id} row`)
       }
     }
     patches.push(
@@ -805,8 +968,7 @@ export function prepareDesktopProfile(
   }
   // Loader patches cannot change an existing row's package identity. Disable the
   // profile row by its current identity and insert the Desktop-owned provider.
-  // Loopback-only binding is a launcher security invariant, not user config.
-  const webserverConfig = { host: '127.0.0.1', port }
+  const webserverConfig = { host: desktopWebServerHost(networkExposure), port }
   if (webserver.name === DESKTOP_WEB_SERVER_PACKAGE) {
     patches.push({
       id: 'webserver',
@@ -858,6 +1020,9 @@ export function prepareDesktopProfile(
       ...rowConfig(desktopShell),
       mode,
       port,
+      networkExposure,
+      macosMaterial,
+      windowsMaterial,
     },
   })
   return {
@@ -869,8 +1034,13 @@ export function prepareDesktopProfile(
     skippedOptionalEntries,
     mode,
     port,
+    macosMaterial,
+    windowsMaterial,
+    openBrowser,
+    networkExposure,
     settingsDocument,
     market: desktopMarketSnapshotWithEffective(marketSelection, effectiveMarket),
+    requiresDependencyMigration,
     ...(marketFailure === undefined ? {} : { marketFailure }),
   }
 }
