@@ -44,6 +44,22 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(desktopSetupWizardCopy('en').lanWarningBody).toContain('operate your computer directly')
   })
 
+  it('describes the sequential navigation, skip confirmation, and final success action', () => {
+    const english = desktopSetupWizardCopy('en')
+    const chinese = desktopSetupWizardCopy('zh')
+    expect(chinese.back).toBe('上一步')
+    expect(chinese.next).toBe('下一步')
+    expect(chinese.successTitle).toContain('成功')
+    expect(chinese.startUsing).toBe('开始使用')
+    expect(chinese.skipDialogBody).toContain('设置')
+    expect(chinese.skipDialogBody).toContain('桌面设置')
+    expect(english.back).toMatch(/^(?:Back|Previous)$/u)
+    expect(english.next).toBe('Next')
+    expect(english.startUsing).toContain('Start using')
+    expect(english.skipDialogBody).toContain('Settings')
+    expect(english.skipDialogBody).toContain('Desktop settings')
+  })
+
   it('requires confirmation only when loopback access is changed to LAN', () => {
     expect(desktopSetupWizardRequiresLanConfirmation('loopback', 'lan')).toBe(true)
     expect(desktopSetupWizardRequiresLanConfirmation('lan', 'loopback')).toBe(false)

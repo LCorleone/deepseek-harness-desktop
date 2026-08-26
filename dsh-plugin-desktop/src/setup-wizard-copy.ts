@@ -4,12 +4,7 @@ import type { DesktopLocale } from './runtime.ts'
 
 export interface DesktopSetupWizardCopy {
   readonly title: string
-  readonly heading: string
-  readonly introduction: string
   readonly profile: string
-  readonly appearanceTab: string
-  readonly accessTab: string
-  readonly notificationsTab: string
   readonly presentationTitle: string
   readonly presentationBody: string
   readonly compatibilityMode: string
@@ -22,9 +17,13 @@ export interface DesktopSetupWizardCopy {
   readonly windowMaterial: string
   readonly windowMaterialBody: string
   readonly materialOff: string
+  readonly materialOffBody: string
   readonly materialTransparent: string
+  readonly materialTransparentBody: string
   readonly materialAcrylic: string
+  readonly materialAcrylicBody: string
   readonly materialMica: string
+  readonly materialMicaBody: string
   readonly browserTitle: string
   readonly browserBody: string
   readonly openBrowser: string
@@ -53,21 +52,24 @@ export interface DesktopSetupWizardCopy {
   readonly turnFailure: string
   readonly jobCompletion: string
   readonly jobFailure: string
-  readonly complete: string
+  readonly back: string
+  readonly next: string
   readonly skip: string
+  readonly skipDialogTitle: string
+  readonly skipDialogBody: string
+  readonly cancelSkip: string
+  readonly confirmSkip: string
+  readonly successTitle: string
+  readonly successBody: string
+  readonly startUsing: string
   readonly invalidState: string
 }
 
 const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
   en: {
     title: 'Set up DSH Desktop',
-    heading: 'Set up this Profile',
-    introduction: 'Choose the initial Desktop experience. You can change these options later in Desktop settings.',
     profile: 'Profile',
-    appearanceTab: 'Window',
-    accessTab: 'Browser & market',
-    notificationsTab: 'Notifications',
-    presentationTitle: 'Window mode',
+    presentationTitle: 'Choose a window mode',
     presentationBody: 'Choose how DSH Desktop presents the official client.',
     compatibilityMode: 'Compatibility mode',
     compatibilityModeBody: 'Keep the official client layout for the broadest compatibility.',
@@ -76,13 +78,17 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     advancedMode: 'Enhanced mode',
     advancedModeBody: 'Use the layout and window interactions optimized for Desktop.',
     unavailableOnLinux: 'This mode is currently available on macOS and Windows.',
-    windowMaterial: 'Window material',
+    windowMaterial: 'Choose a window material',
     windowMaterialBody: 'Choose the transparency or glass effect used by the Desktop window.',
     materialOff: 'No window material',
+    materialOffBody: 'Use a solid, opaque window background.',
     materialTransparent: 'Transparent',
+    materialTransparentBody: 'Let content behind the window show through the Desktop surface.',
     materialAcrylic: 'Acrylic',
+    materialAcrylicBody: 'Use the Windows acrylic blur material.',
     materialMica: 'Mica',
-    browserTitle: 'Browser access',
+    materialMicaBody: 'Use the native Windows Mica material when it is supported.',
+    browserTitle: 'Set up browser access',
     browserBody: 'Choose whether to open the client in your browser and who can reach it.',
     openBrowser: 'Open the client in my browser after startup',
     networkExposure: 'Network access',
@@ -95,7 +101,7 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     lanWarningBody: 'This is dangerous: everyone on your local network may be able to operate your computer directly. Enable it only with great care.',
     confirmLan: 'Enable LAN access',
     cancelLan: 'Keep this computer only',
-    marketTitle: 'Plugin market',
+    marketTitle: 'Choose a plugin market',
     marketBody: 'Choose one plugin market for this Desktop installation.',
     marketDisabled: 'Do not enable a plugin market',
     marketDisabledBody: 'Keep plugin market features turned off.',
@@ -103,26 +109,29 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     communityMarketBody: 'The open market built into DSH Desktop, including custom data sources.',
     dshMarket: 'dsh-market',
     dshMarketBody: 'The popular community market powered by awesome-dsh-plugin data.',
-    notificationsTitle: 'Desktop notifications',
+    notificationsTitle: 'Set up Desktop notifications',
     notificationsBody: 'Choose which completion and failure events send a system notification. Notification text never includes conversation content.',
     notificationsEnabled: 'Enable Desktop notifications',
     turnCompletion: 'User turn completed',
     turnFailure: 'User turn failed',
     jobCompletion: 'Background job completed',
     jobFailure: 'Background job failed',
-    complete: 'Finish setup',
+    back: 'Previous',
+    next: 'Next',
     skip: 'Skip setup',
+    skipDialogTitle: 'Skip setup?',
+    skipDialogBody: 'You can still configure all of these options later under Settings > Desktop settings.',
+    cancelSkip: 'Continue setup',
+    confirmSkip: 'Skip setup',
+    successTitle: 'Setup complete',
+    successBody: 'DSH Desktop is ready for this Profile.',
+    startUsing: 'Start using DSH Desktop',
     invalidState: 'Setup information could not be loaded. Close this window and try again.',
   },
   zh: {
     title: '设置 DSH Desktop',
-    heading: '设置这个 Profile',
-    introduction: '选择初始桌面体验。之后仍可在“桌面设置”中修改这些选项。',
     profile: 'Profile',
-    appearanceTab: '窗口',
-    accessTab: '浏览器与市场',
-    notificationsTab: '通知',
-    presentationTitle: '窗口模式',
+    presentationTitle: '选择窗口模式',
     presentationBody: '选择 DSH Desktop 如何呈现官方客户端。',
     compatibilityMode: '兼容模式',
     compatibilityModeBody: '保留官方客户端布局，兼容性最好。',
@@ -131,13 +140,17 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     advancedMode: '增强模式',
     advancedModeBody: '使用针对桌面端优化的布局和窗口交互。',
     unavailableOnLinux: '此模式目前支持 macOS 和 Windows。',
-    windowMaterial: '窗口材质',
+    windowMaterial: '选择窗口材质',
     windowMaterialBody: '选择桌面窗口使用的透明或玻璃效果。',
     materialOff: '不使用窗口材质',
+    materialOffBody: '使用不透明的纯色窗口背景。',
     materialTransparent: '透明材质',
+    materialTransparentBody: '让桌面窗口呈现可透出背后内容的透明效果。',
     materialAcrylic: '亚克力',
+    materialAcrylicBody: '使用 Windows 亚克力模糊材质。',
     materialMica: 'Mica',
-    browserTitle: '浏览器访问',
+    materialMicaBody: '在系统支持时使用 Windows 原生 Mica 材质。',
+    browserTitle: '设置浏览器访问',
     browserBody: '选择启动后是否在浏览器中打开客户端，以及谁可以访问。',
     openBrowser: '启动后在我的浏览器中打开客户端',
     networkExposure: '网络访问范围',
@@ -150,7 +163,7 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。',
     confirmLan: '确认开启局域网访问',
     cancelLan: '保持仅本机访问',
-    marketTitle: '插件市场',
+    marketTitle: '选择插件市场',
     marketBody: '为这套桌面安装选择一个插件市场。',
     marketDisabled: '不启用插件市场',
     marketDisabledBody: '保持插件市场功能关闭。',
@@ -158,15 +171,23 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     communityMarketBody: 'DSH Desktop 内置的开放市场，并支持自定义数据源。',
     dshMarket: 'dsh-market',
     dshMarketBody: '使用 awesome-dsh-plugin 数据的热门社区市场。',
-    notificationsTitle: '桌面通知',
+    notificationsTitle: '设置桌面通知',
     notificationsBody: '选择哪些完成或失败事件发送系统通知。通知文本不会包含会话内容。',
     notificationsEnabled: '启用桌面通知',
     turnCompletion: '用户回合完成',
     turnFailure: '用户回合失败',
     jobCompletion: '后台任务完成',
     jobFailure: '后台任务失败',
-    complete: '完成设置',
+    back: '上一步',
+    next: '下一步',
     skip: '跳过设置',
+    skipDialogTitle: '跳过设置？',
+    skipDialogBody: '之后仍可在“设置” > “桌面设置”中配置这里的所有内容。',
+    cancelSkip: '继续设置',
+    confirmSkip: '确认跳过',
+    successTitle: '设置成功',
+    successBody: '这个 Profile 的 DSH Desktop 已准备就绪。',
+    startUsing: '开始使用',
     invalidState: '无法加载设置信息。请关闭此窗口后重试。',
   },
 }
