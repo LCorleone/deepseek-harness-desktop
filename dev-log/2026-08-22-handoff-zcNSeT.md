@@ -17,9 +17,9 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 | 评审修复 ×4 | 详见各 Phase 段 | 894e82223f, c9e8c773e4, e9c2785877, b5ef752291 |
 
 ## Current State
-- **里程碑（2026-08-26）**：试点安装链全程闭合——**dsh-better-sidebar@0.15.2 市场安装成功、重启加载** ✅；tag `v0.1.0-desktop-pilot`（fork master = `8787050cb2`，包版本 2.0.3，构建 #21）
-- **Working on**: 试点收尾（待办见下）；下一阶段：E2E 冒烟自动化（优化清单⑦）与正式密钥替换
-- **密钥状态**：会话内生成过两对演示钥，均已暴露于会话输出——**生产前必须作废重生成**；当前策略钉 c469 指纹，样例 manifest 用它签（sequence 2）
+- **里程碑（2026-08-26）**：试点安装链全程闭合——**dsh-better-sidebar@0.15.2 市场安装成功、重启加载** ✅；tag `v0.1.0-desktop-pilot`（包版本 2.0.3，构建 #21）；E2E 冒烟 12 步自动化已入库（`4d9dfde3af`）
+- **Working on（下次会话入口）**：origin 模式切换收尾——GitLab 托管已验证可用（见下），**下一步：改 release 策略切 origin（companyCatalogOrigin=https://gitlab.s.dai.deloitte.cn、companyManifestUrl=https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json）→ 根 check → 打包 → 用户装包验证 GitLab 拉目录**；注意 manifestUrl 含 query/多段路径是否过 safeCompanyManifestUrl 校验需先跑 spec（若拒则需评估放宽或改用 GitLab Pages 类纯静态路径）
+- **密钥状态**：会话内生成过两对演示钥，均已暴露于会话输出——**生产前必须作废重生成**；当前策略钉 c469 指纹，manifest sequence 3 用它签
 - **Blocked on**: 无
 
 ## 试点期安全决策（2026-08-24）
