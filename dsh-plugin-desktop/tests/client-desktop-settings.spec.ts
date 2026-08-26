@@ -12,7 +12,11 @@ import {
   DesktopVersionControl,
   selectDesktopFrameMode,
 } from '../src/client/ExtendedTitlebar.tsx'
-import { DesktopSettingsSection } from '../src/client/DesktopSettingsSection.tsx'
+import {
+  desktopBrowserUrlsShouldRender,
+  DesktopSettingsSection,
+  resolveDesktopLanConfirmation,
+} from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
 import {
   createDesktopSettingsApi,
@@ -28,7 +32,7 @@ import {
   DESKTOP_SETTINGS_LOCALE_NAMESPACE,
   DESKTOP_SHELL_SETTINGS_NAMESPACE,
 } from '../src/client/desktop-settings.ts'
-import { en, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
+import { en, zh, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from '../src/client/desktop-settings-styles.ts'
 
 const VIEW: DesktopSettingsView = {
@@ -39,6 +43,7 @@ const VIEW: DesktopSettingsView = {
     { name: 'work', exists: true, webCapable: true, selectable: true, deletable: true },
   ],
   market: { requested: 'disabled', effective: 'disabled', legacyDefaulted: true },
+  web: { localUrl: 'http://127.0.0.1:43120/', lanUrls: [] },
 }
 
 function json(value: unknown, status = 200): Response {
@@ -55,6 +60,8 @@ describe('Desktop settings API', () => {
       .toThrow('duplicate profile')
     expect(() => parseDesktopSettingsView({ ...VIEW, market: { ...VIEW.market, requested: 'unknown' } }))
       .toThrow('invalid Desktop settings response')
+    expect(() => parseDesktopSettingsView({ ...VIEW, web: { ...VIEW.web, localUrl: 'https://example.com/' } }))
+      .toThrow('invalid browser URL')
     expect(parseDesktopRestartAcceptance({ accepted: true, restartRequired: true }))
       .toEqual({ accepted: true, restartRequired: true })
     expect(parseDesktopRestartAcceptance({ accepted: true, restartRequired: false }))
@@ -63,6 +70,30 @@ describe('Desktop settings API', () => {
     expect(parseDesktopActionAcceptance({ accepted: true })).toBeUndefined()
     expect(() => parseDesktopActionAcceptance({ accepted: true, detail: 'extra' }))
       .toThrow('invalid Desktop action response')
+  })
+
+  it('names the section Desktop settings and carries the explicit LAN danger warning', () => {
+    expect(zh.nav).toBe('桌面设置')
+    expect(en.nav).toBe('Desktop settings')
+    expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
+    expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
+  })
+
+  it('shows actual URLs only for browser handoff or LAN and requires explicit LAN confirmation', () => {
+    expect(desktopBrowserUrlsShouldRender(false, 'loopback')).toBe(false)
+    expect(desktopBrowserUrlsShouldRender(true, 'loopback')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(true)
+
+    const dismiss = vi.fn()
+    const enableLan = vi.fn()
+    resolveDesktopLanConfirmation(false, dismiss, enableLan)
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(enableLan).not.toHaveBeenCalled()
+
+    dismiss.mockClear()
+    resolveDesktopLanConfirmation(true, dismiss, enableLan)
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(enableLan).toHaveBeenCalledOnce()
   })
 
   it('uses the strict same-origin routes and request bodies', async () => {

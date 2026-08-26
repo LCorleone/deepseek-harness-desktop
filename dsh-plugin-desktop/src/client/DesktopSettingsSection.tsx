@@ -17,6 +17,8 @@ export interface DesktopShellSettings {
   readonly macosMaterial: 'off' | 'transparent'
   readonly windowsMaterial: 'off' | 'acrylic' | 'mica'
   readonly port: number
+  readonly openBrowser: boolean
+  readonly networkExposure: 'loopback' | 'lan'
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
@@ -46,8 +48,26 @@ export type DesktopSettingsSectionProps =
   & InjectFace<DesktopSettingsSectionInjected>
 
 type Translate = DesktopSettingsSectionProps['t']
-type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'material' | 'notification'
+type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'material' | 'web' | 'notification'
 type RestartState = 'none' | 'restarting' | 'required'
+
+/** The URL block follows either explicit browser handoff or LAN exposure. */
+export function desktopBrowserUrlsShouldRender(
+  openBrowser: boolean,
+  networkExposure: DesktopShellSettings['networkExposure'],
+): boolean {
+  return openBrowser || networkExposure === 'lan'
+}
+
+/** Keep cancellation side-effect free; only explicit confirmation enables LAN. */
+export function resolveDesktopLanConfirmation(
+  confirmed: boolean,
+  dismiss: () => void,
+  enableLan: () => void,
+): void {
+  dismiss()
+  if (confirmed) enableLan()
+}
 
 function useScope<T>(scope: SettingsScope<T>) {
   const subscribe = useCallback((listener: () => void) => scope.subscribe(listener), [scope])
@@ -208,6 +228,7 @@ export function DesktopSettingsSection({
   const [operationFailed, setOperationFailed] = useState(false)
   const [restart, setRestart] = useState<RestartState>('none')
   const [pendingProfileDelete, setPendingProfileDelete] = useState<string>()
+  const [confirmLan, setConfirmLan] = useState(false)
 
   const load = useCallback(async () => {
     setBusy('load')
@@ -245,6 +266,8 @@ export function DesktopSettingsSection({
   const settingsWritable = desktop.status === 'ready' && desktop.writable
   const notificationsWritable = notifications.status === 'ready' && notifications.writable
   const mode = desktop.value?.mode ?? initialMode
+  const openBrowser = desktop.value?.openBrowser ?? false
+  const networkExposure = desktop.value?.networkExposure ?? 'loopback'
   const notificationValue = notifications.value ?? {
     enabled: true,
     notifyOnTurnCompletion: true,
@@ -314,6 +337,17 @@ export function DesktopSettingsSection({
 
   const setNotification = (field: keyof DesktopNotificationSettings, checked: boolean): void => {
     void run('notification', async () => { await notificationSettings.set(field, checked) })
+  }
+
+  const setOpenBrowser = (checked: boolean): void => {
+    void run('web', async () => { await desktopSettings.set('openBrowser', checked) })
+  }
+
+  const setNetworkExposure = (exposure: DesktopShellSettings['networkExposure']): void => {
+    void run('web', async () => {
+      await desktopSettings.set('networkExposure', exposure)
+      requestRestart()
+    })
   }
 
   return (
@@ -513,6 +547,38 @@ export function DesktopSettingsSection({
         )}
       </section>
 
+      <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-web-title">
+        <div>
+          <h3 id="dsh-desktop-web-title">{t('webTitle')}</h3>
+          <p className="dshDesktopSettingsGroupIntro">{t('webIntro')}</p>
+        </div>
+        <ToggleRow
+          label={t('openBrowser')}
+          checked={openBrowser}
+          disabled={!settingsWritable || busy !== undefined}
+          onChange={setOpenBrowser}
+        />
+        <ToggleRow
+          label={t('lanAccess')}
+          checked={networkExposure === 'lan'}
+          disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
+          onChange={(checked) => {
+            if (checked) setConfirmLan(true)
+            else setNetworkExposure('loopback')
+          }}
+        />
+        {desktopBrowserUrlsShouldRender(openBrowser, networkExposure) && view !== undefined && (
+          <div className="dshDesktopSettingsUrls">
+            <span className="dshDesktopSettingsChoiceTitle">{t('browserUrls')}</span>
+            <a href={view.web.localUrl} target="_blank" rel="noopener noreferrer">{view.web.localUrl}</a>
+            {networkExposure === 'lan' && view.web.lanUrls.map(url => <a href={url} key={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
+            {networkExposure === 'lan' && view.web.lanUrls.length === 0 && (
+              <span className="dshDesktopSettingsChoiceBody">{t('lanUrlsAfterRestart')}</span>
+            )}
+          </div>
+        )}
+      </section>
+
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-notifications-title">
         <div>
           <h3 id="dsh-desktop-notifications-title">{t('notificationsTitle')}</h3>
@@ -552,6 +618,34 @@ export function DesktopSettingsSection({
           />
         </div>
       </section>
+      {confirmLan && (
+        <div className="dshDesktopSettingsDialogBackdrop" role="presentation">
+          <div className="dshDesktopSettingsDialog" role="alertdialog" aria-modal="true" aria-labelledby="dsh-desktop-lan-warning-title" aria-describedby="dsh-desktop-lan-warning-body">
+            <h3 id="dsh-desktop-lan-warning-title">{t('lanWarningTitle')}</h3>
+            <p id="dsh-desktop-lan-warning-body">{t('lanWarningBody')}</p>
+            <div className="dshDesktopSettingsDialogActions">
+              <button
+                type="button"
+                className="dshDesktopSettingsButton dshDesktopSettingsButtonSecondary"
+                onClick={() => {
+                  resolveDesktopLanConfirmation(false, () => { setConfirmLan(false) }, () => { setNetworkExposure('lan') })
+                }}
+              >
+                {t('lanCancel')}
+              </button>
+              <button
+                type="button"
+                className="dshDesktopSettingsButton dshDesktopSettingsButtonDanger"
+                onClick={() => {
+                  resolveDesktopLanConfirmation(true, () => { setConfirmLan(false) }, () => { setNetworkExposure('lan') })
+                }}
+              >
+                {t('lanConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

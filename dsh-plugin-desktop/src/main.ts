@@ -15,12 +15,14 @@ import {
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
+import type {} from '@deepseek-ai/dsh-web-app'
 import { isDesktopInstallerQuitRequest } from './desktop-installer-quit.ts'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
 } from './desktop-runtime-environment.ts'
 import { desktopProductVersion, ElectronDesktopRuntime } from './electron-runtime.ts'
+import { getOrCreateDesktopInstallationId } from './desktop-installation-id.ts'
 import {
   ElectronStderrLogger,
   installDesktopChildProcessLogging,
@@ -40,6 +42,10 @@ import type {
 } from './lifecycle-events.ts'
 import { FileExporter } from './file-exporter.ts'
 import { DESKTOP_SETTINGS_NAMESPACE, type DesktopSettings } from './index.ts'
+import {
+  desktopLanBrowserUrls,
+  desktopLoopbackBrowserUrl,
+} from './desktop-network.ts'
 import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { resolveDesktopShellEnvironment } from './shell-environment.ts'
@@ -83,6 +89,17 @@ import {
 } from './profile.ts'
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
 import {
+  clearDesktopSetupWizardState,
+  completeOrSkipDesktopSetupWizard,
+  readDesktopSetupWizardState,
+} from './setup-wizard-state.ts'
+import {
+  readDesktopSetupWizardSettings,
+  updateDesktopSetupWizardSettings,
+} from './setup-wizard-settings.ts'
+import type { DesktopSetupWizardResult } from './setup-wizard-contract.ts'
+import { DesktopSetupWizardWindow } from './setup-wizard-window.ts'
+import {
   formatProfileMaterializationFailure,
   materializeProfile,
   ProfileMaterializationError,
@@ -115,6 +132,7 @@ import {
   recoverOversizedSessionProjectionCache,
   type SessionProjectionCacheRecoveryResult,
 } from './session-projcache-recovery.ts'
+import { windowsSupportsMica } from './window-material.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const PRODUCT_NAME = 'DSH Desktop'
@@ -229,6 +247,7 @@ async function start(): Promise<void> {
   let logSink: LogFileSink | undefined
   let startupRecoveryController: DesktopStartupRecoveryController | undefined
   let startupRecoveryWindow: DesktopStartupRecoveryWindow | undefined
+  let setupWizardWindow: DesktopSetupWizardWindow | undefined
   let startupRecoveryConfigurationPaths: DesktopStartupRecoveryConfigurationPaths | undefined
   let profileCheckpoint: DesktopProfileCheckpoint | undefined
   let startupRecoveryProfileActions: DesktopStartupRecoveryProfileActions | undefined
@@ -314,6 +333,7 @@ async function start(): Promise<void> {
     },
   )
   let restartRequested = false
+  const installationId = await getOrCreateDesktopInstallationId(app.getPath('userData'))
   runtime = new ElectronDesktopRuntime(async target => {
     if (shutdown === undefined) {
       throw new Error('dsh-plugin-desktop: shutdown coordinator is not ready')
@@ -336,7 +356,7 @@ async function start(): Promise<void> {
     // Main owns every pre-health failure branch. Returning true prevents the
     // legacy Renderer recovery dialog from racing the native startup window.
     return report.status === 'failed'
-  }, electronLogger)
+  }, electronLogger, undefined, undefined, installationId)
   const finalExit = (code: number): void => { nativeExit.finish(code) }
   shutdown = createDesktopShutdown(
     async () => { await generation.release() },
@@ -385,13 +405,25 @@ async function start(): Promise<void> {
     }
   }
 
+  const showPreHostSurface = (): boolean => {
+    if (setupWizardWindow !== undefined) {
+      setupWizardWindow.show()
+      return true
+    }
+    if (startupRecoveryWindow !== undefined) {
+      startupRecoveryWindow.show()
+      return true
+    }
+    return false
+  }
+  app.on('activate', () => { showPreHostSurface() })
+  if (process.platform === 'darwin') app.on('did-become-active', () => { showPreHostSurface() })
   app.on('second-instance', (_event, argv) => {
     if (isDesktopInstallerQuitRequest(argv, process.platform)) {
       requestQuit(0)
       return
     }
-    if (startupRecoveryWindow !== undefined) startupRecoveryWindow.show()
-    else runtime.show()
+    if (!showPreHostSurface()) runtime.show()
   })
   try {
     await app.whenReady()
@@ -540,6 +572,7 @@ async function start(): Promise<void> {
               homeDir,
               nodeBinDir: pnpmRuntime.nodeBinDir,
               nodeShimPath: pnpmRuntime.nodeShimPath,
+              pnpmBinDir: pnpmRuntime.pathDir,
               electronVersion,
               packageName,
             })
@@ -601,7 +634,7 @@ async function start(): Promise<void> {
     startupStage = 'profile-composition'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
-    const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
+    let marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
     const preparationHooks = {
       onSettingsDocumentResolved: (settingsDocument: string) => {
         if (startupRecoveryConfigurationPaths === undefined) return
@@ -620,6 +653,63 @@ async function start(): Promise<void> {
       marketSelection,
       preparationHooks,
     )
+    if (readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir) === undefined) {
+      const setupSettings = readDesktopSetupWizardSettings(prepared.settingsDocument)
+      setupWizardWindow = new DesktopSetupWizardWindow({
+        locale: desktopLocaleFromLanguageTag(app.getLocale()),
+        input: {
+          profileName: activeProfileName,
+          platform: runtime.platform,
+          micaSupported: process.platform === 'win32' && windowsSupportsMica(runtime.windowsBuild),
+          ...setupSettings,
+          market: marketSelection.requested,
+        },
+      })
+      let setupResult: DesktopSetupWizardResult
+      try {
+        setupResult = await setupWizardWindow.run()
+      } finally {
+        setupWizardWindow = undefined
+      }
+      if (setupResult.action === 'quit') {
+        startupRecoveryController?.dispose()
+        startupRecoveryController = undefined
+        await shutdown.request(0)
+        return
+      }
+      if (setupResult.action === 'skip') {
+        await completeOrSkipDesktopSetupWizard(
+          marketUserDataDir,
+          prepared.profile.dir,
+          'skipped',
+        )
+      } else {
+        await updateDesktopSetupWizardSettings(prepared.settingsDocument, {
+          mode: setupResult.selection.mode,
+          macosMaterial: setupResult.selection.macosMaterial,
+          windowsMaterial: setupResult.selection.windowsMaterial,
+          openBrowser: setupResult.selection.openBrowser,
+          networkExposure: setupResult.selection.networkExposure,
+          notifications: setupResult.selection.notifications,
+        })
+        await selectDesktopMarketProvider(marketUserDataDir, setupResult.selection.market)
+        marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
+        prepared = prepareDesktopProfile(
+          process.env.DSH_TELEMETRY_DISABLED,
+          homeDir,
+          process.platform,
+          activeProfileName,
+          pluginManagementStatePath,
+          marketSelection,
+          preparationHooks,
+        )
+        await completeOrSkipDesktopSetupWizard(
+          marketUserDataDir,
+          prepared.profile.dir,
+          'completed',
+        )
+      }
+    }
     if (profileCheckpoint === undefined) {
       try {
         profileCheckpoint = new DesktopProfileCheckpoint({
@@ -759,7 +849,11 @@ async function start(): Promise<void> {
             selectionStatePath,
             currentProfileName: activeProfileName,
             clearDisabledState: () => clearDesktopProfilePluginState(pluginManagementStatePath, name),
-            clearCheckpoint: () => clearDesktopProfileCheckpoint(app.getPath('userData'), resolveProfileDir(name, homeDir)),
+            clearCheckpoint: async () => {
+              const profileDir = resolveProfileDir(name, homeDir)
+              clearDesktopProfileCheckpoint(app.getPath('userData'), profileDir)
+              await clearDesktopSetupWizardState(app.getPath('userData'), profileDir)
+            },
           }, name),
           persistSelection: name => { selectDesktopProfile(selectionStatePath, homeDir, name) },
           requestRestart: () => runtime.requestRestart(),
@@ -789,6 +883,14 @@ async function start(): Promise<void> {
             selectDesktopProfile(selectionStatePath, homeDir, name)
           },
           readMarket,
+          readWeb: () => {
+            const webRuntime = hostCtx.get('webRuntime')
+            if (webRuntime === undefined) throw new Error(`${BIN_NAME}: Web runtime is unavailable`)
+            return {
+              localUrl: desktopLoopbackBrowserUrl(hostCtx.webServer.port),
+              lanUrls: desktopLanBrowserUrls(hostCtx.webServer.port, webRuntime.lanAddresses),
+            }
+          },
           selectMarket: async provider => desktopMarketSnapshotWithEffective(
             await selectDesktopMarketProvider(marketUserDataDir, provider),
             prepared.market.effective,
@@ -815,7 +917,10 @@ async function start(): Promise<void> {
           },
         }))
         provideCmdline(hostCtx, {
-          args: ['--host', '127.0.0.1', '--port', String(prepared.port)],
+          args: [
+            '--port',
+            String(prepared.port),
+          ],
           exit: requestQuit,
         })
       },

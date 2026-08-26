@@ -75,6 +75,7 @@ describe('profile materializer', () => {
       cwd: '/Users/test/.dsh/profiles/desktop',
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: {
         PATH: `/private/node-bin${delimiter}${process.env.PATH ?? ''}`,
         NODE: '/private/node-bin/node',

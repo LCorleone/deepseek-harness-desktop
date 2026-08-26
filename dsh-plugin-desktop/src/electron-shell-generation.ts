@@ -17,6 +17,10 @@ import type { ElectronPlatformStrategy } from './electron-platform.ts'
 import type { DesktopNotification, DesktopShellSpec } from './runtime.ts'
 import { prepareTrayIcon } from './tray-icons.ts'
 import { desktopWindowOptions } from './window-options.ts'
+import {
+  windowsSupportsSystemBackdrop,
+  windowsUsesLegacyAcrylic,
+} from './window-material.ts'
 import { setWindowsAcrylic } from './windows-acrylic.ts'
 import {
   fitMainWindowBounds,
@@ -103,13 +107,17 @@ export class ElectronShellGeneration {
     window.accessibleTitle = spec.windowTitle
     platform.configureWindow(window)
     const refreshNativeMaterial = (): void => {
-      if (platform.platform === 'win32' && spec.material === 'acrylic') {
-        try {
-          if (!setWindowsAcrylic(window, true, nativeTheme.shouldUseDarkColors)) {
-            this.options.logError('dsh-plugin-desktop: Windows rejected the acrylic backdrop request')
+      if (platform.platform === 'win32'
+        && (spec.material === 'acrylic' || spec.material === 'mica')
+        && !windowsSupportsSystemBackdrop(spec.windowsBuild)) {
+        if (spec.material === 'acrylic' && windowsUsesLegacyAcrylic(spec.windowsBuild)) {
+          try {
+            if (!setWindowsAcrylic(window, true, nativeTheme.shouldUseDarkColors)) {
+              this.options.logError('dsh-plugin-desktop: Windows rejected the acrylic backdrop request')
+            }
+          } catch (cause) {
+            this.options.logError(`dsh-plugin-desktop: failed to apply Windows acrylic backdrop: ${cause instanceof Error ? cause.message : String(cause)}`)
           }
-        } catch (cause) {
-          this.options.logError(`dsh-plugin-desktop: failed to apply Windows acrylic backdrop: ${cause instanceof Error ? cause.message : String(cause)}`)
         }
         return
       }

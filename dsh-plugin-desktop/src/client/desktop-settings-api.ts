@@ -14,6 +14,7 @@ const UPDATE_CHECK_PATH = '/api/desktop/updates/check'
 const DIAGNOSTICS_EXPORT_PATH = '/api/desktop/diagnostics/export'
 const MAX_PROFILES = 256
 const MAX_PROFILE_NAME_LENGTH = 255
+const MAX_LAN_URLS = 32
 
 /** Launcher-supported plugin market implementations. */
 export type DesktopMarketProvider = 'disabled' | 'community-market' | 'dsh-market'
@@ -34,11 +35,18 @@ export interface DesktopMarketView {
   readonly legacyDefaulted: boolean
 }
 
+/** Marker-free ordinary-browser URLs for the running Desktop generation. */
+export interface DesktopWebView {
+  readonly localUrl: string
+  readonly lanUrls: readonly string[]
+}
+
 /** Complete launcher-owned settings projection. */
 export interface DesktopSettingsView {
   readonly current: string
   readonly profiles: readonly DesktopProfileView[]
   readonly market: DesktopMarketView
+  readonly web: DesktopWebView
 }
 
 /** A persisted selection that requires a new Desktop generation. */
@@ -93,6 +101,26 @@ function parseProfile(value: unknown): DesktopProfileView {
   })
 }
 
+function parseBrowserUrl(value: unknown, loopback: boolean): string {
+  if (typeof value !== 'string' || value.length > 2_048) {
+    throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
+  }
+  if (url.protocol !== 'http:' || url.username !== '' || url.password !== ''
+    || url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.port === '') {
+    throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
+  }
+  if (loopback ? url.hostname !== '127.0.0.1' : !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(url.hostname)) {
+    throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
+  }
+  return url.href
+}
+
 /** Validate the bounded settings projection before it reaches React state. */
 export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
   if (!isObject(value)
@@ -104,10 +132,15 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
     || !isObject(value.market)
     || !isMarketProvider(value.market.requested)
     || !isMarketProvider(value.market.effective)
-    || typeof value.market.legacyDefaulted !== 'boolean') {
+    || typeof value.market.legacyDefaulted !== 'boolean'
+    || !isObject(value.web)
+    || !Array.isArray(value.web.lanUrls)
+    || value.web.lanUrls.length > MAX_LAN_URLS) {
     throw new Error('dsh-plugin-desktop: invalid Desktop settings response')
   }
   const profiles = value.profiles.map(parseProfile)
+  const localUrl = parseBrowserUrl(value.web.localUrl, true)
+  const lanUrls = value.web.lanUrls.map(url => parseBrowserUrl(url, false))
   if (new Set(profiles.map(profile => profile.name)).size !== profiles.length) {
     throw new Error('dsh-plugin-desktop: duplicate profile in settings response')
   }
@@ -118,6 +151,10 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
       requested: value.market.requested,
       effective: value.market.effective,
       legacyDefaulted: value.market.legacyDefaulted,
+    }),
+    web: Object.freeze({
+      localUrl,
+      lanUrls: Object.freeze(lanUrls),
     }),
   })
 }

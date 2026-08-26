@@ -32,7 +32,7 @@ describe('Desktop installer quit request', () => {
       'if (isDesktopInstallerQuitRequest(argv, process.platform))',
       secondInstance,
     )
-    const show = main.indexOf('startupRecoveryWindow.show()', secondInstance)
+    const show = main.indexOf('if (!showPreHostSurface()) runtime.show()', secondInstance)
 
     expect(lock).toBeGreaterThanOrEqual(0)
     expect(earlyQuit).toBeGreaterThan(lock)
@@ -40,6 +40,7 @@ describe('Desktop installer quit request', () => {
     expect(secondInstance).toBeGreaterThan(startup)
     expect(secondQuit).toBeGreaterThan(secondInstance)
     expect(secondQuit).toBeLessThan(show)
+    expect(show).toBeGreaterThan(secondQuit)
     expect(main.slice(secondQuit, show)).toContain('requestQuit(0)')
   })
 })

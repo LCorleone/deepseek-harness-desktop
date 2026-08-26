@@ -1,7 +1,7 @@
 /** Run the official DSH plugin-removal flow before the Cordis Host starts. */
 
 import { execFile } from 'node:child_process'
-import { delimiter, isAbsolute } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import { PNPM_IGNORE_MINIMUM_RELEASE_AGE } from './pnpm-policy.ts'
 
@@ -18,11 +18,15 @@ export interface RecoveryPluginUninstallOptions {
   readonly homeDir: string
   readonly nodeBinDir: string
   readonly nodeShimPath: string
+  /** Directory containing Desktop's packaged pnpm command shim. */
+  readonly pnpmBinDir: string
   readonly electronVersion: string
   readonly packageName: string
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
   readonly maxOutputBytes?: number
+  /** Injectable only for focused environment-isolation tests. */
+  readonly environment?: NodeJS.ProcessEnv
 }
 
 export interface RecoveryPluginUninstallResult {
@@ -52,10 +56,41 @@ function assertAbsolutePath(label: string, value: string): void {
   }
 }
 
-function inheritedPath(): string {
-  const exact = process.env.PATH
-  if (exact !== undefined || process.platform !== 'win32') return exact ?? ''
-  return Object.entries(process.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? ''
+function inheritedPath(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  const exact = environment.PATH
+  if (exact !== undefined || platform !== 'win32') return exact ?? ''
+  return Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? ''
+}
+
+/** Build the fixed Desktop command environment used after Host quiescence. */
+export function recoveryPluginEnvironment(
+  options: Pick<RecoveryPluginUninstallOptions,
+    | 'homeDir'
+    | 'nodeBinDir'
+    | 'nodeShimPath'
+    | 'pnpmBinDir'
+    | 'electronVersion'
+    | 'environment'>,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const environment = { ...(options.environment ?? process.env) }
+  if (platform === 'win32') {
+    for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === 'PATH') delete environment[key]
+    }
+  }
+  const path = inheritedPath(options.environment ?? process.env, platform)
+  environment.PATH = [options.nodeBinDir, options.pnpmBinDir, path]
+    .filter(value => value.length > 0)
+    .join(platform === 'win32' ? ';' : ':')
+  environment.NODE = options.nodeShimPath
+  environment.ELECTRON_RUN_AS_NODE = '1'
+  environment.DSH_HOME = options.homeDir
+  environment.CI = 'true'
+  environment.npm_config_runtime = 'electron'
+  environment.npm_config_target = options.electronVersion
+  environment.npm_config_disturl = ELECTRON_HEADERS_URL
+  return environment
 }
 
 function diagnosticStream(label: string, value: string): string | undefined {
@@ -97,6 +132,7 @@ export async function removeRecoveryPlugin(
     ['Harness home', options.homeDir],
     ['Node command directory', options.nodeBinDir],
     ['Node command', options.nodeShimPath],
+    ['pnpm command directory', options.pnpmBinDir],
   ] as const) assertAbsolutePath(label, value)
   if (options.electronVersion.length === 0 || options.electronVersion.includes('\0')) {
     throw new RecoveryPluginUninstallError('recovery plugin uninstall Electron version is invalid')
@@ -107,7 +143,6 @@ export async function removeRecoveryPlugin(
     throw new RecoveryPluginUninstallError('recovery plugin uninstall process limits are invalid')
   }
   options.signal?.throwIfAborted()
-  const path = inheritedPath()
   // Do not forward the pnpm policy here. The packaged pnpm command shim adds
   // it at the actual package-manager boundary; forwarding it too makes pnpm
   // parse the numeric option as an array and produces an invalid cutoff date.
@@ -124,17 +159,7 @@ export async function removeRecoveryPlugin(
     execFile(options.appExecutable, args, {
       cwd: options.profileDir,
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: path.length === 0 ? options.nodeBinDir : `${options.nodeBinDir}${delimiter}${path}`,
-        NODE: options.nodeShimPath,
-        ELECTRON_RUN_AS_NODE: '1',
-        DSH_HOME: options.homeDir,
-        CI: 'true',
-        npm_config_runtime: 'electron',
-        npm_config_target: options.electronVersion,
-        npm_config_disturl: ELECTRON_HEADERS_URL,
-      },
+      env: recoveryPluginEnvironment(options),
       maxBuffer,
       timeout: timeoutMs,
       windowsHide: true,

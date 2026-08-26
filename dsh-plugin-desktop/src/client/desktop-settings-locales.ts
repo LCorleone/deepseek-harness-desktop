@@ -1,7 +1,7 @@
 /** Desktop-owned settings copy. */
 
 export const zh = {
-  nav: '桌面版',
+  nav: '桌面设置',
   title: 'DSH Desktop 设置',
   intro: '管理当前 Profile、插件市场和桌面功能。',
   loading: '正在读取桌面设置…',
@@ -77,6 +77,16 @@ export const zh = {
   windowMaterialTransparent: '透明材质',
   windowMaterialAcrylic: '亚克力',
   windowMaterialMica: 'Mica',
+  webTitle: '浏览器与局域网',
+  webIntro: '选择是否在启动后打开默认浏览器，以及 Web 界面的网络监听范围。',
+  openBrowser: '启动后在默认浏览器中打开',
+  lanAccess: '允许向局域网开放',
+  browserUrls: '浏览器访问 URL',
+  lanUrlsAfterRestart: '重启后将在这里显示实际的局域网 URL。',
+  lanWarningTitle: '确认向局域网开放？',
+  lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。此连接没有身份认证。',
+  lanCancel: '取消',
+  lanConfirm: '我已了解风险，仍然开启',
   notificationsTitle: '桌面通知',
   notificationsIntro: '选择 DSH Desktop 何时发出系统通知。通知不包含会话内容。',
   notificationsEnabled: '启用桌面通知',
@@ -89,7 +99,7 @@ export const zh = {
 export type DesktopSettingsLocaleKey = keyof typeof zh
 
 export const en: Record<DesktopSettingsLocaleKey, string> = {
-  nav: 'Desktop',
+  nav: 'Desktop settings',
   title: 'DSH Desktop settings',
   intro: 'Manage the current Profile, plugin market, and Desktop features.',
   loading: 'Loading Desktop settings…',
@@ -165,6 +175,16 @@ export const en: Record<DesktopSettingsLocaleKey, string> = {
   windowMaterialTransparent: 'Transparent',
   windowMaterialAcrylic: 'Acrylic',
   windowMaterialMica: 'Mica',
+  webTitle: 'Browser and local network',
+  webIntro: 'Choose whether startup opens the default browser and which network interfaces serve the Web app.',
+  openBrowser: 'Open in the default browser after startup',
+  lanAccess: 'Allow access from the local network',
+  browserUrls: 'Browser URLs',
+  lanUrlsAfterRestart: 'The actual local-network URLs will appear here after restart.',
+  lanWarningTitle: 'Expose DSH Desktop to your local network?',
+  lanWarningBody: 'This is dangerous. Anyone on your local network can directly operate your computer. Enable it only with extreme care. This connection has no authentication.',
+  lanCancel: 'Cancel',
+  lanConfirm: 'I understand the risk — enable it',
   notificationsTitle: 'Desktop notifications',
   notificationsIntro: 'Choose when DSH Desktop sends system notifications. Notifications do not include conversation content.',
   notificationsEnabled: 'Enable Desktop notifications',

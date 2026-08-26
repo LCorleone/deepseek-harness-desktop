@@ -59,6 +59,10 @@ import { desktopBootRecoveryInjections } from './desktop-boot-recovery.ts'
 import type { DesktopShellMode } from './runtime.ts'
 import type {} from './runtime.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
+import {
+  desktopWebServerHost,
+  type DesktopNetworkExposure,
+} from './desktop-network.ts'
 import { DESKTOP_FRAME_HEIGHT } from './window-chrome.ts'
 import {
   DEFAULT_MACOS_WINDOW_MATERIAL,
@@ -93,6 +97,10 @@ export interface DesktopSettings {
   windowsMaterial: WindowsWindowMaterial
   /** Loopback Web port selected for the next application generation; zero requests a random port. */
   port: number
+  /** Whether a settled Desktop generation hands its marker-free URL to the default browser. */
+  openBrowser: boolean
+  /** Whether the next generation listens only on loopback or on every LAN interface. */
+  networkExposure: DesktopNetworkExposure
   /** Log verbosity threshold applied to the file logger. */
   logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
@@ -103,6 +111,8 @@ export const DesktopSettingsSchema: z<DesktopSettings> = z.object({
   macosMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_MACOS_WINDOW_MATERIAL),
   windowsMaterial: z.union(['off', 'acrylic', 'mica'] as const).default(DEFAULT_WINDOWS_WINDOW_MATERIAL),
   port: z.number().step(1).min(0).max(65_535).default(DESKTOP_DEFAULT_WEB_PORT),
+  openBrowser: z.boolean().default(false),
+  networkExposure: z.union(['loopback', 'lan'] as const).default('loopback'),
   logLevel: z.union(['debug', 'info', 'warn', 'error'] as const).default('info'),
 })
 
@@ -116,6 +126,8 @@ export interface Config {
   windowsMaterial: WindowsWindowMaterial
   /** Configured loopback Web port used to detect restart-applied settings changes. */
   port: number
+  /** Configured listener exposure used to detect restart-applied settings changes. */
+  networkExposure: DesktopNetworkExposure
   /** Initial window width in CSS pixels. */
   width: number
   /** Initial window height in CSS pixels. */
@@ -132,6 +144,7 @@ export const Config: z<Config> = z.object({
   macosMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_MACOS_WINDOW_MATERIAL),
   windowsMaterial: z.union(['off', 'acrylic', 'mica'] as const).default(DEFAULT_WINDOWS_WINDOW_MATERIAL),
   port: z.number().step(1).min(0).max(65_535).default(DESKTOP_DEFAULT_WEB_PORT),
+  networkExposure: z.union(['loopback', 'lan'] as const).default('loopback'),
   width: z.number().step(1).min(800).default(1280),
   height: z.number().step(1).min(600).default(840),
   minWidth: z.number().step(1).min(640).default(900),
@@ -188,8 +201,8 @@ export function apply(ctx: Context, config: Config): void {
   if (appExit === undefined) {
     throw new Error('dsh-plugin-desktop: the launcher did not provide ctx.appExit')
   }
-  if (ctx.webServer.host !== '127.0.0.1') {
-    throw new Error('dsh-plugin-desktop: desktop shell requires a loopback Web server')
+  if (ctx.webServer.host !== desktopWebServerHost(config.networkExposure)) {
+    throw new Error('dsh-plugin-desktop: desktop shell WebServer host does not match networkExposure')
   }
   const iconFilename = runtime.platform === 'darwin'
     ? 'app-icon-mac.png'
@@ -305,6 +318,7 @@ export function apply(ctx: Context, config: Config): void {
     const stopWatching = settings.watch((next) => {
       if (next.mode === config.mode
         && next.port === config.port
+        && next.networkExposure === config.networkExposure
         && next.macosMaterial === config.macosMaterial
         && next.windowsMaterial === config.windowsMaterial) {
         if (pending !== undefined) clearImmediate(pending)
