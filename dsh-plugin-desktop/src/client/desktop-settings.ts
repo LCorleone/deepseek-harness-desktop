@@ -32,13 +32,18 @@ export async function persistDesktopModeSelection(
   desktopSettings: Pick<SettingsScope<DesktopShellSettings>, 'set'>,
   mode: DesktopShellSettings['mode'],
 ): Promise<void> {
-  await desktopSettings.set('mode', mode)
-  if (mode === 'compatibility') return
+  if (mode === 'compatibility') {
+    await desktopSettings.set('mode', mode)
+    return
+  }
   // The titlebar is interactive before the settings mirror necessarily reaches
   // ready. Always withdraw both browser capabilities for a custom mode instead
   // of treating an unavailable or stale snapshot as browser access being off.
-  await desktopSettings.set('openBrowser', false)
+  // Withdraw the listener first so every intermediate persisted state remains
+  // valid while compatibility mode is still selected.
   await desktopSettings.set('networkExposure', 'loopback')
+  await desktopSettings.set('openBrowser', false)
+  await desktopSettings.set('mode', mode)
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

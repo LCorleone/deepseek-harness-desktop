@@ -32,7 +32,6 @@ import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 import {
   desktopBrowserAccessEnabled,
   desktopNetworkExposureForBrowserAccess,
-  desktopShellModeForBrowserAccess,
   desktopWebServerHost,
   parseDesktopNetworkExposure,
   parseDesktopOpenBrowser,
@@ -164,13 +163,15 @@ export function desktopStartupSettingsFromSettings(document: unknown): DesktopSt
     throw new Error(`${BIN_NAME}: ${DESKTOP_SETTINGS_NAMESPACE} settings must be a map`)
   }
   const values = section as Record<string, unknown>
+  const mode = parseDesktopShellMode(values.mode)
   const networkExposure = parseDesktopNetworkExposure(values.networkExposure)
   const openBrowser = desktopBrowserAccessEnabled(
+    mode,
     parseDesktopOpenBrowser(values.openBrowser),
     networkExposure,
   )
   return {
-    mode: desktopShellModeForBrowserAccess(parseDesktopShellMode(values.mode), openBrowser),
+    mode,
     port: parseDesktopPort(values.port),
     macosMaterial: parseMacosWindowMaterial(values.macosMaterial),
     windowsMaterial: parseWindowsWindowMaterial(values.windowsMaterial),

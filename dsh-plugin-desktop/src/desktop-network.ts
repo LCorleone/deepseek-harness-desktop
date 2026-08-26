@@ -18,16 +18,21 @@ export function parseDesktopOpenBrowser(value: unknown): boolean {
   throw new Error('dsh-plugin-desktop: dsh-desktop.openBrowser must be a boolean')
 }
 
+/** Browser access can only be granted by an explicitly selected compatibility shell. */
+export function desktopBrowserAccessAvailable(mode: DesktopShellMode): boolean {
+  return mode === 'compatibility'
+}
+
 /**
- * Resolve browser access while preserving already-exposed legacy LAN setups.
- * A legacy LAN listener was already browser-reachable, so it migrates to an
- * explicit enabled preference instead of becoming a hidden exposure.
+ * Resolve browser access while preserving already-exposed legacy LAN setups
+ * only when the selected shell is compatible with an ordinary browser.
  */
 export function desktopBrowserAccessEnabled(
+  mode: DesktopShellMode,
   storedOpenBrowser: boolean,
   exposure: DesktopNetworkExposure,
 ): boolean {
-  return storedOpenBrowser || exposure === 'lan'
+  return desktopBrowserAccessAvailable(mode) && (storedOpenBrowser || exposure === 'lan')
 }
 
 /** LAN exposure is meaningful only while ordinary-browser access is enabled. */
@@ -36,14 +41,6 @@ export function desktopNetworkExposureForBrowserAccess(
   exposure: DesktopNetworkExposure,
 ): DesktopNetworkExposure {
   return browserAccess ? exposure : 'loopback'
-}
-
-/** Browser access uses the official compatibility layout for the whole generation. */
-export function desktopShellModeForBrowserAccess(
-  mode: DesktopShellMode,
-  browserAccess: boolean,
-): DesktopShellMode {
-  return browserAccess ? 'compatibility' : mode
 }
 
 /** Parse the restart-applied listener exposure preference. */

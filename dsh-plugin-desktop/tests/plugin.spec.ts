@@ -420,7 +420,7 @@ describe('desktop Host plugin', () => {
     expect(harness.restart).toHaveBeenCalledOnce()
   })
 
-  it('restarts when browser access changes but ignores a dormant custom mode behind access', async () => {
+  it('restarts when browser access changes and when a custom mode withdraws stale access', async () => {
     vi.useFakeTimers()
     const harness = createHarness()
     apply(harness.ctx, config)
@@ -440,7 +440,7 @@ describe('desktop Host plugin', () => {
       { mode: 'compatibility', macosMaterial: 'transparent', windowsMaterial: 'acrylic', port: 43_120, openBrowser: true, networkExposure: 'loopback', logLevel: 'info' },
     )
     await vi.runAllTimersAsync()
-    expect(enabledHarness.restart).not.toHaveBeenCalled()
+    expect(enabledHarness.restart).toHaveBeenCalledOnce()
   })
 
   it('requests one orderly restart after the configured Web port changes', async () => {
@@ -537,11 +537,11 @@ describe('desktop Host plugin', () => {
       ...settings,
       mode: 'advanced',
       openBrowser: true,
-    })).not.toThrow()
+    })).toThrow('browser and LAN access require compatibility mode')
     expect(() => options?.validate?.({
       ...settings,
       mode: 'advanced',
       networkExposure: 'lan',
-    })).not.toThrow()
+    })).toThrow('browser and LAN access require compatibility mode')
   })
 })

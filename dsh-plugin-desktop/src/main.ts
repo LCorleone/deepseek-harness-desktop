@@ -791,7 +791,9 @@ async function start(): Promise<void> {
         `${BIN_NAME}: requested Market provider ${prepared.market.requested} was disabled for this generation: ${prepared.marketFailure}`,
       )
     }
-    const browserAccess = createDesktopBrowserAccess(prepared.openBrowser)
+    const browserAccess = createDesktopBrowserAccess(
+      prepared.mode === 'compatibility' && prepared.openBrowser,
+    )
     const desktopPnpmBootstrap: DesktopPnpmBootstrap = {
       activeProfileName,
       activeProfileDir: prepared.profile.dir,

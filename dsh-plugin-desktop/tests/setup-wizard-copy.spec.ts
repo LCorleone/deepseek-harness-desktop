@@ -81,10 +81,16 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(chinese.openBrowser).toBe('允许在浏览器中打开')
     expect(chinese.openBrowser).not.toMatch(/启动后|自动/u)
     expect(chinese.browserCompatibilityNotice).toContain('兼容模式')
-    expect(chinese.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+    expect(chinese.browserCompatibilityNotice).toContain('仅在')
+    expect(chinese.browserCompatibilityDialogBody).toContain('只能使用兼容模式')
+    expect(chinese.browserCompatibilityDialogBody).toContain('切换为兼容模式')
+    expect(chinese.confirmBrowserCompatibility).toBe('切换并开启')
+    expect(chinese.cancelBrowserCompatibility).toBe('取消')
     expect(english.openBrowser).toMatch(/allow.+(?:open|opening).+browser/iu)
     expect(english.openBrowser).not.toMatch(/after startup|automatically/iu)
     expect(english.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
+    expect(english.browserCompatibilityDialogBody).toMatch(/requires compatibility mode/iu)
+    expect(english.browserCompatibilityDialogBody).toMatch(/switch.+window mode/iu)
   })
 
   it('requires confirmation only when loopback access is changed to LAN', () => {

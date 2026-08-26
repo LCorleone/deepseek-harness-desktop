@@ -76,15 +76,21 @@ describe('Desktop settings API', () => {
   it('names the section Desktop settings and describes browser opening as permission', () => {
     expect(zh.nav).toBe('桌面设置')
     expect(en.nav).toBe('Desktop settings')
+    expect(Object.values(zh)).not.toContain('将在启动时创建')
+    expect(Object.values(en)).not.toContain('Created when first started')
     expect(zh.openBrowser).toBe('允许在浏览器中打开')
     expect(zh.openBrowser).not.toMatch(/启动后|自动/u)
     expect(zh.webIntro).not.toMatch(/启动后|自动/u)
     expect(zh.browserCompatibilityNotice).toContain('兼容模式')
-    expect(zh.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+    expect(zh.browserCompatibilityNotice).toContain('仅在')
+    expect(zh.browserCompatibilityNotice).toContain('先选择')
+    expect(zh.browserCompatibilityNotice).not.toContain('切换到兼容模式')
     expect(en.openBrowser).toMatch(/allow.+(?:open|opening).+browser/iu)
     expect(en.openBrowser).not.toMatch(/after startup|automatically/iu)
     expect(en.webIntro).not.toMatch(/after startup|automatically/iu)
     expect(en.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
+    expect(en.browserCompatibilityNotice).toMatch(/select compatibility mode first/iu)
+    expect(en.browserCompatibilityNotice).not.toMatch(/switch(?:es|ing)?.+profile/iu)
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
     expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
   })
@@ -132,9 +138,9 @@ describe('Desktop settings API', () => {
 
     await persistDesktopModeSelection(scope, 'advanced')
     expect(set.mock.calls).toEqual([
-      ['mode', 'advanced'],
-      ['openBrowser', false],
       ['networkExposure', 'loopback'],
+      ['openBrowser', false],
+      ['mode', 'advanced'],
     ])
   })
 
@@ -156,9 +162,9 @@ describe('Desktop settings API', () => {
     await persistDesktopModeSelection(scope, 'extended')
 
     expect(set.mock.calls).toEqual([
-      ['mode', 'extended'],
-      ['openBrowser', false],
       ['networkExposure', 'loopback'],
+      ['openBrowser', false],
+      ['mode', 'extended'],
     ])
   })
 
