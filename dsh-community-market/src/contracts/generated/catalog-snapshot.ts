@@ -26,6 +26,7 @@ export type Item = Item1 & {
   repository?: Repository
   installSource?: InstallSource
   package?: Package
+  installPolicy?: InstallPolicy
   publisher?: Publisher
   media?: Media
   capabilities?: Capabilities
@@ -45,6 +46,21 @@ export type Item1 =
 export type Identifier = string
 export type PlainText = string
 export type CategoryId = string
+/**
+ * Host-owned automatic-install eligibility. Remote standard sources cannot set this field; reviewed adapters emit it after local normalization.
+ */
+export type InstallPolicy =
+  | {
+      mode: 'automatic'
+      /**
+       * The exact stable package version covered by the reviewed no-build decision. Preview must match it against registry evidence.
+       */
+      reviewedVersion: string
+    }
+  | {
+      mode: 'manual'
+      reason: 'build-approval-required' | 'build-policy-unverified'
+    }
 /**
  * An opaque Host-managed media reference. It is neither a remote URL nor a filesystem path and is the only media locator exposed to the Renderer.
  */

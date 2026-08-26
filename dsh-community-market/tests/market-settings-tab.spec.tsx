@@ -165,6 +165,7 @@ function makeInstallableItem(
     ...(repository === undefined ? {} : { repository }),
     latestVersion: version,
     package: { registry: 'npm', name: packageName },
+    installPolicy: { mode: 'automatic', reviewedVersion: version },
   }
 }
 
@@ -387,6 +388,7 @@ describe('MarketSettingsTab', () => {
 
   it('falls back in the same dialog to a Host-derived manual command and opens DSH Terminal', async () => {
     const item = makeItem(firstSource, 'manual-github-plugin', 'Manual GitHub Plugin', ['tools'])
+    item.installPolicy = { mode: 'manual', reason: 'build-policy-unverified' }
     const manualCatalog: MarketCatalogResponse = {
       ...catalogForSource(firstSource, [item]),
       manualInstall: [{
@@ -396,6 +398,7 @@ describe('MarketSettingsTab', () => {
         kind: 'github',
         mutable: true,
         desktopVerification: 'not-verified',
+        reason: 'build-policy-unverified',
         displayCommand: 'dsh plugin add github:example/manual-github-plugin',
       }],
     }
@@ -416,6 +419,7 @@ describe('MarketSettingsTab', () => {
     expect(sourceLink.href).toBe('https://catalog.example/')
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
     expect(screen.getByText(en.manualNotVerified)).toBeTruthy()
+    expect(screen.getByText(en.manualBuildPolicyUnverified)).toBeTruthy()
     expect(screen.getByText(en.mutableGithubWarning)).toBeTruthy()
     expect(screen.getByText(en.operationWarning)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.openTerminal }))
@@ -746,6 +750,47 @@ describe('MarketSettingsTab', () => {
     )
     expect(details.target).toBe('_blank')
     expect(details.rel).toContain('noopener')
+  })
+
+  it.each([
+    ['build-approval-required', en.buildApprovalDetected, en.manualBuildApprovalRequired],
+    ['build-policy-changed', en.buildPolicyChanged, en.manualBuildPolicyUnverified],
+  ])('turns %s into a localized manual terminal handoff', async (code, message, reason) => {
+    const item = makeInstallableItem(firstSource)
+    const response: MarketInstallableResponse = {
+      ...installableResponse([item]),
+      manualInstall: [{
+        sourceRecordId: firstSource.sourceRecordId,
+        providerId: firstSource.providerId,
+        itemId: item.id,
+        kind: 'npm',
+        mutable: false,
+        desktopVerification: 'not-verified',
+        reason: 'build-policy-unverified',
+        displayCommand: 'dsh plugin add --save-exact dsh-plugin-installable@1.2.3',
+      }],
+    }
+    const error = Object.assign(new Error('server build policy detail'), {
+      code,
+    })
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(response)
+    vi.mocked(readMarketInstallations).mockResolvedValue({ installations: [] })
+    vi.mocked(previewMarketOperation).mockRejectedValue(error)
+    vi.mocked(openMarketTerminal).mockResolvedValue({ ok: true })
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` }))
+
+    expect(await screen.findByText(message)).toBeTruthy()
+    expect(screen.getByText('dsh plugin add --save-exact dsh-plugin-installable@1.2.3')).toBeTruthy()
+    expect(screen.getByText(reason)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.openTerminal }))
+    await waitFor(() => {
+      expect(openMarketTerminal).toHaveBeenCalledWith(expect.any(AbortSignal))
+    })
   })
 
   it('ignores a late inventory result after switching the selected catalog item', async () => {

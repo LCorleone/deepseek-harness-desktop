@@ -19,12 +19,12 @@ Installed state is independent of the selected catalog and of which market perfo
 
 1. The user selects a catalog item. The Renderer sends only `sourceRecordId` and `itemId`.
 2. The Host resolves the normalized npm package identity it previously observed.
-3. The Host requests `https://registry.npmjs.org/<package>/latest` and requires the same package name, an exact stable version, and a valid `dsh.bundle.patch` declaration.
+3. The Host first requires a reviewed `installPolicy.mode: automatic` bound to an exact release, then requests `https://registry.npmjs.org/<package>/latest` and requires the same package name, the same reviewed stable version, a valid `dsh.bundle.patch` declaration, and no direct install lifecycle or native `gypfile` requirement.
 4. The confirmation shows the package, exact version, current Profile, and preview expiry.
 5. On confirmation, the Host consumes the one-shot `previewId` and calls `desktopPnpm.run()` with Host-owned argv for an exact `pnpm add`.
 6. The Host reconciles the package into `dsh.profile.bundles` and confirms that it is now a direct Profile dependency.
 
-The source's listed version is never used as the install target. Repository equality, deprecation metadata, lifecycle scripts, engine ranges, integrity metadata, and provider verification flags do not block the operation. Provider command strings are discarded.
+The source's listed version is never used as the install target. Reviewed build-policy evidence gates entry into automatic preview, and current npm lifecycle metadata can stop preview before mutation. Repository equality, deprecation metadata, engine ranges, integrity metadata, and generic provider badges do not independently grant install authority. Provider command strings are discarded.
 
 Market installation creates no receipt, checkpoint, retry, cleanup, or rollback operation. Desktop's ordinary Profile checkpoints cover the resulting state.
 
@@ -33,9 +33,11 @@ Market installation creates no receipt, checkpoint, retry, cleanup, or rollback 
 A catalog entry can reach automatic install preview only when:
 
 - exactly one valid npm package name is normalized from the entry;
+- a reviewed local adapter emits `installPolicy.mode: automatic` with an exact reviewed version for that identity;
 - the package is not `dsh-plugin-desktop` or `dsh-community-market`;
-- npm `latest` is an exact stable version for that same package; and
-- the npm manifest declares a safe relative DSH bundle patch path.
+- npm `latest` is the same exact stable version reviewed by the adapter; and
+- the npm manifest declares a safe relative DSH bundle patch path; and
+- the current manifest declares no `preinstall`, `install`, `postinstall`, `prepare`, `prepack`, or native `gypfile` requirement.
 
 Failure keeps the item browseable and may expose a display-only manual command.
 
@@ -51,13 +53,14 @@ This flow applies equally to plugins installed by Community Market, another plug
 
 ## Manual fallback
 
-If automatic preview is unavailable, the Host may construct a bounded display-only npm command from normalized identity. **Open DSH Terminal** opens the terminal only; it sends no package command, path, or Profile and performs no mutation.
+If build approval is required or no reviewed build policy exists, the Host constructs a bounded display-only command from normalized identity. The details dialog explains the reason and offers **Open DSH Terminal**. That action opens the terminal only; it sends no package command, path, approval, or Profile and performs no mutation. The user reviews any build-script permission requested by pnpm and decides outside the graphical flow.
 
 ## Failure behavior
 
 | Failure | Result |
 | --- | --- |
 | npm latest cannot be resolved or is not a stable DSH plugin | No package operation starts |
+| The reviewed policy requires build approval, npm latest changed, or the release now declares an install/build hook | Automatic installation is withheld; the manual terminal instruction remains available |
 | Profile changes after preview | The one-shot preview is rejected |
 | pnpm fails | The error is reported; Market performs no automatic cleanup or rollback |
 | Profile reconciliation fails after pnpm | The error is reported for diagnosis or explicit Recovery checkpoint restore |

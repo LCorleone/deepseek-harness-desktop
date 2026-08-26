@@ -141,10 +141,22 @@ function keywords(value: unknown, languageValue: unknown): readonly string[] | u
  */
 function reviewedNpmTarget(
   install: Record<string, unknown> | undefined,
-): { spec: string; revision: string } | undefined {
+): {
+    spec: string
+    revision: string
+    installPolicy:
+      | { mode: 'automatic'; reviewedVersion: string }
+      | { mode: 'manual'; reason: 'build-approval-required' }
+  } | undefined {
   if (install === undefined || !Array.isArray(install.methods)) return undefined
   const packageName = typeof install.pkg_name === 'string' ? install.pkg_name : undefined
-  const targets = new Map<string, { spec: string; revision: string }>()
+  const targets = new Map<string, {
+    spec: string
+    revision: string
+    installPolicy:
+      | { mode: 'automatic'; reviewedVersion: string }
+      | { mode: 'manual'; reason: 'build-approval-required' }
+  }>()
   for (const value of install.methods) {
     const method = record(value)
     if (method === undefined) continue
@@ -152,7 +164,7 @@ function reviewedNpmTarget(
       method.kind !== 'npm'
       || method.verification !== 'verified'
       || method.code !== 'repository_backlink'
-      || method.requiresBuildAllowance !== false
+      || typeof method.requiresBuildAllowance !== 'boolean'
       || typeof method.spec !== 'string'
       || typeof method.revision !== 'string'
       || method.spec.length > MAX_NPM_PACKAGE_LENGTH
@@ -161,7 +173,14 @@ function reviewedNpmTarget(
       || !STABLE_SEMVER_PATTERN.test(method.revision)
       || (packageName !== undefined && method.spec !== packageName)
     ) continue
-    targets.set(`${method.spec}@${method.revision}`, { spec: method.spec, revision: method.revision })
+    const installPolicy = method.requiresBuildAllowance
+      ? { mode: 'manual' as const, reason: 'build-approval-required' as const }
+      : { mode: 'automatic' as const, reviewedVersion: method.revision }
+    targets.set(`${method.spec}@${method.revision}\0${installPolicy.mode}`, {
+      spec: method.spec,
+      revision: method.revision,
+      installPolicy,
+    })
   }
   return targets.size === 1 ? targets.values().next().value : undefined
 }
@@ -208,6 +227,7 @@ function normalizeItem(value: unknown, context: CatalogFetchContext): CatalogIte
     ...(npmTarget === undefined ? {} : {
       package: { registry: 'npm' as const, name: npmTarget.spec },
       latestVersion: npmTarget.revision,
+      installPolicy: npmTarget.installPolicy,
     }),
     provenance: {
       sourceRecordId: context.source.sourceRecordId,

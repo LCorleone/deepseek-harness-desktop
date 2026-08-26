@@ -30,15 +30,16 @@ Provider 命令会被丢弃。经过审查的 1024Store adapter 只会解析一�
 
 ## 安装行为
 
-可安装目录条目只贡献一个 npm package 身份。安装 preview 解析 npm 官方 `latest` manifest，并要求：
+可自动安装的目录条目贡献一个 npm package 身份和一份由 Host 受审 adapter 生成、绑定精确 release 的构建策略。安装 preview 解析 npm 官方 `latest` manifest，并要求：
 
 - npm package name 一致；
-- 版本精确且稳定；以及
-- `dsh.bundle.patch` 合法。
+- 版本精确、稳定，且与受审策略覆盖的版本相同；以及
+- `dsh.bundle.patch` 合法；以及
+- 解析到的 manifest 没有直接安装生命周期脚本或原生 `gypfile` 要求。
 
 Preview 把这些事实、已经观察到的目录条目和当前 Profile 绑定到短时一次性 token。执行阶段只调用 `desktopPnpm.run(argv)`，保存精确版本并 reconcile `dsh.profile.bundles`。
 
-Market 不再使用 receipt 或安装专用保护、恢复路径。来源版本、仓库匹配、lifecycle script、deprecated、engine 范围和 provider 验证徽章都不作为安装门槛。
+Market 不再使用 receipt 或安装专用保护、恢复路径。缺少构建策略或明确需要构建许可的条目保持手动安装；npm latest 版本变化或当前 manifest 也可以在修改 Profile 前撤销自动安装资格。未经审核的来源版本、仓库匹配、deprecated、engine 范围和普通 provider 徽章本身不会授予安装权限。
 
 ## 已安装清单与卸载
 

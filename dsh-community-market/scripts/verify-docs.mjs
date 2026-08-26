@@ -211,6 +211,12 @@ if (
 if (Object.hasOwn(itemSchema.properties, 'install') || Object.hasOwn(itemSchema.properties, 'installCommand')) {
   fail('catalog snapshot items must not contain executable installation fields')
 }
+if (
+  !Object.hasOwn(itemSchema.properties, 'installPolicy')
+  || Object.hasOwn(providerPageSchema.$defs.item.properties, 'installPolicy')
+) {
+  fail('install policy must be Host-owned normalized metadata, never provider wire input')
+}
 if (Object.hasOwn(providerPageSchema.$defs.item.properties, 'provenance')) {
   fail('provider wire items must not be allowed to supply Host provenance')
 }

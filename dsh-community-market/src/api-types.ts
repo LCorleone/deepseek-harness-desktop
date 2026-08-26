@@ -45,9 +45,10 @@ export interface MarketManualInstallHint {
   readonly providerId: string
   readonly itemId: string
   readonly kind: 'npm' | 'github'
-  /** GitHub instructions resolve a moving repository HEAD; exact npm targets do not. */
+  /** Unpinned npm and GitHub instructions resolve a moving target. */
   readonly mutable: boolean
   readonly desktopVerification: 'not-verified'
+  readonly reason: 'build-approval-required' | 'build-policy-unverified'
   readonly displayCommand: string
 }
 

@@ -93,6 +93,7 @@ describe('DSH Marketplace compatibility adapter', () => {
       summary: 'plugin-0',
       repository: { url: 'https://github.com/owner/plugin-0' },
       package: { registry: 'npm', name: 'dsh-plugin-0' },
+      installPolicy: { mode: 'manual', reason: 'build-policy-unverified' },
       provenance: {
         sourceRecordId: source().sourceRecordId,
         providerId: DSH_MARKETPLACE_PROVIDER_ID,

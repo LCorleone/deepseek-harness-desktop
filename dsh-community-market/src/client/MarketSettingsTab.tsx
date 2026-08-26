@@ -112,6 +112,27 @@ function operationErrorMessage(cause: unknown, fallback: string): string {
     : fallback
 }
 
+function operationErrorCode(cause: unknown): string | undefined {
+  const code = cause !== null && typeof cause === 'object' && 'code' in cause
+    ? (cause as { readonly code?: unknown }).code
+    : undefined
+  return typeof code === 'string' ? code : undefined
+}
+
+function installPreviewErrorMessage(
+  cause: unknown,
+  fallback: string,
+  t: MarketSettingsTabProps['t'],
+): string {
+  if (operationErrorCode(cause) === 'build-approval-required') {
+    return t('buildApprovalDetected')
+  }
+  if (operationErrorCode(cause) === 'build-policy-changed') {
+    return t('buildPolicyChanged')
+  }
+  return operationErrorMessage(cause, fallback)
+}
+
 function catalogFailureMessage(
   cause: unknown,
   source: MarketSourceView,
@@ -271,6 +292,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
   const [operationPreview, setOperationPreview] = useState<MarketOperationPreviewResponse>()
   const [operationSuccess, setOperationSuccess] = useState<CompletedOperation>()
   const [operationError, setOperationError] = useState<string>()
+  const [operationBuildApprovalRequired, setOperationBuildApprovalRequired] = useState(false)
   const [operationPending, setOperationPending] = useState(false)
   const [desktopActionError, setDesktopActionError] = useState<string>()
   const [desktopActionPending, setDesktopActionPending] = useState(false)
@@ -650,6 +672,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     selectedKeyRef.current = undefined
     setSelected(undefined)
     setOperationError(undefined)
+    setOperationBuildApprovalRequired(false)
     if (next === 'installable') {
       installationsRequest.current?.abort()
       installationsRequest.current = undefined
@@ -689,6 +712,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     operationStage.current = 'preview'
     setOperationPending(true)
     setOperationError(undefined)
+    setOperationBuildApprovalRequired(false)
     setDesktopActionError(undefined)
     setOperationSuccess(undefined)
     try {
@@ -704,9 +728,13 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         setInstallationsError(t('desktopUnavailable'))
         setOperationError(t('desktopUnavailable'))
       } else {
-        setOperationError(operationErrorMessage(cause, t(requestValue.action === 'install'
-          ? 'previewError'
-          : 'uninstallPreviewError')))
+        const fallback = t(requestValue.action === 'install' ? 'previewError' : 'uninstallPreviewError')
+        setOperationBuildApprovalRequired(
+          requestValue.action === 'install' && operationErrorCode(cause) === 'build-approval-required',
+        )
+        setOperationError(requestValue.action === 'install'
+          ? installPreviewErrorMessage(cause, fallback, t)
+          : operationErrorMessage(cause, fallback))
       }
     } finally {
       if (operationRequest.current === request) {
@@ -734,9 +762,11 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setOperationPreview(undefined)
     setOperationSuccess(undefined)
     setOperationError(undefined)
+    setOperationBuildApprovalRequired(false)
     setDesktopActionError(undefined)
     const beginInstallPreview = () => {
       if (selectedKeyRef.current !== selectionKey) return
+      if (value.item.installPolicy?.mode !== 'automatic') return
       void beginOperationPreview({
         action: 'install',
         sourceRecordId: value.source.sourceRecordId,
@@ -787,6 +817,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setSelectedInventoryError(undefined)
     setOperationPreview(undefined)
     setOperationError(undefined)
+    setOperationBuildApprovalRequired(false)
     setDesktopActionError(undefined)
   }
 
@@ -798,6 +829,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     operationStage.current = 'execute'
     setOperationPending(true)
     setOperationError(undefined)
+    setOperationBuildApprovalRequired(false)
     setDesktopActionError(undefined)
     try {
       const result = await executeMarketOperation(preview.previewId, request.signal)
@@ -999,6 +1031,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           preview={operationPreview?.action === 'install' ? operationPreview : undefined}
           pending={operationPending}
           operationError={operationError}
+          buildApprovalRequired={operationBuildApprovalRequired}
           desktopActionError={desktopActionError}
           desktopActionPending={desktopActionPending}
           canOpenTerminal={state?.desktopActions.openTerminal === true}
@@ -1024,6 +1057,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
             if (operationPending) return
             setOperationPreview(undefined)
             setOperationError(undefined)
+            setOperationBuildApprovalRequired(false)
           }}
           onConfirm={() => { void executePreview() }}
           t={t}
@@ -1835,6 +1869,7 @@ function ItemActionModal({
   preview,
   pending,
   operationError,
+  buildApprovalRequired,
   desktopActionError,
   desktopActionPending,
   canOpenTerminal,
@@ -1853,6 +1888,7 @@ function ItemActionModal({
   preview: MarketOperationPreviewResponse | undefined
   pending: boolean
   operationError?: string | undefined
+  buildApprovalRequired: boolean
   desktopActionError?: string | undefined
   desktopActionPending: boolean
   canOpenTerminal: boolean
@@ -1970,9 +2006,17 @@ function ItemActionModal({
                   <span>{t('installCommand')}</span>
                   <code>{manualInstall.displayCommand}</code>
                 </div>
+                <div className="dshMarketOperationWarning">
+                  <StateDot state="warning" size={12} />
+                  <span>{t(buildApprovalRequired || manualInstall.reason === 'build-approval-required'
+                    ? 'manualBuildApprovalRequired'
+                    : 'manualBuildPolicyUnverified')}</span>
+                </div>
                 <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('manualNotVerified')}</span></div>
                 {manualInstall.mutable && (
-                  <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('mutableGithubWarning')}</span></div>
+                  <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t(manualInstall.kind === 'github'
+                    ? 'mutableGithubWarning'
+                    : 'mutableNpmWarning')}</span></div>
                 )}
                 <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('operationWarning')}</span></div>
                 <div className="dshMarketOperationWarning">

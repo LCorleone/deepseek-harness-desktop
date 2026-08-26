@@ -30,15 +30,16 @@ Provider commands are discarded. The reviewed 1024Store adapter may parse one ex
 
 ## Install behavior
 
-An installable catalog entry contributes only one npm package identity. Install preview resolves npm's official `latest` manifest and requires:
+An automatically installable catalog entry contributes one npm package identity plus a Host-owned build policy bound to an exact reviewed release. Install preview resolves npm's official `latest` manifest and requires:
 
 - matching npm package name;
-- exact stable version; and
-- valid `dsh.bundle.patch`.
+- the same exact stable version covered by the reviewed policy; and
+- valid `dsh.bundle.patch`; and
+- no direct install lifecycle or native `gypfile` requirement in the resolved manifest.
 
 The preview binds these facts, the observed catalog item, and the active Profile to a short-lived one-shot token. Execution calls only `desktopPnpm.run(argv)`, saves the exact version, and reconciles `dsh.profile.bundles`.
 
-There are no Market receipts or install-specific protection and recovery paths. Source version, repository matching, lifecycle scripts, deprecation, engine ranges, and provider verification badges do not gate installation.
+There are no Market receipts or install-specific protection and recovery paths. A missing or build-requiring policy keeps the entry manual; a changed npm latest version or current manifest can also revoke automatic eligibility before Profile mutation. Unreviewed source versions, repository matching, deprecation, engine ranges, and generic provider badges do not independently grant installation authority.
 
 ## Installed inventory and uninstall
 

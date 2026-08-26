@@ -11,7 +11,7 @@ DSH Community Market is the open plugin market built into [DSH Desktop](../READM
 The Market has four views:
 
 1. **Discover** browses the selected source, with search, category filters, details, and source attribution.
-2. **Installable** shows normalized entries that expose one unambiguous npm package identity. It does not trust a source-provided version.
+2. **Installable** shows normalized entries that expose one unambiguous npm package identity and a reviewed declaration that installation needs no build-script approval. It does not trust a source-provided version as the final install target.
 3. **Installed** reads direct plugin dependencies from the active Profile. It includes plugins installed by this Market, another market, or the DSH CLI. Removable plugins offer **Uninstall** only; core bundles remain read-only.
 4. **Sources** saves, orders, and selects catalog sources. Exactly one source is active for browsing.
 
@@ -22,11 +22,12 @@ The Renderer never sends a package name or package-manager command for an instal
 Automatic installation deliberately has a small qualification boundary:
 
 - the selected catalog entry exposes exactly one valid npm package name;
+- a reviewed local adapter marks an exact stable release eligible without build-script approval;
 - the package is not a Desktop-owned product bundle;
-- the official npm registry's `latest` endpoint returns the same package name and an exact stable version; and
-- that npm manifest declares a valid `dsh.bundle.patch` path.
+- the official npm registry's `latest` endpoint returns the same package name and the same reviewed exact stable version; and
+- that npm manifest declares a valid `dsh.bundle.patch` path and no direct install lifecycle or native `gypfile` requirement.
 
-Source versions, verification badges, repository equality, deprecation metadata, lifecycle scripts, engine ranges, tarball integrity metadata, and build-allowance claims do not decide Market eligibility. pnpm remains responsible for resolving and installing the requested exact npm version.
+Unreviewed source versions remain informational, while an adapter's reviewed version binds build-allowance evidence to one release. Desktop independently rechecks npm `latest` and the current manifest, then stops before Profile mutation if latest changed or the release now declares install/build hooks. Repository equality, deprecation metadata, engine ranges, and tarball integrity metadata remain outside this narrow eligibility check.
 
 After confirmation, the Host calls only `desktopPnpm.run(argv)`, adds the exact npm version, and reconciles the package into `dsh.profile.bundles`. The Market creates no install receipt, snapshot, retry, cleanup, or rollback path. Recovery is handled by Desktop's unified three-slot healthy-start checkpoints.
 
@@ -40,15 +41,15 @@ Uninstall preview accepts only the generation-scoped opaque `bundleId` returned 
 
 Anyone may publish a source implementing the public [`catalog-source`](docs/schemas/catalog-source.schema.json) and [`catalog-provider-page`](docs/schemas/catalog-provider-page.schema.json) contracts. Existing APIs can be integrated through reviewed local adapters. Remote source data is normalized before the Client sees it, and provider commands are never displayed or executed.
 
-[DSH 1024Store](https://github.com/imsai-sh/awesome-deepseek-harness-plugins) is an optional cooperating source. Desktop uses its current paginated `/api/v2/plugins` directory for browsing, search, sorting, and categories instead of the frozen 500-item v1 compatibility feed. The v2 command is never executed: an exact plain `dsh plugin --profile … add <npm-package>` shape contributes only the npm package identity, and npm `latest` remains the version authority during install preview. Browse-only GitHub targets remain visible without being marked automatically installable.
+[DSH 1024Store](https://github.com/imsai-sh/awesome-deepseek-harness-plugins) is an optional cooperating source. Desktop uses its current paginated `/api/v2/plugins` directory for browsing, search, sorting, and categories instead of the frozen 500-item v1 compatibility feed. The v2 command is never executed: an exact plain `dsh plugin --profile … add <npm-package>` shape contributes only the npm package identity. Because this source does not currently carry reviewed build-policy evidence, these entries use the manual terminal flow rather than automatic installation.
 
-[dshfind](https://dshfind.com) is another optional cooperating source. Its adapter walks the provider's versioned REST pages and normalizes structured npm identity without executing provider command text. Any provider-supplied version remains informational; automatic installation still resolves npm `latest`.
+[dshfind](https://dshfind.com) is another optional cooperating source. Its adapter walks the provider's versioned REST pages and normalizes structured npm identity without executing provider command text. A uniquely reviewed method with `requiresBuildAllowance: false` may enter automatic preview; a method that requires build approval remains manual and keeps an exact display command.
 
 Source requests are HTTPS-only, credential-free, bounded, and protected against unsafe redirects and private-network destinations. A source failure never changes the user's selected source or blocks DSH Desktop startup.
 
 ## Manual installation
 
-When automatic installation is unavailable, the details dialog may show a bounded, display-only npm command reconstructed by the Host. **Open DSH Terminal** only opens Desktop's terminal; it does not paste or execute the command.
+When build approval is required or the source has no reviewed build policy, the details dialog explains why automatic installation is unavailable and shows a bounded, display-only command reconstructed by the Host. **Open DSH Terminal** only opens Desktop's terminal; it does not paste, execute, or approve that command.
 
 ## Documentation
 

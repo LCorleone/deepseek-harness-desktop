@@ -1,5 +1,6 @@
 import { prerelease, valid } from 'semver'
 import type { CatalogHttpClient, NormalizedGitHubInstallSource } from '../contracts/index.js'
+import { packageRequiresBuildApproval } from './build-policy.js'
 
 const RAW_GITHUB_ORIGIN = 'https://raw.githubusercontent.com'
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
@@ -14,6 +15,7 @@ export interface GitHubPackageVerification {
   readonly version: string
   readonly bundlePatch: string
   readonly source: NormalizedGitHubInstallSource
+  readonly requiresBuildApproval: boolean
 }
 
 function fail(message: string): never {
@@ -89,7 +91,13 @@ export function createGitHubPackageVerifier(http: CatalogHttpClient) {
         ? (bundle as Record<string, unknown>).patch
         : undefined
       if (!safeBundlePatch(patch)) fail('package does not declare a valid DSH bundle')
-      return { packageName: packageNameValue, version: versionValue, bundlePatch: patch, source }
+      return {
+        packageName: packageNameValue,
+        version: versionValue,
+        bundlePatch: patch,
+        source,
+        requiresBuildApproval: packageRequiresBuildApproval(manifest),
+      }
     },
   }
 }

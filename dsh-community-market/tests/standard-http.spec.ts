@@ -109,6 +109,7 @@ describe('standard HTTP catalog adapter', () => {
           alt: 'Better Sidebar plugin icon',
         },
       },
+      installPolicy: { mode: 'manual', reason: 'build-policy-unverified' },
     })
     expect(snapshot.page).toEqual({ nextCursor: 'page_2', total: 42 })
     expect(register).toHaveBeenCalledWith({

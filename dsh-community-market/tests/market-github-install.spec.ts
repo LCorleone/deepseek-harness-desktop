@@ -42,6 +42,8 @@ function snapshot(): CatalogSnapshot {
       summary: 'Pinned GitHub plugin',
       repository: { url: 'https://github.com/example/plugin', subdirectory: 'packages/plugin' },
       installSource: source,
+      latestVersion: '1.2.3',
+      installPolicy: { mode: 'automatic', reviewedVersion: '1.2.3' },
       provenance: { sourceRecordId: 'source-1', providerId: 'provider.example', itemId: 'example/plugin' },
     }],
     page: {},
@@ -75,6 +77,7 @@ describe('Market GitHub install target', () => {
         packageName: 'dsh-plugin-git',
         version: '1.2.3',
         source: candidate.source!,
+        requiresBuildApproval: false,
       })),
     }
     const service = new MarketInstallService(

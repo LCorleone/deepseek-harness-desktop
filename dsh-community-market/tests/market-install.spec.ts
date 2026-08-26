@@ -50,6 +50,8 @@ function snapshot(): CatalogSnapshot {
       displayName: 'Safe Plugin',
       summary: 'Fixture plugin',
       package: { registry: 'npm', name: packageName },
+      latestVersion: version,
+      installPolicy: { mode: 'automatic', reviewedVersion: version },
       provenance: {
         sourceRecordId: 'source-1',
         providerId: DSH_1024STORE_PROVIDER_ID,
@@ -106,7 +108,7 @@ function runner(profileDir: string, calls: string[][]): MarketDesktopPnpm {
 }
 
 describe('npm latest resolution', () => {
-  it('uses npm latest and accepts lifecycle, deprecated, and unrelated repository metadata', async () => {
+  it('uses npm latest and reports lifecycle build approval separately from package identity', async () => {
     const getJson = vi.fn(async () => ({
       finalUrl: `https://registry.npmjs.org/${packageName}/latest`,
       value: {
@@ -121,12 +123,33 @@ describe('npm latest resolution', () => {
     }))
     const verifier = createNpmRegistryVerifier({ getJson } satisfies CatalogHttpClient)
 
-    await expect(verifier.verify({ packageName }, new AbortController().signal)).resolves.toEqual({ version })
+    await expect(verifier.verify({ packageName }, new AbortController().signal)).resolves.toEqual({
+      version,
+      requiresBuildApproval: true,
+    })
     expect(getJson).toHaveBeenCalledWith(
       `https://registry.npmjs.org/${packageName}/latest`,
       expect.any(AbortSignal),
       { allowedOrigin: 'https://registry.npmjs.org' },
     )
+  })
+
+  it('keeps script-free packages eligible for a reviewed automatic install', async () => {
+    const verifier = createNpmRegistryVerifier({
+      getJson: vi.fn(async () => ({
+        finalUrl: `https://registry.npmjs.org/${packageName}/latest`,
+        value: {
+          name: packageName,
+          version,
+          dsh: { bundle: { patch: './cordis.patch.yml' } },
+        },
+      })),
+    })
+
+    await expect(verifier.verify({ packageName }, new AbortController().signal)).resolves.toEqual({
+      version,
+      requiresBuildApproval: false,
+    })
   })
 
   it('requires a stable latest version and a valid DSH bundle declaration', async () => {
@@ -193,11 +216,55 @@ describe('simplified Profile package operations', () => {
     expect(response).toHaveProperty('fetchedAt')
   })
 
+  it('keeps unknown build policies out of automatic installation', async () => {
+    const profileDir = await createProfile()
+    const service = new MarketInstallService(
+      () => ({ name: 'desktop', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn() },
+    )
+    const item = snapshot().items[0]!
+    if (item.package === undefined) throw new Error('fixture package missing')
+    const manualPage: CatalogSnapshot = {
+      ...snapshot(),
+      items: [{
+        id: item.id,
+        name: item.name,
+        displayName: item.displayName,
+        summary: item.summary,
+        package: item.package,
+        latestVersion: version,
+        installPolicy: { mode: 'manual', reason: 'build-policy-unverified' },
+        provenance: item.provenance,
+      }],
+    }
+
+    const response = service.listInstallablePage({
+      sourceRecordId: 'source-1',
+      registrationKind: 'built-in',
+      adapterId: DSH_1024STORE_ADAPTER_ID,
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      enabled: true,
+      order: 0,
+      name: 'DSH 1024Store',
+      endpoint: 'https://deepseek1024.com/api/v2/plugins',
+      partnership: true,
+    }, manualPage, [], new AbortController().signal)
+
+    expect(response.items).toEqual([])
+    expect(response.manualInstall).toEqual([])
+    await expect(service.previewInstall(
+      'source-1',
+      'example/dsh-plugin-safe',
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'not-available' })
+  })
+
   it('installs npm latest with one pnpm add and does not persist a market receipt', async () => {
     const profileDir = await createProfile()
     const calls: string[][] = []
     const scope = memoryScope()
-    const verify = vi.fn(async () => ({ version }))
+    const verify = vi.fn(async () => ({ version, requiresBuildApproval: false }))
     const service = new MarketInstallService(
       () => ({ name: 'desktop', dir: profileDir }),
       runner(profileDir, calls),
@@ -223,6 +290,46 @@ describe('simplified Profile package operations', () => {
       dsh: { profile: { bundles: [packageName] } },
     })
     expect(verify).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a changed package that now requires build approval before pnpm starts', async () => {
+    const profileDir = await createProfile()
+    const calls: string[][] = []
+    const service = new MarketInstallService(
+      () => ({ name: 'desktop', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => ({ version, requiresBuildApproval: true })) },
+    )
+    service.observeCatalog(snapshot())
+
+    await expect(service.previewInstall(
+      'source-1',
+      'example/dsh-plugin-safe',
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'build-approval-required' })
+    expect(calls).toEqual([])
+    expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8'))).toMatchObject({
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    })
+  })
+
+  it('rejects a newer registry release whose dependency build policy has not been reviewed', async () => {
+    const profileDir = await createProfile()
+    const calls: string[][] = []
+    const service = new MarketInstallService(
+      () => ({ name: 'desktop', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => ({ version: '1.2.4', requiresBuildApproval: false })) },
+    )
+    service.observeCatalog(snapshot())
+
+    await expect(service.previewInstall(
+      'source-1',
+      'example/dsh-plugin-safe',
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: 'build-policy-changed' })
+    expect(calls).toEqual([])
   })
 
   it('uninstalls a direct Profile plugin regardless of which market installed it', async () => {
