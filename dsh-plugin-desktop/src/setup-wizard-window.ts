@@ -159,7 +159,10 @@ export class DesktopSetupWizardWindow {
       resizable: true,
       maximizable: false,
       fullscreenable: false,
-      show: false,
+      // Electron can emit `ready-to-show` before the first hidden Win32 HWND
+      // accepts BrowserWindow.show(). Create the local Wizard visibly on
+      // Windows so startup never waits behind an unreachable surface.
+      show: input.platform === 'win32',
       autoHideMenuBar: true,
       backgroundColor: '#202124',
       webPreferences: {
