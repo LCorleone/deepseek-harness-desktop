@@ -713,6 +713,9 @@ async function start(): Promise<void> {
       installRecoveryStatePath,
       generationId,
       externalMarketInstallEnabled: prepared.market.effective === 'dsh-market',
+      // The install child runs the packaged desktop-cli, which cannot read
+      // the in-archive policy asset and fails closed without the hand-off.
+      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
     }
     const restoreProfileCheckpoint = async (
       checkpoint: DesktopProfileCheckpoint,

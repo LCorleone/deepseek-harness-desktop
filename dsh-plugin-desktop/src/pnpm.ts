@@ -93,6 +93,12 @@ export interface DesktopPnpmBootstrap {
   readonly generationId: string
   /** Whether the selected Market provider may use the non-WAL external install boundary. */
   readonly externalMarketInstallEnabled: boolean
+  /**
+   * Launcher-injected policy environment hand-off for spawned desktop-cli
+   * children (installs): the packaged CLI cannot read the in-archive policy
+   * asset and fails closed without all four entries.
+   */
+  readonly cliPolicyEnvironment?: Readonly<Record<string, string>>
 }
 
 /** Exit facts for one desktop-owned package-manager operation. */
@@ -546,6 +552,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
         npm_config_target: this.bootstrap.electronVersion,
         npm_config_disturl: ELECTRON_HEADERS_URL,
         ...pnpmTlsEnvironmentEntries(process.env),
+        ...(this.bootstrap.cliPolicyEnvironment ?? {}),
       },
     }
     const child = this.ctx.subprocess.spawn(spec)
