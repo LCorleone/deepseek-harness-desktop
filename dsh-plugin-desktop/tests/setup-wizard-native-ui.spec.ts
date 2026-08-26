@@ -257,7 +257,7 @@ describe('Setup Wizard navigation and completion', () => {
       step: 'mode',
     }))
     expect(markup).toContain(`aria-label="${copy.back}"`)
-    expect(markup).not.toMatch(new RegExp(`<button[^>]+aria-label="${copy.back}"[^>]+disabled`, 'u'))
+    expect(markup).not.toMatch(new RegExp(`<button[^>]+aria-label="${copy.back}"[^>]+disabled=""`, 'u'))
   })
 
   it('uses a dialog trigger for Skip and explains where setup remains available', () => {

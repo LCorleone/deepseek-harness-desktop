@@ -5,6 +5,10 @@ import type { DesktopLocale } from './runtime.ts'
 export interface DesktopSetupWizardCopy {
   readonly title: string
   readonly profile: string
+  readonly welcomeTitle: string
+  readonly welcomeBody: string
+  readonly firstProfileSetup: string
+  readonly startSetup: string
   readonly presentationTitle: string
   readonly presentationBody: string
   readonly compatibilityMode: string
@@ -27,6 +31,7 @@ export interface DesktopSetupWizardCopy {
   readonly browserTitle: string
   readonly browserBody: string
   readonly openBrowser: string
+  readonly browserCompatibilityNotice: string
   readonly networkExposure: string
   readonly networkExposureBody: string
   readonly loopback: string
@@ -69,6 +74,10 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
   en: {
     title: 'Set up DSH Desktop',
     profile: 'Profile',
+    welcomeTitle: 'Welcome to DSH Desktop',
+    welcomeBody: 'This wizard configures the Desktop experience for the Profile shown below.',
+    firstProfileSetup: 'This is the first time you are setting up Desktop mode for this Profile.',
+    startSetup: 'Start setup',
     presentationTitle: 'Choose a window mode',
     presentationBody: 'Choose how DSH Desktop presents the official client.',
     compatibilityMode: 'Compatibility mode',
@@ -89,8 +98,9 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     materialMica: 'Mica',
     materialMicaBody: 'Use the native Windows Mica material when it is supported.',
     browserTitle: 'Set up browser access',
-    browserBody: 'Choose whether to open the client in your browser and who can reach it.',
-    openBrowser: 'Open the client in my browser after startup',
+    browserBody: 'Choose whether this Profile may be opened in a browser and who may reach it.',
+    openBrowser: 'Allow opening this Profile in a browser',
+    browserCompatibilityNotice: 'Browser access is only available in compatibility mode. This does not change the Desktop window mode you selected.',
     networkExposure: 'Network access',
     networkExposureBody: 'Loopback keeps access on this computer. LAN makes the client reachable from your local network.',
     loopback: 'This computer only',
@@ -131,6 +141,10 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
   zh: {
     title: '设置 DSH Desktop',
     profile: 'Profile',
+    welcomeTitle: '欢迎设置 DSH Desktop',
+    welcomeBody: '此向导将为下方 Profile 配置桌面体验。',
+    firstProfileSetup: '这是您第一次为这个 Profile 设置桌面模式。',
+    startSetup: '开始设置',
     presentationTitle: '选择窗口模式',
     presentationBody: '选择 DSH Desktop 如何呈现官方客户端。',
     compatibilityMode: '兼容模式',
@@ -151,8 +165,9 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     materialMica: 'Mica',
     materialMicaBody: '在系统支持时使用 Windows 原生 Mica 材质。',
     browserTitle: '设置浏览器访问',
-    browserBody: '选择启动后是否在浏览器中打开客户端，以及谁可以访问。',
-    openBrowser: '启动后在我的浏览器中打开客户端',
+    browserBody: '选择是否允许在浏览器中打开这个 Profile，以及谁可以访问。',
+    openBrowser: '允许在浏览器中打开',
+    browserCompatibilityNotice: '浏览器访问只能使用兼容模式，不会更改您选择的桌面窗口模式。',
     networkExposure: '网络访问范围',
     networkExposureBody: '仅本机访问只监听回环地址；局域网访问会让同一网络中的设备能够打开客户端。',
     loopback: '仅这台电脑',
