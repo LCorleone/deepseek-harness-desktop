@@ -96,6 +96,15 @@ export interface NormalizedPackageIdentity {
   readonly name: string
 }
 
+/** A pinned GitHub source descriptor; metadata only until install support is enabled. */
+export interface NormalizedGitHubInstallSource {
+  readonly kind: 'github'
+  readonly owner: string
+  readonly repo: string
+  readonly commit: string
+  readonly subdirectory?: string
+}
+
 export type CatalogIdentityChoice =
   | { readonly kind: 'repository'; readonly repository: NormalizedRepositoryIdentity }
   | { readonly kind: 'package'; readonly package: NormalizedPackageIdentity }
