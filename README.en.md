@@ -1,15 +1,23 @@
+<p align="center">
+  <a href="https://dshdesktop.cn"><img src="assets/desktop-hero-en.png" alt="DSH Desktop, an open-source desktop client built on DeepSeek Harness" width="100%"></a>
+</p>
+
 <h1 align="center">DSH Desktop</h1>
 
 <p align="center">
-  <strong>An open-source desktop client for Windows and macOS, built on DeepSeek Harness.</strong><br>
-  One-click download, ready to use out of the box.<br>
+  <strong>An open-source desktop client for Windows and macOS, built on DeepSeek Harness.</strong>
+</p>
+
+<h3 align="center"><a href="https://dshdesktop.cn">One-click download, ready to use out of the box.</a></h3>
+
+<p align="center">
   Everything is a plugin — the desktop itself is a plugin.
 </p>
 
 <p align="center"><sub>An independent community project, not affiliated with, authorized by, or endorsed by DeepSeek.<br>No DeepSeek employee or official upstream DeepSeek Harness team member currently participates in this repository; upstream contributors shown by GitHub are inherited from synchronized fork history.<br><a href="README.md">中文</a> · English</sub></p>
 
 <p align="center">
-  <img src="assets/desktop-hero-en.png" alt="DSH Desktop, an open-source desktop client built on DeepSeek Harness" width="100%">
+  <img src="assets/desktop-chat-en.png" alt="DSH Desktop chat interface in English" width="100%">
 </p>
 
 <p align="center">
