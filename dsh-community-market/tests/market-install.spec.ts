@@ -857,7 +857,12 @@ describe('market install service', () => {
           await removeInstalledPlugin(profileDir)
           return { exitCode: 0, signal: null }
         })()
-        return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
+        return {
+          stdout: Readable.from([]),
+          stderr: Readable.from(['pnpm ERR! ELIFECYCLE  Command failed with exit code 1.\n']),
+          done,
+          cancel: vi.fn(),
+        }
       },
     })
     const service = new MarketInstallService(
@@ -868,13 +873,74 @@ describe('market install service', () => {
     )
     service.observeCatalog(snapshot())
     const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
-    await expect(service.executeInstall(preview.intent, new AbortController().signal)).rejects.toMatchObject({
-      code: 'operation-failed',
-      message: expect.stringContaining('partial installation was rolled back'),
-    })
+    const failure = await service.executeInstall(preview.intent, new AbortController().signal)
+      .then(() => { throw new Error('expected the rolled-back install to reject') }, cause => cause as MarketInstallError)
+    expect(failure).toMatchObject({ code: 'operation-failed' })
+    expect(failure.message).toContain('partial installation was rolled back')
+    // The rollback branch inlines the original failure message, which already
+    // carries the captured pnpm stderr tail.
+    expect(failure.message).toContain('pnpm ERR! ELIFECYCLE  Command failed with exit code 1.')
     expect(calls).toEqual(['add', 'remove'])
     expect(settings.receipts()).toEqual([])
     expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({})
+  })
+
+  it('surfaces the tail of package-manager stderr when an install fails', async () => {
+    const profileDir = await createProfile()
+    // Ten stderr lines: the runPlugin tail capture keeps only the last six,
+    // so the earliest lines must stay out of the surfaced message.
+    const stderrLines = [
+      'pnpm ERR! EARLIEST stderr line that the tail must drop',
+      'pnpm ERR! filler line 1',
+      'pnpm ERR! filler line 2',
+      'pnpm ERR! filler line 3',
+      'pnpm ERR! filler line 4',
+      'pnpm ERR! filler line 5',
+      'pnpm WARN  warning before the failure',
+      'pnpm ERR! ERR_PNPM_IGNORED_BUILDS  Dependency build scripts were ignored',
+      'pnpm ERR! ERR_PNPM_PEER_DEP_ISSUES  Unmet peer dependencies',
+      'pnpm ERR! ELIFECYCLE  Command failed with exit code 1.',
+    ]
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      recoverableRunner(profileDir, {
+        runPlugin(args) {
+          if (args[0] !== 'add') {
+            return {
+              stdout: Readable.from([]),
+              stderr: Readable.from([]),
+              done: Promise.resolve({ exitCode: 0, signal: null }),
+              cancel: vi.fn(),
+            }
+          }
+          // Resolve done only after the stderr stream has been fully
+          // consumed, like a real child that exits after printing its
+          // failure; otherwise done can win the race against the tail
+          // capture and the failure message loses the stderr detail.
+          const stderr = Readable.from(stderrLines.map(line => `${line}\n`))
+          const done = new Promise<{ exitCode: number; signal: NodeJS.Signals | null }>(
+            resolve => { stderr.once('end', () => resolve({ exitCode: 1, signal: null })) },
+          )
+          return { stdout: Readable.from([]), stderr, done, cancel: vi.fn() }
+        },
+      }),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const failure = await service.executeInstall(preview.intent, new AbortController().signal)
+      .then(() => { throw new Error('expected the failed install to reject') }, cause => cause as MarketInstallError)
+
+    expect(failure).toBeInstanceOf(MarketInstallError)
+    expect(failure.code).toBe('operation-failed')
+    expect(failure.message).toContain('The desktop package manager did not complete successfully: ')
+    expect(failure.message).toContain('pnpm ERR! ELIFECYCLE  Command failed with exit code 1.')
+    expect(failure.message).toContain('ERR_PNPM_PEER_DEP_ISSUES')
+    expect(failure.message).not.toContain('EARLIEST stderr line')
+    expect(failure.message).not.toContain('filler line 1')
+    expect(settings.receipts()).toEqual([])
   })
 
   it('rolls back a direct dependency written before a rejected add completion', async () => {

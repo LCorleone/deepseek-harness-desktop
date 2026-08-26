@@ -1,6 +1,7 @@
 /** Desktop-managed pnpm build-script approval for plugin profiles. */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
 /**
@@ -115,5 +116,15 @@ export function ensureProfilePnpmBuildApproval(profileDir: string): void {
   const updated = withDesktopApprovedBuilds(current)
   if (updated === current) return
   mkdirSync(profileDir, { recursive: true })
-  writeFileSync(workspacePath, updated)
+  // Write through a sibling temporary file and rename it into place: a crash
+  // mid-write can never leave a truncated pnpm-workspace.yaml behind, which
+  // pnpm would refuse on every later plugin operation. Node's same-directory
+  // rename is atomic on every supported platform.
+  const temporaryPath = `${workspacePath}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    writeFileSync(temporaryPath, updated)
+    renameSync(temporaryPath, workspacePath)
+  } finally {
+    rmSync(temporaryPath, { force: true })
+  }
 }

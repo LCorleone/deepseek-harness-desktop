@@ -17,6 +17,11 @@ import {
   type DesktopPnpm,
   type DesktopPnpmBootstrap,
 } from '../src/pnpm.ts'
+import {
+  DESKTOP_POLICY_ENVIRONMENT,
+  desktopPolicyEnvironmentEntries,
+  type DesktopPolicy,
+} from '../src/desktop-policy.ts'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -116,49 +121,88 @@ function finish(child: ControlledSubprocess, outcome: SubprocessOutcome = {
   child.resolveTree()
 }
 
+/** Uppercase names of every parent variable the pnpm spawn path can forward. */
+const FORWARDABLE_TLS_ENVIRONMENT_NAMES = new Set([
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'NPM_CONFIG_CAFILE',
+  'NPM_CONFIG_STRICT_SSL',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+])
+
+/**
+ * Run one body with every forwardable TLS/proxy variable absent from the
+ * parent environment, restoring the exact previous state afterwards. The
+ * exact-env assertions below stay valid on machines behind corporate
+ * proxies or with TLS variables set instead of flaking on inherited values.
+ */
+async function withoutForwardableTlsEnvironment<T>(body: () => Promise<T>): Promise<T> {
+  const saved = Object.entries(process.env)
+    .filter(([key]) => FORWARDABLE_TLS_ENVIRONMENT_NAMES.has(key.toUpperCase()))
+  for (const [key] of saved) delete process.env[key]
+  try {
+    return await body()
+  } finally {
+    for (const [key, value] of saved) {
+      if (value !== undefined) process.env[key] = value
+    }
+  }
+}
+
 describe('desktop pnpm Host service', () => {
   it('runs physical packaged pnpm with the bundled Node lifecycle environment', async () => {
     const child = controlledSubprocess()
-    const harness = await createHarness([child])
     const signal = new AbortController().signal
 
-    const operation = harness.service.run(['list', '--depth=0'], signal)
+    await withoutForwardableTlsEnvironment(async () => {
+      const harness = await createHarness([child])
 
-    expect(harness.spawn).toHaveBeenCalledOnce()
-    const spec = harness.spawn.mock.calls[0]?.[0]
-    expect(spec).toEqual({
-      argv: [
-        bootstrap().nodeExecutable,
-        bootstrap().pnpmBinPath,
-        'list',
-        '--depth=0',
-      ],
-      cwd: bootstrap().activeProfileDir,
-      stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
-      graceMs: 3_000,
-      signal,
-      env: {
-        PATH: `${bootstrap().nodeBinDir}${delimiter}${process.env.PATH ?? ''}`,
-        NODE: bootstrap().nodeShimPath,
-        DSH_HOME: bootstrap().homeDir,
-        CI: 'true',
-        npm_config_runtime: 'electron',
-        npm_config_target: '43.4.0',
-        npm_config_disturl: 'https://electronjs.org/headers',
-      },
+      const operation = harness.service.run(['list', '--depth=0'], signal)
+
+      expect(harness.spawn).toHaveBeenCalledOnce()
+      const spec = harness.spawn.mock.calls[0]?.[0]
+      expect(spec).toEqual({
+        argv: [
+          bootstrap().nodeExecutable,
+          bootstrap().pnpmBinPath,
+          'list',
+          '--depth=0',
+        ],
+        cwd: bootstrap().activeProfileDir,
+        stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+        graceMs: 3_000,
+        signal,
+        env: {
+          PATH: `${bootstrap().nodeBinDir}${delimiter}${process.env.PATH ?? ''}`,
+          NODE: bootstrap().nodeShimPath,
+          DSH_HOME: bootstrap().homeDir,
+          CI: 'true',
+          npm_config_runtime: 'electron',
+          npm_config_target: '43.4.0',
+          npm_config_disturl: 'https://electronjs.org/headers',
+        },
+      })
+      expect(spec?.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
+      expect(spec?.env).not.toHaveProperty('NODE_EXTRA_CA_CERTS')
+      expect(spec).not.toHaveProperty('shell')
+      expect(operation.stdout).toBe(child.stdout)
+      expect(operation.stderr).toBe(child.stderr)
+      operation.cancel()
+      expect(child.terminate).toHaveBeenCalledOnce()
+
+      finish(child)
+      await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
+      expect(child.waitForExit).toHaveBeenCalledWith()
+      await harness.dispose()
+      expect(harness.ctx.get('desktopPnpm')).toBeUndefined()
     })
-    expect(spec?.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
-    expect(spec).not.toHaveProperty('shell')
-    expect(operation.stdout).toBe(child.stdout)
-    expect(operation.stderr).toBe(child.stderr)
-    operation.cancel()
-    expect(child.terminate).toHaveBeenCalledOnce()
-
-    finish(child)
-    await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
-    expect(child.waitForExit).toHaveBeenCalledWith()
-    await harness.dispose()
-    expect(harness.ctx.get('desktopPnpm')).toBeUndefined()
   })
 
   it('runs the packaged DSH plugin command from the caller directory', async () => {
@@ -597,6 +641,57 @@ describe('desktop pnpm Host service', () => {
     await disposing
     expect(child.waitForExit).toHaveBeenCalledOnce()
     expect(() => harness.service.run(['list'])).toThrow('generation is closed')
+  })
+})
+
+describe('pnpm policy environment hand-off', () => {
+  /** Locked content-mode policy constant used to seed the hand-off fixture. */
+  const lockedContentModePolicy: DesktopPolicy = {
+    locked: true,
+    companyCatalogOrigin: null,
+    companyManifestUrl: 'company-market/catalog-manifest.json',
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    trustRoots: [{ keyId: 'k1', fingerprint: 'a'.repeat(64) }],
+  }
+
+  it('forwards the bootstrap policy hand-off into spawned install children', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-policy-handoff-'))
+    const selectedBootstrap: DesktopPnpmBootstrap = {
+      ...bootstrap(root),
+      // The launcher encodes the in-archive policy through this overlay; the
+      // packaged CLI child fails closed without all four entries, so a future
+      // refactor that drops this spread must fail right here.
+      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(lockedContentModePolicy),
+    }
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const operation = await harness.service.installPlugin({
+        pnpmOptions: ['--save-exact'],
+        invokingDir: selectedBootstrap.activeProfileDir,
+        recovery: {
+          packageName: 'example-plugin',
+          packageVersion: '1.0.0',
+          receiptId: 'receipt:policy-handoff-0001',
+        },
+      })
+
+      const spawnedEnv = harness.spawn.mock.calls[0]?.[0].env as Record<string, string>
+      expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.locked]).toBe('1')
+      expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]).toBe('-')
+      expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.manifestUrl]).toBe('company-market/catalog-manifest.json')
+      expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.trustRoots]).toBe(`k1:${'a'.repeat(64)}`)
+
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

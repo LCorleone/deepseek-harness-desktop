@@ -95,6 +95,7 @@ import {
 } from './profile.ts'
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
 import { materializeProfile, ProfileMaterializationError } from './profile-materializer.ts'
+import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import {
   createDesktopExitCoordinator,
@@ -744,6 +745,17 @@ async function start(): Promise<void> {
       const dependencyFilesChanged = restored.changedFiles.some(name =>
         name === 'package.json' || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml')
       if (dependencyFilesChanged || forceMaterialization) {
+        // The restored snapshot may predate the build-approval whitelist, so
+        // re-approve before materializing or pnpm 11 fails the dependency
+        // synchronization on ERR_PNPM_IGNORED_BUILDS. Best-effort: a failed
+        // approval must not block the restore itself.
+        try {
+          ensureProfilePnpmBuildApproval(profileDir)
+        } catch (approvalCause) {
+          electronLogger.error(
+            `${BIN_NAME}: profile build approval before restore materialization failed: ${approvalCause instanceof Error ? approvalCause.message : String(approvalCause)}`,
+          )
+        }
         try {
           await materializeProfile({
             nodeExecutable,

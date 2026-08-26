@@ -1003,9 +1003,13 @@ export class MarketInstallService {
       } catch (cause) {
         if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
         await this.rollbackInstall(profile, candidate.packageName, receiptId)
+        // The cause is runPlugin's MarketInstallError, whose message already
+        // carries the captured pnpm stderr tail; inline it so this branch
+        // does not swallow the actual failure reason behind a generic text.
+        const detail = cause instanceof Error ? ` ${cause.message}` : ''
         throw new MarketInstallError(
           'operation-failed',
-          'The package manager failed after changing the active profile, so the partial installation was rolled back.',
+          `The package manager failed after changing the active profile, so the partial installation was rolled back.${detail}`,
         )
       }
       let installedDir: string

@@ -646,6 +646,25 @@ describe('published package surface', () => {
     expect(main).toContain('import { packagedDependencyPath, unpackedAsarPath } from')
   })
 
+  it('re-approves profile build scripts before restoring materializes dependencies', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+
+    // A restored snapshot may predate the onlyBuiltDependencies whitelist;
+    // the approval must run after the checkpoint restore and before pnpm
+    // materializes the dependencies, and a failed approval must not block
+    // the restore (no early return inside its catch).
+    const restore = main.indexOf('const restoreProfileCheckpoint = async (')
+    const restored = main.indexOf('const restored = checkpoint.restoreLatest(attemptId)')
+    const approval = main.indexOf('ensureProfilePnpmBuildApproval(profileDir)')
+    const materialize = main.indexOf('await materializeProfile({')
+
+    expect(restore).toBeGreaterThan(-1)
+    expect(restored).toBeGreaterThan(restore)
+    expect(approval).toBeGreaterThan(restored)
+    expect(materialize).toBeGreaterThan(approval)
+    expect(main).toContain('import { ensureProfilePnpmBuildApproval } from')
+  })
+
   it('separates unsigned smoke packaging from the signed macOS release', () => {
     const packageDir = readFileSync(new URL('scripts/package-dir.mjs', packageRoot), 'utf8')
 

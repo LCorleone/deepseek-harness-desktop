@@ -64,6 +64,13 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **启动崩溃修复链**（`485d74fb02`，已 push）：P3-2 图标收进 asar 后 lib 模块仍按 unpacked URL 相对解析 → nativeImage 失败 → 启动即挂 → 恢复窗 loadFile 又拿 asar 虚拟路径二次失败（双击无反应的根因）；修复=图标 archivedAsarPath 进 asar 区、recovery/profile-create 文档 unpackedAsarPath 钉物理区；全部模块相对资产消费点已审计（12 处）
 - **评审与修复**（`b5ef752291`，用户拍板**方向 B**）：3 High 全修——① 门禁接线真实发布路径（mac 无条件/win `DSH_COMPANY_RELEASE=1`，CI smoke 免疫）；② 删除客户端签名路径（「客户端持私钥」与防伪造主张矛盾），报告恒定 `unsigned+reason`，检测模型=「报告缺失即信号 + 内容比对」（与已签收上限自洽）；③ 手册 exit 码/命令名/字段实形勘误。+5 Medium/6 Low（正则多行兼容、三对双语 i18n 入册、验签脚本加固等）。
 
+## 8/26 评审修复记录（认知修正 + 遗留闭环）
+- **A 链（企业 TLS）**：`15a7e01e27`（CA/代理透传 + stderr 尾部捕获）+ `d540fb75be`（C 方案放行 `NODE_TLS_REJECT_UNAUTHORIZED`，用户拍板试点期与 DSH Terminal CLI 路径对齐）。**认知修正（评审 High）**：spawn env 实为「清洗父环境 + 覆盖层」而非白名单重建——A 链根因**未闭环**：Windows Electron 启动环境可能缺变量（无 shell 捕获，不同于 CLI 继承路径），复发时靠 stderr 尾部定位真因
+- **B 链（pnpm 构建防火墙）**：`39acad1d06`（profile pnpm-workspace.yaml 自动维护 `onlyBuiltDependencies` 白名单 + 回滚改醒目警告）——**端到端未验证**：#18 安装包死在 C 链之前，node-pty install 脚本首跑待真实机器检验
+- **C 链（CLI 策略 env 注入）**：`e069eea82a`（pnpm.ts 将 `cliPolicyEnvironment` 注入 spawn 子进程，P3 漏网修复）——**#18 包不含此修复**；下一包（≥2.0.3）才是全修复版
+- **版本标记**：2.0.3 起试点可区分构建（旧包 2.0.2 = 不含 C 链；新包 2.0.3 = A+B+C 全量）
+- 评审其余结论：M5 封闭白名单记待办（见部署侧待办 ⑧）；Top3 风险 = node-pty 首跑 / TLS 真因 / 白名单封闭，均已对应上述跟踪点
+
 ## 部署侧待办（运营项，代码已备）
 - **终审（2026-08-23）**：整体评价工程质量高，但发现 P0 交付完整性缺口：① L2 主链路未接线②发布门禁盲区 → **已全部修复于 `d63c85e88d`（已 push）**：market 锁定+有根时构造签名目录全链（provider content/origin 双模式 + sequence store + 签名 authority + 不可信闭锁，替换 dshfind 占位与 rejectAll；锁定无根 = 占位 + 显式警告 + 门禁拦截，启动永不因市场失败）；desktop CLI/boot 补 origin 模式；boot 树摘要持久化指纹缓存（命中跳过全量哈希，6 用例验证）；门禁补盲（trustRoots 非空 + content 模式打包树 manifest 构建期验签）；策略分发 ADR（main.ts 解析一次=唯一权威，其余通道皆投影，EN+zh+i18n 入册）。worker 被 API 限流打断一次，由第二个 worker 盘点半成品后续完；根 check 全绿 desktop 1100 / market 358
 - ③ 签收单「已执行」表述待同步勘正（接线后基本成立，待我复核措辞）；P1 余项（⑥signing subpath 根治门面/⑦E2E 链路/⑧清单对账）与 P2 四条已记入优化清单待后续迭代
@@ -74,6 +81,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 5. GUI 三面冒烟（终端/plugin add/Market）+ 诊断导出人工验证（CLI headless 已通）
 6. VM 验证 `ELECTRON_RUN_AS_NODE=1 ./app` 不进 node 模式；mac 签名机确认捆绑 node 二进制被签
 7. v1 receipt 升级引导文案（存量用户全部拒载后重装）；推广前同事机器安装实测
+8. onlyBuiltDependencies 目前硬编码三元组（node-pty/esbuild/protobufjs，`dsh-plugin-desktop/src/profile-pnpm-policy.ts`）：目录里第二个插件若携带其它原生构建依赖（sharp/sqlite3/bcrypt…）会复现 ERR_PNPM_IGNORED_BUILDS——长期方案是从签名 manifest 条目驱动批准清单，而非逐包扩硬编码
 
 ## Artifacts
 - `dev-log/2026-08-22-company-market-lockdown-plan-v2.md` — 实施计划 v2（唯一权威版）
