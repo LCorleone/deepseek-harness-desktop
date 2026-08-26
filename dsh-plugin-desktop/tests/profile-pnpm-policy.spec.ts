@@ -12,6 +12,15 @@ nodeLinker: hoisted
 autoInstallPeers: false
 `
 
+/** The v11 spelling and transitional setting every approved workspace carries. */
+const APPROVAL_TAIL = `allowBuilds:
+  node-pty: true
+  esbuild: true
+  protobufjs: true
+strictDepBuilds:
+  false
+`
+
 /** A fresh temp root whose profile directory may carry a pre-seeded workspace. */
 function profileRoot(workspace?: string): { root: string, dir: string } {
   const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-policy-'))
@@ -35,6 +44,12 @@ describe('profile pnpm build approval policy', () => {
   - node-pty
   - esbuild
   - protobufjs
+allowBuilds:
+  node-pty: true
+  esbuild: true
+  protobufjs: true
+strictDepBuilds:
+  false
 `,
       )
     } finally {
@@ -54,7 +69,9 @@ describe('profile pnpm build approval policy', () => {
       // trailing newline, and the block lands after them as a top-level key.
       expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
         'packages:\n  - .\ncatalog: https://registry.npmjs.org/\nnodeLinker: hoisted'
-        + '\n\nonlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs',
+        + '\n\nonlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs'
+        + '\n\nallowBuilds:\n  node-pty: true\n  esbuild: true\n  protobufjs: true'
+        + '\n\nstrictDepBuilds:\n  false',
       )
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -70,7 +87,7 @@ describe('profile pnpm build approval policy', () => {
       ensureProfilePnpmBuildApproval(dir)
 
       expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
-        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - node-pty\n  - user-native-dep\n  - esbuild\n  - protobufjs\n`,
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - node-pty\n  - user-native-dep\n  - esbuild\n  - protobufjs\n${APPROVAL_TAIL}`
       )
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -84,7 +101,7 @@ describe('profile pnpm build approval policy', () => {
       ensureProfilePnpmBuildApproval(dir)
 
       expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
-        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs\n`,
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs\n${APPROVAL_TAIL}`
       )
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -100,7 +117,7 @@ describe('profile pnpm build approval policy', () => {
       ensureProfilePnpmBuildApproval(dir)
 
       expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
-        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - esbuild\n  - user-native-dep\n  - node-pty\n  - protobufjs\n`,
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - esbuild\n  - user-native-dep\n  - node-pty\n  - protobufjs\n${APPROVAL_TAIL}`
       )
     } finally {
       rmSync(root, { recursive: true, force: true })
