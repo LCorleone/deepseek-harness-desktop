@@ -135,6 +135,24 @@ export function companyManifestAssetPath(moduleUrl: string, companyManifestUrl: 
   return join(dirname(fileURLToPath(new URL(moduleUrl))), ...segments)
 }
 
+/** The pinned npm registry flag value the market install path injects (mirrors pnpm.ts). */
+const PINNED_NPM_REGISTRY = 'https://registry.npmjs.org/'
+
+/**
+ * Whether one argument is a pinned registry flag the market install path
+ * injects (mirrors the pnpm option audit): `--registry=`/`--<scope>:registry=`
+ * with exactly the official npm origin as the value. `--save-exact` is
+ * handled separately (single occurrence).
+ */
+function isAcceptedRegistryFlag(argument: string): boolean {
+  if (!argument.startsWith('--')) return false
+  const equals = argument.indexOf('=')
+  if (equals === -1) return false
+  const name = argument.slice(2, equals)
+  const value = argument.slice(equals + 1)
+  return (name === 'registry' || name.endsWith(':registry')) && value === PINNED_NPM_REGISTRY
+}
+
 /**
  * Decide whether one locked-build terminal plugin add may proceed. The market
  * signing library is imported lazily so every CLI invocation that is not a
@@ -149,10 +167,24 @@ export async function authorizeLockedPluginAdd(
   policy: DesktopPolicy,
   options: LockedPluginAddOptions = {},
 ): Promise<LockedPluginAddDecision> {
-  // `--save-exact` is the one flag the launcher itself injects after an
-  // allow, so a user-typed copy directly after `add` is accepted and consumed
-  // here; every other flag-looking argument still fails the exact-spec parse.
-  const packageArguments = packageSpecs[0] === SAVE_EXACT_FLAG ? packageSpecs.slice(1) : packageSpecs
+  // The launcher injects `--save-exact` after an allow and the Market install
+  // path forwards its pinned registry flags, so those exact flags are
+  // accepted and consumed here (each at most once); every other flag-looking
+  // argument still fails the exact-spec parse.
+  const packageArguments: string[] = []
+  let saveExactSeen = false
+  let registryFlagsSeen = 0
+  for (const argument of packageSpecs) {
+    if (argument === SAVE_EXACT_FLAG && !saveExactSeen) {
+      saveExactSeen = true
+      continue
+    }
+    if (isAcceptedRegistryFlag(argument) && registryFlagsSeen < 2) {
+      registryFlagsSeen += 1
+      continue
+    }
+    packageArguments.push(argument)
+  }
   if (packageArguments.length !== 1) {
     return denied(`locked builds accept 'dsh plugin add <package>@<exact version>' with exactly one package argument (got ${String(packageArguments.length)}). ${MARKET_GUIDANCE}`)
   }

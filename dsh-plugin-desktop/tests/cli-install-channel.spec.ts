@@ -159,6 +159,31 @@ describe('locked plugin-add authorization', () => {
       packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
     })
 
+    // The Market install path forwards its pinned registry flags through the
+    // spawned desktop-cli; the locked channel consumes exactly those.
+    const marketShaped = await authorizeLockedPluginAdd(
+      ['--save-exact', '--registry=https://registry.npmjs.org/', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(marketShaped).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+    const scopedMarketShaped = await authorizeLockedPluginAdd(
+      ['--save-exact', '--registry=https://registry.npmjs.org/', '--@scope:registry=https://registry.npmjs.org/', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(scopedMarketShaped.allowed).toBe(true)
+
+    const hostileRegistry = await authorizeLockedPluginAdd(
+      ['--registry=https://evil.example/', 'example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath },
+    )
+    expect(hostileRegistry.allowed).toBe(false)
+
     const otherFlag = await authorizeLockedPluginAdd(
       ['--save-dev', 'example-plugin@1.0.0'],
       lockedCatalogPolicy(),
