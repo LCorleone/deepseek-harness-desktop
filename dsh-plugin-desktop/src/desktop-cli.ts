@@ -12,6 +12,7 @@ import {
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
 import { desktopPolicyFromEnvironment, readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
+import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
 
@@ -156,6 +157,9 @@ class CapturedDesktopCliExit {
   constructor(readonly code: number) {}
 }
 
+/** Fallback banner printed whenever a failed terminal plugin add is rolled back. */
+const INSTALL_RESTORED_NOTICE = 'dsh-desktop: the plugin install failed and the profile was restored to its previous state; the package manager error above explains why\n'
+
 /** Run one built-in-terminal add inside the same durable recovery boundary as Market installs. */
 async function loadWithInstallRecovery(
   load: (url: string) => Promise<unknown>,
@@ -195,12 +199,18 @@ async function loadWithInstallRecovery(
       await store.seal(transaction.transactionId)
     } catch (cause) {
       const restored = await store.restoreCurrentInstall(transaction.transactionId, 'install-failed')
-      if (restored.status !== 'manual-recovery-required') await store.clear(transaction.transactionId)
+      if (restored.status !== 'manual-recovery-required') {
+        await store.clear(transaction.transactionId)
+        process.stderr.write(INSTALL_RESTORED_NOTICE)
+      }
       throw cause
     }
   } else {
     const restored = await store.restoreCurrentInstall(transaction.transactionId, 'install-failed')
-    if (restored.status !== 'manual-recovery-required') await store.clear(transaction.transactionId)
+    if (restored.status !== 'manual-recovery-required') {
+      await store.clear(transaction.transactionId)
+      process.stderr.write(INSTALL_RESTORED_NOTICE)
+    }
   }
   if (failure !== undefined) throw failure
   if (capturedExitCode !== undefined) process.exitCode = capturedExitCode
@@ -264,6 +274,14 @@ export async function runDesktopDshCli(
       // `addIndex` counts inside the `argv.slice(2)` window, so the absolute
       // argv position of `add` is two further in.
       injectSaveExactFlag(argv, installCommand.addIndex + 2)
+    }
+    if (homeDir !== undefined) {
+      // pnpm 11 fails the whole `dsh plugin add` when any dependency's build
+      // script is not pre-approved in the profile's pnpm-workspace.yaml, and
+      // the upstream profile template ships no approval list. Desktop's
+      // trusted builders must be allow-listed before the upstream CLI spawns
+      // pnpm (this path does not go through desktopPnpm).
+      ensureProfilePnpmBuildApproval(resolveProfileDir(installCommand.profileName, homeDir))
     }
   }
   if (

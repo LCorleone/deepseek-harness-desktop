@@ -251,6 +251,7 @@ describe('packaged dsh bootstrap', () => {
     const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
     const manifestPath = join(profileDir, 'package.json')
     const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
       mkdirSync(profileDir, { recursive: true })
       const originalManifest = JSON.stringify({ dependencies: {} })
@@ -267,6 +268,42 @@ describe('packaged dsh bootstrap', () => {
       expect(readFileSync(manifestPath, 'utf8')).toBe(originalManifest)
       expect(existsSync(statePath)).toBe(false)
       expect(process.exitCode).toBe(1)
+      // The rollback is no longer silent: after pnpm's own diagnostics the
+      // user is told the profile was restored, not left wondering why the
+      // plugin did not load.
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('dsh-desktop: the plugin install failed and the profile was restored to its previous state')
+      expect(stderr).toContain('the package manager error above explains why')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('pre-approves trusted pnpm build scripts in the profile for terminal plugin adds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-build-approval-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+      }, async () => { process.exit(0) }, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'], desktopPolicy(false))
+
+      // The upstream CLI spawns pnpm itself, so the profile workspace must
+      // already carry Desktop's build approvals when it does.
+      const workspace = readFileSync(join(profileDir, 'pnpm-workspace.yaml'), 'utf8')
+      expect(workspace).toContain('nodeLinker: hoisted')
+      expect(workspace).toContain('onlyBuiltDependencies:')
+      for (const name of ['node-pty', 'esbuild', 'protobufjs']) {
+        expect(workspace).toContain(`- ${name}`)
+      }
     } finally {
       process.exitCode = originalExitCode
       rmSync(root, { recursive: true, force: true })

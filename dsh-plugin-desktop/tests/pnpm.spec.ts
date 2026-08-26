@@ -162,72 +162,97 @@ describe('desktop pnpm Host service', () => {
   })
 
   it('runs the packaged DSH plugin command from the caller directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-plugin-'))
+    const selectedBootstrap = bootstrap(root)
     const child = controlledSubprocess()
-    const harness = await createHarness([child])
+    const harness = await createHarness([child], selectedBootstrap)
     const invokingDir = '/workspace/third-party-plugin'
 
-    const operation = harness.service.runPlugin(['remove', 'dshmarket'], invokingDir)
+    try {
+      const operation = harness.service.runPlugin(['remove', 'dshmarket'], invokingDir)
 
-    const spec = harness.spawn.mock.calls[0]?.[0]
-    expect(spec?.argv).toEqual([
-      bootstrap().nodeExecutable,
-      '--expose-internals',
-      bootstrap().dshBootstrapPath,
-      'plugin',
-      '--profile',
-      '工作 profile',
-      'remove',
-      'dshmarket',
-    ])
-    expect(spec?.cwd).toBe(invokingDir)
-    expect(spec).not.toHaveProperty('signal')
-    expect(spec).not.toHaveProperty('shell')
+      const spec = harness.spawn.mock.calls[0]?.[0]
+      expect(spec?.argv).toEqual([
+        selectedBootstrap.nodeExecutable,
+        '--expose-internals',
+        selectedBootstrap.dshBootstrapPath,
+        'plugin',
+        '--profile',
+        '工作 profile',
+        'remove',
+        'dshmarket',
+      ])
+      expect(spec?.cwd).toBe(invokingDir)
+      expect(spec).not.toHaveProperty('signal')
+      expect(spec).not.toHaveProperty('shell')
+      // pnpm 11 fails operations whose dependency builds are unapproved, so
+      // every plugin spawn first ensures the profile approves them.
+      expect(readFileSync(join(selectedBootstrap.activeProfileDir, 'pnpm-workspace.yaml'), 'utf8'))
+        .toContain('onlyBuiltDependencies:')
 
-    finish(child, { exitCode: 7, signal: null })
-    await expect(operation.done).resolves.toEqual({ exitCode: 7, signal: null })
-    await harness.dispose()
+      finish(child, { exitCode: 7, signal: null })
+      await expect(operation.done).resolves.toEqual({ exitCode: 7, signal: null })
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('allows an unpatched dsh-market runtime to add through the external boundary', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-external-add-'))
+    const selectedBootstrap = { ...bootstrap(root), externalMarketInstallEnabled: true }
     const child = controlledSubprocess()
-    const harness = await createHarness([child], { ...bootstrap(), externalMarketInstallEnabled: true })
-    const operation = harness.service.runPlugin(
-      ['add', 'dshmarket@1.18.0', '--reporter=ndjson'],
-      '/workspace/dsh-market',
-    )
+    const harness = await createHarness([child], selectedBootstrap)
+    try {
+      const operation = harness.service.runPlugin(
+        ['add', 'dshmarket@1.18.0', '--reporter=ndjson'],
+        '/workspace/dsh-market',
+      )
 
-    expect(harness.spawn.mock.calls[0]?.[0].argv).toContain('dshmarket@1.18.0')
-    finish(child)
-    await operation.done
-    await harness.dispose()
+      expect(harness.spawn.mock.calls[0]?.[0].argv).toContain('dshmarket@1.18.0')
+      // The unpatched dsh-market add runs without a WAL, but its profile
+      // workspace is still build-approved before pnpm is spawned.
+      expect(readFileSync(join(selectedBootstrap.activeProfileDir, 'pnpm-workspace.yaml'), 'utf8'))
+        .toContain('- node-pty')
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('runs the selected dsh-market install without creating a per-install WAL', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-external-install-'))
+    const selectedBootstrap = { ...bootstrap(root), externalMarketInstallEnabled: true }
     const child = controlledSubprocess()
-    const selectedBootstrap = { ...bootstrap(), externalMarketInstallEnabled: true }
     const harness = await createHarness([child], selectedBootstrap)
-    const operation = harness.service.runExternalMarketPluginInstall(
-      ['add', '--reporter=ndjson', '@scope/example-plugin@1.2.3'],
-      '/workspace/dsh-market',
-    )
+    try {
+      const operation = harness.service.runExternalMarketPluginInstall(
+        ['add', '--reporter=ndjson', '@scope/example-plugin@1.2.3'],
+        '/workspace/dsh-market',
+      )
 
-    expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
-      selectedBootstrap.nodeExecutable,
-      '--expose-internals',
-      selectedBootstrap.dshBootstrapPath,
-      'plugin',
-      '--profile',
-      selectedBootstrap.activeProfileName,
-      'add',
-      '--reporter=ndjson',
-      '@scope/example-plugin@1.2.3',
-    ])
-    expect(harness.spawn.mock.calls[0]?.[0].cwd).toBe('/workspace/dsh-market')
-    expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+      expect(harness.spawn.mock.calls[0]?.[0].argv).toEqual([
+        selectedBootstrap.nodeExecutable,
+        '--expose-internals',
+        selectedBootstrap.dshBootstrapPath,
+        'plugin',
+        '--profile',
+        selectedBootstrap.activeProfileName,
+        'add',
+        '--reporter=ndjson',
+        '@scope/example-plugin@1.2.3',
+      ])
+      expect(harness.spawn.mock.calls[0]?.[0].cwd).toBe('/workspace/dsh-market')
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
 
-    finish(child)
-    await operation.done
-    await harness.dispose()
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('rejects the external Market boundary unless dsh-market is selected', async () => {
@@ -327,6 +352,11 @@ describe('desktop pnpm Host service', () => {
       await expect(operation.done).resolves.toEqual({ exitCode: 1, signal: null })
       expect(readFileSync(manifestPath, 'utf8')).toBe(originalManifest)
       expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+      // The build approval was written before the WAL snapshot, so the
+      // rollback restores a workspace that still pre-approves the trusted
+      // dependency builds instead of stripping them for the next install.
+      expect(readFileSync(join(selectedBootstrap.activeProfileDir, 'pnpm-workspace.yaml'), 'utf8'))
+        .toContain('- node-pty')
       await harness.dispose()
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -511,25 +541,30 @@ describe('desktop pnpm Host service', () => {
   })
 
   it('holds the generation gate until the first operation process tree exits', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-gate-'))
     const first = controlledSubprocess()
     const second = controlledSubprocess()
-    const harness = await createHarness([first, second])
-    const firstOperation = harness.service.run(['install'])
+    const harness = await createHarness([first, second], bootstrap(root))
+    try {
+      const firstOperation = harness.service.run(['install'])
 
-    first.resolveDone({ exitCode: 0, signal: null })
-    await Promise.resolve()
-    expect(first.waitForExit).toHaveBeenCalledOnce()
-    expect(() => harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')).toThrow(
-      'another desktop pnpm operation is already running',
-    )
+      first.resolveDone({ exitCode: 0, signal: null })
+      await Promise.resolve()
+      expect(first.waitForExit).toHaveBeenCalledOnce()
+      expect(() => harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')).toThrow(
+        'another desktop pnpm operation is already running',
+      )
 
-    first.resolveTree()
-    await firstOperation.done
-    const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
-    expect(harness.spawn).toHaveBeenCalledTimes(2)
-    finish(second)
-    await secondOperation.done
-    await harness.dispose()
+      first.resolveTree()
+      await firstOperation.done
+      const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
+      expect(harness.spawn).toHaveBeenCalledTimes(2)
+      finish(second)
+      await secondOperation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('releases the operation gate after a spawn-level failure and whole-tree wait', async () => {

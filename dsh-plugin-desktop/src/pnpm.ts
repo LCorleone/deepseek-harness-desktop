@@ -11,6 +11,7 @@ import type {
 import {
   DesktopInstallRecoveryStore,
 } from './install-recovery.ts'
+import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
@@ -349,6 +350,11 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
       throw new Error(`${BIN_NAME}: plugin add must use the recoverable install boundary`)
     }
     assertAbsolutePath('plugin invoking directory', invokingDir)
+    // pnpm 11 fails a plugin operation whose dependency build scripts are
+    // not pre-approved in the profile workspace, so start from an approved
+    // one; without this an ordinary add (e.g. node-pty for the terminal
+    // panel) derails on pnpm's build firewall instead of installing.
+    ensureProfilePnpmBuildApproval(this.bootstrap.activeProfileDir)
     return this.start({
       argv: [
         this.bootstrap.nodeExecutable,
@@ -375,6 +381,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
     const resolvedArgs = validateExternalMarketInstallArgs(args)
     assertAbsolutePath('plugin invoking directory', invokingDir)
+    ensureProfilePnpmBuildApproval(this.bootstrap.activeProfileDir)
     return this.start({
       argv: [
         this.bootstrap.nodeExecutable,
@@ -425,6 +432,10 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
     auditInstallOptions(resolvedOptions)
     assertAbsolutePath('plugin invoking directory', request.invokingDir)
+    // Approve the trusted builds before the recovery WAL snapshots the
+    // profile, so a later rollback restores a workspace that still carries
+    // the approval instead of stripping it from under the next install.
+    ensureProfilePnpmBuildApproval(this.bootstrap.activeProfileDir)
     if (this.closed) throw new Error(`${BIN_NAME}: desktop pnpm generation is closed`)
     if (this.active !== undefined || this.installPreparationActive) {
       throw new Error(`${BIN_NAME}: another desktop pnpm operation is already running`)
