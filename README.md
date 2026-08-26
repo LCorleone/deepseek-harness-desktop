@@ -1,15 +1,23 @@
+<p align="center">
+  <a href="https://dshdesktop.cn"><img src="assets/desktop-hero-zh.png" alt="DSH Desktop：基于 DeepSeek Harness 构建的开源桌面客户端" width="100%"></a>
+</p>
+
 <h1 align="center">DSH Desktop</h1>
 
 <p align="center">
-  <strong>基于 DeepSeek Harness 构建的 Windows 和 macOS 开源桌面客户端。</strong><br>
-  一键下载，开箱即用。<br>
+  <strong>基于 DeepSeek Harness 构建的 Windows 和 macOS 开源桌面客户端。</strong>
+</p>
+
+<h3 align="center"><a href="https://dshdesktop.cn">一键下载，开箱即用。</a></h3>
+
+<p align="center">
   万物皆「插件」，桌面本身也是「插件」。
 </p>
 
 <p align="center"><sub>独立的社区开源项目，与深度求索不存在隶属、合作、授权或背书关系。<br>本仓库目前无深度求索员工或 DeepSeek Harness 上游官方团队成员参与；GitHub Contributors 中显示的上游贡献者来自 fork 继承和同步的提交历史。<br>中文 · <a href="README.en.md">English</a></sub></p>
 
 <p align="center">
-  <img src="assets/desktop-hero-zh.png" alt="DSH Desktop：基于 DeepSeek Harness 构建的开源桌面客户端" width="100%">
+  <img src="assets/desktop-chat-zh.png" alt="DSH Desktop 中文对话界面" width="100%">
 </p>
 
 <p align="center">
