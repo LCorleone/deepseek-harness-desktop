@@ -36,6 +36,7 @@ const MAX_STATE_BYTES = 4 * 1024
 const STATE_DIRECTORY_MODE = 0o700
 const STATE_FILE_MODE = 0o600
 const MAX_PROFILE_NAME_BYTES = 255
+const INTERNAL_PROFILE_STAGING_PATTERN = /^\..+\.(?:creating|deleting|incomplete)-\d+-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 /** One discovered or lazily available DSH profile. */
 export interface DesktopProfileSummary {
@@ -101,6 +102,7 @@ export function assertDesktopProfileName(name: string): void {
   if (typeof name !== 'string' || name.length === 0
     || name.includes('/') || name.includes('\\') || name === '.' || name === '..'
     || name === 'node_modules' || Buffer.byteLength(name, 'utf8') > MAX_PROFILE_NAME_BYTES
+    || INTERNAL_PROFILE_STAGING_PATTERN.test(name)
     || /[\0-\x1f\x7f-\x9f]/.test(name)
     || /[<>:"|?*]/.test(name) || /[. ]$/.test(name)
     || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(name)) {
@@ -195,6 +197,43 @@ export function createDesktopWebProfile(home: string, name: string): DesktopProf
   return existingProfile(name, home)
 }
 
+/**
+ * Publish the real default Profile while preserving an interrupted, incomplete
+ * directory under an internal sibling name. Ordinary files and symlinks fail
+ * closed instead of being replaced.
+ */
+function materializeDefaultDesktopProfile(home: string): DesktopProfileSummary {
+  const target = resolveProfileDir(DEFAULT_PROFILE_NAME, home)
+  if (existsSync(join(target, PROFILE_MANIFEST_FILENAME))) return existingProfile(DEFAULT_PROFILE_NAME, home)
+
+  let incomplete: string | undefined
+  try {
+    const item = lstatSync(target)
+    if (!item.isDirectory() || item.isSymbolicLink()) {
+      throw new Error(`${BIN_NAME}: default profile path is not a real directory`)
+    }
+    incomplete = join(dirname(target), `.${basename(target)}.incomplete-${process.pid}-${randomUUID()}`)
+    renameSync(target, incomplete)
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause
+  }
+
+  try {
+    return createDesktopWebProfile(home, DEFAULT_PROFILE_NAME)
+  } catch (cause) {
+    if (incomplete !== undefined) {
+      try {
+        lstatSync(target)
+      } catch (targetCause) {
+        if ((targetCause as NodeJS.ErrnoException).code === 'ENOENT') {
+          try { renameSync(incomplete, target) } catch { /* preserve the creation failure */ }
+        }
+      }
+    }
+    throw cause
+  }
+}
+
 /** Deterministic profile order with the actual Desktop profile first. */
 function compareProfiles(left: DesktopProfileSummary, right: DesktopProfileSummary): number {
   const priority = (name: string): number => name === DEFAULT_PROFILE_NAME ? 0 : 1
@@ -213,6 +252,7 @@ export function listDesktopProfiles(home: string): DesktopProfileSummary[] {
   const summaries = new Map<string, DesktopProfileSummary>()
   try {
     for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
+      if (INTERNAL_PROFILE_STAGING_PATTERN.test(entry.name)) continue
       if (entry.name === 'node_modules' || (!entry.isDirectory() && !entry.isSymbolicLink())) continue
       try {
         assertDesktopProfileName(entry.name)
@@ -437,7 +477,7 @@ export function selectDesktopProfile(statePath: string, home: string, name: stri
  * selection is otherwise left for the Recovery window instead of being
  * silently replaced while another Profile remains available.
  * @param statePath - desktop-owned state file outside the Harness profile tree.
- * @param home - Harness home used only for read-only profile discovery.
+ * @param home - Harness home used for discovery and zero-Profile default materialization.
  * @returns profile decision persisted before profile preparation starts.
  */
 export function beginDesktopProfileStartup(statePath: string, home: string): DesktopProfileStartup {
@@ -448,7 +488,7 @@ export function beginDesktopProfileStartup(statePath: string, home: string): Des
   let recoveredState = loaded.recovered
   if ((current.active === DEFAULT_PROFILE_NAME || noProfilesExist)
     && !discovered.some(profile => profile.name === DEFAULT_PROFILE_NAME)) {
-    createDesktopWebProfile(home, DEFAULT_PROFILE_NAME)
+    materializeDefaultDesktopProfile(home)
   }
   if (noProfilesExist && current.active !== DEFAULT_PROFILE_NAME) {
     current = defaultState()

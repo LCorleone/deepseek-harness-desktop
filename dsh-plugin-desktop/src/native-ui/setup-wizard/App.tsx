@@ -613,7 +613,18 @@ export function confirmDesktopSetupWizardBrowserCompatibility(
   }
 }
 
-type LanConfirmationReason = 'select' | 'advance' | 'start'
+type LanConfirmationReason = 'select' | 'advance' | 'start' | 'skip'
+
+export function desktopSetupWizardSkipRequiresLanAcknowledgement(
+  selection: DesktopSetupWizardSelection,
+  acknowledged: boolean,
+): boolean {
+  return desktopSetupWizardRequiresLanAcknowledgement(
+    selection.networkExposure,
+    selection.networkExposure,
+    acknowledged,
+  )
+}
 
 export function SetupWizardApp(): JSX.Element {
   const locale = localLocale(window.location.search)
@@ -652,6 +663,14 @@ export function SetupWizardApp(): JSX.Element {
     setSelection(result.selection)
   }
 
+  const skip = (): void => {
+    if (desktopSetupWizardSkipRequiresLanAcknowledgement(selection, lanAcknowledged)) {
+      setConfirmLan('skip')
+      return
+    }
+    window.location.assign(`${SCHEME}//skip`)
+  }
+
   const advance = (): void => {
     const next = nextDesktopSetupWizardStep(step)
     if (next === undefined) return
@@ -683,7 +702,7 @@ export function SetupWizardApp(): JSX.Element {
       {step === 'welcome'
         ? <SetupWizardWelcome
           copy={copy}
-          onSkip={() => { window.location.assign(`${SCHEME}//skip`) }}
+          onSkip={skip}
           onStart={() => { setStep('mode') }}
           profileName={input.profileName}
         />
@@ -698,7 +717,7 @@ export function SetupWizardApp(): JSX.Element {
         if (previous !== undefined) setStep(previous)
       }}
       onNext={advance}
-      onSkip={() => { window.location.assign(`${SCHEME}//skip`) }}
+      onSkip={skip}
       step={step}
     />
   </section></main>
@@ -712,6 +731,7 @@ export function SetupWizardApp(): JSX.Element {
       setConfirmLan(undefined)
       if (reason === 'advance') setStep('success')
       if (reason === 'start') finish(next)
+      if (reason === 'skip') window.location.assign(`${SCHEME}//skip`)
     }}
     copy={copy}
   />}

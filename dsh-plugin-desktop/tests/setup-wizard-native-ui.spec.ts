@@ -10,6 +10,7 @@ import {
   confirmDesktopSetupWizardBrowserCompatibility,
   decodeDesktopSetupWizardInput,
   DESKTOP_SETUP_WIZARD_STEPS,
+  desktopSetupWizardSkipRequiresLanAcknowledgement,
   nextDesktopSetupWizardStep,
   previousDesktopSetupWizardStep,
   resolveDesktopSetupWizardBrowserAccessRequest,
@@ -306,6 +307,21 @@ describe('Setup Wizard navigation and completion', () => {
 })
 
 describe('Setup Wizard native UI boundaries', () => {
+  it('does not let Skip bypass the LAN danger acknowledgement', () => {
+    const exposed = {
+      ...selection,
+      mode: 'compatibility' as const,
+      openBrowser: true,
+      networkExposure: 'lan' as const,
+    }
+    expect(desktopSetupWizardSkipRequiresLanAcknowledgement(exposed, false)).toBe(true)
+    expect(desktopSetupWizardSkipRequiresLanAcknowledgement(exposed, true)).toBe(false)
+    expect(desktopSetupWizardSkipRequiresLanAcknowledgement({
+      ...exposed,
+      networkExposure: 'loopback',
+    }, false)).toBe(false)
+  })
+
   it('asks before switching a custom mode to compatibility for browser access', () => {
     expect(resolveDesktopSetupWizardBrowserAccessRequest(selection, true)).toEqual({
       action: 'confirm-compatibility',
