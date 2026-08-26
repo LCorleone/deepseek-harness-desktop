@@ -16,6 +16,8 @@ import {
   SetupWizardStepPage,
   SetupWizardSuccess,
 } from '../src/native-ui/setup-wizard/App.tsx'
+import { Button } from '../src/native-ui/components/ui/button.tsx'
+import { DialogClose } from '../src/native-ui/components/ui/dialog.tsx'
 import { desktopSetupWizardCopy } from '../src/setup-wizard-copy.ts'
 
 const input: DesktopSetupWizardInput = {
@@ -70,6 +72,16 @@ function elementText(node: ReactNode): string {
   return elementText((node.props as { readonly children?: ReactNode }).children)
 }
 
+function elementTree(node: ReactNode): readonly ReactElement[] {
+  const elements: ReactElement[] = []
+  Children.forEach(node, child => {
+    if (!isValidElement(child)) return
+    elements.push(child)
+    elements.push(...elementTree((child.props as { readonly children?: ReactNode }).children))
+  })
+  return elements
+}
+
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('Setup Wizard step flow', () => {
@@ -122,9 +134,21 @@ describe('Setup Wizard setting pages', () => {
   it.each(['mode', 'material', 'market', 'notifications', 'browser'] as const)(
     'lays out the %s page options vertically',
     (step) => {
-      expect(renderStep(step)).toContain('aria-orientation="vertical"')
+      expect(renderStep(step)).toContain('data-orientation="vertical"')
     },
   )
+
+  it.each([
+    ['mode', copy.presentationTitle],
+    ['material', copy.windowMaterial],
+    ['market', copy.marketTitle],
+    ['browser', copy.networkExposure],
+  ] as const)('uses a named shadcn RadioGroup for the %s choices', (step, accessibleName) => {
+    const markup = renderStep(step)
+    expect(markup).toContain('data-slot="radio-group"')
+    expect(markup).toContain(`aria-label="${accessibleName}"`)
+    expect(markup).toContain('data-slot="radio-group-item"')
+  })
 
   it('does not combine the plugin market and browser settings', () => {
     const market = renderStep('market')
@@ -238,6 +262,15 @@ describe('Setup Wizard native UI boundaries', () => {
     expect(text).toContain('这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启')
     expect(text).toContain('确认开启局域网访问')
     expect(text).toContain('保持仅本机访问')
+    const descendants = elementTree(content)
+    const close = descendants.find(element => element.type === DialogClose)
+    const confirm = descendants.find(element => element.type === Button
+      && elementText(element).includes(copy.confirmLan)
+      && (element.props as { readonly variant?: string }).variant === 'destructive')
+    expect(close).toBeDefined()
+    expect((close?.props as { readonly render?: ReactElement }).render?.props).toMatchObject({ autoFocus: true })
+    expect(confirm).toBeDefined()
+    expect((confirm?.props as { readonly autoFocus?: boolean }).autoFocus).not.toBe(true)
   })
 
   it('decodes only the exact bounded state tuple emitted by the owner window', () => {

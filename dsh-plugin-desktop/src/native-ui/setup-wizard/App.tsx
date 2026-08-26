@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Check,
   CheckCircle2,
   SkipForward,
 } from 'lucide-react'
@@ -34,6 +33,7 @@ import {
   DialogTrigger,
 } from '../components/ui/dialog.tsx'
 import { Label } from '../components/ui/label.tsx'
+import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group.tsx'
 import { Switch } from '../components/ui/switch.tsx'
 import { DesktopFrame } from '../shared/DesktopFrame.tsx'
 
@@ -146,29 +146,27 @@ function finish(selection: DesktopSetupWizardSelection): void {
 }
 
 function Choice({
+  id,
+  value,
   title,
   body,
   selected,
   disabled = false,
-  onSelect,
 }: {
+  readonly id: string
+  readonly value: string
   readonly title: string
   readonly body: string
   readonly selected: boolean
   readonly disabled?: boolean
-  readonly onSelect: () => void
 }): JSX.Element {
-  return <button
-    aria-checked={selected}
-    className={`flex w-full items-start gap-3 rounded-xl border p-4 text-left outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/30 ${selected ? 'border-primary bg-muted/70' : 'hover:bg-muted/40'}`}
-    disabled={disabled}
-    onClick={onSelect}
-    role="radio"
-    type="button"
+  return <Label
+    className={`flex w-full items-start gap-3 rounded-xl border p-4 text-left leading-normal outline-none transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${selected ? 'border-primary bg-muted/70' : 'hover:bg-muted/40'}`}
+    htmlFor={id}
   >
-    <span aria-hidden="true" className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border ${selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/60'}`}>{selected ? <Check className="size-3" /> : null}</span>
+    <RadioGroupItem className="mt-0.5" disabled={disabled} id={id} value={value} />
     <span className="min-w-0"><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{body}</span></span>
-  </button>
+  </Label>
 }
 
 function ToggleRow({
@@ -212,7 +210,7 @@ function Page({
   readonly subtitle: string
   readonly children: ReactNode
 }): JSX.Element {
-  return <div className="mx-auto flex w-full max-w-2xl flex-col py-5" data-setup-step={step}>
+  return <div className="mx-auto flex w-full max-w-2xl flex-col py-5" data-orientation="vertical" data-setup-step={step}>
     <header className="mb-6">
       <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{subtitle}</p>
@@ -237,14 +235,25 @@ function ModeOptions({
     { value: 'extended', title: copy.extendedMode, body: input.platform === 'linux' ? copy.unavailableOnLinux : copy.extendedModeBody },
     { value: 'advanced', title: copy.advancedMode, body: input.platform === 'linux' ? copy.unavailableOnLinux : copy.advancedModeBody },
   ]
-  return <div aria-orientation="vertical" className="space-y-3" role="radiogroup">{modes.map(option => <Choice
+  return <RadioGroup
+    aria-label={copy.presentationTitle}
+    aria-orientation="vertical"
+    name="setup-window-mode"
+    onValueChange={value => {
+      if (value === 'compatibility' || value === 'extended' || value === 'advanced') {
+        update({ ...selection, mode: value })
+      }
+    }}
+    value={selection.mode}
+  >{modes.map(option => <Choice
     body={option.body}
     disabled={input.platform === 'linux' && option.value !== 'compatibility'}
+    id={`setup-window-mode-${option.value}`}
     key={option.value}
-    onSelect={() => { update({ ...selection, mode: option.value }) }}
     selected={selection.mode === option.value}
     title={option.title}
-  />)}</div>
+    value={option.value}
+  />)}</RadioGroup>
 }
 
 type MaterialOption = {
@@ -283,14 +292,23 @@ function MaterialOptions({
       update({ ...selection, windowsMaterial: value })
     }
   }
-  return <div aria-orientation="vertical" className="space-y-3" role="radiogroup">{options.map(option => <Choice
+  return <RadioGroup
+    aria-label={copy.windowMaterial}
+    aria-orientation="vertical"
+    name="setup-window-material"
+    onValueChange={value => {
+      if (value === 'off' || value === 'transparent' || value === 'acrylic' || value === 'mica') choose(value)
+    }}
+    value={selected}
+  >{options.map(option => <Choice
     body={option.body}
     disabled={input.platform === 'linux'}
+    id={`setup-window-material-${option.value}`}
     key={option.value}
-    onSelect={() => { choose(option.value) }}
     selected={selected === option.value}
     title={option.title}
-  />)}</div>
+    value={option.value}
+  />)}</RadioGroup>
 }
 
 function MarketOptions({
@@ -307,13 +325,24 @@ function MarketOptions({
     { value: 'community-market', title: copy.communityMarket, body: copy.communityMarketBody },
     { value: 'dsh-market', title: copy.dshMarket, body: copy.dshMarketBody },
   ]
-  return <div aria-orientation="vertical" className="space-y-3" role="radiogroup">{markets.map(option => <Choice
+  return <RadioGroup
+    aria-label={copy.marketTitle}
+    aria-orientation="vertical"
+    name="setup-plugin-market"
+    onValueChange={value => {
+      if (value === 'disabled' || value === 'community-market' || value === 'dsh-market') {
+        update({ ...selection, market: value })
+      }
+    }}
+    value={selection.market}
+  >{markets.map(option => <Choice
     body={option.body}
+    id={`setup-plugin-market-${option.value}`}
     key={option.value}
-    onSelect={() => { update({ ...selection, market: option.value }) }}
     selected={selection.market === option.value}
     title={option.title}
-  />)}</div>
+    value={option.value}
+  />)}</RadioGroup>
 }
 
 function NotificationOptions({
@@ -328,7 +357,7 @@ function NotificationOptions({
   const set = (key: keyof DesktopSetupWizardNotifications, checked: boolean): void => {
     update({ ...notifications, [key]: checked })
   }
-  return <div aria-orientation="vertical" className="space-y-3">
+  return <div className="space-y-3" data-orientation="vertical">
     <ToggleRow checked={notifications.enabled} id="setup-notifications-enabled" label={copy.notificationsEnabled} onChange={checked => { set('enabled', checked) }} />
     <div className="space-y-3 border-l pl-4">
       <ToggleRow checked={notifications.notifyOnTurnCompletion} disabled={!notifications.enabled} id="setup-turn-completion" label={copy.turnCompletion} onChange={checked => { set('notifyOnTurnCompletion', checked) }} />
@@ -355,10 +384,19 @@ function BrowserOptions({
     <section>
       <h2 className="text-sm font-semibold">{copy.networkExposure}</h2>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.networkExposureBody}</p>
-      <div aria-orientation="vertical" className="mt-3 space-y-3" role="radiogroup">
-        <Choice body={copy.loopbackBody} onSelect={() => { requestExposure('loopback') }} selected={selection.networkExposure === 'loopback'} title={copy.loopback} />
-        <Choice body={copy.lanBody} onSelect={() => { requestExposure('lan') }} selected={selection.networkExposure === 'lan'} title={copy.lan} />
-      </div>
+      <RadioGroup
+        aria-label={copy.networkExposure}
+        aria-orientation="vertical"
+        className="mt-3"
+        name="setup-network-exposure"
+        onValueChange={value => {
+          if (value === 'loopback' || value === 'lan') requestExposure(value)
+        }}
+        value={selection.networkExposure}
+      >
+        <Choice body={copy.loopbackBody} id="setup-network-exposure-loopback" selected={selection.networkExposure === 'loopback'} title={copy.loopback} value="loopback" />
+        <Choice body={copy.lanBody} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
+      </RadioGroup>
     </section>
   </div>
 }
@@ -467,8 +505,8 @@ export function SetupWizardLanConfirmation({ copy, confirm, cancel }: {
         </div>
       </DialogHeader>
       <DialogFooter>
-        <Button onClick={cancel} type="button" variant="outline">{copy.cancelLan}</Button>
-        <Button autoFocus onClick={confirm} type="button" variant="destructive"><AlertTriangle />{copy.confirmLan}</Button>
+        <DialogClose render={<Button autoFocus type="button" variant="outline" />}>{copy.cancelLan}</DialogClose>
+        <Button onClick={confirm} type="button" variant="destructive"><AlertTriangle />{copy.confirmLan}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
