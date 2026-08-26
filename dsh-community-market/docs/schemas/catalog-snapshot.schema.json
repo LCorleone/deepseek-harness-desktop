@@ -213,6 +213,23 @@
         }
       }
     },
+    "installSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "commit"
+      ],
+      "properties": {
+        "kind": {
+          "const": "github"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
     "package": {
       "type": "object",
       "additionalProperties": false,
@@ -400,6 +417,9 @@
         },
         "repository": {
           "$ref": "#/$defs/repository"
+        },
+        "installSource": {
+          "$ref": "#/$defs/installSource"
         },
         "package": {
           "$ref": "#/$defs/package"

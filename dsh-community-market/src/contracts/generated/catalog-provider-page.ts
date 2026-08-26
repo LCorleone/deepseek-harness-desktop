@@ -18,6 +18,7 @@ export type Item = Item1 & {
    */
   keywords?: string[]
   repository?: Repository
+  installSource?: InstallSource
   package?: Package
   publisher?: Publisher
   media?: Media
@@ -60,6 +61,10 @@ export interface CatalogProviderPage {
 export interface Repository {
   url: HttpsUri
   subdirectory?: string
+}
+export interface InstallSource {
+  kind: 'github'
+  commit: string
 }
 export interface Package {
   registry: 'npm'
