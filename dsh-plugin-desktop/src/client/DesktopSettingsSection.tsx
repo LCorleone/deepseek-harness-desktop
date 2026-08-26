@@ -10,6 +10,10 @@ import type {
 } from './desktop-settings-api.ts'
 import type { DesktopSettingsLocaleKey } from './desktop-settings-locales.ts'
 import type { DesktopClientPlatform } from './environment.ts'
+import {
+  desktopBrowserAccessEnabled,
+  desktopShellModeForBrowserAccess,
+} from '../desktop-network.ts'
 
 /** Browser view of the Host `dsh-desktop` settings namespace. */
 export interface DesktopShellSettings {
@@ -37,6 +41,7 @@ export interface DesktopSettingsSectionInjected {
   readonly platform: DesktopClientPlatform
   readonly initialMode: DesktopShellSettings['mode']
   readonly micaSupported: boolean
+  readonly setMode: (mode: DesktopShellSettings['mode']) => Promise<void>
   readonly desktopSettings: SettingsScope<DesktopShellSettings>
   readonly notificationSettings: SettingsScope<DesktopNotificationSettings>
 }
@@ -51,12 +56,12 @@ type Translate = DesktopSettingsSectionProps['t']
 type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'material' | 'web' | 'notification'
 type RestartState = 'none' | 'restarting' | 'required'
 
-/** The URL block follows either explicit browser handoff or LAN exposure. */
+/** URLs are advertised only after the user explicitly enables browser access. */
 export function desktopBrowserUrlsShouldRender(
-  openBrowser: boolean,
-  networkExposure: DesktopShellSettings['networkExposure'],
+  browserAccess: boolean,
+  _networkExposure: DesktopShellSettings['networkExposure'],
 ): boolean {
-  return openBrowser || networkExposure === 'lan'
+  return browserAccess
 }
 
 /** Keep cancellation side-effect free; only explicit confirmation enables LAN. */
@@ -216,6 +221,7 @@ export function DesktopSettingsSection({
   platform,
   initialMode,
   micaSupported,
+  setMode: persistMode,
   desktopSettings,
   notificationSettings,
 }: DesktopSettingsSectionProps) {
@@ -265,9 +271,14 @@ export function DesktopSettingsSection({
   const requestRestart = (): void => { setRestart('restarting') }
   const settingsWritable = desktop.status === 'ready' && desktop.writable
   const notificationsWritable = notifications.status === 'ready' && notifications.writable
-  const mode = desktop.value?.mode ?? initialMode
-  const openBrowser = desktop.value?.openBrowser ?? false
-  const networkExposure = desktop.value?.networkExposure ?? 'loopback'
+  const storedMode = desktop.value?.mode ?? initialMode
+  const configuredNetworkExposure = desktop.value?.networkExposure ?? 'loopback'
+  const browserAccess = desktopBrowserAccessEnabled(
+    desktop.value?.openBrowser ?? false,
+    configuredNetworkExposure,
+  )
+  const mode = desktopShellModeForBrowserAccess(storedMode, browserAccess)
+  const networkExposure = browserAccess ? configuredNetworkExposure : 'loopback'
   const notificationValue = notifications.value ?? {
     enabled: true,
     notifyOnTurnCompletion: true,
@@ -313,7 +324,7 @@ export function DesktopSettingsSection({
 
   const setMode = (next: DesktopShellSettings['mode']): void => {
     void run('mode', async () => {
-      await desktopSettings.set('mode', next)
+      await persistMode(next)
       requestRestart()
     })
   }
@@ -339,8 +350,21 @@ export function DesktopSettingsSection({
     void run('notification', async () => { await notificationSettings.set(field, checked) })
   }
 
-  const setOpenBrowser = (checked: boolean): void => {
-    void run('web', async () => { await desktopSettings.set('openBrowser', checked) })
+  const setBrowserAccess = (checked: boolean): void => {
+    void run('web', async () => {
+      if (checked) {
+        await desktopSettings.set('openBrowser', true)
+        requestRestart()
+        return
+      }
+      // LAN keeps legacy browser access effective until the listener is safely
+      // returned to loopback, so the queued writes cannot expose a hidden gate.
+      await desktopSettings.set('openBrowser', false)
+      if (configuredNetworkExposure === 'lan') {
+        await desktopSettings.set('networkExposure', 'loopback')
+      }
+      if (browserAccess) requestRestart()
+    })
   }
 
   const setNetworkExposure = (exposure: DesktopShellSettings['networkExposure']): void => {
@@ -554,20 +578,21 @@ export function DesktopSettingsSection({
         </div>
         <ToggleRow
           label={t('openBrowser')}
-          checked={openBrowser}
-          disabled={!settingsWritable || busy !== undefined}
-          onChange={setOpenBrowser}
+          checked={browserAccess}
+          disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
+          onChange={setBrowserAccess}
         />
+        <p className="dshDesktopSettingsNotice">{t('browserCompatibilityNotice')}</p>
         <ToggleRow
           label={t('lanAccess')}
           checked={networkExposure === 'lan'}
-          disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
+          disabled={!browserAccess || !settingsWritable || busy !== undefined || restart !== 'none'}
           onChange={(checked) => {
             if (checked) setConfirmLan(true)
             else setNetworkExposure('loopback')
           }}
         />
-        {desktopBrowserUrlsShouldRender(openBrowser, networkExposure) && view !== undefined && (
+        {desktopBrowserUrlsShouldRender(browserAccess, networkExposure) && view !== undefined && (
           <div className="dshDesktopSettingsUrls">
             <span className="dshDesktopSettingsChoiceTitle">{t('browserUrls')}</span>
             <a href={view.web.localUrl} target="_blank" rel="noopener noreferrer">{view.web.localUrl}</a>

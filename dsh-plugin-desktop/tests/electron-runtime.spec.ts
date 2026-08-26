@@ -83,6 +83,7 @@ const electron = vi.hoisted(() => {
   const browserWindowOn = vi.fn()
   const browserWindowOff = vi.fn()
   const loadURL = vi.fn(async (_url: string) => {})
+  const webRequest = { onBeforeSendHeaders: vi.fn() }
   const applicationMenuTemplates: unknown[][] = []
   const menuTemplates: unknown[][] = []
   const notifications: Notification[] = []
@@ -107,6 +108,8 @@ const electron = vi.hoisted(() => {
     setTemplateImage: vi.fn(),
   }
   const webContents = {
+    id: 73,
+    session: { webRequest },
     closeDevTools: vi.fn(() => { devToolsOpened = false }),
     executeJavaScript: vi.fn(async (_code: string, _userGesture?: boolean) => null as string | null),
     getZoomLevel: vi.fn(() => zoomLevel),
@@ -249,6 +252,7 @@ const electron = vi.hoisted(() => {
     Tray,
     trays,
     webContents,
+    webRequest,
   }
 })
 
@@ -289,6 +293,10 @@ const spec: DesktopShellSpec = {
   minWidth: 900,
   minHeight: 640,
   url: 'http://127.0.0.1:43120/',
+  rendererAccessHeader: {
+    name: 'x-dsh-desktop-renderer',
+    value: Buffer.alloc(32, 9).toString('base64url'),
+  },
   productName: 'DSH Desktop',
   windowTitle: 'DeepSeek Harness Desktop',
   iconPath: '/tmp/app-icon.png',
@@ -372,6 +380,7 @@ describe('Electron desktop runtime', () => {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
+        partition: 'persist:dsh-desktop-renderer',
       },
     }))
     expect(options).not.toHaveProperty('autoHideMenuBar')
@@ -402,6 +411,176 @@ describe('Electron desktop runtime', () => {
     await release()
     expect(electron.browserWindowOff).toHaveBeenCalledWith('page-title-updated', titleListener)
     expect(electron.trays[0]?.off).toHaveBeenCalledWith('click', expect.any(Function))
+  })
+
+  it('attaches the renderer capability to same-origin HTTP and WebSocket requests only', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(spec)
+
+    await runtime.mountScheduled()
+
+    const registration = electron.webRequest.onBeforeSendHeaders.mock.calls
+      .find(call => call.length === 2)
+    expect(registration).toBeDefined()
+    expect(registration?.[0]).toEqual({ urls: ['<all_urls>'] })
+    expect(electron.webRequest.onBeforeSendHeaders.mock.invocationCallOrder[0])
+      .toBeLessThan(electron.loadURL.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY)
+    const listener = registration?.[1] as (
+      details: {
+        id: number
+        url: string
+        method: string
+        webContentsId?: number
+        webContents?: { id: number }
+        frame?: {
+          detached: boolean
+          origin: string
+          parent: unknown
+          top: { detached: boolean; origin: string } | null
+        } | null
+        resourceType: string
+        referrer: string
+        timestamp: number
+        requestHeaders: Record<string, string>
+      },
+      callback: (response: { requestHeaders?: Record<string, string | string[]> }) => void,
+    ) => void
+
+    const assetCallback = vi.fn()
+    const mainFrame = {
+      detached: false,
+      origin: 'http://127.0.0.1:43120',
+      parent: null,
+      top: null,
+    }
+    listener({
+      id: 1,
+      url: 'http://127.0.0.1:43120/assets/index.js',
+      method: 'GET',
+      webContentsId: 73,
+      frame: mainFrame,
+      resourceType: 'script',
+      referrer: 'http://127.0.0.1:43120/',
+      timestamp: 1,
+      requestHeaders: {
+        Accept: '*/*',
+        'X-DSH-DESKTOP-RENDERER': 'spoofed',
+      },
+    }, assetCallback)
+    expect(assetCallback).toHaveBeenCalledWith({
+      requestHeaders: {
+        Accept: '*/*',
+        [spec.rendererAccessHeader.name]: spec.rendererAccessHeader.value,
+      },
+    })
+
+    const socketCallback = vi.fn()
+    listener({
+      id: 2,
+      url: 'ws://127.0.0.1:43120/api/events.websocket',
+      method: 'GET',
+      webContents: { id: 73 },
+      frame: mainFrame,
+      resourceType: 'webSocket',
+      referrer: 'http://127.0.0.1:43120/',
+      timestamp: 2,
+      requestHeaders: { Upgrade: 'websocket' },
+    }, socketCallback)
+    expect(socketCallback).toHaveBeenCalledWith({
+      requestHeaders: {
+        Upgrade: 'websocket',
+        [spec.rendererAccessHeader.name]: spec.rendererAccessHeader.value,
+      },
+    })
+
+    for (const details of [
+      {
+        id: 3,
+        url: 'https://example.com/asset.js',
+        method: 'GET',
+        webContentsId: 73,
+        frame: mainFrame,
+        resourceType: 'script',
+        referrer: 'http://127.0.0.1:43120/',
+        timestamp: 3,
+        requestHeaders: {
+          Accept: 'text/javascript',
+          [spec.rendererAccessHeader.name]: spec.rendererAccessHeader.value,
+        },
+      },
+      {
+        id: 4,
+        url: 'http://127.0.0.1:43120/api/private',
+        method: 'GET',
+        webContentsId: 74,
+        frame: mainFrame,
+        resourceType: 'xhr',
+        referrer: 'http://127.0.0.1:43120/',
+        timestamp: 4,
+        requestHeaders: {
+          Accept: 'application/json',
+          [spec.rendererAccessHeader.name]: spec.rendererAccessHeader.value,
+        },
+      },
+    ]) {
+      const callback = vi.fn()
+      listener(details, callback)
+      expect(callback).toHaveBeenCalledWith({
+        requestHeaders: Object.fromEntries(
+          Object.entries(details.requestHeaders)
+            .filter(([name]) => name !== spec.rendererAccessHeader.name),
+        ),
+      })
+    }
+
+    for (const details of [
+      {
+        id: 5,
+        url: 'http://127.0.0.1:43120/api/private',
+        method: 'GET',
+        resourceType: 'xhr',
+        referrer: 'http://127.0.0.1:43120/',
+        timestamp: 5,
+        requestHeaders: {},
+      },
+      {
+        id: 6,
+        url: 'http://127.0.0.1:43120/api/private',
+        method: 'GET',
+        webContentsId: 73,
+        frame: {
+          detached: false,
+          origin: 'https://untrusted.example',
+          parent: mainFrame,
+          top: mainFrame,
+        },
+        resourceType: 'xhr',
+        referrer: 'https://untrusted.example/',
+        timestamp: 6,
+        requestHeaders: {},
+      },
+      {
+        id: 7,
+        url: 'http://127.0.0.1:43120/api/private',
+        method: 'GET',
+        webContentsId: 73,
+        webContents: { id: 74 },
+        frame: mainFrame,
+        resourceType: 'xhr',
+        referrer: 'http://127.0.0.1:43120/',
+        timestamp: 7,
+        requestHeaders: {},
+      },
+    ]) {
+      const callback = vi.fn()
+      listener(details, callback)
+      expect(callback).toHaveBeenCalledWith({ requestHeaders: {} })
+    }
+
+    await release()
+    expect(electron.webRequest.onBeforeSendHeaders).toHaveBeenLastCalledWith(null)
   })
 
   it('restores, debounces, and flushes main-window bounds across shell generations', async () => {
@@ -2076,6 +2255,7 @@ describe('Electron desktop runtime', () => {
       rendererBoot,
     ])).rejects.toThrow('renderer unavailable')
     expect(electron.nativeTheme.themeSource).toBe('dark')
+    expect(electron.webRequest.onBeforeSendHeaders).toHaveBeenLastCalledWith(null)
     await expect(release()).rejects.toThrow('renderer unavailable')
     expect(electron.nativeTheme.themeSource).toBe('light')
   })

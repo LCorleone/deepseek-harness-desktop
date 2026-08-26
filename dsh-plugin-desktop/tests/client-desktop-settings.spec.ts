@@ -31,6 +31,7 @@ import {
   DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE,
   DESKTOP_SETTINGS_LOCALE_NAMESPACE,
   DESKTOP_SHELL_SETTINGS_NAMESPACE,
+  persistDesktopModeSelection,
 } from '../src/client/desktop-settings.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from '../src/client/desktop-settings-styles.ts'
@@ -72,17 +73,27 @@ describe('Desktop settings API', () => {
       .toThrow('invalid Desktop action response')
   })
 
-  it('names the section Desktop settings and carries the explicit LAN danger warning', () => {
+  it('names the section Desktop settings and describes browser opening as permission', () => {
     expect(zh.nav).toBe('桌面设置')
     expect(en.nav).toBe('Desktop settings')
+    expect(zh.openBrowser).toBe('允许在浏览器中打开')
+    expect(zh.openBrowser).not.toMatch(/启动后|自动/u)
+    expect(zh.webIntro).not.toMatch(/启动后|自动/u)
+    expect(zh.browserCompatibilityNotice).toContain('兼容模式')
+    expect(zh.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+    expect(en.openBrowser).toMatch(/allow.+(?:open|opening).+browser/iu)
+    expect(en.openBrowser).not.toMatch(/after startup|automatically/iu)
+    expect(en.webIntro).not.toMatch(/after startup|automatically/iu)
+    expect(en.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
     expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
   })
 
-  it('shows actual URLs only for browser handoff or LAN and requires explicit LAN confirmation', () => {
+  it('shows actual URLs only when browser access is permitted and requires explicit LAN confirmation', () => {
     expect(desktopBrowserUrlsShouldRender(false, 'loopback')).toBe(false)
     expect(desktopBrowserUrlsShouldRender(true, 'loopback')).toBe(true)
-    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(true, 'lan')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(false)
 
     const dismiss = vi.fn()
     const enableLan = vi.fn()
@@ -94,6 +105,61 @@ describe('Desktop settings API', () => {
     resolveDesktopLanConfirmation(true, dismiss, enableLan)
     expect(dismiss).toHaveBeenCalledOnce()
     expect(enableLan).toHaveBeenCalledOnce()
+  })
+
+  it('withdraws browser and LAN access before selecting a custom Desktop mode', async () => {
+    const set = vi.fn(async () => {})
+    const scope = {
+      getSnapshot: () => ({
+        status: 'ready' as const,
+        value: {
+          mode: 'compatibility' as const,
+          macosMaterial: 'transparent' as const,
+          windowsMaterial: 'acrylic' as const,
+          port: 43_120,
+          openBrowser: true,
+          networkExposure: 'lan' as const,
+          logLevel: 'info' as const,
+        },
+        base: undefined,
+        user: undefined,
+        revision: 1,
+        writable: true,
+        mode: 'host' as const,
+      }),
+      set,
+    }
+
+    await persistDesktopModeSelection(scope, 'advanced')
+    expect(set.mock.calls).toEqual([
+      ['mode', 'advanced'],
+      ['openBrowser', false],
+      ['networkExposure', 'loopback'],
+    ])
+  })
+
+  it('withdraws browser and LAN access while the settings mirror is still loading', async () => {
+    const set = vi.fn(async () => {})
+    const scope = {
+      getSnapshot: () => ({
+        status: 'loading' as const,
+        value: undefined,
+        base: undefined,
+        user: undefined,
+        revision: undefined,
+        writable: false,
+        mode: 'host' as const,
+      }),
+      set,
+    }
+
+    await persistDesktopModeSelection(scope, 'extended')
+
+    expect(set.mock.calls).toEqual([
+      ['mode', 'extended'],
+      ['openBrowser', false],
+      ['networkExposure', 'loopback'],
+    ])
   })
 
   it('uses the strict same-origin routes and request bodies', async () => {
@@ -369,6 +435,7 @@ describe('Desktop settings Slot registration', () => {
       platform: 'darwin',
       initialMode: 'compatibility',
       micaSupported: false,
+      setMode: expect.any(Function),
     })
     expect(component).toBe(DesktopSettingsSection)
 

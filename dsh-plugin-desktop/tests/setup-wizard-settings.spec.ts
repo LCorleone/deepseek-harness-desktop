@@ -14,6 +14,7 @@ import { parseDocument } from 'yaml'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   defaultDesktopSetupWizardSettings,
+  migrateDesktopBrowserAccessSettings,
   readDesktopSetupWizardSettings,
   updateDesktopSetupWizardSettings,
   type DesktopSetupWizardSettings,
@@ -35,7 +36,7 @@ afterEach(() => {
 
 function values(overrides: Partial<DesktopSetupWizardSettings> = {}): DesktopSetupWizardSettings {
   return {
-    mode: 'advanced',
+    mode: 'compatibility',
     macosMaterial: 'transparent',
     windowsMaterial: 'mica',
     openBrowser: true,
@@ -98,7 +99,7 @@ describe('Desktop Setup Wizard settings document', () => {
     const document = parseDocument(text).toJS() as Record<string, Record<string, unknown>>
     expect(document['other-plugin']).toEqual({ token: 'keep-me' })
     expect(document['dsh-desktop']).toMatchObject({
-      mode: 'advanced',
+      mode: 'compatibility',
       macosMaterial: 'transparent',
       windowsMaterial: 'mica',
       port: 61201,
@@ -158,7 +159,12 @@ describe('Desktop Setup Wizard settings document', () => {
   it('creates an absent YAML document with every supported field', async () => {
     const root = temporaryDirectory()
     const path = join(root, 'nested', 'settings.yml')
-    const next = values({ mode: 'extended', macosMaterial: 'transparent' })
+    const next = values({
+      mode: 'extended',
+      macosMaterial: 'transparent',
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
 
     await updateDesktopSetupWizardSettings(path, next)
 
@@ -197,7 +203,7 @@ describe('Desktop Setup Wizard settings document', () => {
     }
   })
 
-  it('requires a complete update and keeps browser handoff separate from LAN exposure', async () => {
+  it('requires a complete update and withdraws LAN exposure with browser access', async () => {
     const path = join(temporaryDirectory(), 'settings.json')
     const incomplete = values({
       openBrowser: false,
@@ -208,10 +214,137 @@ describe('Desktop Setup Wizard settings document', () => {
       .rejects.toThrow('all five notification booleans')
 
     const next = values({ openBrowser: false, networkExposure: 'lan' })
-    await updateDesktopSetupWizardSettings(path, next)
+    await expect(updateDesktopSetupWizardSettings(path, next)).resolves.toMatchObject({
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
     expect(readDesktopSetupWizardSettings(path)).toMatchObject({
       openBrowser: false,
+      networkExposure: 'loopback',
+    })
+  })
+
+  it('projects legacy LAN exposure as explicit compatibility browser access', () => {
+    const path = join(temporaryDirectory(), 'settings.yaml')
+    writeFileSync(path, [
+      'dsh-desktop:',
+      '  openBrowser: false',
+      '  networkExposure: lan',
+      '',
+    ].join('\n'))
+
+    expect(readDesktopSetupWizardSettings(path)).toMatchObject({
+      mode: 'compatibility',
+      openBrowser: true,
       networkExposure: 'lan',
+    })
+  })
+
+  it('atomically migrates legacy browser handoff and LAN combinations', async () => {
+    const root = temporaryDirectory()
+    const yamlPath = join(root, 'legacy.yaml')
+    writeFileSync(yamlPath, [
+      '# preserve browser migration comments',
+      'dsh-desktop:',
+      '  mode: advanced',
+      '  openBrowser: false',
+      '  networkExposure: lan',
+      '  future: keep',
+      '',
+    ].join('\n'))
+
+    await expect(migrateDesktopBrowserAccessSettings(yamlPath)).resolves.toBe(true)
+    await expect(migrateDesktopBrowserAccessSettings(yamlPath)).resolves.toBe(false)
+    const migrated = readFileSync(yamlPath, 'utf8')
+    expect(migrated).toContain('# preserve browser migration comments')
+    expect(parseDocument(migrated).toJS()).toMatchObject({
+      'dsh-desktop': {
+        mode: 'compatibility',
+        openBrowser: true,
+        networkExposure: 'lan',
+        future: 'keep',
+      },
+    })
+
+    const jsonPath = join(root, 'legacy.json')
+    writeFileSync(jsonPath, `${JSON.stringify({
+      'dsh-desktop': {
+        mode: 'extended',
+        openBrowser: true,
+        networkExposure: 'loopback',
+      },
+      untouched: { value: 1 },
+    })}\n`)
+    await expect(migrateDesktopBrowserAccessSettings(jsonPath)).resolves.toBe(true)
+    expect(JSON.parse(readFileSync(jsonPath, 'utf8'))).toMatchObject({
+      'dsh-desktop': {
+        mode: 'compatibility',
+        openBrowser: true,
+        networkExposure: 'loopback',
+      },
+      untouched: { value: 1 },
+    })
+  })
+
+  it('does not acquire a writer lock when browser access settings are already normalized', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: compatibility\n  macosMaterial: transparent\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('does not acquire a writer lock for an unchanged Setup selection', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: compatibility\n  macosMaterial: transparent\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(updateDesktopSetupWizardSettings(path, defaultDesktopSetupWizardSettings()))
+      .resolves.toEqual(defaultDesktopSetupWizardSettings())
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('writes a changed Setup selection without waiting for a settings lock', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    writeFileSync(path, 'dsh-desktop:\n  mode: compatibility\n')
+    writeFileSync(lockPath, 'owner\n')
+    const next = values({
+      mode: 'advanced',
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
+
+    await expect(updateDesktopSetupWizardSettings(path, next)).resolves.toEqual(next)
+    expect(readDesktopSetupWizardSettings(path)).toEqual(next)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('does not wait for a settings lock when a browser migration is needed', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: advanced\n  openBrowser: true\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(true)
+    expect(readFileSync(path, 'utf8')).not.toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+    expect(readDesktopSetupWizardSettings(path)).toMatchObject({
+      mode: 'compatibility',
+      openBrowser: true,
+      networkExposure: 'loopback',
     })
   })
 
@@ -231,8 +364,8 @@ describe('Desktop Setup Wizard settings document', () => {
     const root = temporaryDirectory()
     const path = join(root, 'settings.yaml')
     writeFileSync(path, 'unrelated:\n  keep: true\n', { mode: 0o600 })
-    const first = values({ mode: 'extended', windowsMaterial: 'acrylic', openBrowser: false })
-    const second = values({ mode: 'advanced', windowsMaterial: 'mica', networkExposure: 'loopback' })
+    const first = values({ mode: 'extended', windowsMaterial: 'acrylic', openBrowser: false, networkExposure: 'loopback' })
+    const second = values({ mode: 'compatibility', windowsMaterial: 'mica', networkExposure: 'loopback' })
 
     await Promise.all([
       updateDesktopSetupWizardSettings(path, first),

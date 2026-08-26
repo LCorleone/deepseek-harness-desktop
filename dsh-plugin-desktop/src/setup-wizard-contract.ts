@@ -142,6 +142,8 @@ export function desktopSetupWizardSelectionIsAvailable(
   selection: DesktopSetupWizardSelection,
   capabilities: Pick<DesktopSetupWizardInput, 'platform' | 'micaSupported'>,
 ): boolean {
+  if (selection.openBrowser && selection.mode !== 'compatibility') return false
+  if (!selection.openBrowser && selection.networkExposure === 'lan') return false
   if (capabilities.platform === 'linux' && selection.mode !== 'compatibility') return false
   return capabilities.platform !== 'win32'
     || selection.windowsMaterial !== 'mica'

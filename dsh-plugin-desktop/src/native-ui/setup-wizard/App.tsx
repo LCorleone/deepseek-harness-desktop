@@ -43,6 +43,7 @@ const MAX_STATE_CHARACTERS = 32 * 1024
 type Locale = 'en' | 'zh'
 
 export type DesktopSetupWizardStep =
+  | 'welcome'
   | 'mode'
   | 'material'
   | 'market'
@@ -51,6 +52,7 @@ export type DesktopSetupWizardStep =
   | 'success'
 
 export const DESKTOP_SETUP_WIZARD_STEPS = Object.freeze([
+  'welcome',
   'mode',
   'material',
   'market',
@@ -116,14 +118,15 @@ export function decodeDesktopSetupWizardInput(search: string): DesktopSetupWizar
 }
 
 function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizardSelection {
+  const browserAccess = input.openBrowser || input.networkExposure === 'lan'
   return {
-    mode: input.platform === 'linux' ? 'compatibility' : input.mode,
+    mode: input.platform === 'linux' || browserAccess ? 'compatibility' : input.mode,
     macosMaterial: input.macosMaterial,
     windowsMaterial: input.platform === 'win32' && input.windowsMaterial === 'mica' && !input.micaSupported
       ? 'acrylic'
       : input.windowsMaterial,
-    openBrowser: input.openBrowser,
-    networkExposure: input.networkExposure,
+    openBrowser: browserAccess,
+    networkExposure: browserAccess ? input.networkExposure : 'loopback',
     market: input.market,
     notifications: { ...input.notifications },
   }
@@ -131,11 +134,11 @@ function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizard
 
 function finish(selection: DesktopSetupWizardSelection): void {
   const url = new URL(`${SCHEME}//complete`)
-  url.searchParams.set('mode', selection.mode)
+  url.searchParams.set('mode', selection.openBrowser ? 'compatibility' : selection.mode)
   url.searchParams.set('macosMaterial', selection.macosMaterial)
   url.searchParams.set('windowsMaterial', selection.windowsMaterial)
   url.searchParams.set('openBrowser', String(selection.openBrowser))
-  url.searchParams.set('networkExposure', selection.networkExposure)
+  url.searchParams.set('networkExposure', selection.openBrowser ? selection.networkExposure : 'loopback')
   url.searchParams.set('market', selection.market)
   url.searchParams.set('notificationsEnabled', String(selection.notifications.enabled))
   url.searchParams.set('notifyOnTurnCompletion', String(selection.notifications.notifyOnTurnCompletion))
@@ -241,7 +244,12 @@ function ModeOptions({
     name="setup-window-mode"
     onValueChange={value => {
       if (value === 'compatibility' || value === 'extended' || value === 'advanced') {
-        update({ ...selection, mode: value })
+        update({
+          ...selection,
+          mode: value,
+          openBrowser: value === 'compatibility' ? selection.openBrowser : false,
+          networkExposure: value === 'compatibility' ? selection.networkExposure : 'loopback',
+        })
       }
     }}
     value={selection.mode}
@@ -380,7 +388,20 @@ function BrowserOptions({
   readonly requestExposure: (exposure: DesktopSetupWizardNetworkExposure) => void
 }): JSX.Element {
   return <div className="space-y-5">
-    <ToggleRow checked={selection.openBrowser} id="setup-open-browser" label={copy.openBrowser} onChange={openBrowser => { update({ ...selection, openBrowser }) }} />
+    <ToggleRow
+      checked={selection.openBrowser}
+      description={copy.browserCompatibilityNotice}
+      id="setup-open-browser"
+      label={copy.openBrowser}
+      onChange={openBrowser => {
+        update({
+          ...selection,
+          mode: openBrowser ? 'compatibility' : selection.mode,
+          openBrowser,
+          networkExposure: openBrowser ? selection.networkExposure : 'loopback',
+        })
+      }}
+    />
     <section>
       <h2 className="text-sm font-semibold">{copy.networkExposure}</h2>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.networkExposureBody}</p>
@@ -390,12 +411,12 @@ function BrowserOptions({
         className="mt-3"
         name="setup-network-exposure"
         onValueChange={value => {
-          if (value === 'loopback' || value === 'lan') requestExposure(value)
+          if (value === 'loopback' || (value === 'lan' && selection.openBrowser)) requestExposure(value)
         }}
         value={selection.networkExposure}
       >
         <Choice body={copy.loopbackBody} id="setup-network-exposure-loopback" selected={selection.networkExposure === 'loopback'} title={copy.loopback} value="loopback" />
-        <Choice body={copy.lanBody} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
+        <Choice body={copy.lanBody} disabled={!selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
       </RadioGroup>
     </section>
   </div>
@@ -421,7 +442,7 @@ export function SetupWizardStepPage({
   if (step === 'market') return <Page step={step} subtitle={copy.marketBody} title={copy.marketTitle}><MarketOptions copy={copy} selection={selection} update={update} /></Page>
   if (step === 'notifications') return <Page step={step} subtitle={copy.notificationsBody} title={copy.notificationsTitle}><NotificationOptions copy={copy} notifications={selection.notifications} update={notifications => { update({ ...selection, notifications }) }} /></Page>
   if (step === 'browser') return <Page step={step} subtitle={copy.browserBody} title={copy.browserTitle}><BrowserOptions copy={copy} requestExposure={requestExposure} selection={selection} update={update} /></Page>
-  return <div data-setup-step="success" />
+  return <div data-setup-step={step} />
 }
 
 function SetupWizardSkipDialog({
@@ -448,6 +469,38 @@ function SetupWizardSkipDialog({
   </Dialog>
 }
 
+export function SetupWizardWelcome({
+  copy,
+  profileName,
+  onStart,
+  onSkip,
+}: {
+  readonly copy: DesktopSetupWizardCopy
+  readonly profileName: string
+  readonly onStart: () => void
+  readonly onSkip: () => void
+}): JSX.Element {
+  return <div className="flex flex-1 items-center justify-center py-5" data-align="center" data-setup-step="welcome">
+    <div className="flex w-full max-w-xl flex-col items-stretch text-left">
+      <h1 className="text-2xl font-semibold tracking-tight">{copy.welcomeTitle}</h1>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{copy.welcomeBody}</p>
+      <Card className="mt-7 w-full text-left">
+        <CardContent className="space-y-3 p-5">
+          <div>
+            <span className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.profile}</span>
+            <span className="mt-1 block break-all text-base font-semibold">{profileName}</span>
+          </div>
+          <p className="text-sm leading-relaxed text-muted-foreground">{copy.firstProfileSetup}</p>
+        </CardContent>
+      </Card>
+      <div className="mt-8 flex flex-wrap items-center justify-end gap-3">
+        <SetupWizardSkipDialog copy={copy} onSkip={onSkip} outlined />
+        <Button onClick={onStart} size="lg" type="button">{copy.startSetup}</Button>
+      </div>
+    </div>
+  </div>
+}
+
 export function SetupWizardNavigation({
   copy,
   step,
@@ -461,7 +514,7 @@ export function SetupWizardNavigation({
   readonly onNext: () => void
   readonly onSkip: () => void
 }): JSX.Element | null {
-  if (step === 'success') return null
+  if (step === 'welcome' || step === 'success') return null
   return <footer className="flex shrink-0 items-center justify-between gap-3 border-t pt-4">
     <SetupWizardSkipDialog copy={copy} onSkip={onSkip} />
     <div className="flex items-center gap-2">
@@ -519,7 +572,7 @@ export function SetupWizardApp(): JSX.Element {
   const copy = desktopSetupWizardCopy(locale)
   const input = decodeDesktopSetupWizardInput(window.location.search)
   const [selection, setSelection] = useState<DesktopSetupWizardSelection | undefined>(() => input === undefined ? undefined : normalizedSelection(input))
-  const [step, setStep] = useState<DesktopSetupWizardStep>('mode')
+  const [step, setStep] = useState<DesktopSetupWizardStep>('welcome')
   const [lanAcknowledged, setLanAcknowledged] = useState(false)
   const [confirmLan, setConfirmLan] = useState<LanConfirmationReason>()
   if (input === undefined || selection === undefined) {
@@ -527,6 +580,7 @@ export function SetupWizardApp(): JSX.Element {
   }
 
   const requestExposure = (requested: DesktopSetupWizardNetworkExposure): void => {
+    if (requested === 'lan' && !selection.openBrowser) return
     if (desktopSetupWizardRequiresLanAcknowledgement(
       selection.networkExposure,
       requested,
@@ -566,14 +620,17 @@ export function SetupWizardApp(): JSX.Element {
   }
 
   return <><DesktopFrame /><main className="dshNativeContent h-screen overflow-hidden p-5 sm:p-6"><section className="mx-auto flex h-full w-full max-w-3xl flex-col">
-    <header className="flex shrink-0 items-center justify-between gap-3 pb-2">
-      <span className="text-sm font-semibold">{copy.title}</span>
-      <span className="rounded-full bg-muted px-3 py-1.5 text-xs font-medium">{copy.profile}: {input.profileName}</span>
-    </header>
     <div className="flex min-h-0 flex-1 overflow-y-auto">
-      {step === 'success'
-        ? <SetupWizardSuccess copy={copy} onStart={startUsing} />
-        : <SetupWizardStepPage copy={copy} input={input} requestExposure={requestExposure} selection={selection} step={step} update={setSelection} />}
+      {step === 'welcome'
+        ? <SetupWizardWelcome
+          copy={copy}
+          onSkip={() => { window.location.assign(`${SCHEME}//skip`) }}
+          onStart={() => { setStep('mode') }}
+          profileName={input.profileName}
+        />
+        : step === 'success'
+          ? <SetupWizardSuccess copy={copy} onStart={startUsing} />
+          : <SetupWizardStepPage copy={copy} input={input} requestExposure={requestExposure} selection={selection} step={step} update={setSelection} />}
     </div>
     <SetupWizardNavigation
       copy={copy}

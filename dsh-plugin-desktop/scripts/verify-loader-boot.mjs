@@ -20,6 +20,13 @@ const THIRD_PARTY_DEPENDENCY_NAME = 'dsh-desktop-loader-smoke-dependency'
 const PRODUCT_VERSION = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ).version
+const BROWSER_ACCESS = Object.freeze({
+  ordinaryBrowserEnabled: false,
+  rendererHeader: Object.freeze({
+    name: 'x-dsh-desktop-renderer',
+    value: Buffer.alloc(32, 1).toString('base64url'),
+  }),
+})
 const RUNNER_ENVIRONMENT_NAMES = new Set([
   'ELECTRON_RUN_AS_NODE',
   'NPM_CONFIG_RUNTIME',
@@ -130,6 +137,7 @@ try {
       // Packaged Electron does not expose Node's internal ESM loader.
       host.loader.internal = undefined
       host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, launchEnvironment)
+      host.provide('desktopBrowserAccess', BROWSER_ACCESS)
       host.provide('desktopRuntime', runtime)
       host.provide('webServer', {
         host: '127.0.0.1',
@@ -171,6 +179,9 @@ try {
   const expectedUrl = `http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-version=${PRODUCT_VERSION}&dsh-desktop-material=transparent&dsh-desktop-titlebar-inset=36`
   if (mountedSpec?.url !== expectedUrl) {
     throw new Error(`desktop plugin produced an unexpected renderer URL: ${String(mountedSpec?.url)}`)
+  }
+  if (mountedSpec?.rendererAccessHeader !== BROWSER_ACCESS.rendererHeader) {
+    throw new Error('desktop plugin did not preserve the launcher browser capability')
   }
 } finally {
   try {

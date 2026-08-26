@@ -55,7 +55,7 @@ function input(overrides: Partial<DesktopSetupWizardInput> = {}): DesktopSetupWi
     profileName: 'work',
     platform: 'win32',
     micaSupported: true,
-    mode: 'extended',
+    mode: 'compatibility',
     macosMaterial: 'transparent',
     windowsMaterial: 'mica',
     openBrowser: true,
@@ -94,7 +94,7 @@ describe('Desktop Setup Wizard action parser', () => {
     expect(parseDesktopSetupWizardAction(completeUrl())).toEqual({
       action: 'complete',
       selection: {
-        mode: 'extended',
+        mode: 'compatibility',
         macosMaterial: 'transparent',
         windowsMaterial: 'mica',
         openBrowser: true,

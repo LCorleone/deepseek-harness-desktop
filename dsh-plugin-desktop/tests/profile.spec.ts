@@ -604,7 +604,7 @@ virtualStoreDirMaxLength: 60
     }))
   })
 
-  it('projects YAML startup settings into the Host, Web server, and client Loader rows', () => {
+  it('forces browser access onto the compatibility layout and disables upstream browser handoff', () => {
     const home = temporaryHome()
     writeFileSync(join(home, 'settings.yaml'), [
       'dsh-desktop:',
@@ -618,13 +618,13 @@ virtualStoreDirMaxLength: 60
     const prepared = prepareDesktopProfile(undefined, home, 'darwin')
     const rows = composeEntries([prepared.patches])
 
-    expect(prepared.mode).toBe('advanced')
+    expect(prepared.mode).toBe('compatibility')
     expect(prepared.port).toBe(43_189)
     expect(prepared.openBrowser).toBe(true)
     expect(prepared.networkExposure).toBe('lan')
     expect(rows.find(row => row.id === 'desktop-shell')).toEqual(expect.objectContaining({
       disabled: false,
-      config: expect.objectContaining({ mode: 'advanced', port: 43_189 }),
+      config: expect.objectContaining({ mode: 'compatibility', port: 43_189 }),
     }))
     expect(rows.find(row => row.id === 'webserver')).toEqual(expect.objectContaining({
       name: '@deepseek-ai/dsh-host-webserver',
@@ -635,14 +635,14 @@ virtualStoreDirMaxLength: 60
       config: { host: '0.0.0.0', port: 43_189 },
     }))
     expect(rows.find(row => row.id === 'web-runtime')).toEqual(expect.objectContaining({
-      config: expect.objectContaining({ openBrowser: true }),
+      config: expect.objectContaining({ openBrowser: false }),
     }))
     expect(rows.find(row => row.id === 'settings')).toEqual(expect.objectContaining({
       config: expect.objectContaining({ dshHome: home }),
     }))
-    expect(rows.find(row => row.id === 'ui-layout')?.disabled).toBe(true)
-    expect(rows.find(row => row.id === 'ui-sidebar')?.disabled).toBe(false)
-    expect(rows.find(row => row.id === 'ui-conversation')?.disabled).toBe(false)
+    expect(rows.find(row => row.id === 'ui-layout')?.disabled).not.toBe(true)
+    expect(rows.find(row => row.id === 'ui-sidebar')?.disabled).not.toBe(false)
+    expect(rows.find(row => row.id === 'ui-conversation')?.disabled).not.toBe(false)
   })
 
   it('replaces the official root layout for extended window mode while retaining its occupants', () => {
@@ -698,6 +698,20 @@ virtualStoreDirMaxLength: 60
       networkExposure: 'loopback',
     })
     expect(desktopShellModeFromSettings({ unrelated: { enabled: true } })).toBe('compatibility')
+  })
+
+  it('migrates legacy LAN exposure to explicit compatibility browser access', () => {
+    expect(desktopStartupSettingsFromSettings({
+      'dsh-desktop': {
+        mode: 'advanced',
+        openBrowser: false,
+        networkExposure: 'lan',
+      },
+    })).toMatchObject({
+      mode: 'compatibility',
+      openBrowser: true,
+      networkExposure: 'lan',
+    })
   })
 
   it('rejects invalid settings roots, sections, modes, and YAML', () => {

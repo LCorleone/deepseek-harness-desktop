@@ -19,6 +19,13 @@ import { DesktopProfileService } from '../lib/profile-service.js'
 const BIN_NAME = 'dsh-plugin-desktop-profile-smoke'
 const HOST_SERVICE_PLUGIN_NAME = 'dsh-desktop-host-services-smoke-plugin'
 const HOST_SERVICE_PROBE_KEY = 'desktopHostServiceProbe'
+const BROWSER_ACCESS = Object.freeze({
+  ordinaryBrowserEnabled: false,
+  rendererHeader: Object.freeze({
+    name: 'x-dsh-desktop-renderer',
+    value: Buffer.alloc(32, 2).toString('base64url'),
+  }),
+})
 const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-profile-'))
 let ctx
 let releasePackageResolver
@@ -119,6 +126,7 @@ try {
     patches,
     async (host) => {
       host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([]))
+      host.provide('desktopBrowserAccess', BROWSER_ACCESS)
       host.provide('desktopRuntime', runtime)
       host.provide('desktopPnpmBootstrap', {
         activeProfileName: 'desktop',
@@ -205,6 +213,9 @@ try {
   if (mountedSpec?.mode !== 'advanced') {
     throw new Error(`desktop plugin produced an unexpected shell mode: ${String(mountedSpec?.mode)}`)
   }
+  if (mountedSpec?.rendererAccessHeader !== BROWSER_ACCESS.rendererHeader) {
+    throw new Error('assembled profile did not preserve the launcher browser capability')
+  }
   if (nativeThemeSource !== 'system') {
     throw new Error(`desktop plugin produced an unexpected native theme source: ${nativeThemeSource}`)
   }
@@ -223,7 +234,11 @@ try {
   if (profileMenu?.submenu?.()[0]?.label() !== 'desktop') {
     throw new Error('assembled desktop profile is missing the active profile tray submenu')
   }
-  const response = await fetch(expectedUrl)
+  const response = await fetch(expectedUrl, {
+    headers: {
+      [BROWSER_ACCESS.rendererHeader.name]: BROWSER_ACCESS.rendererHeader.value,
+    },
+  })
   const html = await response.text()
   if (response.status !== 200) {
     throw new Error(`assembled Web root returned HTTP ${String(response.status)}`)

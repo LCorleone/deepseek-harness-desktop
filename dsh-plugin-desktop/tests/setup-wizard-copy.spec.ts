@@ -60,6 +60,33 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(english.skipDialogBody).toContain('Desktop settings')
   })
 
+  it('introduces first-time setup for the current Profile before showing settings', () => {
+    const english = desktopSetupWizardCopy('en')
+    const chinese = desktopSetupWizardCopy('zh')
+    expect(chinese.welcomeTitle).toBeTruthy()
+    expect(chinese.welcomeBody).toContain('Profile')
+    expect(chinese.firstProfileSetup).toContain('第一次')
+    expect(chinese.firstProfileSetup).toContain('桌面模式')
+    expect(chinese.startSetup).toBe('开始设置')
+    expect(english.welcomeTitle).toBeTruthy()
+    expect(english.welcomeBody).toContain('Profile')
+    expect(english.firstProfileSetup).toMatch(/first(?:-time| time)/iu)
+    expect(english.firstProfileSetup).toMatch(/Desktop mode/iu)
+    expect(english.startSetup).toBe('Start setup')
+  })
+
+  it('treats browser opening as permission, not an automatic startup action', () => {
+    const english = desktopSetupWizardCopy('en')
+    const chinese = desktopSetupWizardCopy('zh')
+    expect(chinese.openBrowser).toBe('允许在浏览器中打开')
+    expect(chinese.openBrowser).not.toMatch(/启动后|自动/u)
+    expect(chinese.browserCompatibilityNotice).toContain('兼容模式')
+    expect(chinese.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+    expect(english.openBrowser).toMatch(/allow.+(?:open|opening).+browser/iu)
+    expect(english.openBrowser).not.toMatch(/after startup|automatically/iu)
+    expect(english.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
+  })
+
   it('requires confirmation only when loopback access is changed to LAN', () => {
     expect(desktopSetupWizardRequiresLanConfirmation('loopback', 'lan')).toBe(true)
     expect(desktopSetupWizardRequiresLanConfirmation('lan', 'loopback')).toBe(false)
@@ -85,6 +112,14 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(desktopSetupWizardSelectionIsAvailable(
       { ...input, mode: 'extended', windowsMaterial: 'acrylic' },
       { platform: 'linux', micaSupported: false },
+    )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, mode: 'advanced', openBrowser: true },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, openBrowser: false, networkExposure: 'lan' },
+      { platform: 'win32', micaSupported: true },
     )).toBe(false)
   })
 })
