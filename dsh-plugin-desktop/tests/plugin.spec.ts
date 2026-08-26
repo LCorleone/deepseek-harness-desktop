@@ -28,6 +28,7 @@ const config: DesktopConfig = {
   macosMaterial: 'transparent',
   windowsMaterial: 'acrylic',
   port: 43_120,
+  networkExposure: 'loopback',
   width: 1280,
   height: 840,
   minWidth: 900,
@@ -172,6 +173,8 @@ describe('desktop Host plugin', () => {
       macosMaterial: 'transparent',
       windowsMaterial: 'acrylic',
       port: 43_120,
+      openBrowser: false,
+      networkExposure: 'loopback',
       logLevel: 'info',
     })
     expect(() => DesktopSettingsSchema({ port: -1 } as DesktopSettings)).toThrow()
@@ -439,11 +442,13 @@ describe('desktop Host plugin', () => {
     expect(harness.setLocalePreference).toHaveBeenLastCalledWith(undefined)
   })
 
-  it('requires the desktop Web carrier to remain loopback-only', () => {
+  it('requires the Web carrier host to match the configured exposure', () => {
     const harness = createHarness()
     Object.assign(harness.ctx.webServer, { host: '0.0.0.0' })
 
-    expect(() => apply(harness.ctx, config)).toThrow('requires a loopback Web server')
+    expect(() => apply(harness.ctx, config)).toThrow('does not match networkExposure')
+
+    expect(() => apply(harness.ctx, { ...config, networkExposure: 'lan' })).not.toThrow()
   })
 
   it('refuses custom-window settings on Linux before persistence', () => {

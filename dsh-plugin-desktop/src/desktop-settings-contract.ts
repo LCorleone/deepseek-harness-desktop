@@ -65,6 +65,14 @@ export interface DesktopSettingsMarketView {
   readonly legacyDefaulted: boolean
 }
 
+/** Marker-free ordinary-browser URLs for the running Web generation. */
+export interface DesktopSettingsWebView {
+  /** Always-available loopback URL using the actual listening port. */
+  readonly localUrl: string
+  /** Startup-sampled LAN URLs; empty while the generation is loopback-only. */
+  readonly lanUrls: readonly string[]
+}
+
 /** Complete renderer-safe Desktop settings state. */
 export interface DesktopSettingsResponse {
   /** Profile backing the currently running generation. */
@@ -73,6 +81,8 @@ export interface DesktopSettingsResponse {
   readonly profiles: readonly DesktopSettingsProfileView[]
   /** Market choice for the current and next generation. */
   readonly market: DesktopSettingsMarketView
+  /** Actual browser URLs for the current WebServer generation. */
+  readonly web: DesktopSettingsWebView
 }
 
 /** Exact body accepted by the profile-creation endpoint. */

@@ -29,6 +29,12 @@ import { parseDocument } from 'yaml'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
+import {
+  desktopWebServerHost,
+  parseDesktopNetworkExposure,
+  parseDesktopOpenBrowser,
+  type DesktopNetworkExposure,
+} from './desktop-network.ts'
 import type { DesktopShellMode } from './runtime.ts'
 import {
   DEFAULT_MACOS_WINDOW_MATERIAL,
@@ -124,6 +130,8 @@ export interface DesktopStartupSettings {
   port: number
   macosMaterial: MacosWindowMaterial
   windowsMaterial: WindowsWindowMaterial
+  openBrowser: boolean
+  networkExposure: DesktopNetworkExposure
 }
 
 const DEFAULT_DESKTOP_STARTUP_SETTINGS: DesktopStartupSettings = Object.freeze({
@@ -131,6 +139,8 @@ const DEFAULT_DESKTOP_STARTUP_SETTINGS: DesktopStartupSettings = Object.freeze({
   port: DEFAULT_DESKTOP_PORT,
   macosMaterial: DEFAULT_MACOS_WINDOW_MATERIAL,
   windowsMaterial: DEFAULT_WINDOWS_WINDOW_MATERIAL,
+  openBrowser: false,
+  networkExposure: 'loopback',
 })
 
 /**
@@ -155,6 +165,8 @@ export function desktopStartupSettingsFromSettings(document: unknown): DesktopSt
     port: parseDesktopPort(values.port),
     macosMaterial: parseMacosWindowMaterial(values.macosMaterial),
     windowsMaterial: parseWindowsWindowMaterial(values.windowsMaterial),
+    openBrowser: parseDesktopOpenBrowser(values.openBrowser),
+    networkExposure: parseDesktopNetworkExposure(values.networkExposure),
   }
 }
 
@@ -226,8 +238,12 @@ export interface PreparedDesktopProfile {
   macosMaterial: MacosWindowMaterial
   /** Native backdrop preference retained for Windows generations. */
   windowsMaterial: WindowsWindowMaterial
-  /** Persisted loopback Web port applied to every startup consumer. */
+  /** Persisted Web port applied to every startup consumer. */
   port: number
+  /** Whether the settled Web runtime hands its marker-free URL to the default browser. */
+  openBrowser: boolean
+  /** Listener scope applied to the Desktop-owned WebServer. */
+  networkExposure: DesktopNetworkExposure
   /** Resolved file-backed settings document used by this generation. */
   settingsDocument: string
   /** Requested provider and the fail-closed provider effective for this generation. */
@@ -820,10 +836,28 @@ export function prepareDesktopProfile(
   } as SettingsFileConfig)
   const settingsDocument = resolveSettingsFileSpec(settingsConfig).filename
   hooks.onSettingsDocumentResolved?.(settingsDocument)
-  const { mode, port, macosMaterial, windowsMaterial } = readDesktopStartupSettings(settingsConfig)
+  const {
+    mode,
+    port,
+    macosMaterial,
+    windowsMaterial,
+    openBrowser,
+    networkExposure,
+  } = readDesktopStartupSettings(settingsConfig)
   patches.push({
     id: 'settings',
     config: settingsConfig,
+  })
+  const webRuntime = rows.get('web-runtime')
+  if (webRuntime === undefined) {
+    throw new Error(`${BIN_NAME}: desktop profile has no web-runtime row`)
+  }
+  patches.push({
+    id: 'web-runtime',
+    config: {
+      ...rowConfig(webRuntime),
+      openBrowser,
+    },
   })
   if (mode === 'advanced' || mode === 'extended') {
     for (const [id, packageName] of [
@@ -919,8 +953,7 @@ export function prepareDesktopProfile(
   }
   // Loader patches cannot change an existing row's package identity. Disable the
   // profile row by its current identity and insert the Desktop-owned provider.
-  // Loopback-only binding is a launcher security invariant, not user config.
-  const webserverConfig = { host: '127.0.0.1', port }
+  const webserverConfig = { host: desktopWebServerHost(networkExposure), port }
   if (webserver.name === DESKTOP_WEB_SERVER_PACKAGE) {
     patches.push({
       id: 'webserver',
@@ -972,6 +1005,7 @@ export function prepareDesktopProfile(
       ...rowConfig(desktopShell),
       mode,
       port,
+      networkExposure,
       macosMaterial,
       windowsMaterial,
     },
@@ -987,6 +1021,8 @@ export function prepareDesktopProfile(
     port,
     macosMaterial,
     windowsMaterial,
+    openBrowser,
+    networkExposure,
     settingsDocument,
     market: desktopMarketSnapshotWithEffective(marketSelection, effectiveMarket),
     requiresDependencyMigration,

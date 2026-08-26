@@ -24,12 +24,12 @@ async function occupy(): Promise<{ server: Server; port: number }> {
 }
 
 describe('Desktop WebServer port policy', () => {
-  it('rejects a non-loopback bind even when invoked outside profile composition', async () => {
+  it('accepts the explicit all-interfaces LAN bind', async () => {
     const context = new Context()
     contexts.push(context)
 
-    await expect(context.plugin(DesktopWebServer, { host: '0.0.0.0', port: 43_120 }))
-      .rejects.toThrow('requires a loopback host')
+    await context.plugin(DesktopWebServer, { host: '0.0.0.0', port: 0 })
+    expect(context.get('webServer')?.host).toBe('0.0.0.0')
   })
 
   it('increments only after the requested loopback bind reports EADDRINUSE', async () => {

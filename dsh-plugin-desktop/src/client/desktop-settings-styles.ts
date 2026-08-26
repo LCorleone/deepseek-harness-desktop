@@ -299,6 +299,43 @@ const CSS = `
   padding-left: 14px;
   border-left: 2px solid var(--dsw-alias-border-l1);
 }
+.dshDesktopSettingsUrls {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+.dshDesktopSettingsUrls a {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-brand-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+.dshDesktopSettingsDialogBackdrop {
+  position: fixed;
+  z-index: 2147483002;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 55%, transparent);
+}
+.dshDesktopSettingsDialog {
+  width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 24px 64px color-mix(in srgb, #000 38%, transparent);
+}
+.dshDesktopSettingsDialog h3 { margin: 0; color: var(--dsw-alias-state-error-primary); font-size: 16px; }
+.dshDesktopSettingsDialog p { margin: 12px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.65; }
+.dshDesktopSettingsDialogActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 @media (max-width: 720px) {
   .dshDesktopSettingsChoice,
   .dshDesktopSettingsToggleRow { align-items: flex-start; }

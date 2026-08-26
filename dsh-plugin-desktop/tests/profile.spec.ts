@@ -309,6 +309,8 @@ virtualStoreDirMaxLength: 60
     expect(prepared.homeDir).toBe(home)
     expect(fileURLToPath(prepared.bareModuleBaseUrl)).toBe(join(prepared.profile.dir, 'package.json'))
     expect(prepared.mode).toBe('compatibility')
+    expect(prepared.openBrowser).toBe(false)
+    expect(prepared.networkExposure).toBe('loopback')
 
     const rows = composeEntries([prepared.patches])
     for (const [id, name] of [
@@ -604,13 +606,22 @@ virtualStoreDirMaxLength: 60
 
   it('projects YAML startup settings into the Host, Web server, and client Loader rows', () => {
     const home = temporaryHome()
-    writeFileSync(join(home, 'settings.yaml'), 'dsh-desktop:\n  mode: advanced\n  port: 43189\n')
+    writeFileSync(join(home, 'settings.yaml'), [
+      'dsh-desktop:',
+      '  mode: advanced',
+      '  port: 43189',
+      '  openBrowser: true',
+      '  networkExposure: lan',
+      '',
+    ].join('\n'))
 
     const prepared = prepareDesktopProfile(undefined, home, 'darwin')
     const rows = composeEntries([prepared.patches])
 
     expect(prepared.mode).toBe('advanced')
     expect(prepared.port).toBe(43_189)
+    expect(prepared.openBrowser).toBe(true)
+    expect(prepared.networkExposure).toBe('lan')
     expect(rows.find(row => row.id === 'desktop-shell')).toEqual(expect.objectContaining({
       disabled: false,
       config: expect.objectContaining({ mode: 'advanced', port: 43_189 }),
@@ -621,7 +632,10 @@ virtualStoreDirMaxLength: 60
     }))
     expect(rows.find(row => row.id === 'desktop-webserver')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/webserver',
-      config: { host: '127.0.0.1', port: 43_189 },
+      config: { host: '0.0.0.0', port: 43_189 },
+    }))
+    expect(rows.find(row => row.id === 'web-runtime')).toEqual(expect.objectContaining({
+      config: expect.objectContaining({ openBrowser: true }),
     }))
     expect(rows.find(row => row.id === 'settings')).toEqual(expect.objectContaining({
       config: expect.objectContaining({ dshHome: home }),
@@ -672,12 +686,16 @@ virtualStoreDirMaxLength: 60
       port: 43_189,
       macosMaterial: 'transparent',
       windowsMaterial: 'acrylic',
+      openBrowser: false,
+      networkExposure: 'loopback',
     })
     expect(desktopStartupSettingsFromSettings({ 'dsh-desktop': { mode: 'advanced' } })).toEqual({
       mode: 'advanced',
       port: 43_120,
       macosMaterial: 'transparent',
       windowsMaterial: 'acrylic',
+      openBrowser: false,
+      networkExposure: 'loopback',
     })
     expect(desktopShellModeFromSettings({ unrelated: { enabled: true } })).toBe('compatibility')
   })
@@ -693,6 +711,10 @@ virtualStoreDirMaxLength: 60
         'port must be an integer from 0 through 65535',
       )
     }
+    expect(() => desktopStartupSettingsFromSettings({ 'dsh-desktop': { openBrowser: 'yes' } }))
+      .toThrow('openBrowser must be a boolean')
+    expect(() => desktopStartupSettingsFromSettings({ 'dsh-desktop': { networkExposure: 'internet' } }))
+      .toThrow('networkExposure must be "loopback" or "lan"')
 
     const home = temporaryHome()
     const path = join(home, 'invalid.yaml')

@@ -537,7 +537,7 @@ describe('published package surface', () => {
     expect(boot).toBeGreaterThan(installDsh)
     expect(main).toContain("'dsh-plugin-desktop: packaged pnpm runtime PATH'")
     expect(main).toContain("'dsh-plugin-desktop: packaged dsh runtime PATH'")
-    expect(main).toContain("args: ['--host', '127.0.0.1', '--port', String(prepared.port)]")
+    expect(main).toContain("prepared.networkExposure === 'lan' ? '0.0.0.0' : '127.0.0.1'")
     expect(main).not.toContain("'--port', '0'")
     expect(main).toContain("import { DesktopStartupGeneration } from './startup-generation.ts'")
     expect(main).toContain('async () => { await generation.release() }')

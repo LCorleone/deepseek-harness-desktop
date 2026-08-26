@@ -15,12 +15,14 @@ import {
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
+import type {} from '@deepseek-ai/dsh-web-app'
 import { isDesktopInstallerQuitRequest } from './desktop-installer-quit.ts'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
 } from './desktop-runtime-environment.ts'
 import { desktopProductVersion, ElectronDesktopRuntime } from './electron-runtime.ts'
+import { getOrCreateDesktopInstallationId } from './desktop-installation-id.ts'
 import {
   ElectronStderrLogger,
   installDesktopChildProcessLogging,
@@ -40,6 +42,10 @@ import type {
 } from './lifecycle-events.ts'
 import { FileExporter } from './file-exporter.ts'
 import { DESKTOP_SETTINGS_NAMESPACE, type DesktopSettings } from './index.ts'
+import {
+  desktopLanBrowserUrls,
+  desktopLoopbackBrowserUrl,
+} from './desktop-network.ts'
 import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { resolveDesktopShellEnvironment } from './shell-environment.ts'
@@ -314,6 +320,7 @@ async function start(): Promise<void> {
     },
   )
   let restartRequested = false
+  const installationId = await getOrCreateDesktopInstallationId(app.getPath('userData'))
   runtime = new ElectronDesktopRuntime(async target => {
     if (shutdown === undefined) {
       throw new Error('dsh-plugin-desktop: shutdown coordinator is not ready')
@@ -336,7 +343,7 @@ async function start(): Promise<void> {
     // Main owns every pre-health failure branch. Returning true prevents the
     // legacy Renderer recovery dialog from racing the native startup window.
     return report.status === 'failed'
-  }, electronLogger)
+  }, electronLogger, undefined, undefined, installationId)
   const finalExit = (code: number): void => { nativeExit.finish(code) }
   shutdown = createDesktopShutdown(
     async () => { await generation.release() },
@@ -789,6 +796,14 @@ async function start(): Promise<void> {
             selectDesktopProfile(selectionStatePath, homeDir, name)
           },
           readMarket,
+          readWeb: () => {
+            const webRuntime = hostCtx.get('webRuntime')
+            if (webRuntime === undefined) throw new Error(`${BIN_NAME}: Web runtime is unavailable`)
+            return {
+              localUrl: desktopLoopbackBrowserUrl(hostCtx.webServer.port),
+              lanUrls: desktopLanBrowserUrls(hostCtx.webServer.port, webRuntime.lanAddresses),
+            }
+          },
           selectMarket: async provider => desktopMarketSnapshotWithEffective(
             await selectDesktopMarketProvider(marketUserDataDir, provider),
             prepared.market.effective,
@@ -815,7 +830,12 @@ async function start(): Promise<void> {
           },
         }))
         provideCmdline(hostCtx, {
-          args: ['--host', '127.0.0.1', '--port', String(prepared.port)],
+          args: [
+            '--host',
+            prepared.networkExposure === 'lan' ? '0.0.0.0' : '127.0.0.1',
+            '--port',
+            String(prepared.port),
+          ],
           exit: requestQuit,
         })
       },
