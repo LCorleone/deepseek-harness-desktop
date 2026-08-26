@@ -70,6 +70,7 @@ DSH Desktop 将 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harne
 | --- | --- |
 | 安装和日常使用 | [用户指南](docs/user-guide.md) |
 | 快速确认平台、环境和使用边界 | [常见问题](docs/faq.md) |
+| 了解数据处理与隐私选择 | [隐私政策](PRIVACY.zh.md) |
 | 了解项目为什么存在 | [为什么做 DSH Desktop](docs/why-desktop.md) |
 | 查看全部文档与 README 分工 | [文档索引](docs/README.md) |
 

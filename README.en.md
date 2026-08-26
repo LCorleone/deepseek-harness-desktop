@@ -70,6 +70,7 @@ Ordinary users can start with the [user guide](docs/user-guide.en.md); the devel
 | --- | --- |
 | Install and use the application | [User guide](docs/user-guide.en.md) |
 | Check platforms, prerequisites, and product boundaries | [FAQ](docs/faq.en.md) |
+| Understand data processing and privacy choices | [Privacy Policy](PRIVACY.md) |
 | Understand why the project exists | [Why DSH Desktop](docs/why-desktop.en.md) |
 | See the full documentation and README map | [Documentation index](docs/README.en.md) |
 
