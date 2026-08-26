@@ -64,6 +64,14 @@ jobs:
           if (-not (Test-Path $exe)) { throw "installed exe not found: $exe" }
           $total = @(Get-ChildItem $target -Recurse -File -ErrorAction SilentlyContinue).Count
           Write-Host "silent install OK: $exe ($total files)"
+      - name: E2E install smoke
+        # Headless install-chain regression smoke over the
+        # dist/win-unpacked tree the installer build above already produced:
+        # artifact structure, CLI policy hand-off, a real profile plugin add
+        # through the packaged pnpm, and boot verification. Advisory for now —
+        # a failure must stay visible without blocking the artifact upload.
+        continue-on-error: true
+        run: yarn e2e:install-smoke
       - name: Print artifact hashes
         shell: pwsh
         run: Get-FileHash dsh-plugin-desktop/dist/*-Setup.exe -Algorithm SHA256 | Format-List
