@@ -15,6 +15,7 @@ import {
   SetupWizardNavigation,
   SetupWizardStepPage,
   SetupWizardSuccess,
+  SetupWizardWelcome,
 } from '../src/native-ui/setup-wizard/App.tsx'
 import { Button } from '../src/native-ui/components/ui/button.tsx'
 import { DialogClose } from '../src/native-ui/components/ui/dialog.tsx'
@@ -51,7 +52,7 @@ const selection: DesktopSetupWizardSelection = {
 
 const copy = desktopSetupWizardCopy('zh')
 
-function renderStep(step: Exclude<(typeof DESKTOP_SETUP_WIZARD_STEPS)[number], 'success'>): string {
+function renderStep(step: Exclude<(typeof DESKTOP_SETUP_WIZARD_STEPS)[number], 'welcome' | 'success'>): string {
   return renderToStaticMarkup(createElement(SetupWizardStepPage, {
     copy,
     input,
@@ -85,8 +86,9 @@ function elementTree(node: ReactNode): readonly ReactElement[] {
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('Setup Wizard step flow', () => {
-  it('keeps one setting per page and browser access as the final setting page', () => {
+  it('starts with an introduction and keeps browser access as the final setting page', () => {
     expect(DESKTOP_SETUP_WIZARD_STEPS).toEqual([
+      'welcome',
       'mode',
       'material',
       'market',
@@ -99,6 +101,7 @@ describe('Setup Wizard step flow', () => {
   it('moves only between adjacent pages and stops at both boundaries', () => {
     expect(DESKTOP_SETUP_WIZARD_STEPS.map(step => previousDesktopSetupWizardStep(step))).toEqual([
       undefined,
+      'welcome',
       'mode',
       'material',
       'market',
@@ -106,6 +109,7 @@ describe('Setup Wizard step flow', () => {
       'browser',
     ])
     expect(DESKTOP_SETUP_WIZARD_STEPS.map(step => nextDesktopSetupWizardStep(step))).toEqual([
+      'mode',
       'material',
       'market',
       'notifications',
@@ -113,6 +117,48 @@ describe('Setup Wizard step flow', () => {
       'success',
       undefined,
     ])
+  })
+})
+
+describe('Setup Wizard welcome page', () => {
+  it('identifies the Profile and explains why first-run Desktop setup is shown', () => {
+    const markup = renderToStaticMarkup(createElement(SetupWizardWelcome, {
+      copy,
+      onSkip: () => {},
+      onStart: () => {},
+      profileName: input.profileName,
+    }))
+    expect(markup).toContain('data-setup-step="welcome"')
+    expect(markup).toContain(copy.welcomeTitle)
+    expect(markup).toContain(copy.welcomeBody)
+    expect(markup).toContain(copy.firstProfileSetup)
+    expect(markup).toContain(copy.profile)
+    expect(markup).toContain(input.profileName)
+  })
+
+  it('offers Start setup and confirmed Skip without ordinary arrow navigation', () => {
+    const markup = renderToStaticMarkup(createElement(SetupWizardWelcome, {
+      copy,
+      onSkip: () => {},
+      onStart: () => {},
+      profileName: input.profileName,
+    }))
+    const navigation = renderToStaticMarkup(createElement(SetupWizardNavigation, {
+      copy,
+      onBack: () => {},
+      onNext: () => {},
+      onSkip: () => {},
+      step: 'welcome',
+    }))
+    expect(markup).toContain(copy.startSetup)
+    expect(markup).toContain(copy.skip)
+    expect(markup).toContain('data-slot="dialog-trigger"')
+    expect(markup).toContain('aria-haspopup="dialog"')
+    expect(markup).not.toContain(`aria-label="${copy.back}"`)
+    expect(markup).not.toContain(`aria-label="${copy.next}"`)
+    expect(markup).not.toContain('lucide-arrow-left')
+    expect(markup).not.toContain('lucide-arrow-right')
+    expect(navigation).toBe('')
   })
 })
 
@@ -162,6 +208,17 @@ describe('Setup Wizard setting pages', () => {
     expect(browser).not.toContain(copy.dshMarket)
   })
 
+  it('describes browser access as an opt-in capability limited to compatibility mode', () => {
+    const browser = renderStep('browser')
+    expect(browser).toContain(copy.openBrowser)
+    expect(browser).toContain(copy.browserCompatibilityNotice)
+    expect(copy.openBrowser).toBe('允许在浏览器中打开')
+    expect(copy.openBrowser).not.toContain('启动后')
+    expect(copy.openBrowser).not.toContain('自动')
+    expect(copy.browserCompatibilityNotice).toContain('兼容模式')
+    expect(copy.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+  })
+
   it('uses the shadcn Switch component for every wizard toggle', () => {
     const notifications = renderStep('notifications')
     const browser = renderStep('browser')
@@ -174,7 +231,7 @@ describe('Setup Wizard setting pages', () => {
 
 describe('Setup Wizard navigation and completion', () => {
   it('shows Skip on the left and back/forward arrow buttons on every setting page', () => {
-    for (const step of DESKTOP_SETUP_WIZARD_STEPS.slice(0, -1)) {
+    for (const step of DESKTOP_SETUP_WIZARD_STEPS.slice(1, -1)) {
       const markup = renderToStaticMarkup(createElement(SetupWizardNavigation, {
         copy,
         onBack: () => {},
@@ -191,7 +248,7 @@ describe('Setup Wizard navigation and completion', () => {
     }
   })
 
-  it('keeps the first-page back button visible but disabled', () => {
+  it('lets the first setting page return to the welcome page', () => {
     const markup = renderToStaticMarkup(createElement(SetupWizardNavigation, {
       copy,
       onBack: () => {},
@@ -199,7 +256,8 @@ describe('Setup Wizard navigation and completion', () => {
       onSkip: () => {},
       step: 'mode',
     }))
-    expect(markup).toMatch(new RegExp(`<button[^>]+aria-label="${copy.back}"[^>]+disabled`, 'u'))
+    expect(markup).toContain(`aria-label="${copy.back}"`)
+    expect(markup).not.toMatch(new RegExp(`<button[^>]+aria-label="${copy.back}"[^>]+disabled`, 'u'))
   })
 
   it('uses a dialog trigger for Skip and explains where setup remains available', () => {
