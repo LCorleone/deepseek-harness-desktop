@@ -118,14 +118,15 @@ export function decodeDesktopSetupWizardInput(search: string): DesktopSetupWizar
 }
 
 function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizardSelection {
+  const browserAccess = input.openBrowser || input.networkExposure === 'lan'
   return {
-    mode: input.platform === 'linux' ? 'compatibility' : input.mode,
+    mode: input.platform === 'linux' || browserAccess ? 'compatibility' : input.mode,
     macosMaterial: input.macosMaterial,
     windowsMaterial: input.platform === 'win32' && input.windowsMaterial === 'mica' && !input.micaSupported
       ? 'acrylic'
       : input.windowsMaterial,
-    openBrowser: input.openBrowser,
-    networkExposure: input.openBrowser ? input.networkExposure : 'loopback',
+    openBrowser: browserAccess,
+    networkExposure: browserAccess ? input.networkExposure : 'loopback',
     market: input.market,
     notifications: { ...input.notifications },
   }
@@ -133,7 +134,7 @@ function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizard
 
 function finish(selection: DesktopSetupWizardSelection): void {
   const url = new URL(`${SCHEME}//complete`)
-  url.searchParams.set('mode', selection.mode)
+  url.searchParams.set('mode', selection.openBrowser ? 'compatibility' : selection.mode)
   url.searchParams.set('macosMaterial', selection.macosMaterial)
   url.searchParams.set('windowsMaterial', selection.windowsMaterial)
   url.searchParams.set('openBrowser', String(selection.openBrowser))
@@ -243,7 +244,12 @@ function ModeOptions({
     name="setup-window-mode"
     onValueChange={value => {
       if (value === 'compatibility' || value === 'extended' || value === 'advanced') {
-        update({ ...selection, mode: value })
+        update({
+          ...selection,
+          mode: value,
+          openBrowser: value === 'compatibility' ? selection.openBrowser : false,
+          networkExposure: value === 'compatibility' ? selection.networkExposure : 'loopback',
+        })
       }
     }}
     value={selection.mode}
@@ -390,6 +396,7 @@ function BrowserOptions({
       onChange={openBrowser => {
         update({
           ...selection,
+          mode: openBrowser ? 'compatibility' : selection.mode,
           openBrowser,
           networkExposure: openBrowser ? selection.networkExposure : 'loopback',
         })

@@ -30,6 +30,9 @@ import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 import {
+  desktopBrowserAccessEnabled,
+  desktopNetworkExposureForBrowserAccess,
+  desktopShellModeForBrowserAccess,
   desktopWebServerHost,
   parseDesktopNetworkExposure,
   parseDesktopOpenBrowser,
@@ -130,6 +133,7 @@ export interface DesktopStartupSettings {
   port: number
   macosMaterial: MacosWindowMaterial
   windowsMaterial: WindowsWindowMaterial
+  /** Persisted compatibility key for ordinary-browser access permission. */
   openBrowser: boolean
   networkExposure: DesktopNetworkExposure
 }
@@ -160,13 +164,18 @@ export function desktopStartupSettingsFromSettings(document: unknown): DesktopSt
     throw new Error(`${BIN_NAME}: ${DESKTOP_SETTINGS_NAMESPACE} settings must be a map`)
   }
   const values = section as Record<string, unknown>
+  const networkExposure = parseDesktopNetworkExposure(values.networkExposure)
+  const openBrowser = desktopBrowserAccessEnabled(
+    parseDesktopOpenBrowser(values.openBrowser),
+    networkExposure,
+  )
   return {
-    mode: parseDesktopShellMode(values.mode),
+    mode: desktopShellModeForBrowserAccess(parseDesktopShellMode(values.mode), openBrowser),
     port: parseDesktopPort(values.port),
     macosMaterial: parseMacosWindowMaterial(values.macosMaterial),
     windowsMaterial: parseWindowsWindowMaterial(values.windowsMaterial),
-    openBrowser: parseDesktopOpenBrowser(values.openBrowser),
-    networkExposure: parseDesktopNetworkExposure(values.networkExposure),
+    openBrowser,
+    networkExposure: desktopNetworkExposureForBrowserAccess(openBrowser, networkExposure),
   }
 }
 
@@ -240,7 +249,7 @@ export interface PreparedDesktopProfile {
   windowsMaterial: WindowsWindowMaterial
   /** Persisted Web port applied to every startup consumer. */
   port: number
-  /** Whether the settled Web runtime hands its marker-free URL to the default browser. */
+  /** Whether Desktop advertises the marker-free compatibility client for browser use. */
   openBrowser: boolean
   /** Listener scope applied to the Desktop-owned WebServer. */
   networkExposure: DesktopNetworkExposure
@@ -856,7 +865,9 @@ export function prepareDesktopProfile(
     id: 'web-runtime',
     config: {
       ...rowConfig(webRuntime),
-      openBrowser,
+      // Browser access is an advertised Desktop capability, never an
+      // instruction to launch the operating system's default browser.
+      openBrowser: false,
     },
   })
   if (mode === 'advanced' || mode === 'extended') {

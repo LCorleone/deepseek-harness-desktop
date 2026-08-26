@@ -31,6 +31,7 @@ import {
   DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE,
   DESKTOP_SETTINGS_LOCALE_NAMESPACE,
   DESKTOP_SHELL_SETTINGS_NAMESPACE,
+  persistDesktopModeSelection,
 } from '../src/client/desktop-settings.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from '../src/client/desktop-settings-styles.ts'
@@ -104,6 +105,37 @@ describe('Desktop settings API', () => {
     resolveDesktopLanConfirmation(true, dismiss, enableLan)
     expect(dismiss).toHaveBeenCalledOnce()
     expect(enableLan).toHaveBeenCalledOnce()
+  })
+
+  it('withdraws browser and LAN access before selecting a custom Desktop mode', async () => {
+    const set = vi.fn(async () => {})
+    const scope = {
+      getSnapshot: () => ({
+        status: 'ready' as const,
+        value: {
+          mode: 'compatibility' as const,
+          macosMaterial: 'transparent' as const,
+          windowsMaterial: 'acrylic' as const,
+          port: 43_120,
+          openBrowser: true,
+          networkExposure: 'lan' as const,
+          logLevel: 'info' as const,
+        },
+        base: undefined,
+        user: undefined,
+        revision: 1,
+        writable: true,
+        mode: 'host' as const,
+      }),
+      set,
+    }
+
+    await persistDesktopModeSelection(scope, 'advanced')
+    expect(set.mock.calls).toEqual([
+      ['mode', 'advanced'],
+      ['openBrowser', false],
+      ['networkExposure', 'loopback'],
+    ])
   })
 
   it('uses the strict same-origin routes and request bodies', async () => {
@@ -379,6 +411,7 @@ describe('Desktop settings Slot registration', () => {
       platform: 'darwin',
       initialMode: 'compatibility',
       micaSupported: false,
+      setMode: expect.any(Function),
     })
     expect(component).toBe(DesktopSettingsSection)
 

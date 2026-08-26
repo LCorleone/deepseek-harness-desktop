@@ -113,5 +113,13 @@ describe('Desktop Setup Wizard copy and contract', () => {
       { ...input, mode: 'extended', windowsMaterial: 'acrylic' },
       { platform: 'linux', micaSupported: false },
     )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, mode: 'advanced', openBrowser: true },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, openBrowser: false, networkExposure: 'lan' },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(false)
   })
 })

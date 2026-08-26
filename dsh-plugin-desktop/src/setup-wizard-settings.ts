@@ -1,5 +1,6 @@
 /** Pre-Host reader and atomic writer for Desktop Setup Wizard preferences. */
 
+import { desktopBrowserAccessEnabled, desktopNetworkExposureForBrowserAccess, desktopShellModeForBrowserAccess } from './desktop-network.ts'
 import {
   closeSync,
   constants,
@@ -45,9 +46,9 @@ export interface DesktopSetupWizardSettings {
   readonly macosMaterial: DesktopSetupWizardMacosMaterial
   /** Preserve both platform preferences when Setup runs on either platform. */
   readonly windowsMaterial: DesktopSetupWizardWindowsMaterial
-  /** Whether Web Runtime performs its ordinary post-start browser handoff. */
+  /** Persisted compatibility key for ordinary-browser access permission. */
   readonly openBrowser: boolean
-  /** Native Web listener exposure; independent from the browser handoff. */
+  /** Native Web listener exposure; LAN requires browser access permission. */
   readonly networkExposure: DesktopSetupWizardNetworkExposure
   readonly notifications: DesktopSetupWizardNotificationSettings
 }
@@ -189,12 +190,17 @@ function projectSettings(
 ): DesktopSetupWizardSettings {
   const desktop = section(root, DESKTOP_NAMESPACE)
   const notifications = section(root, NOTIFICATIONS_NAMESPACE)
+  const networkExposure = parseExposure(desktop.networkExposure)
+  const openBrowser = desktopBrowserAccessEnabled(
+    optionalBoolean(desktop, 'openBrowser', false),
+    networkExposure,
+  )
   return Object.freeze({
-    mode: parseMode(desktop.mode),
+    mode: desktopShellModeForBrowserAccess(parseMode(desktop.mode), openBrowser),
     macosMaterial: parseMacosWindowMaterial(desktop.macosMaterial),
     windowsMaterial: parseWindowsWindowMaterial(desktop.windowsMaterial),
-    openBrowser: optionalBoolean(desktop, 'openBrowser', false),
-    networkExposure: parseExposure(desktop.networkExposure),
+    openBrowser,
+    networkExposure: desktopNetworkExposureForBrowserAccess(openBrowser, networkExposure),
     notifications: notificationSettings(notifications),
   })
 }
@@ -203,7 +209,7 @@ function normalizedUpdate(
   value: DesktopSetupWizardSettings,
 ): DesktopSetupWizardSettings {
   if (!isRecord(value)) throw new TypeError(`${BIN_NAME}: invalid Setup Wizard settings update`)
-  const mode = parseMode(value.mode)
+  const requestedMode = parseMode(value.mode)
   if (value.macosMaterial !== 'off' && value.macosMaterial !== 'transparent') {
     throw new TypeError(`${BIN_NAME}: macOS Setup Wizard material must be off or transparent`)
   }
@@ -213,7 +219,10 @@ function normalizedUpdate(
   if (typeof value.openBrowser !== 'boolean') {
     throw new TypeError(`${BIN_NAME}: Setup Wizard openBrowser must be a boolean`)
   }
-  const networkExposure = parseExposure(value.networkExposure)
+  const networkExposure = desktopNetworkExposureForBrowserAccess(
+    value.openBrowser,
+    parseExposure(value.networkExposure),
+  )
   if (!isRecord(value.notifications)) {
     throw new TypeError(`${BIN_NAME}: Setup Wizard notifications must be a map`)
   }
@@ -229,7 +238,7 @@ function normalizedUpdate(
     throw new TypeError(`${BIN_NAME}: Setup Wizard update must contain all five notification booleans`)
   }
   return Object.freeze({
-    mode,
+    mode: desktopShellModeForBrowserAccess(requestedMode, value.openBrowser),
     macosMaterial: value.macosMaterial,
     windowsMaterial: value.windowsMaterial,
     openBrowser: value.openBrowser,
@@ -321,6 +330,54 @@ export async function updateDesktopSetupWizardSettings(
     })
   })
   return next
+}
+
+/**
+ * Atomically migrate settings written with the former browser-handoff
+ * semantics before the Host reads them. Existing LAN exposure becomes an
+ * explicit browser-access grant, and every enabled grant uses compatibility
+ * mode. Returns whether the durable document changed.
+ */
+export async function migrateDesktopBrowserAccessSettings(
+  documentPath: string,
+): Promise<boolean> {
+  const path = settingsPath(documentPath)
+  ensureDocumentDirectory(path)
+  let changed = false
+  await withFileLock(path, async () => {
+    const loaded = loadSettingsDocument(path)
+    // Validate every known Wizard-owned value before migrating any leaf.
+    projectSettings(loaded.root)
+    const desktop = section(loaded.root, DESKTOP_NAMESPACE)
+    const storedMode = parseMode(desktop.mode)
+    const storedOpenBrowser = optionalBoolean(desktop, 'openBrowser', false)
+    const storedExposure = parseExposure(desktop.networkExposure)
+    const browserAccess = desktopBrowserAccessEnabled(storedOpenBrowser, storedExposure)
+    const mode = desktopShellModeForBrowserAccess(storedMode, browserAccess)
+    if (storedMode === mode && storedOpenBrowser === browserAccess) return
+
+    let output: string
+    if (loaded.format === 'yaml') {
+      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'mode'], mode)
+      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'openBrowser'], browserAccess)
+      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'networkExposure'], storedExposure)
+      output = loaded.yaml!.toString()
+    } else {
+      const root = structuredClone(loaded.root)
+      const nextDesktop = { ...section(root, DESKTOP_NAMESPACE) }
+      nextDesktop.mode = mode
+      nextDesktop.openBrowser = browserAccess
+      nextDesktop.networkExposure = storedExposure
+      root[DESKTOP_NAMESPACE] = nextDesktop
+      output = `${JSON.stringify(root, undefined, 2)}\n`
+    }
+    await writeFileAtomic(path, output, {
+      mode: DOCUMENT_FILE_MODE,
+      dirMode: DOCUMENT_DIRECTORY_MODE,
+    })
+    changed = true
+  })
+  return changed
 }
 
 /** Defaults used when the settings document or both owned sections are absent. */

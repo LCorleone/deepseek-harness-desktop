@@ -1,6 +1,6 @@
 /** Official Settings Slot registration for Desktop-owned preferences. */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { DesktopSettingsSection, type DesktopNotificationSettings, type DesktopShellSettings } from './DesktopSettingsSection.tsx'
@@ -9,6 +9,7 @@ import { createDesktopSettingsApi } from './desktop-settings-api.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from './desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from './desktop-settings-styles.ts'
 import type { DesktopClientEnvironment } from './environment.ts'
+import { desktopBrowserAccessEnabled } from '../desktop-network.ts'
 
 /** Locale namespace owned by the Desktop settings page. */
 export const DESKTOP_SETTINGS_LOCALE_NAMESPACE = 'desktop.settings'
@@ -21,6 +22,24 @@ export const DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE = 'dsh-desktop-notificatio
 export interface DesktopSettingsClientControl {
   readonly api: ReturnType<typeof createDesktopSettingsApi>
   setMode(mode: DesktopShellSettings['mode']): Promise<void>
+}
+
+/**
+ * Persist a native mode choice without leaving browser access in a mode the
+ * marker-free client cannot render. Custom modes withdraw browser and LAN
+ * access in ordered writes; the Host compares only effective generation state.
+ */
+export async function persistDesktopModeSelection(
+  desktopSettings: Pick<SettingsScope<DesktopShellSettings>, 'getSnapshot' | 'set'>,
+  mode: DesktopShellSettings['mode'],
+): Promise<void> {
+  const current = desktopSettings.getSnapshot().value as DesktopShellSettings | undefined
+  const exposure = current?.networkExposure ?? 'loopback'
+  const browserAccess = desktopBrowserAccessEnabled(current?.openBrowser ?? false, exposure)
+  await desktopSettings.set('mode', mode)
+  if (mode === 'compatibility' || !browserAccess) return
+  await desktopSettings.set('openBrowser', false)
+  if (exposure === 'lan') await desktopSettings.set('networkExposure', 'loopback')
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -43,6 +62,9 @@ export function applyDesktopSettings(
   })
   const api = createDesktopSettingsApi()
   const t = ctx.locale.bind(DESKTOP_SETTINGS_LOCALE_NAMESPACE)
+  const setMode = async (mode: DesktopShellSettings['mode']): Promise<void> => {
+    await persistDesktopModeSelection(desktopSettings, mode)
+  }
 
   ctx.effect(
     () => ctx.locale.register(DESKTOP_SETTINGS_LOCALE_NAMESPACE, { zh, en }),
@@ -63,6 +85,7 @@ export function applyDesktopSettings(
       platform: environment.platform,
       initialMode: environment.mode,
       micaSupported: environment.micaSupported,
+      setMode,
       desktopSettings,
       notificationSettings,
     }),
@@ -77,8 +100,6 @@ export function applyDesktopSettings(
 
   return Object.freeze({
     api,
-    async setMode(mode: DesktopShellSettings['mode']) {
-      await desktopSettings.set('mode', mode)
-    },
+    setMode,
   })
 }
