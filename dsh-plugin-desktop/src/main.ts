@@ -100,6 +100,10 @@ import {
   desktopRecoveryModeRequested,
   desktopRecoveryRelaunchArguments,
 } from './relaunch-arguments.ts'
+import {
+  recoverOversizedSessionProjectionCache,
+  type SessionProjectionCacheRecoveryResult,
+} from './session-projcache-recovery.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const PRODUCT_NAME = 'DSH Desktop'
@@ -179,6 +183,21 @@ function notifyWindowsVolumeConcerns(
   }
 }
 
+function notifySessionProjectionCacheRecovery(
+  runtime: ElectronDesktopRuntime,
+  logger: DesktopLogger,
+  _recovery: Extract<SessionProjectionCacheRecoveryResult, { status: 'quarantined' }>,
+): void {
+  try {
+    runtime.updates.notify({
+      title: 'Recovered Session Cache',
+      body: 'An oversized session projection cache was moved aside and will be rebuilt from session history.',
+    })
+  } catch (cause) {
+    logger.error(`${BIN_NAME}: failed to show session projection cache recovery notification: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+}
+
 /** Start one Electron process and leave lifetime to the mounted desktop plugin. */
 async function start(): Promise<void> {
   if (!app.requestSingleInstanceLock()) {
@@ -202,6 +221,9 @@ async function start(): Promise<void> {
   let startupRecoveryConfigurationPaths: DesktopStartupRecoveryConfigurationPaths | undefined
   let profileCheckpoint: DesktopProfileCheckpoint | undefined
   let startupRecoveryProfileActions: DesktopStartupRecoveryProfileActions | undefined
+  let sessionProjectionCacheRecovery:
+    | Extract<SessionProjectionCacheRecoveryResult, { status: 'quarantined' }>
+    | undefined
   let profileRecoveryActionUsed = false
   let recoveryTerminalAvailable = false
   let startupStage: DesktopStartupFailureStage = 'electron-ready'
@@ -374,6 +396,14 @@ async function start(): Promise<void> {
     })
     for (const [name, value] of Object.entries(shellEnvironmentResolution.updates)) process.env[name] = value
     const homeDir = resolveDshHome()
+    const projectionCacheRecovery = recoverOversizedSessionProjectionCache(homeDir)
+    if (projectionCacheRecovery.status === 'quarantined') {
+      sessionProjectionCacheRecovery = projectionCacheRecovery
+      electronLogger.error(
+        `${BIN_NAME}: quarantined oversized session projection cache (${String(projectionCacheRecovery.sizeBytes)} bytes) at `
+          + `${projectionCacheRecovery.cachePath}; backup saved to ${projectionCacheRecovery.backupPath}`,
+      )
+    }
     const windowsVolumeConcerns = diagnoseWindowsVolumes(process.platform, [
       { label: 'application install', path: process.execPath },
       { label: 'desktop user data', path: app.getPath('userData') },
@@ -786,6 +816,9 @@ async function start(): Promise<void> {
     lifecycleRecorder.completeStartup(startupStage, rendererReport)
     notifySkippedOptionalEntries(runtime, electronLogger, prepared.skippedOptionalEntries)
     notifyWindowsVolumeConcerns(runtime, electronLogger, windowsVolumeConcerns)
+    if (sessionProjectionCacheRecovery !== undefined) {
+      notifySessionProjectionCacheRecovery(runtime, electronLogger, sessionProjectionCacheRecovery)
+    }
   } catch (cause) {
     runtime.stopRendererBootMonitoring()
     lifecycleRecorder.failRendererBootIfPending(lifecycleRendererFailureReason(runtime.rendererBootFailureReason))
