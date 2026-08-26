@@ -9,7 +9,16 @@ import type {
   MarketSourceView,
 } from '../api-types.js'
 import type { CatalogHttpClient } from '../contracts/types.js'
-import type { CatalogSnapshot } from '../contracts/index.js'
+import {
+  normalizeGitHubInstallSource,
+  type CatalogSnapshot,
+  type NormalizedGitHubInstallSource,
+} from '../contracts/index.js'
+import {
+  createGitHubPackageVerifier,
+  githubPackageTarget,
+  type GitHubPackageVerification,
+} from './github.js'
 import { manualInstallHints } from './manual.js'
 
 const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org'
@@ -99,14 +108,15 @@ interface InstallCandidate {
   readonly providerId: string
   readonly itemId: string
   readonly displayName: string
-  readonly packageName: string
+  readonly packageName?: string
+  readonly source?: NormalizedGitHubInstallSource
   readonly savedAt: number
 }
 
 interface InstallIntent {
   readonly kind: 'install'
   readonly candidate: InstallCandidate
-  readonly verification: MarketNpmPackageVerification
+  readonly verification: MarketPackageVerification
   readonly profile: MarketDesktopProfile
   readonly expiresAt: number
 }
@@ -135,6 +145,20 @@ export interface MarketNpmPackageVerifier {
 
 export interface MarketNpmPackageVerification {
   readonly version: string
+}
+
+export interface MarketPackageVerification extends MarketNpmPackageVerification {
+  readonly packageName?: string
+  readonly source?: NormalizedGitHubInstallSource
+}
+
+export interface MarketInstallCandidateInput {
+  readonly packageName?: string
+  readonly source?: NormalizedGitHubInstallSource
+}
+
+export interface MarketPackageVerifier {
+  verify(candidate: MarketInstallCandidateInput, signal: AbortSignal): Promise<MarketPackageVerification>
 }
 
 export interface MarketInstallServiceOptions {
@@ -220,6 +244,34 @@ export function createNpmRegistryVerifier(http: CatalogHttpClient): MarketNpmPac
         throw new MarketInstallError('verification-failed', 'The npm package does not declare a valid DSH bundle.')
       }
       return { version: manifest.version }
+    },
+  }
+}
+
+/** Combine the stable npm verifier and the pinned GitHub manifest verifier. */
+export function createMarketPackageVerifier(
+  http: CatalogHttpClient,
+): MarketPackageVerifier {
+  const npm = createNpmRegistryVerifier(http)
+  return {
+    async verify(candidate, signal) {
+      if (candidate.source !== undefined) {
+        try {
+          const verification: GitHubPackageVerification = await createGitHubPackageVerifier(http)
+            .verify(candidate.source, signal)
+          return verification
+        } catch (cause) {
+          signal.throwIfAborted()
+          throw new MarketInstallError(
+            'verification-failed',
+            cause instanceof Error ? cause.message : 'The GitHub package could not be verified.',
+          )
+        }
+      }
+      if (candidate.packageName === undefined) {
+        throw new MarketInstallError('verification-failed', 'The plugin install source is incomplete.')
+      }
+      return await npm.verify({ packageName: candidate.packageName }, signal)
     },
   }
 }
@@ -351,7 +403,7 @@ export class MarketInstallService {
   constructor(
     private readonly currentProfile: () => MarketDesktopProfile,
     private readonly pnpm: MarketDesktopPnpm,
-    private readonly verifier: MarketNpmPackageVerifier,
+    private readonly verifier: MarketPackageVerifier,
     options: MarketInstallServiceOptions = {},
   ) {
     this.now = options.now ?? Date.now
@@ -375,13 +427,20 @@ export class MarketInstallService {
     for (const item of snapshot.items) {
       const key = candidateKey(snapshot.source.sourceRecordId, item.id)
       this.candidates.delete(key)
+      let source: NormalizedGitHubInstallSource | undefined
+      if (item.installSource !== undefined) {
+        try { source = normalizeGitHubInstallSource(item.repository, item.installSource) }
+        catch { continue }
+      }
+      const packageName = source === undefined && item.package?.registry === 'npm' && safePackageName(item.package.name)
+        ? item.package.name
+        : undefined
       if (
         item.provenance.sourceRecordId !== snapshot.source.sourceRecordId
         || item.provenance.providerId !== snapshot.source.providerId
         || item.provenance.itemId !== item.id
-        || item.package?.registry !== 'npm'
-        || !safePackageName(item.package.name)
-        || !marketManagedPackage(item.package.name)
+        || (packageName === undefined && source === undefined)
+        || (packageName !== undefined && !marketManagedPackage(packageName))
       ) {
         continue
       }
@@ -391,7 +450,8 @@ export class MarketInstallService {
         providerId: snapshot.source.providerId,
         itemId: item.id,
         displayName: item.displayName,
-        packageName: item.package.name,
+        ...(packageName === undefined ? {} : { packageName }),
+        ...(source === undefined ? {} : { source }),
         savedAt: this.now(),
       }
       this.candidates.set(key, candidate)
@@ -452,8 +512,8 @@ export class MarketInstallService {
       throw new MarketInstallError('not-available', 'This catalog item has no verified install target. Refresh the active source and try again.')
     }
     const profile = this.profile()
-    await assertNotInstalled(profile, candidate.packageName)
-    let verification: MarketNpmPackageVerification
+    if (candidate.packageName !== undefined) await assertNotInstalled(profile, candidate.packageName)
+    let verification: MarketPackageVerification
     try { verification = await this.verifier.verify(candidate, operationSignal) }
     catch (cause) {
       operationSignal.throwIfAborted()
@@ -471,11 +531,16 @@ export class MarketInstallService {
       profile,
       expiresAt: this.now() + this.intentTtlMs,
     })
+    const packageName = verification.packageName ?? candidate.packageName
+    if (packageName === undefined || !safePackageName(packageName)) {
+      throw new MarketInstallError('verification-failed', 'The verified package name is invalid.')
+    }
+    await assertNotInstalled(profile, packageName)
     return {
       intent: token,
       action: 'install',
       profileName: profile.name,
-      packageName: candidate.packageName,
+      packageName,
       version: verification.version,
       displayName: candidate.displayName,
       expiresAt: new Date(this.now() + this.intentTtlMs).toISOString(),
@@ -491,19 +556,26 @@ export class MarketInstallService {
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The verified catalog item is no longer available.')
       }
-      await assertNotInstalled(profile, candidate.packageName)
       const verification = intent.verification
+      const packageName = verification.packageName ?? candidate.packageName
+      if (packageName === undefined || !safePackageName(packageName)) {
+        throw new MarketInstallError('verification-failed', 'The verified package name is invalid.')
+      }
+      await assertNotInstalled(profile, packageName)
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
       }
+      const target = candidate.source === undefined
+        ? `${packageName}@${verification.version}`
+        : githubPackageTarget(candidate.source)
       await this.runPnpm([
         'add',
-        ...this.installOptions(candidate.packageName),
-        `${candidate.packageName}@${verification.version}`,
+        ...(candidate.source === undefined ? this.installOptions(packageName) : ['--save-exact']),
+        target,
       ], operationSignal)
       try {
-        await setProfileBundle(profile, candidate.packageName, true)
-        const installedVersion = await directProfilePluginVersion(profile, candidate.packageName)
+        await setProfileBundle(profile, packageName, true)
+        const installedVersion = await directProfilePluginVersion(profile, packageName)
         if (installedVersion !== verification.version) throw new Error('installed version mismatch')
         operationSignal.throwIfAborted()
       } catch {
@@ -512,7 +584,7 @@ export class MarketInstallService {
           'The package manager changed the Profile, but the plugin bundle could not be validated. Use a Recovery checkpoint if you need to restore the previous Profile state.',
         )
       }
-      return { packageName: candidate.packageName, version: verification.version }
+      return { packageName, version: verification.version }
     })
   }
 
