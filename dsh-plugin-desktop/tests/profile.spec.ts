@@ -464,7 +464,6 @@ virtualStoreDirMaxLength: 60
     profileManifest.dsh.profile.bundles.push(packageName)
     writeFileSync(profileManifestPath, JSON.stringify(profileManifest) + '\n')
     const managementStatePath = join(home, 'user-data', 'plugin-management', 'state.json')
-    const recoveryStatePath = join(home, 'user-data', 'startup-recovery', 'state.json')
     mkdirSync(dirname(managementStatePath), { recursive: true })
     writeFileSync(managementStatePath, JSON.stringify({
       version: 1,
@@ -478,7 +477,6 @@ virtualStoreDirMaxLength: 60
       'desktop',
       managementStatePath,
       { requested: 'dsh-market', effective: 'dsh-market', legacyDefaulted: false },
-      recoveryStatePath,
     )
     expect(composeEntries([external.patches])).toContainEqual(expect.objectContaining({
       id: 'third-party-marker',
@@ -491,14 +489,13 @@ virtualStoreDirMaxLength: 60
       'desktop',
       managementStatePath,
       { requested: 'community-market', effective: 'community-market', legacyDefaulted: false },
-      recoveryStatePath,
     )
     expect(composeEntries([community.patches])).not.toContainEqual(expect.objectContaining({
       id: 'third-party-marker',
     }))
   })
 
-  it('keeps a startup-recovery disable effective for every market provider', () => {
+  it('ignores obsolete startup-recovery disable state for every market provider', () => {
     const home = temporaryHome()
     const packageName = 'third-party-plugin'
     installBundle(home, packageName, '- insert:\n    - id: third-party-marker\n      name: cordis:example\n')
@@ -523,9 +520,8 @@ virtualStoreDirMaxLength: 60
       'desktop',
       managementStatePath,
       { requested: 'dsh-market', effective: 'dsh-market', legacyDefaulted: false },
-      recoveryStatePath,
     )
-    expect(composeEntries([prepared.patches])).not.toContainEqual(expect.objectContaining({
+    expect(composeEntries([prepared.patches])).toContainEqual(expect.objectContaining({
       id: 'third-party-marker',
     }))
   })

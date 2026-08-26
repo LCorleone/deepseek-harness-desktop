@@ -514,6 +514,14 @@ describe('published package surface', () => {
     expect(main).not.toContain('disposeDshRuntime')
   })
 
+  it('keeps the release-age override in the shared process-local pnpm policy', () => {
+    const policy = readFileSync(new URL('src/pnpm-policy.ts', packageRoot), 'utf8')
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+
+    expect(policy).toContain("'--config.minimumReleaseAge=0'")
+    expect(main).not.toContain('allowYoungLockedDependencies')
+  })
+
   it('injects profile creation into the generation-scoped Host service without selecting it', () => {
     const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
     const profileImport = main.indexOf('createDesktopWebProfile,')
@@ -624,10 +632,17 @@ describe('published package surface', () => {
     const requested = main.indexOf('if (recoveryModeRequested)')
     const prepare = main.indexOf('let prepared = prepareDesktopProfile(')
     const quiesce = main.indexOf('const recoveryActionsSafe = await generation.quiesceForRecovery()')
+    const configureTerminal = main.indexOf('runtime.configureTerminal({')
+    const terminalAvailable = main.indexOf('recoveryTerminalAvailable = true')
 
     expect(windows).toHaveLength(2)
     expect(windows[0]).toBeGreaterThan(requested)
     expect(windows[0]).toBeLessThan(prepare)
+    expect(configureTerminal).toBeGreaterThanOrEqual(0)
+    expect(configureTerminal).toBeLessThan(requested)
+    expect(terminalAvailable).toBeGreaterThan(configureTerminal)
+    expect(terminalAvailable).toBeLessThan(requested)
+    expect(main.match(/runtime\.configureTerminal\(\{/gu)).toHaveLength(1)
     expect(windows[1]).toBeGreaterThan(windows[0]!)
     expect(quiesce).toBeGreaterThan(prepare)
     expect(windows[1]).toBeGreaterThan(quiesce)

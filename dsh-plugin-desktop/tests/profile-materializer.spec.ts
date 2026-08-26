@@ -5,6 +5,7 @@ import { delimiter } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  formatProfileMaterializationFailure,
   materializeProfile,
   type ProfileMaterializerOptions,
   type ProfileMaterializerSpawn,
@@ -66,6 +67,7 @@ describe('profile materializer', () => {
       '--import',
       pathToFileURL('/private/clear-env.mjs').href,
       '/private/pnpm/bin/pnpm.mjs',
+      '--config.minimumReleaseAge=0',
       'install',
       '--frozen-lockfile',
     ])
@@ -106,6 +108,7 @@ describe('profile materializer', () => {
       '--import',
       pathToFileURL('/private/clear-env.mjs').href,
       '/private/pnpm/bin/pnpm.mjs',
+      '--config.minimumReleaseAge=0',
       'install',
       '--no-frozen-lockfile',
     ])
@@ -121,6 +124,22 @@ describe('profile materializer', () => {
       name: 'ProfileMaterializationError',
       result: { exitCode: 1, stderr: 'lockfile is out of date' },
     })
+  })
+
+  it('formats bounded package-manager details for the recovery error window', async () => {
+    const child = fakeChild()
+    const spawn = vi.fn(() => child as unknown as ChildProcess) as unknown as ProfileMaterializerSpawn
+    const resultPromise = materializeProfile(options(spawn))
+    child.stdout.end('resolution completed')
+    child.stderr.end('ERR_PNPM_OUTDATED_LOCKFILE')
+    child.emit('close', 1, null)
+    const cause = await resultPromise.catch((error: unknown) => error)
+
+    const detail = formatProfileMaterializationFailure(cause)
+    expect(detail).toContain('Command: pnpm --config.minimumReleaseAge=0 install --frozen-lockfile')
+    expect(detail).toContain('Exit status: 1')
+    expect(detail).toContain('stderr:\nERR_PNPM_OUTDATED_LOCKFILE')
+    expect(detail).toContain('stdout:\nresolution completed')
   })
 
   it('terminates and rejects when the caller aborts', async () => {

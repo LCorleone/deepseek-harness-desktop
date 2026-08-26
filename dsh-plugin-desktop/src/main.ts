@@ -64,7 +64,10 @@ import {
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
-import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
+import {
+  DesktopStartupRecoveryController,
+  DesktopStartupRecoveryControllerError,
+} from './startup-recovery-controller.ts'
 import {
   DesktopStartupRecoveryWindow,
   type DesktopStartupRecoveryConfigurationPaths,
@@ -79,7 +82,15 @@ import {
   type SkippedOptionalEntry,
 } from './profile.ts'
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
-import { materializeProfile, ProfileMaterializationError } from './profile-materializer.ts'
+import {
+  formatProfileMaterializationFailure,
+  materializeProfile,
+  ProfileMaterializationError,
+} from './profile-materializer.ts'
+import {
+  formatRecoveryPluginRemoveFailure,
+  removeRecoveryPlugin,
+} from './recovery-plugin-uninstall.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import {
   createDesktopExitCoordinator,
@@ -435,15 +446,24 @@ async function start(): Promise<void> {
       stateDir: join(app.getPath('userData'), 'runtime-commands'),
       environment: process.env,
     })
+    const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
     const releasePnpmRuntime = generation.own(() => { pnpmRuntime.dispose() })
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')
     const pluginManagementStatePath = join(app.getPath('userData'), 'plugin-management', 'state.json')
-    const startupRecoveryStatePath = join(app.getPath('userData'), 'startup-recovery', 'state.json')
     startupStage = 'profile-selection'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const profileStartup = beginDesktopProfileStartup(selectionStatePath, homeDir)
     const activeProfileName = profileStartup.profileName
     const activeProfileDir = resolveProfileDir(activeProfileName, homeDir)
+    // Recovery can open before Profile composition and Host boot. Fix the
+    // launcher-owned terminal identity as soon as Profile selection succeeds
+    // so every recovery entry path exposes the same terminal action.
+    runtime.configureTerminal({
+      profileName: activeProfileName,
+      profileDir: activeProfileDir,
+      homeDir,
+    })
+    recoveryTerminalAvailable = true
     const recoveryProfileToken = randomUUID()
     startupRecoveryProfileActions = {
       token: recoveryProfileToken,
@@ -482,6 +502,7 @@ async function start(): Promise<void> {
       profileCheckpoint = new DesktopProfileCheckpoint({
         userDataDir: app.getPath('userData'),
         profileDir: activeProfileDir,
+        homeDir,
         profileName: activeProfileName,
         provider: 'desktop-profile',
         appVersion,
@@ -502,31 +523,66 @@ async function start(): Promise<void> {
         pluginState: {
           profileName: activeProfileName,
           homeDir,
-          statePath: startupRecoveryStatePath,
+          statePath: pluginManagementStatePath,
         },
         generationId,
         currentGeneration: () => ({
           profileName: readDesktopProfileState(selectionStatePath).active,
           generationId,
         }),
+        uninstallPlugin: async packageName => {
+          try {
+            await removeRecoveryPlugin({
+              appExecutable: process.execPath,
+              dshBootstrapPath,
+              profileName: activeProfileName,
+              profileDir: activeProfileDir,
+              homeDir,
+              nodeBinDir: pnpmRuntime.nodeBinDir,
+              nodeShimPath: pnpmRuntime.nodeShimPath,
+              electronVersion,
+              packageName,
+            })
+          } catch (cause) {
+            const detail = maskSecrets(formatRecoveryPluginRemoveFailure(cause))
+            electronLogger.error(`${BIN_NAME}: recovery plugin uninstall failed:\n${detail}`)
+            throw new DesktopStartupRecoveryControllerError(
+              'operation-failed',
+              'The plugin could not be removed from the current Profile.',
+              { operationStage: 'plugin-change', diagnosticDetail: detail },
+            )
+          }
+        },
         checkpoints: profileCheckpoint,
         openCheckpointDirectory: async path => {
           const error = await shell.openPath(path)
           if (error.length > 0) throw new Error(error)
         },
         afterCheckpointRestore: async result => {
-          if (!result.changedFiles.some(name => name === 'package.json'
-            || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml')) return
-          await materializeProfile({
-            appExecutable: process.execPath,
-            clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
-            pnpmBinPath,
-            nodeBinDir: pnpmRuntime.nodeBinDir,
-            nodeShimPath: pnpmRuntime.nodeShimPath,
-            homeDir,
-            profileDir: activeProfileDir,
-            electronVersion,
-          })
+          if (!result.dependencyMaterializationRequired) return
+          try {
+            await materializeProfile({
+              appExecutable: process.execPath,
+              clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
+              pnpmBinPath,
+              nodeBinDir: pnpmRuntime.nodeBinDir,
+              nodeShimPath: pnpmRuntime.nodeShimPath,
+              homeDir,
+              profileDir: activeProfileDir,
+              electronVersion,
+            })
+          } catch (cause) {
+            const detail = maskSecrets(formatProfileMaterializationFailure(cause))
+            electronLogger.error(`${BIN_NAME}: checkpoint dependency materialization failed:\n${detail}`)
+            throw new DesktopStartupRecoveryControllerError(
+              'operation-failed',
+              'The checkpoint files were restored, but Profile dependencies could not be rebuilt.',
+              {
+                operationStage: 'dependency-materialization',
+                diagnosticDetail: detail,
+              },
+            )
+          }
         },
       })
     }
@@ -562,7 +618,6 @@ async function start(): Promise<void> {
       activeProfileName,
       pluginManagementStatePath,
       marketSelection,
-      startupRecoveryStatePath,
       preparationHooks,
     )
     if (profileCheckpoint === undefined) {
@@ -570,6 +625,7 @@ async function start(): Promise<void> {
         profileCheckpoint = new DesktopProfileCheckpoint({
           userDataDir: app.getPath('userData'),
           profileDir: prepared.profile.dir,
+          homeDir,
           profileName: activeProfileName,
           provider: 'desktop-profile',
           appVersion,
@@ -582,7 +638,6 @@ async function start(): Promise<void> {
     }
     startupStage = 'runtime-bootstrap'
     lifecycleRecorder.transitionStartupStage(startupStage)
-    const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
     const dshRuntime = process.platform === 'win32'
       ? installDesktopDshRuntime({
           platform: process.platform,
@@ -616,7 +671,6 @@ async function start(): Promise<void> {
           activeProfileName,
           pluginManagementStatePath,
           marketSelection,
-          startupRecoveryStatePath,
           preparationHooks,
         )
         if (prepared.requiresDependencyMigration) {
@@ -649,14 +703,6 @@ async function start(): Promise<void> {
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const releasePackageResolver = installProfilePackageResolver(prepared.bareModuleBaseUrl)
-    // Configure the launcher-owned terminal before Host boot so the native
-    // recovery window can still open it when profile composition fails.
-    runtime.configureTerminal({
-      profileName: activeProfileName,
-      profileDir: prepared.profile.dir,
-      homeDir: prepared.homeDir,
-    })
-    recoveryTerminalAvailable = true
     const ctx = await boot(
       BIN_NAME,
       prepared.rootConfig,
@@ -689,7 +735,6 @@ async function start(): Promise<void> {
             profileName: activeProfileName,
             homeDir,
             statePath: pluginManagementStatePath,
-            recoveryStatePath: startupRecoveryStatePath,
             installAnchor: desktopInstallAnchor(),
           })
         }
