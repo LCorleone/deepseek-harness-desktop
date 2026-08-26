@@ -36,12 +36,24 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(Object.values(chinese).every(value => value.length > 0)).toBe(true)
   })
 
-  it('contains the required direct-control LAN danger warning in both locales', () => {
-    expect(desktopSetupWizardCopy('zh').lanWarningBody).toContain(
+  it('contains the required direct-control and HTTP security warnings in both locales', () => {
+    const chinese = desktopSetupWizardCopy('zh')
+    const english = desktopSetupWizardCopy('en')
+    expect(chinese.beta).toBe('Beta')
+    expect(english.beta).toBe('Beta')
+    expect(chinese.lanWarningBody).toContain(
       '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启',
     )
-    expect(desktopSetupWizardCopy('en').lanWarningBody).toContain('everyone on your local network')
-    expect(desktopSetupWizardCopy('en').lanWarningBody).toContain('operate your computer directly')
+    expect(chinese.lanWarningBody).toContain('浏览器安全限制')
+    expect(chinese.lanWarningBody).toContain('HTTP')
+    expect(chinese.lanWarningBody).toContain('安全模块可能不可用')
+    expect(chinese.lanWarningBody).toContain('无法正常使用')
+    expect(english.lanWarningBody).toContain('everyone on your local network')
+    expect(english.lanWarningBody).toContain('operate your computer directly')
+    expect(english.lanWarningBody).toContain('Browser security restrictions')
+    expect(english.lanWarningBody).toContain('HTTP')
+    expect(english.lanWarningBody).toContain('security modules')
+    expect(english.lanWarningBody).toContain('not to work correctly')
   })
 
   it('describes the sequential navigation, skip confirmation, and final success action', () => {

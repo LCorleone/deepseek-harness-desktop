@@ -91,8 +91,18 @@ describe('Desktop settings API', () => {
     expect(en.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
     expect(en.browserCompatibilityNotice).toMatch(/select compatibility mode first/iu)
     expect(en.browserCompatibilityNotice).not.toMatch(/switch(?:es|ing)?.+profile/iu)
+    expect(zh.beta).toBe('Beta')
+    expect(en.beta).toBe('Beta')
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
+    expect(zh.lanWarningBody).toContain('浏览器安全限制')
+    expect(zh.lanWarningBody).toContain('HTTP')
+    expect(zh.lanWarningBody).toContain('安全模块可能不可用')
+    expect(zh.lanWarningBody).toContain('无法正常使用')
     expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
+    expect(en.lanWarningBody).toContain('Browser security restrictions')
+    expect(en.lanWarningBody).toContain('HTTP')
+    expect(en.lanWarningBody).toContain('security modules')
+    expect(en.lanWarningBody).toContain('not to work correctly')
   })
 
   it('shows actual URLs only when browser access is permitted and requires explicit LAN confirmation', () => {

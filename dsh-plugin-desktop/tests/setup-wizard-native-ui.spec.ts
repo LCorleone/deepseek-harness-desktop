@@ -215,6 +215,24 @@ describe('Setup Wizard setting pages', () => {
     expect(browser).not.toContain(copy.dshMarket)
   })
 
+  it('marks Community Market and LAN access as Beta features', () => {
+    const market = renderStep('market')
+    const browser = renderStep('browser')
+    const communityOption = market.indexOf('for="setup-plugin-market-community-market"')
+    const nextMarketOption = market.indexOf('for="setup-plugin-market-dsh-market"')
+    const marketBadge = market.indexOf('data-slot="badge"')
+    const lanOption = browser.indexOf('for="setup-network-exposure-lan"')
+    const lanBadge = browser.indexOf('data-slot="badge"')
+
+    expect(occurrences(market, 'data-slot="badge"')).toBe(1)
+    expect(occurrences(browser, 'data-slot="badge"')).toBe(1)
+    expect(market).toContain(copy.beta)
+    expect(browser).toContain(copy.beta)
+    expect(marketBadge).toBeGreaterThan(communityOption)
+    expect(marketBadge).toBeLessThan(nextMarketOption)
+    expect(lanBadge).toBeGreaterThan(lanOption)
+  })
+
   it('describes browser access as an opt-in capability limited to compatibility mode', () => {
     const browser = renderStep('browser')
     expect(browser).toContain(copy.openBrowser)
@@ -380,6 +398,10 @@ describe('Setup Wizard native UI boundaries', () => {
     })
     const text = elementText(content)
     expect(text).toContain('这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启')
+    expect(text).toContain('由于浏览器安全限制')
+    expect(text).toContain('HTTP')
+    expect(text).toContain('部分安全模块可能不可用')
+    expect(text).toContain('无法正常使用')
     expect(text).toContain('确认开启局域网访问')
     expect(text).toContain('保持仅本机访问')
     const descendants = elementTree(content)

@@ -3,6 +3,7 @@
 import type { DesktopLocale } from './runtime.ts'
 
 export interface DesktopSetupWizardCopy {
+  readonly beta: string
   readonly title: string
   readonly profile: string
   readonly welcomeTitle: string
@@ -76,6 +77,7 @@ export interface DesktopSetupWizardCopy {
 
 const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
   en: {
+    beta: 'Beta',
     title: 'Set up DSH Desktop',
     profile: 'Profile',
     welcomeTitle: 'Welcome to DSH Desktop',
@@ -116,7 +118,7 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     lan: 'Local network',
     lanBody: 'Allow other devices on the same LAN to open and operate the client.',
     lanWarningTitle: 'Allow control from your local network?',
-    lanWarningBody: 'This is dangerous: everyone on your local network may be able to operate your computer directly. Enable it only with great care.',
+    lanWarningBody: 'This is dangerous: everyone on your local network may be able to operate your computer directly. Enable it only with great care. Browser security restrictions may prevent some security modules from working when DSH Desktop is accessed over HTTP from the local network, which may cause it not to work correctly.',
     confirmLan: 'Enable LAN access',
     cancelLan: 'Keep this computer only',
     marketTitle: 'Choose a plugin market',
@@ -147,6 +149,7 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     invalidState: 'Setup information could not be loaded. Close this window and try again.',
   },
   zh: {
+    beta: 'Beta',
     title: '设置 DSH Desktop',
     profile: 'Profile',
     welcomeTitle: '欢迎设置 DSH Desktop',
@@ -187,7 +190,7 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     lan: '局域网',
     lanBody: '允许同一局域网中的其他设备打开并操作客户端。',
     lanWarningTitle: '允许局域网中的设备控制吗？',
-    lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。',
+    lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。由于浏览器安全限制，从局域网内使用 HTTP 访问时，部分安全模块可能不可用，可能导致 DSH Desktop 无法正常使用。',
     confirmLan: '确认开启局域网访问',
     cancelLan: '保持仅本机访问',
     marketTitle: '选择插件市场',

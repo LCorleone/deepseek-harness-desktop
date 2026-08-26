@@ -1,6 +1,7 @@
 /** Desktop-owned settings copy. */
 
 export const zh = {
+  beta: 'Beta',
   nav: '桌面设置',
   title: 'DSH Desktop 设置',
   intro: '管理当前 Profile、插件市场和桌面功能。',
@@ -84,7 +85,7 @@ export const zh = {
   browserUrls: '浏览器访问 URL',
   lanUrlsAfterRestart: '重启后将在这里显示实际的局域网 URL。',
   lanWarningTitle: '确认向局域网开放？',
-  lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。此连接没有身份认证。',
+  lanWarningBody: '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启。此连接没有身份认证。由于浏览器安全限制，从局域网内使用 HTTP 访问时，部分安全模块可能不可用，可能导致 DSH Desktop 无法正常使用。',
   lanCancel: '取消',
   lanConfirm: '我已了解风险，仍然开启',
   notificationsTitle: '桌面通知',
@@ -99,6 +100,7 @@ export const zh = {
 export type DesktopSettingsLocaleKey = keyof typeof zh
 
 export const en: Record<DesktopSettingsLocaleKey, string> = {
+  beta: 'Beta',
   nav: 'Desktop settings',
   title: 'DSH Desktop settings',
   intro: 'Manage the current Profile, plugin market, and Desktop features.',
@@ -182,7 +184,7 @@ export const en: Record<DesktopSettingsLocaleKey, string> = {
   browserUrls: 'Browser URLs',
   lanUrlsAfterRestart: 'The actual local-network URLs will appear here after restart.',
   lanWarningTitle: 'Expose DSH Desktop to your local network?',
-  lanWarningBody: 'This is dangerous. Anyone on your local network can directly operate your computer. Enable it only with extreme care. This connection has no authentication.',
+  lanWarningBody: 'This is dangerous. Anyone on your local network can directly operate your computer. Enable it only with extreme care. This connection has no authentication. Browser security restrictions may prevent some security modules from working when DSH Desktop is accessed over HTTP from the local network, which may cause it not to work correctly.',
   lanCancel: 'Cancel',
   lanConfirm: 'I understand the risk — enable it',
   notificationsTitle: 'Desktop notifications',
