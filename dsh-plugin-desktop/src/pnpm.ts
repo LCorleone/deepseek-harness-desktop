@@ -15,6 +15,46 @@ import { assertDesktopProfileName } from './profile-manager.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
+
+/**
+ * Enterprise TLS variables forwarded to pnpm installs so corporate MITM
+ * proxies work without disabling verification: the CA bundle locations and
+ * proxy settings Node and npm both honor. `NODE_TLS_REJECT_UNAUTHORIZED` is
+ * deliberately NOT forwarded — installs must keep verifying certificates.
+ */
+const PNPM_TLS_ENVIRONMENT_KEYS = [
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'npm_config_cafile',
+  'npm_config_strict_ssl',
+] as const
+
+/** Collect the enterprise TLS/proxy variables present in one environment. */
+function pnpmTlsEnvironmentEntries(source: NodeJS.ProcessEnv): Record<string, string> {
+  const entries: Record<string, string> = {}
+  const seen = new Set<string>()
+  const add = (name: string): void => {
+    const upper = name.toUpperCase()
+    if (seen.has(upper)) return
+    for (const [key, value] of Object.entries(source)) {
+      if (key.toUpperCase() !== upper || value === undefined || value.length === 0) continue
+      entries[key] = value
+      seen.add(upper)
+      return
+    }
+  }
+  for (const name of PNPM_TLS_ENVIRONMENT_KEYS) add(name)
+  // npm/pnpm also honor the lowercase spellings of the proxy variables.
+  for (const name of ['http_proxy', 'https_proxy', 'no_proxy', 'all_proxy']) add(name)
+  return entries
+}
 const TERMINATION_GRACE_MS = 3_000
 const NPM_PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
 const NPM_EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u
@@ -487,6 +527,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
         npm_config_runtime: 'electron',
         npm_config_target: this.bootstrap.electronVersion,
         npm_config_disturl: ELECTRON_HEADERS_URL,
+        ...pnpmTlsEnvironmentEntries(process.env),
       },
     }
     const child = this.ctx.subprocess.spawn(spec)

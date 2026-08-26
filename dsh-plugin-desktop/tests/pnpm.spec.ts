@@ -564,3 +564,48 @@ describe('desktop pnpm Host service', () => {
     expect(() => harness.service.run(['list'])).toThrow('generation is closed')
   })
 })
+
+describe('pnpm enterprise TLS environment forwarding', () => {
+  it('forwards CA bundles and proxies but never TLS bypass variables', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tls-'))
+    const selectedBootstrap = bootstrap(root)
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      const previousEnv = { ...process.env }
+      Object.assign(process.env, {
+        NODE_EXTRA_CA_CERTS: 'C:/corp/ca.pem',
+        https_proxy: 'http://proxy.corp:8080',
+        NO_PROXY: 'localhost',
+        NODE_TLS_REJECT_UNAUTHORIZED: '0',
+        HTTP_PROXY: 'http://proxy.corp:8080',
+      })
+      finish(child)
+      let harness: PnpmHarness | undefined
+      try {
+        harness = await createHarness([child], selectedBootstrap)
+        const operation = await harness!.service.installPlugin({
+          pnpmOptions: ['--save-exact'],
+          invokingDir: selectedBootstrap.activeProfileDir,
+          recovery: { packageName: 'example-plugin', packageVersion: '1.0.0', receiptId: 'receipt:tls-env-0001' },
+        })
+        const spawnedEnv = harness!.spawn.mock.calls[0]?.[0].env as Record<string, string>
+        expect(spawnedEnv.NODE_EXTRA_CA_CERTS).toBe('C:/corp/ca.pem')
+        expect(spawnedEnv.HTTP_PROXY).toBe('http://proxy.corp:8080')
+        expect(spawnedEnv.https_proxy).toBe('http://proxy.corp:8080')
+        expect(spawnedEnv.NO_PROXY).toBe('localhost')
+        expect(spawnedEnv.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined()
+        await operation.done
+      } finally {
+        for (const key of Object.keys(process.env)) {
+          if (!(key in previousEnv)) delete process.env[key]
+        }
+        Object.assign(process.env, previousEnv)
+        await harness?.dispose()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

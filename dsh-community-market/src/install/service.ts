@@ -1336,8 +1336,22 @@ export class MarketInstallService {
           })
     }
     catch { throw new MarketInstallError('operation-failed', 'The desktop package manager could not start.') }
+    // Keep the tail of the package manager's stderr so failures carry the
+    // actual pnpm error (TLS, registry, peer conflicts) into the surfaced
+    // MarketInstallError instead of a generic "did not complete".
+    const stderrTail: string[] = []
+    handle.stderr.on('data', (chunk: Buffer) => {
+      stderrTail.push(chunk.toString('utf8'))
+      const overflow = stderrTail.join('').length - 8_000
+      if (overflow > 0) {
+        let remaining = overflow
+        while (remaining > 0 && stderrTail.length > 1) {
+          remaining -= stderrTail[0]!.length
+          stderrTail.shift()
+        }
+      }
+    })
     handle.stdout.resume()
-    handle.stderr.resume()
     const cancel = () => handle.cancel()
     combinedSignal.addEventListener('abort', cancel, { once: true })
     let outcome: MarketDesktopPnpmOutcome
@@ -1349,7 +1363,13 @@ export class MarketInstallService {
     finally { combinedSignal.removeEventListener('abort', cancel) }
     combinedSignal.throwIfAborted()
     if (outcome.exitCode !== 0 || outcome.signal !== null) {
-      throw new MarketInstallError('operation-failed', 'The desktop package manager did not complete successfully.')
+      const detail = stderrTail.join('').trim().split(/\r?\n/u).filter(line => line.length > 0).slice(-6).join(' | ')
+      throw new MarketInstallError(
+        'operation-failed',
+        detail.length === 0
+          ? 'The desktop package manager did not complete successfully.'
+          : `The desktop package manager did not complete successfully: ${detail}`,
+      )
     }
   }
 
