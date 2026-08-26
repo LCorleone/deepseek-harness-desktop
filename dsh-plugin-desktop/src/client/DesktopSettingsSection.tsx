@@ -11,8 +11,8 @@ import type {
 import type { DesktopSettingsLocaleKey } from './desktop-settings-locales.ts'
 import type { DesktopClientPlatform } from './environment.ts'
 import {
+  desktopBrowserAccessAvailable,
   desktopBrowserAccessEnabled,
-  desktopShellModeForBrowserAccess,
 } from '../desktop-network.ts'
 
 /** Browser view of the Host `dsh-desktop` settings namespace. */
@@ -176,8 +176,8 @@ function ToggleRow({
 }
 
 function profileState(profile: DesktopProfileView, t: Translate): string {
-  if (!profile.webCapable || !profile.selectable) return t('profileUnavailable')
-  return profile.exists ? t('profileReady') : t('profileMissing')
+  if (!profile.exists || !profile.webCapable || !profile.selectable) return t('profileUnavailable')
+  return t('profileReady')
 }
 
 const MARKET_OPTIONS: readonly {
@@ -274,10 +274,11 @@ export function DesktopSettingsSection({
   const storedMode = desktop.value?.mode ?? initialMode
   const configuredNetworkExposure = desktop.value?.networkExposure ?? 'loopback'
   const browserAccess = desktopBrowserAccessEnabled(
+    storedMode,
     desktop.value?.openBrowser ?? false,
     configuredNetworkExposure,
   )
-  const mode = desktopShellModeForBrowserAccess(storedMode, browserAccess)
+  const mode = storedMode
   const networkExposure = browserAccess ? configuredNetworkExposure : 'loopback'
   const notificationValue = notifications.value ?? {
     enabled: true,
@@ -353,6 +354,7 @@ export function DesktopSettingsSection({
   const setBrowserAccess = (checked: boolean): void => {
     void run('web', async () => {
       if (checked) {
+        if (!desktopBrowserAccessAvailable(mode)) return
         await desktopSettings.set('openBrowser', true)
         requestRestart()
         return
@@ -579,7 +581,7 @@ export function DesktopSettingsSection({
         <ToggleRow
           label={t('openBrowser')}
           checked={browserAccess}
-          disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
+          disabled={!desktopBrowserAccessAvailable(mode) || !settingsWritable || busy !== undefined || restart !== 'none'}
           onChange={setBrowserAccess}
         />
         <p className="dshDesktopSettingsNotice">{t('browserCompatibilityNotice')}</p>

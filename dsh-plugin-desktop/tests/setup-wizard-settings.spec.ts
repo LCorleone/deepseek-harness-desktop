@@ -222,6 +222,18 @@ describe('Desktop Setup Wizard settings document', () => {
       openBrowser: false,
       networkExposure: 'loopback',
     })
+
+    const incompatible = values({ mode: 'advanced', openBrowser: true, networkExposure: 'lan' })
+    await expect(updateDesktopSetupWizardSettings(path, incompatible)).resolves.toMatchObject({
+      mode: 'advanced',
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
+    expect(readDesktopSetupWizardSettings(path)).toMatchObject({
+      mode: 'advanced',
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
   })
 
   it('projects legacy LAN exposure as explicit compatibility browser access', () => {
@@ -240,7 +252,7 @@ describe('Desktop Setup Wizard settings document', () => {
     })
   })
 
-  it('atomically migrates legacy browser handoff and LAN combinations', async () => {
+  it('atomically withdraws legacy browser handoff and LAN from custom modes', async () => {
     const root = temporaryDirectory()
     const yamlPath = join(root, 'legacy.yaml')
     writeFileSync(yamlPath, [
@@ -259,9 +271,9 @@ describe('Desktop Setup Wizard settings document', () => {
     expect(migrated).toContain('# preserve browser migration comments')
     expect(parseDocument(migrated).toJS()).toMatchObject({
       'dsh-desktop': {
-        mode: 'compatibility',
-        openBrowser: true,
-        networkExposure: 'lan',
+        mode: 'advanced',
+        openBrowser: false,
+        networkExposure: 'loopback',
         future: 'keep',
       },
     })
@@ -278,11 +290,31 @@ describe('Desktop Setup Wizard settings document', () => {
     await expect(migrateDesktopBrowserAccessSettings(jsonPath)).resolves.toBe(true)
     expect(JSON.parse(readFileSync(jsonPath, 'utf8'))).toMatchObject({
       'dsh-desktop': {
-        mode: 'compatibility',
-        openBrowser: true,
+        mode: 'extended',
+        openBrowser: false,
         networkExposure: 'loopback',
       },
       untouched: { value: 1 },
+    })
+  })
+
+  it('migrates legacy LAN to explicit browser access only in compatibility mode', async () => {
+    const path = join(temporaryDirectory(), 'legacy.yaml')
+    writeFileSync(path, [
+      'dsh-desktop:',
+      '  mode: compatibility',
+      '  openBrowser: false',
+      '  networkExposure: lan',
+      '',
+    ].join('\n'))
+
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(true)
+    expect(parseDocument(readFileSync(path, 'utf8')).toJS()).toMatchObject({
+      'dsh-desktop': {
+        mode: 'compatibility',
+        openBrowser: true,
+        networkExposure: 'lan',
+      },
     })
   })
 
@@ -342,8 +374,8 @@ describe('Desktop Setup Wizard settings document', () => {
     expect(readFileSync(path, 'utf8')).not.toBe(contents)
     expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
     expect(readDesktopSetupWizardSettings(path)).toMatchObject({
-      mode: 'compatibility',
-      openBrowser: true,
+      mode: 'advanced',
+      openBrowser: false,
       networkExposure: 'loopback',
     })
   })

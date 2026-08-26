@@ -118,9 +118,10 @@ export function decodeDesktopSetupWizardInput(search: string): DesktopSetupWizar
 }
 
 function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizardSelection {
-  const browserAccess = input.openBrowser || input.networkExposure === 'lan'
+  const mode = input.platform === 'linux' ? 'compatibility' : input.mode
+  const browserAccess = mode === 'compatibility' && (input.openBrowser || input.networkExposure === 'lan')
   return {
-    mode: input.platform === 'linux' || browserAccess ? 'compatibility' : input.mode,
+    mode,
     macosMaterial: input.macosMaterial,
     windowsMaterial: input.platform === 'win32' && input.windowsMaterial === 'mica' && !input.micaSupported
       ? 'acrylic'
@@ -133,12 +134,13 @@ function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizard
 }
 
 function finish(selection: DesktopSetupWizardSelection): void {
+  const browserAccess = selection.mode === 'compatibility' && selection.openBrowser
   const url = new URL(`${SCHEME}//complete`)
-  url.searchParams.set('mode', selection.openBrowser ? 'compatibility' : selection.mode)
+  url.searchParams.set('mode', selection.mode)
   url.searchParams.set('macosMaterial', selection.macosMaterial)
   url.searchParams.set('windowsMaterial', selection.windowsMaterial)
-  url.searchParams.set('openBrowser', String(selection.openBrowser))
-  url.searchParams.set('networkExposure', selection.openBrowser ? selection.networkExposure : 'loopback')
+  url.searchParams.set('openBrowser', String(browserAccess))
+  url.searchParams.set('networkExposure', browserAccess ? selection.networkExposure : 'loopback')
   url.searchParams.set('market', selection.market)
   url.searchParams.set('notificationsEnabled', String(selection.notifications.enabled))
   url.searchParams.set('notifyOnTurnCompletion', String(selection.notifications.notifyOnTurnCompletion))
@@ -379,28 +381,21 @@ function NotificationOptions({
 function BrowserOptions({
   copy,
   selection,
-  update,
+  requestBrowserAccess,
   requestExposure,
 }: {
   readonly copy: DesktopSetupWizardCopy
   readonly selection: DesktopSetupWizardSelection
-  readonly update: (selection: DesktopSetupWizardSelection) => void
+  readonly requestBrowserAccess: (enabled: boolean) => void
   readonly requestExposure: (exposure: DesktopSetupWizardNetworkExposure) => void
 }): JSX.Element {
   return <div className="space-y-5">
     <ToggleRow
-      checked={selection.openBrowser}
+      checked={selection.mode === 'compatibility' && selection.openBrowser}
       description={copy.browserCompatibilityNotice}
       id="setup-open-browser"
       label={copy.openBrowser}
-      onChange={openBrowser => {
-        update({
-          ...selection,
-          mode: openBrowser ? 'compatibility' : selection.mode,
-          openBrowser,
-          networkExposure: openBrowser ? selection.networkExposure : 'loopback',
-        })
-      }}
+      onChange={requestBrowserAccess}
     />
     <section>
       <h2 className="text-sm font-semibold">{copy.networkExposure}</h2>
@@ -411,12 +406,13 @@ function BrowserOptions({
         className="mt-3"
         name="setup-network-exposure"
         onValueChange={value => {
-          if (value === 'loopback' || (value === 'lan' && selection.openBrowser)) requestExposure(value)
+          if (value === 'loopback'
+            || (value === 'lan' && selection.mode === 'compatibility' && selection.openBrowser)) requestExposure(value)
         }}
         value={selection.networkExposure}
       >
         <Choice body={copy.loopbackBody} id="setup-network-exposure-loopback" selected={selection.networkExposure === 'loopback'} title={copy.loopback} value="loopback" />
-        <Choice body={copy.lanBody} disabled={!selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
+        <Choice body={copy.lanBody} disabled={selection.mode !== 'compatibility' || !selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
       </RadioGroup>
     </section>
   </div>
@@ -428,6 +424,7 @@ export function SetupWizardStepPage({
   input,
   selection,
   update,
+  requestBrowserAccess,
   requestExposure,
 }: {
   readonly step: DesktopSetupWizardStep
@@ -435,13 +432,14 @@ export function SetupWizardStepPage({
   readonly input: DesktopSetupWizardInput
   readonly selection: DesktopSetupWizardSelection
   readonly update: (selection: DesktopSetupWizardSelection) => void
+  readonly requestBrowserAccess: (enabled: boolean) => void
   readonly requestExposure: (exposure: DesktopSetupWizardNetworkExposure) => void
 }): JSX.Element {
   if (step === 'mode') return <Page step={step} subtitle={copy.presentationBody} title={copy.presentationTitle}><ModeOptions copy={copy} input={input} selection={selection} update={update} /></Page>
   if (step === 'material') return <Page step={step} subtitle={copy.windowMaterialBody} title={copy.windowMaterial}><MaterialOptions copy={copy} input={input} selection={selection} update={update} /></Page>
   if (step === 'market') return <Page step={step} subtitle={copy.marketBody} title={copy.marketTitle}><MarketOptions copy={copy} selection={selection} update={update} /></Page>
   if (step === 'notifications') return <Page step={step} subtitle={copy.notificationsBody} title={copy.notificationsTitle}><NotificationOptions copy={copy} notifications={selection.notifications} update={notifications => { update({ ...selection, notifications }) }} /></Page>
-  if (step === 'browser') return <Page step={step} subtitle={copy.browserBody} title={copy.browserTitle}><BrowserOptions copy={copy} requestExposure={requestExposure} selection={selection} update={update} /></Page>
+  if (step === 'browser') return <Page step={step} subtitle={copy.browserBody} title={copy.browserTitle}><BrowserOptions copy={copy} requestBrowserAccess={requestBrowserAccess} requestExposure={requestExposure} selection={selection} /></Page>
   return <div data-setup-step={step} />
 }
 
@@ -565,6 +563,56 @@ export function SetupWizardLanConfirmation({ copy, confirm, cancel }: {
   </Dialog>
 }
 
+export function SetupWizardBrowserCompatibilityConfirmation({ copy, confirm, cancel }: {
+  readonly copy: DesktopSetupWizardCopy
+  readonly confirm: () => void
+  readonly cancel: () => void
+}): JSX.Element {
+  return <Dialog onOpenChange={open => { if (!open) cancel() }} open>
+    <DialogContent aria-describedby="browser-compatibility-body" aria-labelledby="browser-compatibility-title" aria-modal="true" role="alertdialog" showCloseButton={false}>
+      <DialogHeader>
+        <DialogTitle id="browser-compatibility-title">{copy.browserCompatibilityDialogTitle}</DialogTitle>
+        <DialogDescription className="mt-2 text-foreground" id="browser-compatibility-body">{copy.browserCompatibilityDialogBody}</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <DialogClose render={<Button autoFocus type="button" variant="outline" />}>{copy.cancelBrowserCompatibility}</DialogClose>
+        <Button onClick={confirm} type="button">{copy.confirmBrowserCompatibility}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
+export function resolveDesktopSetupWizardBrowserAccessRequest(
+  selection: DesktopSetupWizardSelection,
+  enabled: boolean,
+): { readonly action: 'confirm-compatibility' } | {
+  readonly action: 'update'
+  readonly selection: DesktopSetupWizardSelection
+} {
+  if (enabled && selection.mode !== 'compatibility') {
+    return Object.freeze({ action: 'confirm-compatibility' as const })
+  }
+  return Object.freeze({
+    action: 'update' as const,
+    selection: {
+      ...selection,
+      openBrowser: enabled,
+      networkExposure: enabled ? selection.networkExposure : 'loopback',
+    },
+  })
+}
+
+export function confirmDesktopSetupWizardBrowserCompatibility(
+  selection: DesktopSetupWizardSelection,
+): DesktopSetupWizardSelection {
+  return {
+    ...selection,
+    mode: 'compatibility',
+    openBrowser: true,
+    networkExposure: 'loopback',
+  }
+}
+
 type LanConfirmationReason = 'select' | 'advance' | 'start'
 
 export function SetupWizardApp(): JSX.Element {
@@ -575,12 +623,13 @@ export function SetupWizardApp(): JSX.Element {
   const [step, setStep] = useState<DesktopSetupWizardStep>('welcome')
   const [lanAcknowledged, setLanAcknowledged] = useState(false)
   const [confirmLan, setConfirmLan] = useState<LanConfirmationReason>()
+  const [confirmBrowserCompatibility, setConfirmBrowserCompatibility] = useState(false)
   if (input === undefined || selection === undefined) {
     return <><DesktopFrame /><main className="dshNativeContent flex h-screen items-center justify-center p-6"><div className="w-full max-w-lg space-y-4"><Alert variant="destructive"><AlertTriangle /><AlertTitle>{copy.title}</AlertTitle><AlertDescription>{copy.invalidState}</AlertDescription></Alert><div className="flex justify-end"><SetupWizardSkipDialog copy={copy} onSkip={() => { window.location.assign(`${SCHEME}//skip`) }} outlined /></div></div></main></>
   }
 
   const requestExposure = (requested: DesktopSetupWizardNetworkExposure): void => {
-    if (requested === 'lan' && !selection.openBrowser) return
+    if (requested === 'lan' && (selection.mode !== 'compatibility' || !selection.openBrowser)) return
     if (desktopSetupWizardRequiresLanAcknowledgement(
       selection.networkExposure,
       requested,
@@ -591,6 +640,16 @@ export function SetupWizardApp(): JSX.Element {
     }
     if (requested === 'loopback') setLanAcknowledged(false)
     setSelection({ ...selection, networkExposure: requested })
+  }
+
+  const requestBrowserAccess = (enabled: boolean): void => {
+    const result = resolveDesktopSetupWizardBrowserAccessRequest(selection, enabled)
+    if (result.action === 'confirm-compatibility') {
+      setConfirmBrowserCompatibility(true)
+      return
+    }
+    if (!enabled) setLanAcknowledged(false)
+    setSelection(result.selection)
   }
 
   const advance = (): void => {
@@ -630,7 +689,7 @@ export function SetupWizardApp(): JSX.Element {
         />
         : step === 'success'
           ? <SetupWizardSuccess copy={copy} onStart={startUsing} />
-          : <SetupWizardStepPage copy={copy} input={input} requestExposure={requestExposure} selection={selection} step={step} update={setSelection} />}
+          : <SetupWizardStepPage copy={copy} input={input} requestBrowserAccess={requestBrowserAccess} requestExposure={requestExposure} selection={selection} step={step} update={setSelection} />}
     </div>
     <SetupWizardNavigation
       copy={copy}
@@ -655,5 +714,14 @@ export function SetupWizardApp(): JSX.Element {
       if (reason === 'start') finish(next)
     }}
     copy={copy}
-  />}</>
+  />}
+  {confirmBrowserCompatibility ? <SetupWizardBrowserCompatibilityConfirmation
+    cancel={() => { setConfirmBrowserCompatibility(false) }}
+    confirm={() => {
+      setSelection(confirmDesktopSetupWizardBrowserCompatibility(selection))
+      setLanAcknowledged(false)
+      setConfirmBrowserCompatibility(false)
+    }}
+    copy={copy}
+  /> : null}</>
 }

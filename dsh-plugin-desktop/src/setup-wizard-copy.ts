@@ -32,6 +32,10 @@ export interface DesktopSetupWizardCopy {
   readonly browserBody: string
   readonly openBrowser: string
   readonly browserCompatibilityNotice: string
+  readonly browserCompatibilityDialogTitle: string
+  readonly browserCompatibilityDialogBody: string
+  readonly confirmBrowserCompatibility: string
+  readonly cancelBrowserCompatibility: string
   readonly networkExposure: string
   readonly networkExposureBody: string
   readonly loopback: string
@@ -100,7 +104,11 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     browserTitle: 'Set up browser access',
     browserBody: 'Choose whether this Profile may be opened in a browser and who may reach it.',
     openBrowser: 'Allow opening this Profile in a browser',
-    browserCompatibilityNotice: 'Browser access is only available in compatibility mode. Enabling it switches this Profile to compatibility mode.',
+    browserCompatibilityNotice: 'Browser access is only available in compatibility mode.',
+    browserCompatibilityDialogTitle: 'Switch to compatibility mode?',
+    browserCompatibilityDialogBody: 'Opening this Profile in a browser requires compatibility mode. Continue to switch the window mode and enable browser access.',
+    confirmBrowserCompatibility: 'Switch and enable',
+    cancelBrowserCompatibility: 'Cancel',
     networkExposure: 'Network access',
     networkExposureBody: 'Loopback keeps access on this computer. LAN makes the client reachable from your local network.',
     loopback: 'This computer only',
@@ -167,7 +175,11 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     browserTitle: '设置浏览器访问',
     browserBody: '选择是否允许在浏览器中打开这个 Profile，以及谁可以访问。',
     openBrowser: '允许在浏览器中打开',
-    browserCompatibilityNotice: '浏览器访问只能使用兼容模式；开启后，这个 Profile 将切换到兼容模式。',
+    browserCompatibilityNotice: '浏览器访问仅在兼容模式下可用。',
+    browserCompatibilityDialogTitle: '切换到兼容模式？',
+    browserCompatibilityDialogBody: '在浏览器中打开只能使用兼容模式。继续将把这个 Profile 的窗口模式切换为兼容模式，并开启浏览器访问。',
+    confirmBrowserCompatibility: '切换并开启',
+    cancelBrowserCompatibility: '取消',
     networkExposure: '网络访问范围',
     networkExposureBody: '仅本机访问只监听回环地址；局域网访问会让同一网络中的设备能够打开客户端。',
     loopback: '仅这台电脑',

@@ -61,8 +61,8 @@ import type {} from './runtime.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 import {
   desktopBrowserAccessEnabled,
+  desktopBrowserAccessAvailable,
   desktopNetworkExposureForBrowserAccess,
-  desktopShellModeForBrowserAccess,
   desktopWebServerHost,
   type DesktopNetworkExposure,
 } from './desktop-network.ts'
@@ -225,12 +225,11 @@ export function apply(ctx: Context, config: Config): void {
     {
       applies: 'restart',
       validate: (value) => {
-        const effectiveBrowserAccess = desktopBrowserAccessEnabled(
-          value.openBrowser,
-          value.networkExposure,
-        )
-        const mode = desktopShellModeForBrowserAccess(value.mode, effectiveBrowserAccess)
-        if (mode !== 'compatibility' && runtime.platform === 'linux') {
+        if (!desktopBrowserAccessAvailable(value.mode)
+          && (value.openBrowser || value.networkExposure === 'lan')) {
+          throw new Error('dsh-plugin-desktop: browser and LAN access require compatibility mode')
+        }
+        if (value.mode !== 'compatibility' && runtime.platform === 'linux') {
           throw new Error('dsh-plugin-desktop: custom desktop shell modes are supported on macOS and Windows')
         }
       },
@@ -329,15 +328,15 @@ export function apply(ctx: Context, config: Config): void {
     let pending: ReturnType<typeof setImmediate> | undefined
     const stopWatching = settings.watch((next) => {
       const nextBrowserAccess = desktopBrowserAccessEnabled(
+        next.mode,
         next.openBrowser,
         next.networkExposure,
       )
-      const nextMode = desktopShellModeForBrowserAccess(next.mode, nextBrowserAccess)
       const nextNetworkExposure = desktopNetworkExposureForBrowserAccess(
         nextBrowserAccess,
         next.networkExposure,
       )
-      if (nextMode === config.mode
+      if (next.mode === config.mode
         && next.port === config.port
         && nextNetworkExposure === config.networkExposure
         && nextBrowserAccess === browserAccess.ordinaryBrowserEnabled
@@ -409,11 +408,8 @@ export function apply(ctx: Context, config: Config): void {
         requestQuit: appExit,
         requestModeChange: async mode => {
           const current = settings.get()
-          const currentBrowserAccess = desktopBrowserAccessEnabled(
-            current.openBrowser,
-            current.networkExposure,
-          )
-          await settings.update(mode !== 'compatibility' && currentBrowserAccess
+          const storedBrowserCapability = current.openBrowser || current.networkExposure === 'lan'
+          await settings.update(mode !== 'compatibility' && storedBrowserCapability
             ? { mode, openBrowser: false, networkExposure: 'loopback' }
             : { mode })
         },

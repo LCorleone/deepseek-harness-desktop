@@ -68,7 +68,7 @@ export function projectDesktopSettingsProfile(
     name: profile.name,
     exists: profile.exists,
     webCapable: profile.webCapable,
-    selectable: profile.webCapable && profile.problem === undefined,
+    selectable: profile.exists && profile.webCapable && profile.problem === undefined,
     deletable,
   })
 }

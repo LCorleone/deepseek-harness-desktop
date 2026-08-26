@@ -27,7 +27,6 @@ import {
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const DEFAULT_PROFILE_NAME = 'desktop'
-const WEB_PROFILE_NAME = 'web'
 const BASE_BUNDLE_NAME = '@deepseek-ai/dsh-base'
 const WEB_BUNDLE_NAME = '@deepseek-ai/dsh-web-app'
 const DESKTOP_BUNDLE_NAME = 'dsh-plugin-desktop'
@@ -152,21 +151,6 @@ function existingProfile(name: string, home: string): DesktopProfileSummary {
   }
 }
 
-/** Describe one profile that upstream app-boot will lazily initialize. */
-function virtualProfile(name: typeof DEFAULT_PROFILE_NAME | typeof WEB_PROFILE_NAME, home: string): DesktopProfileSummary {
-  const bundles = PROFILE_TEMPLATES.web
-  if (bundles === undefined) {
-    throw new Error(`${BIN_NAME}: installed dsh-app-boot has no web profile template`)
-  }
-  return {
-    name,
-    dir: resolveProfileDir(name, home),
-    exists: false,
-    bundles: [...bundles],
-    webCapable: true,
-  }
-}
-
 /**
  * Create a safe Web profile using only the shipped template.
  *
@@ -211,9 +195,9 @@ export function createDesktopWebProfile(home: string, name: string): DesktopProf
   return existingProfile(name, home)
 }
 
-/** Deterministic profile order with the product defaults first. */
+/** Deterministic profile order with the actual Desktop profile first. */
 function compareProfiles(left: DesktopProfileSummary, right: DesktopProfileSummary): number {
-  const priority = (name: string): number => name === DEFAULT_PROFILE_NAME ? 0 : name === WEB_PROFILE_NAME ? 1 : 2
+  const priority = (name: string): number => name === DEFAULT_PROFILE_NAME ? 0 : 1
   const difference = priority(left.name) - priority(right.name)
   if (difference !== 0) return difference
   return left.name < right.name ? -1 : left.name > right.name ? 1 : 0
@@ -222,7 +206,7 @@ function compareProfiles(left: DesktopProfileSummary, right: DesktopProfileSumma
 /**
  * List profile manifests without initializing or modifying any profile.
  * @param home - Harness home containing the shared profile directory.
- * @returns existing profiles plus lazy desktop and Web defaults.
+ * @returns only profiles whose manifests currently exist on disk.
  */
 export function listDesktopProfiles(home: string): DesktopProfileSummary[] {
   const profilesDir = join(home, 'profiles')
@@ -241,9 +225,6 @@ export function listDesktopProfiles(home: string): DesktopProfileSummary[] {
     }
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause
-  }
-  for (const name of [DEFAULT_PROFILE_NAME, WEB_PROFILE_NAME] as const) {
-    if (!summaries.has(name)) summaries.set(name, virtualProfile(name, home))
   }
   return [...summaries.values()].sort(compareProfiles)
 }
@@ -451,21 +432,34 @@ export function selectDesktopProfile(statePath: string, home: string, name: stri
 }
 
 /**
- * Resolve the exact selected Profile. Startup failures are handled only by
- * the Recovery window; this boundary never substitutes another Profile.
+ * Resolve the exact selected Profile. When no Profile manifests exist, create
+ * one real default Desktop Profile and recover selection to it. A missing
+ * selection is otherwise left for the Recovery window instead of being
+ * silently replaced while another Profile remains available.
  * @param statePath - desktop-owned state file outside the Harness profile tree.
  * @param home - Harness home used only for read-only profile discovery.
  * @returns profile decision persisted before profile preparation starts.
  */
 export function beginDesktopProfileStartup(statePath: string, home: string): DesktopProfileStartup {
   const loaded = loadState(statePath)
-  const current = loaded.state
+  const discovered = listDesktopProfiles(home)
+  const noProfilesExist = discovered.length === 0
+  let current = loaded.state
+  let recoveredState = loaded.recovered
+  if ((current.active === DEFAULT_PROFILE_NAME || noProfilesExist)
+    && !discovered.some(profile => profile.name === DEFAULT_PROFILE_NAME)) {
+    createDesktopWebProfile(home, DEFAULT_PROFILE_NAME)
+  }
+  if (noProfilesExist && current.active !== DEFAULT_PROFILE_NAME) {
+    current = defaultState()
+    recoveredState = true
+  }
   selectableProfile(home, current.active)
   const next: DesktopProfileStateV2 = { version: STATE_VERSION, active: current.active }
   writeState(statePath, next)
   return {
     profileName: current.active,
     state: next,
-    recoveredState: loaded.recovered,
+    recoveredState,
   }
 }
