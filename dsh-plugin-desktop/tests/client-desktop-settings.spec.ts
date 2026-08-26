@@ -72,17 +72,27 @@ describe('Desktop settings API', () => {
       .toThrow('invalid Desktop action response')
   })
 
-  it('names the section Desktop settings and carries the explicit LAN danger warning', () => {
+  it('names the section Desktop settings and describes browser opening as permission', () => {
     expect(zh.nav).toBe('桌面设置')
     expect(en.nav).toBe('Desktop settings')
+    expect(zh.openBrowser).toBe('允许在浏览器中打开')
+    expect(zh.openBrowser).not.toMatch(/启动后|自动/u)
+    expect(zh.webIntro).not.toMatch(/启动后|自动/u)
+    expect(zh.browserCompatibilityNotice).toContain('兼容模式')
+    expect(zh.browserCompatibilityNotice).toMatch(/只(?:能|支持|可)/u)
+    expect(en.openBrowser).toMatch(/allow.+(?:open|opening).+browser/iu)
+    expect(en.openBrowser).not.toMatch(/after startup|automatically/iu)
+    expect(en.webIntro).not.toMatch(/after startup|automatically/iu)
+    expect(en.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
     expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
   })
 
-  it('shows actual URLs only for browser handoff or LAN and requires explicit LAN confirmation', () => {
+  it('shows actual URLs only when browser access is permitted and requires explicit LAN confirmation', () => {
     expect(desktopBrowserUrlsShouldRender(false, 'loopback')).toBe(false)
     expect(desktopBrowserUrlsShouldRender(true, 'loopback')).toBe(true)
-    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(true, 'lan')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(false)
 
     const dismiss = vi.fn()
     const enableLan = vi.fn()

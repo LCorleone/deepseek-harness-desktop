@@ -604,7 +604,7 @@ virtualStoreDirMaxLength: 60
     }))
   })
 
-  it('projects YAML startup settings into the Host, Web server, and client Loader rows', () => {
+  it('keeps browser permission orthogonal to the native mode and disables upstream browser handoff', () => {
     const home = temporaryHome()
     writeFileSync(join(home, 'settings.yaml'), [
       'dsh-desktop:',
@@ -635,7 +635,7 @@ virtualStoreDirMaxLength: 60
       config: { host: '0.0.0.0', port: 43_189 },
     }))
     expect(rows.find(row => row.id === 'web-runtime')).toEqual(expect.objectContaining({
-      config: expect.objectContaining({ openBrowser: true }),
+      config: expect.objectContaining({ openBrowser: false }),
     }))
     expect(rows.find(row => row.id === 'settings')).toEqual(expect.objectContaining({
       config: expect.objectContaining({ dshHome: home }),
