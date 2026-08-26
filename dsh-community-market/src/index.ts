@@ -8,7 +8,7 @@ import {
 } from './host/routes.js'
 import { createRestrictedHttpClient } from './network/restricted-http.js'
 import {
-  createNpmRegistryVerifier,
+  createMarketPackageVerifier,
   MarketInstallService,
   type MarketDesktopPnpm,
   type MarketDesktopProfile,
@@ -70,7 +70,7 @@ export function apply(ctx: Context): void {
       const service = new MarketInstallService(
         () => profiles.current,
         pnpm,
-        createNpmRegistryVerifier(npmRegistryHttp),
+        createMarketPackageVerifier(npmRegistryHttp),
       )
       installService = service
       return () => {
