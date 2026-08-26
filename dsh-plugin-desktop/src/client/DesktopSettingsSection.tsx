@@ -89,6 +89,7 @@ function Choice({
   disabled,
   action,
   status,
+  badge,
 }: {
   title: ReactNode
   body: ReactNode
@@ -98,6 +99,7 @@ function Choice({
   disabled?: boolean
   action: () => void
   status?: ReactNode
+  badge?: ReactNode
 }) {
   const actionable = disabled !== true && (!selected || reselectable === true)
   const choose = (): void => {
@@ -122,6 +124,7 @@ function Choice({
       <span className="dshDesktopSettingsChoiceCopy">
         <span className="dshDesktopSettingsChoiceTitle">
           {title}
+          {badge !== undefined && <span className="dshDesktopSettingsBadge">{badge}</span>}
           {status !== undefined && <span className="dshDesktopSettingsBadge">{status}</span>}
         </span>
         <span className="dshDesktopSettingsChoiceBody">{body}</span>
@@ -147,11 +150,13 @@ function RepositoryLink({ href, children }: { href: string; children: ReactNode 
 
 function ToggleRow({
   label,
+  badge,
   checked,
   disabled,
   onChange,
 }: {
   label: ReactNode
+  badge?: ReactNode
   checked: boolean
   disabled: boolean
   onChange: (checked: boolean) => void
@@ -159,7 +164,10 @@ function ToggleRow({
   const labelId = useId()
   return (
     <div className="dshDesktopSettingsToggleRow">
-      <span id={labelId}>{label}</span>
+      <span className="dshDesktopSettingsToggleLabel" id={labelId}>
+        {label}
+        {badge !== undefined && <span className="dshDesktopSettingsBadge">{badge}</span>}
+      </span>
       <button
         type="button"
         role="switch"
@@ -497,6 +505,7 @@ export function DesktopSettingsSection({
               <Choice
                 key={option.id}
                 title={marketTitle(option, t)}
+                badge={option.id === 'community-market' ? t('beta') : undefined}
                 body={marketBody(option, t)}
                 selected={view.market.requested === option.id}
                 reselectable={view.market.requested === option.id && view.market.requested !== view.market.effective}
@@ -587,6 +596,7 @@ export function DesktopSettingsSection({
         <p className="dshDesktopSettingsNotice">{t('browserCompatibilityNotice')}</p>
         <ToggleRow
           label={t('lanAccess')}
+          badge={t('beta')}
           checked={networkExposure === 'lan'}
           disabled={!browserAccess || !settingsWritable || busy !== undefined || restart !== 'none'}
           onChange={(checked) => {

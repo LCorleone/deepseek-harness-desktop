@@ -20,6 +20,7 @@ import {
 } from '../../setup-wizard-contract.ts'
 import { desktopSetupWizardCopy, type DesktopSetupWizardCopy } from '../../setup-wizard-copy.ts'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
+import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card, CardContent } from '../components/ui/card.tsx'
 import {
@@ -157,6 +158,7 @@ function Choice({
   body,
   selected,
   disabled = false,
+  badge,
 }: {
   readonly id: string
   readonly value: string
@@ -164,13 +166,20 @@ function Choice({
   readonly body: string
   readonly selected: boolean
   readonly disabled?: boolean
+  readonly badge?: string
 }): JSX.Element {
   return <Label
     className={`flex w-full items-start gap-3 rounded-xl border p-4 text-left leading-normal outline-none transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${selected ? 'border-primary bg-muted/70' : 'hover:bg-muted/40'}`}
     htmlFor={id}
   >
     <RadioGroupItem className="mt-0.5" disabled={disabled} id={id} value={value} />
-    <span className="min-w-0"><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{body}</span></span>
+    <span className="min-w-0">
+      <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+        <span>{title}</span>
+        {badge === undefined ? null : <Badge variant="secondary">{badge}</Badge>}
+      </span>
+      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{body}</span>
+    </span>
   </Label>
 }
 
@@ -346,6 +355,7 @@ function MarketOptions({
     }}
     value={selection.market}
   >{markets.map(option => <Choice
+    {...(option.value === 'community-market' ? { badge: copy.beta } : {})}
     body={option.body}
     id={`setup-plugin-market-${option.value}`}
     key={option.value}
@@ -412,7 +422,7 @@ function BrowserOptions({
         value={selection.networkExposure}
       >
         <Choice body={copy.loopbackBody} id="setup-network-exposure-loopback" selected={selection.networkExposure === 'loopback'} title={copy.loopback} value="loopback" />
-        <Choice body={copy.lanBody} disabled={selection.mode !== 'compatibility' || !selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
+        <Choice badge={copy.beta} body={copy.lanBody} disabled={selection.mode !== 'compatibility' || !selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
       </RadioGroup>
     </section>
   </div>
