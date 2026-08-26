@@ -844,7 +844,7 @@ describe('published package surface', () => {
     expect(manifest.dependencies).not.toHaveProperty('electron')
     expect(manifest.peerDependencies?.electron).toBe('43.4.0')
     expect(manifest.devDependencies?.electron).toBe('43.4.0')
-    expect(manifest.dependencies?.pnpm).toBe('11.7.0')
+    expect(manifest.dependencies?.pnpm).toBe('11.8.0')
   })
 
   it('packages the native-compiled Koffi Windows runtime', () => {
