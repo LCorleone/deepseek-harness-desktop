@@ -14,6 +14,7 @@ Ordinary users can start with the [user guide](user-guide.en.md) and never need 
 | --- | --- |
 | [User guide](user-guide.en.md) | Installation, profiles, modes, terminal, plugins, and updates |
 | [FAQ](faq.en.md) | Direct answers about platforms, bundled runtime, project status, data, plugins, and updates |
+| [Privacy Policy](../PRIVACY.md) | Official updates, downloads, local data, third-party services, and user choices |
 | [Why Desktop](why-desktop.en.md) | The boundary with upstream Harness and the case for plugins |
 
 ### Developer and maintainer documentation
