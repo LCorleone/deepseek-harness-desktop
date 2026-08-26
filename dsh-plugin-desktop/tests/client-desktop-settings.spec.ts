@@ -138,6 +138,30 @@ describe('Desktop settings API', () => {
     ])
   })
 
+  it('withdraws browser and LAN access while the settings mirror is still loading', async () => {
+    const set = vi.fn(async () => {})
+    const scope = {
+      getSnapshot: () => ({
+        status: 'loading' as const,
+        value: undefined,
+        base: undefined,
+        user: undefined,
+        revision: undefined,
+        writable: false,
+        mode: 'host' as const,
+      }),
+      set,
+    }
+
+    await persistDesktopModeSelection(scope, 'extended')
+
+    expect(set.mock.calls).toEqual([
+      ['mode', 'extended'],
+      ['openBrowser', false],
+      ['networkExposure', 'loopback'],
+    ])
+  })
+
   it('uses the strict same-origin routes and request bodies', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const path = String(input)

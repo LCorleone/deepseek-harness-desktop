@@ -579,7 +579,7 @@ export function DesktopSettingsSection({
         <ToggleRow
           label={t('openBrowser')}
           checked={browserAccess}
-          disabled={!settingsWritable || busy !== undefined}
+          disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
           onChange={setBrowserAccess}
         />
         <p className="dshDesktopSettingsNotice">{t('browserCompatibilityNotice')}</p>

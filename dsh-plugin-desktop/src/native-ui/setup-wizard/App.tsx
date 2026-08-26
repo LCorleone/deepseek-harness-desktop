@@ -481,7 +481,7 @@ export function SetupWizardWelcome({
   readonly onSkip: () => void
 }): JSX.Element {
   return <div className="flex flex-1 items-center justify-center py-5" data-align="center" data-setup-step="welcome">
-    <div className="flex w-full max-w-xl flex-col items-center text-center">
+    <div className="flex w-full max-w-xl flex-col items-stretch text-left">
       <h1 className="text-2xl font-semibold tracking-tight">{copy.welcomeTitle}</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{copy.welcomeBody}</p>
       <Card className="mt-7 w-full text-left">
@@ -493,7 +493,7 @@ export function SetupWizardWelcome({
           <p className="text-sm leading-relaxed text-muted-foreground">{copy.firstProfileSetup}</p>
         </CardContent>
       </Card>
-      <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+      <div className="mt-8 flex flex-wrap items-center justify-end gap-3">
         <SetupWizardSkipDialog copy={copy} onSkip={onSkip} outlined />
         <Button onClick={onStart} size="lg" type="button">{copy.startSetup}</Button>
       </div>
@@ -620,10 +620,6 @@ export function SetupWizardApp(): JSX.Element {
   }
 
   return <><DesktopFrame /><main className="dshNativeContent h-screen overflow-hidden p-5 sm:p-6"><section className="mx-auto flex h-full w-full max-w-3xl flex-col">
-    <header className="flex shrink-0 items-center justify-between gap-3 pb-2">
-      <span className="text-sm font-semibold">{copy.title}</span>
-      <span className="rounded-full bg-muted px-3 py-1.5 text-xs font-medium">{copy.profile}: {input.profileName}</span>
-    </header>
     <div className="flex min-h-0 flex-1 overflow-y-auto">
       {step === 'welcome'
         ? <SetupWizardWelcome

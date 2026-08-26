@@ -88,6 +88,26 @@ describe('Desktop Setup Wizard state', () => {
     }
   })
 
+  it('records Setup after an interrupted older run stranded lock and temp siblings', async () => {
+    const userData = temporaryDirectory('dsh-setup-state-user-')
+    const profile = temporaryDirectory('dsh-setup-state-profile-')
+    const statePath = desktopSetupWizardStatePath(userData, profile)
+    const directory = join(userData, 'profile-setup', desktopSetupWizardProfileHash(profile))
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    writeFileSync(`${statePath}.lock`, '12345\n', { mode: 0o600 })
+    writeFileSync(`${statePath}.interrupted.tmp`, '', { mode: 0o600 })
+
+    await expect(completeOrSkipDesktopSetupWizard(userData, profile, 'skipped')).resolves.toMatchObject({
+      outcome: 'skipped',
+    })
+    expect(readDesktopSetupWizardState(userData, profile)?.outcome).toBe('skipped')
+    expect(readdirSync(directory).sort()).toEqual([
+      'state.json',
+      'state.json.interrupted.tmp',
+      'state.json.lock',
+    ])
+  })
+
   it('rejects corrupted, oversized, and mismatched markers', async () => {
     const userData = temporaryDirectory('dsh-setup-state-user-')
     const profile = temporaryDirectory('dsh-setup-state-profile-')

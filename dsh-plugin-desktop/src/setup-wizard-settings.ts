@@ -253,6 +253,22 @@ function normalizedUpdate(
   })
 }
 
+function sameSettings(
+  current: DesktopSetupWizardSettings,
+  next: DesktopSetupWizardSettings,
+): boolean {
+  return current.mode === next.mode
+    && current.macosMaterial === next.macosMaterial
+    && current.windowsMaterial === next.windowsMaterial
+    && current.openBrowser === next.openBrowser
+    && current.networkExposure === next.networkExposure
+    && current.notifications.enabled === next.notifications.enabled
+    && current.notifications.notifyOnTurnCompletion === next.notifications.notifyOnTurnCompletion
+    && current.notifications.notifyOnTurnFailure === next.notifications.notifyOnTurnFailure
+    && current.notifications.notifyOnJobCompletion === next.notifications.notifyOnJobCompletion
+    && current.notifications.notifyOnJobFailure === next.notifications.notifyOnJobFailure
+}
+
 function applyYamlUpdate(
   document: NonNullable<LoadedSettingsDocument['yaml']>,
   next: DesktopSetupWizardSettings,
@@ -315,6 +331,10 @@ export async function updateDesktopSetupWizardSettings(
 ): Promise<DesktopSetupWizardSettings> {
   const path = settingsPath(documentPath)
   const next = normalizedUpdate(value)
+  // Explicit default leaves do not need to be materialized. Apart from making
+  // Setup idempotent, this lets an unchanged first-run choice proceed while an
+  // unrelated or orphaned settings writer lock exists.
+  if (sameSettings(projectSettings(loadSettingsDocument(path).root), next)) return next
   ensureDocumentDirectory(path)
   await withFileLock(path, async () => {
     const loaded = loadSettingsDocument(path)
@@ -342,10 +362,8 @@ export async function migrateDesktopBrowserAccessSettings(
   documentPath: string,
 ): Promise<boolean> {
   const path = settingsPath(documentPath)
-  ensureDocumentDirectory(path)
-  let changed = false
-  await withFileLock(path, async () => {
-    const loaded = loadSettingsDocument(path)
+
+  const migrationValues = (loaded: LoadedSettingsDocument) => {
     // Validate every known Wizard-owned value before migrating any leaf.
     projectSettings(loaded.root)
     const desktop = section(loaded.root, DESKTOP_NAMESPACE)
@@ -354,29 +372,57 @@ export async function migrateDesktopBrowserAccessSettings(
     const storedExposure = parseExposure(desktop.networkExposure)
     const browserAccess = desktopBrowserAccessEnabled(storedOpenBrowser, storedExposure)
     const mode = desktopShellModeForBrowserAccess(storedMode, browserAccess)
-    if (storedMode === mode && storedOpenBrowser === browserAccess) return
-
-    let output: string
-    if (loaded.format === 'yaml') {
-      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'mode'], mode)
-      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'openBrowser'], browserAccess)
-      loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'networkExposure'], storedExposure)
-      output = loaded.yaml!.toString()
-    } else {
-      const root = structuredClone(loaded.root)
-      const nextDesktop = { ...section(root, DESKTOP_NAMESPACE) }
-      nextDesktop.mode = mode
-      nextDesktop.openBrowser = browserAccess
-      nextDesktop.networkExposure = storedExposure
-      root[DESKTOP_NAMESPACE] = nextDesktop
-      output = `${JSON.stringify(root, undefined, 2)}\n`
+    return {
+      browserAccess,
+      mode,
+      needed: storedMode !== mode || storedOpenBrowser !== browserAccess,
+      storedExposure,
     }
-    await writeFileAtomic(path, output, {
-      mode: DOCUMENT_FILE_MODE,
-      dirMode: DOCUMENT_DIRECTORY_MODE,
+  }
+
+  // Most Profiles are already normalized. Keep their startup entirely
+  // read-only so an unrelated or orphaned settings writer lock cannot block
+  // Desktop from opening.
+  if (!migrationValues(loadSettingsDocument(path)).needed) return false
+
+  ensureDocumentDirectory(path)
+  let changed = false
+  try {
+    await withFileLock(path, async () => {
+      const loaded = loadSettingsDocument(path)
+      const migration = migrationValues(loaded)
+      if (!migration.needed) return
+
+      let output: string
+      if (loaded.format === 'yaml') {
+        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'mode'], migration.mode)
+        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'openBrowser'], migration.browserAccess)
+        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'networkExposure'], migration.storedExposure)
+        output = loaded.yaml!.toString()
+      } else {
+        const root = structuredClone(loaded.root)
+        const nextDesktop = { ...section(root, DESKTOP_NAMESPACE) }
+        nextDesktop.mode = migration.mode
+        nextDesktop.openBrowser = migration.browserAccess
+        nextDesktop.networkExposure = migration.storedExposure
+        root[DESKTOP_NAMESPACE] = nextDesktop
+        output = `${JSON.stringify(root, undefined, 2)}\n`
+      }
+      await writeFileAtomic(path, output, {
+        mode: DOCUMENT_FILE_MODE,
+        dirMode: DOCUMENT_DIRECTORY_MODE,
+      })
+      changed = true
+    }, {
+      // Migration is a compatibility cleanup, not a startup prerequisite. The
+      // effective settings projection is already safe, so retry next launch
+      // rather than waiting behind another writer.
+      waitMs: 0,
     })
-    changed = true
-  })
+  } catch (cause) {
+    const lockTimeout = `atomic-write: timed out waiting for the writer lock at ${path}.lock`
+    if (!(cause instanceof Error) || cause.message !== lockTimeout) throw cause
+  }
   return changed
 }
 

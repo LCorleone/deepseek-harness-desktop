@@ -4,6 +4,7 @@ import type { DesktopShellSpec } from '../src/runtime.ts'
 import {
   advancedWindowOptions,
   compatibilityWindowOptions,
+  DESKTOP_RENDERER_SESSION_PARTITION,
   desktopWindowOptions,
   extendedWindowOptions,
 } from '../src/window-options.ts'
@@ -24,6 +25,10 @@ const spec: DesktopShellSpec = {
   minWidth: 900,
   minHeight: 640,
   url: 'http://127.0.0.1:43120/',
+  rendererAccessHeader: {
+    name: 'x-dsh-desktop-renderer',
+    value: Buffer.alloc(32, 8).toString('base64url'),
+  },
   productName: 'DSH Desktop',
   windowTitle: 'DeepSeek Harness Desktop',
   iconPath: '/tmp/app-icon.png',
@@ -61,6 +66,7 @@ describe('compatibility BrowserWindow options', () => {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
+        partition: DESKTOP_RENDERER_SESSION_PARTITION,
       },
     }))
     expect(options).not.toHaveProperty('titleBarOverlay')

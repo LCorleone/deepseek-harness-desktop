@@ -60,6 +60,9 @@ import type { DesktopShellMode } from './runtime.ts'
 import type {} from './runtime.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 import {
+  desktopBrowserAccessEnabled,
+  desktopNetworkExposureForBrowserAccess,
+  desktopShellModeForBrowserAccess,
   desktopWebServerHost,
   type DesktopNetworkExposure,
 } from './desktop-network.ts'
@@ -97,7 +100,7 @@ export interface DesktopSettings {
   windowsMaterial: WindowsWindowMaterial
   /** Loopback Web port selected for the next application generation; zero requests a random port. */
   port: number
-  /** Whether a settled Desktop generation hands its marker-free URL to the default browser. */
+  /** Whether Desktop advertises its marker-free compatibility client for browser use. */
   openBrowser: boolean
   /** Whether the next generation listens only on loopback or on every LAN interface. */
   networkExposure: DesktopNetworkExposure
@@ -201,6 +204,10 @@ export function apply(ctx: Context, config: Config): void {
   if (appExit === undefined) {
     throw new Error('dsh-plugin-desktop: the launcher did not provide ctx.appExit')
   }
+  const browserAccess = ctx.get('desktopBrowserAccess')
+  if (browserAccess === undefined) {
+    throw new Error('dsh-plugin-desktop: the launcher did not provide ctx.desktopBrowserAccess')
+  }
   if (ctx.webServer.host !== desktopWebServerHost(config.networkExposure)) {
     throw new Error('dsh-plugin-desktop: desktop shell WebServer host does not match networkExposure')
   }
@@ -218,7 +225,12 @@ export function apply(ctx: Context, config: Config): void {
     {
       applies: 'restart',
       validate: (value) => {
-        if (value.mode !== 'compatibility' && runtime.platform === 'linux') {
+        const effectiveBrowserAccess = desktopBrowserAccessEnabled(
+          value.openBrowser,
+          value.networkExposure,
+        )
+        const mode = desktopShellModeForBrowserAccess(value.mode, effectiveBrowserAccess)
+        if (mode !== 'compatibility' && runtime.platform === 'linux') {
           throw new Error('dsh-plugin-desktop: custom desktop shell modes are supported on macOS and Windows')
         }
       },
@@ -316,9 +328,19 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => {
     let pending: ReturnType<typeof setImmediate> | undefined
     const stopWatching = settings.watch((next) => {
-      if (next.mode === config.mode
+      const nextBrowserAccess = desktopBrowserAccessEnabled(
+        next.openBrowser,
+        next.networkExposure,
+      )
+      const nextMode = desktopShellModeForBrowserAccess(next.mode, nextBrowserAccess)
+      const nextNetworkExposure = desktopNetworkExposureForBrowserAccess(
+        nextBrowserAccess,
+        next.networkExposure,
+      )
+      if (nextMode === config.mode
         && next.port === config.port
-        && next.networkExposure === config.networkExposure
+        && nextNetworkExposure === config.networkExposure
+        && nextBrowserAccess === browserAccess.ordinaryBrowserEnabled
         && next.macosMaterial === config.macosMaterial
         && next.windowsMaterial === config.windowsMaterial) {
         if (pending !== undefined) clearImmediate(pending)
@@ -369,6 +391,7 @@ export function apply(ctx: Context, config: Config): void {
           material,
           runtime.windowsBuild,
         ),
+        rendererAccessHeader: browserAccess.rendererHeader,
         productName: 'DSH Desktop',
         windowTitle: 'DeepSeek Harness Desktop',
         iconPath,
@@ -384,7 +407,16 @@ export function apply(ctx: Context, config: Config): void {
           return theme.preference
         },
         requestQuit: appExit,
-        requestModeChange: async mode => settings.update({ mode }),
+        requestModeChange: async mode => {
+          const current = settings.get()
+          const currentBrowserAccess = desktopBrowserAccessEnabled(
+            current.openBrowser,
+            current.networkExposure,
+          )
+          await settings.update(mode !== 'compatibility' && currentBrowserAccess
+            ? { mode, openBrowser: false, networkExposure: 'loopback' }
+            : { mode })
+        },
       })
     },
     'dsh-plugin-desktop: native shell generation',

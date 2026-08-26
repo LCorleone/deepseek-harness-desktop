@@ -17,6 +17,7 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import type {} from '@deepseek-ai/dsh-web-app'
 import { isDesktopInstallerQuitRequest } from './desktop-installer-quit.ts'
+import { createDesktopBrowserAccess } from './desktop-browser-access.ts'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
@@ -94,6 +95,7 @@ import {
   readDesktopSetupWizardState,
 } from './setup-wizard-state.ts'
 import {
+  migrateDesktopBrowserAccessSettings,
   readDesktopSetupWizardSettings,
   updateDesktopSetupWizardSettings,
 } from './setup-wizard-settings.ts'
@@ -653,6 +655,17 @@ async function start(): Promise<void> {
       marketSelection,
       preparationHooks,
     )
+    if (await migrateDesktopBrowserAccessSettings(prepared.settingsDocument)) {
+      prepared = prepareDesktopProfile(
+        process.env.DSH_TELEMETRY_DISABLED,
+        homeDir,
+        process.platform,
+        activeProfileName,
+        pluginManagementStatePath,
+        marketSelection,
+        preparationHooks,
+      )
+    }
     if (readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir) === undefined) {
       const setupSettings = readDesktopSetupWizardSettings(prepared.settingsDocument)
       setupWizardWindow = new DesktopSetupWizardWindow({
@@ -778,6 +791,7 @@ async function start(): Promise<void> {
         `${BIN_NAME}: requested Market provider ${prepared.market.requested} was disabled for this generation: ${prepared.marketFailure}`,
       )
     }
+    const browserAccess = createDesktopBrowserAccess(prepared.openBrowser)
     const desktopPnpmBootstrap: DesktopPnpmBootstrap = {
       activeProfileName,
       activeProfileDir: prepared.profile.dir,
@@ -814,6 +828,7 @@ async function start(): Promise<void> {
           'dsh-plugin-desktop: profile package resolution',
         )
         hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
+        hostCtx.provide('desktopBrowserAccess', browserAccess)
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
         await hostCtx.plugin(DesktopActionsService, {

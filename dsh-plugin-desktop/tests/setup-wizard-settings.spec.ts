@@ -286,6 +286,51 @@ describe('Desktop Setup Wizard settings document', () => {
     })
   })
 
+  it('does not acquire a writer lock when browser access settings are already normalized', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: compatibility\n  macosMaterial: transparent\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('does not acquire a writer lock for an unchanged Setup selection', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: compatibility\n  macosMaterial: transparent\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(updateDesktopSetupWizardSettings(path, defaultDesktopSetupWizardSettings()))
+      .resolves.toEqual(defaultDesktopSetupWizardSettings())
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('defers a needed browser migration when another writer owns the lock', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    const contents = 'dsh-desktop:\n  mode: advanced\n  openBrowser: true\n'
+    writeFileSync(path, contents)
+    writeFileSync(lockPath, 'owner\n')
+
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+    expect(readDesktopSetupWizardSettings(path)).toMatchObject({
+      mode: 'compatibility',
+      openBrowser: true,
+      networkExposure: 'loopback',
+    })
+  })
+
   it('never follows an existing settings-document symlink', async () => {
     const root = temporaryDirectory()
     const outside = join(temporaryDirectory(), 'outside.yaml')

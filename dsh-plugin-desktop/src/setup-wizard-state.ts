@@ -14,7 +14,7 @@ import {
 } from 'node:fs'
 import type { Stats } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const STATE_VERSION = 1
@@ -210,16 +210,17 @@ export async function completeOrSkipDesktopSetupWizard(
     profileHash,
     outcome,
   })
-  await withFileLock(path, async () => {
-    assertSafeStateTarget(path)
-    const current = readStateBytes(path)
-    if (current !== undefined) parseState(current, profileHash)
-    await writeFileAtomic(path, `${JSON.stringify(state, undefined, 2)}\n`, {
-      mode: STATE_FILE_MODE,
-      dirMode: STATE_DIRECTORY_MODE,
-    })
-    if (CHECK_POSIX_MODE) chmodSync(path, STATE_FILE_MODE)
+  // The launcher holds Electron's single-instance lock before this path is
+  // reachable. Atomic replacement is sufficient here and, unlike a sibling
+  // writer lock, cannot strand first-run Setup after an interrupted process.
+  assertSafeStateTarget(path)
+  const current = readStateBytes(path)
+  if (current !== undefined) parseState(current, profileHash)
+  await writeFileAtomic(path, `${JSON.stringify(state, undefined, 2)}\n`, {
+    mode: STATE_FILE_MODE,
+    dirMode: STATE_DIRECTORY_MODE,
   })
+  if (CHECK_POSIX_MODE) chmodSync(path, STATE_FILE_MODE)
   return state
 }
 
@@ -233,12 +234,10 @@ export async function clearDesktopSetupWizardState(
   assertPrivateDirectory(dirname(dirname(path)))
   if (existingPathInfo(dirname(path)) === undefined) return
   assertPrivateDirectory(dirname(path))
-  await withFileLock(path, async () => {
-    const info = existingPathInfo(path)
-    if (info === undefined) return
-    assertSafeStateTarget(path)
-    unlinkSync(path)
-  })
+  const info = existingPathInfo(path)
+  if (info === undefined) return
+  assertSafeStateTarget(path)
+  unlinkSync(path)
 }
 
 export const desktopSetupWizardStateConstants = Object.freeze({

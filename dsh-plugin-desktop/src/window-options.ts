@@ -13,6 +13,9 @@ import {
   windowsUsesLegacyAcrylic,
 } from './window-material.ts'
 
+/** Stable persistent storage isolated from every auxiliary/default session. */
+export const DESKTOP_RENDERER_SESSION_PARTITION = 'persist:dsh-desktop-renderer'
+
 function baseWindowOptions(
   spec: DesktopShellSpec,
   icon: NativeImage,
@@ -34,6 +37,7 @@ function baseWindowOptions(
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      partition: DESKTOP_RENDERER_SESSION_PARTITION,
     },
   }
 }

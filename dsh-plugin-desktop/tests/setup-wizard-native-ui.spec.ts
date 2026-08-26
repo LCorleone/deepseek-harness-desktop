@@ -134,6 +134,8 @@ describe('Setup Wizard welcome page', () => {
     expect(markup).toContain(copy.firstProfileSetup)
     expect(markup).toContain(copy.profile)
     expect(markup).toContain(input.profileName)
+    expect(markup).toContain('text-left')
+    expect(markup).not.toContain('text-center')
   })
 
   it('offers Start setup and confirmed Skip without ordinary arrow navigation', () => {

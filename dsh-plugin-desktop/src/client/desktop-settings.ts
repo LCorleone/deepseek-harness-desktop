@@ -9,7 +9,6 @@ import { createDesktopSettingsApi } from './desktop-settings-api.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from './desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from './desktop-settings-styles.ts'
 import type { DesktopClientEnvironment } from './environment.ts'
-import { desktopBrowserAccessEnabled } from '../desktop-network.ts'
 
 /** Locale namespace owned by the Desktop settings page. */
 export const DESKTOP_SETTINGS_LOCALE_NAMESPACE = 'desktop.settings'
@@ -30,16 +29,16 @@ export interface DesktopSettingsClientControl {
  * access in ordered writes; the Host compares only effective generation state.
  */
 export async function persistDesktopModeSelection(
-  desktopSettings: Pick<SettingsScope<DesktopShellSettings>, 'getSnapshot' | 'set'>,
+  desktopSettings: Pick<SettingsScope<DesktopShellSettings>, 'set'>,
   mode: DesktopShellSettings['mode'],
 ): Promise<void> {
-  const current = desktopSettings.getSnapshot().value as DesktopShellSettings | undefined
-  const exposure = current?.networkExposure ?? 'loopback'
-  const browserAccess = desktopBrowserAccessEnabled(current?.openBrowser ?? false, exposure)
   await desktopSettings.set('mode', mode)
-  if (mode === 'compatibility' || !browserAccess) return
+  if (mode === 'compatibility') return
+  // The titlebar is interactive before the settings mirror necessarily reaches
+  // ready. Always withdraw both browser capabilities for a custom mode instead
+  // of treating an unavailable or stale snapshot as browser access being off.
   await desktopSettings.set('openBrowser', false)
-  if (exposure === 'lan') await desktopSettings.set('networkExposure', 'loopback')
+  await desktopSettings.set('networkExposure', 'loopback')
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
