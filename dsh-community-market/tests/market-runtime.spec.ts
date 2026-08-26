@@ -364,6 +364,7 @@ describe('1024Store adapter', () => {
     const http: CatalogHttpClient = {
       getJson: vi.fn(async (urlValue: string) => {
         const url = new URL(urlValue)
+        expect(url.searchParams.get('q')).toBe('plugin')
         const page = Number(url.searchParams.get('page'))
         return {
           value: catalogPage(page === 1 ? [high] : [low], 1, {
@@ -832,6 +833,43 @@ describe('catalog Host route pagination boundary', () => {
     }
   })
 
+  it('routes 1024Store searches directly through provider pagination', async () => {
+    const active = source()
+    const fetchProvider = vi.spyOn(DefaultCatalogService.prototype, 'fetchProvider').mockResolvedValue([{
+      source: catalogIndex(active).source,
+      snapshot: {
+        schemaVersion: '1.0.0',
+        source: {
+          sourceRecordId: active.sourceRecordId,
+          providerId: active.providerId,
+          adapterId: active.adapterId,
+          registrationKind: active.registrationKind,
+          fetchedAt: '2026-08-26T00:00:00.000Z',
+          finalUrl: 'https://deepseek1024.com/api/v2/plugins?page=1&limit=50&q=appshot',
+        },
+        items: [],
+        page: { total: 0 },
+      },
+      stale: false,
+    }])
+    const scanCatalog = vi.spyOn(DefaultCatalogService.prototype, 'scanCatalog')
+    try {
+      const response = await requestMarketCatalog([active], `${marketRoutes.catalog}?q=appshot`)
+
+      expect(response.statusCode).toBe(200)
+      expect(fetchProvider).toHaveBeenCalledWith(
+        { limit: 50, q: 'appshot' },
+        expect.any(AbortSignal),
+        undefined,
+        { force: false },
+      )
+      expect(scanCatalog).not.toHaveBeenCalled()
+    } finally {
+      fetchProvider.mockRestore()
+      scanCatalog.mockRestore()
+    }
+  })
+
   it('accepts an explicit page size up to the shared 200-item safety cap', async () => {
     const response = await requestMarketCatalog([], `${marketRoutes.catalog}?limit=200`)
 
@@ -1187,6 +1225,41 @@ describe('catalog active-source reads', () => {
     expect(getJson).toHaveBeenCalledOnce()
     expect(results).toHaveLength(1)
     expect(results[0]?.snapshot?.items).toHaveLength(1)
+  })
+
+  it('uses the v2 provider path for 1024Store searches outside the Host route', async () => {
+    const store = new MemoryCatalogSourceStore()
+    await store.save([source()])
+    const appshot = {
+      ...rawPlugin,
+      id: 'TaurusWood/dsh-plugin-appshot',
+      name: 'dsh-plugin-appshot',
+      owner: 'TaurusWood',
+      url: 'https://github.com/TaurusWood/dsh-plugin-appshot',
+    }
+    const getJson = vi.fn(async (urlValue: string) => {
+      const url = new URL(urlValue)
+      const limit = Number(url.searchParams.get('limit'))
+      return {
+        value: catalogPage(url.searchParams.get('q') === 'appshot' ? [appshot] : [rawPlugin], limit),
+        finalUrl: url.href,
+      }
+    })
+    const service = new DefaultCatalogService(store, { getJson })
+    const scanCatalog = vi.spyOn(service, 'scanCatalog')
+
+    try {
+      const results = await service.fetch({ q: 'appshot' }, new AbortController().signal)
+
+      expect(scanCatalog).not.toHaveBeenCalled()
+      expect(getJson).toHaveBeenCalledOnce()
+      const requestedUrl = new URL(getJson.mock.calls[0]![0])
+      expect(requestedUrl.pathname).toBe('/api/v2/plugins')
+      expect(requestedUrl.searchParams.get('q')).toBe('appshot')
+      expect(results[0]?.snapshot?.items.map(item => item.id)).toEqual(['TaurusWood/dsh-plugin-appshot'])
+    } finally {
+      scanCatalog.mockRestore()
+    }
   })
 
   it('reuses only an unexpired complete index and reports explicit cache status', async () => {
