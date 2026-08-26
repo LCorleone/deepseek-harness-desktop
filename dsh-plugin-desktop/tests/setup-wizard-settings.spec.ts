@@ -313,7 +313,24 @@ describe('Desktop Setup Wizard settings document', () => {
     expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
   })
 
-  it('defers a needed browser migration when another writer owns the lock', async () => {
+  it('writes a changed Setup selection without waiting for a settings lock', async () => {
+    const root = temporaryDirectory()
+    const path = join(root, 'settings.yaml')
+    const lockPath = `${path}.lock`
+    writeFileSync(path, 'dsh-desktop:\n  mode: compatibility\n')
+    writeFileSync(lockPath, 'owner\n')
+    const next = values({
+      mode: 'advanced',
+      openBrowser: false,
+      networkExposure: 'loopback',
+    })
+
+    await expect(updateDesktopSetupWizardSettings(path, next)).resolves.toEqual(next)
+    expect(readDesktopSetupWizardSettings(path)).toEqual(next)
+    expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
+  })
+
+  it('does not wait for a settings lock when a browser migration is needed', async () => {
     const root = temporaryDirectory()
     const path = join(root, 'settings.yaml')
     const lockPath = `${path}.lock`
@@ -321,8 +338,8 @@ describe('Desktop Setup Wizard settings document', () => {
     writeFileSync(path, contents)
     writeFileSync(lockPath, 'owner\n')
 
-    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
-    expect(readFileSync(path, 'utf8')).toBe(contents)
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(true)
+    expect(readFileSync(path, 'utf8')).not.toBe(contents)
     expect(readFileSync(lockPath, 'utf8')).toBe('owner\n')
     expect(readDesktopSetupWizardSettings(path)).toMatchObject({
       mode: 'compatibility',

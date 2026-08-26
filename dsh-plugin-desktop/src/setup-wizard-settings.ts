@@ -11,7 +11,7 @@ import {
   readSync,
 } from 'node:fs'
 import { dirname, extname, isAbsolute, resolve } from 'node:path'
-import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { parseDocument } from 'yaml'
 import {
   DEFAULT_MACOS_WINDOW_MATERIAL,
@@ -322,8 +322,8 @@ export function readDesktopSetupWizardSettings(
 
 /**
  * Atomically update only Wizard-owned leaves, preserving every other setting.
- * Existing contents are parsed and validated again while holding the same
- * cross-process writer lock used by the ordinary file settings provider.
+ * Setup runs before the Host and never creates or waits for a settings writer
+ * lock; the same-directory rename still keeps readers from seeing torn bytes.
  */
 export async function updateDesktopSetupWizardSettings(
   documentPath: string,
@@ -336,18 +336,16 @@ export async function updateDesktopSetupWizardSettings(
   // unrelated or orphaned settings writer lock exists.
   if (sameSettings(projectSettings(loadSettingsDocument(path).root), next)) return next
   ensureDocumentDirectory(path)
-  await withFileLock(path, async () => {
-    const loaded = loadSettingsDocument(path)
-    // Refuse to cover an invalid known value, including the inactive platform's
-    // material, before touching the user's document.
-    projectSettings(loaded.root)
-    const output = loaded.format === 'yaml'
-      ? applyYamlUpdate(loaded.yaml!, next)
-      : applyJsonUpdate(loaded.root, next)
-    await writeFileAtomic(path, output, {
-      mode: DOCUMENT_FILE_MODE,
-      dirMode: DOCUMENT_DIRECTORY_MODE,
-    })
+  const loaded = loadSettingsDocument(path)
+  // Refuse to cover an invalid known value, including the inactive platform's
+  // material, before touching the user's document.
+  projectSettings(loaded.root)
+  const output = loaded.format === 'yaml'
+    ? applyYamlUpdate(loaded.yaml!, next)
+    : applyJsonUpdate(loaded.root, next)
+  await writeFileAtomic(path, output, {
+    mode: DOCUMENT_FILE_MODE,
+    dirMode: DOCUMENT_DIRECTORY_MODE,
   })
   return next
 }
@@ -386,44 +384,30 @@ export async function migrateDesktopBrowserAccessSettings(
   if (!migrationValues(loadSettingsDocument(path)).needed) return false
 
   ensureDocumentDirectory(path)
-  let changed = false
-  try {
-    await withFileLock(path, async () => {
-      const loaded = loadSettingsDocument(path)
-      const migration = migrationValues(loaded)
-      if (!migration.needed) return
+  const loaded = loadSettingsDocument(path)
+  const migration = migrationValues(loaded)
+  if (!migration.needed) return false
 
-      let output: string
-      if (loaded.format === 'yaml') {
-        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'mode'], migration.mode)
-        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'openBrowser'], migration.browserAccess)
-        loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'networkExposure'], migration.storedExposure)
-        output = loaded.yaml!.toString()
-      } else {
-        const root = structuredClone(loaded.root)
-        const nextDesktop = { ...section(root, DESKTOP_NAMESPACE) }
-        nextDesktop.mode = migration.mode
-        nextDesktop.openBrowser = migration.browserAccess
-        nextDesktop.networkExposure = migration.storedExposure
-        root[DESKTOP_NAMESPACE] = nextDesktop
-        output = `${JSON.stringify(root, undefined, 2)}\n`
-      }
-      await writeFileAtomic(path, output, {
-        mode: DOCUMENT_FILE_MODE,
-        dirMode: DOCUMENT_DIRECTORY_MODE,
-      })
-      changed = true
-    }, {
-      // Migration is a compatibility cleanup, not a startup prerequisite. The
-      // effective settings projection is already safe, so retry next launch
-      // rather than waiting behind another writer.
-      waitMs: 0,
-    })
-  } catch (cause) {
-    const lockTimeout = `atomic-write: timed out waiting for the writer lock at ${path}.lock`
-    if (!(cause instanceof Error) || cause.message !== lockTimeout) throw cause
+  let output: string
+  if (loaded.format === 'yaml') {
+    loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'mode'], migration.mode)
+    loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'openBrowser'], migration.browserAccess)
+    loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'networkExposure'], migration.storedExposure)
+    output = loaded.yaml!.toString()
+  } else {
+    const root = structuredClone(loaded.root)
+    const nextDesktop = { ...section(root, DESKTOP_NAMESPACE) }
+    nextDesktop.mode = migration.mode
+    nextDesktop.openBrowser = migration.browserAccess
+    nextDesktop.networkExposure = migration.storedExposure
+    root[DESKTOP_NAMESPACE] = nextDesktop
+    output = `${JSON.stringify(root, undefined, 2)}\n`
   }
-  return changed
+  await writeFileAtomic(path, output, {
+    mode: DOCUMENT_FILE_MODE,
+    dirMode: DOCUMENT_DIRECTORY_MODE,
+  })
+  return true
 }
 
 /** Defaults used when the settings document or both owned sections are absent. */
