@@ -127,7 +127,7 @@ describe('compatibility BrowserWindow options', () => {
 
   it('uses native Windows controls, Mica, shadow, and rounded corners in enhanced mode', () => {
     const options = advancedWindowOptions(
-      { ...spec, mode: 'advanced', material: 'mica' },
+      { ...spec, mode: 'advanced', material: 'mica', windowsBuild: 22_621 },
       {} as NativeImage,
       'win32',
       preload,
@@ -145,6 +145,40 @@ describe('compatibility BrowserWindow options', () => {
       roundedCorners: true,
       thickFrame: true,
     }))
+  })
+
+  it('uses the Windows 11 system Acrylic backdrop without transparent-window layering', () => {
+    const options = advancedWindowOptions(
+      { ...spec, mode: 'advanced', material: 'acrylic', windowsBuild: 22_621 },
+      {} as NativeImage,
+      'win32',
+      preload,
+    )
+
+    expect(options).toEqual(expect.objectContaining({
+      backgroundColor: '#00000000',
+      backgroundMaterial: 'acrylic',
+      roundedCorners: true,
+      thickFrame: true,
+    }))
+    expect(options).not.toHaveProperty('transparent')
+  })
+
+  it('keeps a Windows 11 21H2 window opaque when an unevaluated Acrylic spec reaches construction', () => {
+    const options = advancedWindowOptions(
+      { ...spec, mode: 'advanced', material: 'acrylic', windowsBuild: 22_000 },
+      {} as NativeImage,
+      'win32',
+      preload,
+    )
+
+    expect(options).toEqual(expect.objectContaining({
+      backgroundColor: '#202124',
+      roundedCorners: true,
+      thickFrame: true,
+    }))
+    expect(options).not.toHaveProperty('transparent')
+    expect(options).not.toHaveProperty('backgroundMaterial')
   })
 
   it('uses the taller native caption and capability-gated material in extended mode', () => {

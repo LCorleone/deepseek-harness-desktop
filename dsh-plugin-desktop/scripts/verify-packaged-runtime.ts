@@ -35,6 +35,7 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/client.js',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
+  'lib/native-ui/setup-wizard.html',
   'lib/profile.js',
   'lib/profile-manager.js',
   'lib/profile-service.js',
@@ -52,8 +53,11 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/windows-agent-presets.js',
   'lib/windows-acl-runner.js',
   'node_modules/@deepseek-ai/dsh/lib/bin.js',
+  'node_modules/@deepseek-ai/dsh/lib/plugin-9h8shc4d.js',
+  'node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
   'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
+  'node_modules/open/index.js',
   'node_modules/pnpm/bin/pnpm.mjs',
 ] as const
 
@@ -69,6 +73,7 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'lib/client.js',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
+  'lib/native-ui/setup-wizard.html',
   'lib/index.js',
   'lib/profile.js',
   'lib/profile-manager.js',
@@ -87,8 +92,11 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/cordis-plugin-development/SKILL.md',
   'node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/editing-cordis-compositions/SKILL.md',
   'node_modules/@deepseek-ai/dsh/lib/bin.js',
+  'node_modules/@deepseek-ai/dsh/lib/plugin-9h8shc4d.js',
+  'node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js',
   'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
+  'node_modules/open/index.js',
   'node_modules/pnpm/bin/pnpm.mjs',
 ] as const
 

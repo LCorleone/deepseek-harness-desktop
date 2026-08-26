@@ -10,6 +10,7 @@ export type DesktopWindowMaterial = MacosWindowMaterial | WindowsWindowMaterial
 export const DEFAULT_MACOS_WINDOW_MATERIAL: MacosWindowMaterial = 'transparent'
 export const DEFAULT_WINDOWS_WINDOW_MATERIAL: WindowsWindowMaterial = 'acrylic'
 export const WINDOWS_ACRYLIC_MIN_BUILD = 17_763
+export const WINDOWS_ROUNDED_CORNERS_MIN_BUILD = 22_000
 export const WINDOWS_MICA_MIN_BUILD = 22_621
 
 /** Extract the NT build number from a Windows `os.release()` value. */
@@ -24,8 +25,21 @@ export function windowsSupportsAcrylic(build: number | undefined): boolean {
   return build !== undefined && build >= WINDOWS_ACRYLIC_MIN_BUILD
 }
 
-export function windowsSupportsMica(build: number | undefined): boolean {
+export function windowsSupportsRoundedCorners(build: number | undefined): boolean {
+  return build !== undefined && build >= WINDOWS_ROUNDED_CORNERS_MIN_BUILD
+}
+
+export function windowsSupportsSystemBackdrop(build: number | undefined): boolean {
   return build !== undefined && build >= WINDOWS_MICA_MIN_BUILD
+}
+
+export function windowsSupportsMica(build: number | undefined): boolean {
+  return windowsSupportsSystemBackdrop(build)
+}
+
+/** Whether Acrylic must use the legacy transparent-window implementation. */
+export function windowsUsesLegacyAcrylic(build: number | undefined): boolean {
+  return windowsSupportsAcrylic(build) && !windowsSupportsRoundedCorners(build)
 }
 
 export function parseMacosWindowMaterial(value: unknown): MacosWindowMaterial {
@@ -53,9 +67,13 @@ export function effectiveDesktopWindowMaterial(
   void mode
   if (platform === 'linux') return 'off'
   if (platform === 'darwin') return macosMaterial
-  if (windowsMaterial === 'mica' && !windowsSupportsMica(windowsBuild)) {
-    return windowsSupportsAcrylic(windowsBuild) ? 'acrylic' : 'off'
+  if (windowsMaterial === 'mica' && !windowsSupportsSystemBackdrop(windowsBuild)) {
+    return windowsUsesLegacyAcrylic(windowsBuild) ? 'acrylic' : 'off'
   }
-  if (windowsMaterial === 'acrylic' && !windowsSupportsAcrylic(windowsBuild)) return 'off'
+  if (windowsMaterial === 'acrylic') {
+    return windowsSupportsSystemBackdrop(windowsBuild) || windowsUsesLegacyAcrylic(windowsBuild)
+      ? 'acrylic'
+      : 'off'
+  }
   return windowsMaterial
 }

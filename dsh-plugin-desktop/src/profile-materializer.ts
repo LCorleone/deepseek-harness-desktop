@@ -189,6 +189,7 @@ export async function materializeProfile(
     shell: false,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
   if (child.stdout === null || child.stderr === null) {
     killProcessTree(child)

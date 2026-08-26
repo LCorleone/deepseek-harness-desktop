@@ -12,7 +12,11 @@ import {
   DesktopVersionControl,
   selectDesktopFrameMode,
 } from '../src/client/ExtendedTitlebar.tsx'
-import { DesktopSettingsSection } from '../src/client/DesktopSettingsSection.tsx'
+import {
+  desktopBrowserUrlsShouldRender,
+  DesktopSettingsSection,
+  resolveDesktopLanConfirmation,
+} from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
 import {
   createDesktopSettingsApi,
@@ -73,6 +77,23 @@ describe('Desktop settings API', () => {
     expect(en.nav).toBe('Desktop settings')
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')
     expect(en.lanWarningBody).toContain('Anyone on your local network can directly operate your computer')
+  })
+
+  it('shows actual URLs only for browser handoff or LAN and requires explicit LAN confirmation', () => {
+    expect(desktopBrowserUrlsShouldRender(false, 'loopback')).toBe(false)
+    expect(desktopBrowserUrlsShouldRender(true, 'loopback')).toBe(true)
+    expect(desktopBrowserUrlsShouldRender(false, 'lan')).toBe(true)
+
+    const dismiss = vi.fn()
+    const enableLan = vi.fn()
+    resolveDesktopLanConfirmation(false, dismiss, enableLan)
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(enableLan).not.toHaveBeenCalled()
+
+    dismiss.mockClear()
+    resolveDesktopLanConfirmation(true, dismiss, enableLan)
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(enableLan).toHaveBeenCalledOnce()
   })
 
   it('uses the strict same-origin routes and request bodies', async () => {

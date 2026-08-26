@@ -8,6 +8,10 @@ import {
   DESKTOP_FRAME_HEIGHT,
   DESKTOP_FRAME_MACOS_TRAFFIC_LIGHT_TOP,
 } from './window-chrome.ts'
+import {
+  windowsSupportsSystemBackdrop,
+  windowsUsesLegacyAcrylic,
+} from './window-material.ts'
 
 function baseWindowOptions(
   spec: DesktopShellSpec,
@@ -129,6 +133,12 @@ function customChromeWindowOptions(
       : custom
   }
   if (platform === 'win32') {
+    const systemMaterial = windowsSupportsSystemBackdrop(spec.windowsBuild)
+      && (spec.material === 'acrylic' || spec.material === 'mica')
+      ? spec.material
+      : undefined
+    const legacyAcrylic = spec.material === 'acrylic'
+      && windowsUsesLegacyAcrylic(spec.windowsBuild)
     return {
       ...options,
       autoHideMenuBar: true,
@@ -138,9 +148,9 @@ function customChromeWindowOptions(
         symbolColor: '#7f858f',
         height: geometry.titlebarHeight,
       },
-      ...(spec.material === 'off' ? {} : { backgroundColor: '#00000000' }),
-      ...(spec.material === 'acrylic' ? { transparent: true } : {}),
-      ...(spec.material === 'mica' ? { backgroundMaterial: 'mica' as const } : {}),
+      ...(systemMaterial === undefined && !legacyAcrylic ? {} : { backgroundColor: '#00000000' }),
+      ...(legacyAcrylic ? { transparent: true } : {}),
+      ...(systemMaterial === undefined ? {} : { backgroundMaterial: systemMaterial }),
       hasShadow: true,
       roundedCorners: true,
       thickFrame: true,

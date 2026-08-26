@@ -1768,7 +1768,7 @@ describe('Electron desktop runtime', () => {
         detached: true,
         stdio: 'ignore',
         shell: false,
-        windowsHide: false,
+        windowsHide: true,
       },
     )
     expect(requestQuit).not.toHaveBeenCalled()
@@ -2021,6 +2021,38 @@ describe('Electron desktop runtime', () => {
     expect(electron.menuTemplates[0]).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Switch to Enhanced Mode', enabled: true }),
     ]))
+
+    await release()
+  })
+
+  it('uses the Windows 11 system Acrylic backdrop without the legacy transparent helper', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    electron.nativeTheme.themeSource = 'light'
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule({
+      ...spec,
+      mode: 'extended',
+      material: 'acrylic',
+      windowsBuild: 22_621,
+      readThemeSource: () => 'dark',
+    })
+
+    await runtime.mountScheduled()
+
+    expect(electron.browserWindowOptions[0]).toEqual(expect.objectContaining({
+      backgroundMaterial: 'acrylic',
+      roundedCorners: true,
+      thickFrame: true,
+    }))
+    expect(electron.browserWindowOptions[0]).not.toHaveProperty('transparent')
+    expect(windowsAcrylic.set).not.toHaveBeenCalled()
+
+    const window = electron.browserWindows[0]
+    window?.setBackgroundMaterial.mockClear()
+    runtime.setThemeSource('light')
+    expect(window?.setBackgroundMaterial).toHaveBeenCalledOnce()
+    expect(window?.setBackgroundMaterial).toHaveBeenCalledWith('acrylic')
 
     await release()
   })

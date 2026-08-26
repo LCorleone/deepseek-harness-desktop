@@ -31,7 +31,7 @@ dsh-desktop:
   port: 43189
 ```
 
-The port must be an integer from `0` through `65535`. Changing it performs an orderly restart, and the service remains bound only to `127.0.0.1`. If another program already uses a fixed port, Desktop cannot start; release that port or change the setting back to `0` or another available port.
+The port must be an integer from `0` through `65535`. Changing it performs an orderly restart. The service binds only to `127.0.0.1` by default; it listens on all network interfaces only after you acknowledge the danger prompt and explicitly allow LAN access in Desktop settings. If another program already uses a fixed port, Desktop cannot start; release that port or change the setting back to `0` or another available port.
 
 ## Plugin management
 

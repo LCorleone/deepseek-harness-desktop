@@ -6,6 +6,9 @@ import {
   windowsBuildNumber,
   windowsSupportsAcrylic,
   windowsSupportsMica,
+  windowsSupportsRoundedCorners,
+  windowsSupportsSystemBackdrop,
+  windowsUsesLegacyAcrylic,
 } from '../src/window-material.ts'
 
 describe('desktop window material capabilities', () => {
@@ -14,6 +17,12 @@ describe('desktop window material capabilities', () => {
     expect(windowsBuildNumber('10.0.22621.4317')).toBe(22_621)
     expect(windowsBuildNumber('Darwin Kernel Version 25.0.0')).toBeUndefined()
     expect(windowsSupportsAcrylic(17_763)).toBe(true)
+    expect(windowsSupportsRoundedCorners(21_999)).toBe(false)
+    expect(windowsSupportsRoundedCorners(22_000)).toBe(true)
+    expect(windowsSupportsSystemBackdrop(22_000)).toBe(false)
+    expect(windowsSupportsSystemBackdrop(22_621)).toBe(true)
+    expect(windowsUsesLegacyAcrylic(19_045)).toBe(true)
+    expect(windowsUsesLegacyAcrylic(22_000)).toBe(false)
     expect(windowsSupportsMica(19_045)).toBe(false)
     expect(windowsSupportsMica(22_621)).toBe(true)
   })
@@ -32,8 +41,17 @@ describe('desktop window material capabilities', () => {
       'extended', 'win32', 'transparent', 'mica', 19_045,
     )).toBe('acrylic')
     expect(effectiveDesktopWindowMaterial(
+      'extended', 'win32', 'transparent', 'mica', 22_000,
+    )).toBe('off')
+    expect(effectiveDesktopWindowMaterial(
+      'extended', 'win32', 'transparent', 'acrylic', 22_000,
+    )).toBe('off')
+    expect(effectiveDesktopWindowMaterial(
       'extended', 'win32', 'transparent', 'mica', 22_631,
     )).toBe('mica')
+    expect(effectiveDesktopWindowMaterial(
+      'extended', 'win32', 'transparent', 'acrylic', 22_631,
+    )).toBe('acrylic')
     expect(effectiveDesktopWindowMaterial(
       'extended', 'win32', 'transparent', 'acrylic', 10_240,
     )).toBe('off')
