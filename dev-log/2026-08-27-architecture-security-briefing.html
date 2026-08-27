@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Desktop 架构与安全策略说明书 · 内部资料 · 2026-08-27</title>
+<style>
+  :root{
+    --navy:#1c2e52;
+    --navy-2:#26396b;
+    --steel:#2f5fa8;
+    --ink:#222a36;
+    --muted:#5d6774;
+    --faint:#8a93a2;
+    --line:#dce1e9;
+    --bg:#e9edf3;
+    --paper:#ffffff;
+    --panel:#f4f7fb;
+    --ok:#2e7d5b;
+    --warn:#b4541c;
+    --risk:#a83a3a;
+    --code-bg:#f0f3f8;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC",-apple-system,"Segoe UI",sans-serif;
+    font-size:15px;
+    line-height:1.78;
+  }
+  .page{max-width:1000px;margin:0 auto;padding:0 18px 30px;}
+
+  /* ---------- 页眉 ---------- */
+  .hero{
+    background:linear-gradient(135deg,#16274b 0%,#1c2e52 55%,#26396b 100%);
+    color:#fff;
+    border-radius:0 0 14px 14px;
+    padding:34px 40px 30px;
+    margin:0 0 22px;
+  }
+  .hero .badge{
+    display:inline-block;
+    border:1.5px solid #e8b34b;
+    color:#ffd98a;
+    font-size:12.5px;
+    letter-spacing:4px;
+    padding:3px 14px 3px 18px;
+    border-radius:999px;
+    font-weight:600;
+    margin-bottom:16px;
+  }
+  .hero h1{
+    margin:0 0 8px;
+    font-size:30px;
+    line-height:1.35;
+    letter-spacing:1px;
+    font-weight:700;
+  }
+  .hero .sub{
+    font-size:15.5px;
+    color:#c6d2e8;
+    margin:0 0 18px;
+  }
+  .hero .meta{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px 26px;
+    font-size:13px;
+    color:#a9b8d4;
+    border-top:1px solid rgba(255,255,255,.18);
+    padding-top:14px;
+  }
+  .hero .meta b{color:#dbe4f4;font-weight:600;}
+
+  /* ---------- 目录导航 ---------- */
+  .toc{
+    position:sticky;
+    top:0;
+    z-index:60;
+    background:rgba(255,255,255,.96);
+    backdrop-filter:blur(6px);
+    border:1px solid var(--line);
+    border-radius:10px;
+    box-shadow:0 2px 10px rgba(24,38,70,.08);
+    padding:9px 14px;
+    margin-bottom:26px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:4px 6px;
+    align-items:center;
+  }
+  .toc .toc-label{
+    font-size:12.5px;
+    color:var(--faint);
+    letter-spacing:2px;
+    margin-right:8px;
+    font-weight:600;
+  }
+  .toc a{
+    font-size:13.5px;
+    color:var(--muted);
+    text-decoration:none;
+    padding:4px 11px;
+    border-radius:6px;
+    white-space:nowrap;
+  }
+  .toc a:hover{background:var(--panel);color:var(--navy);}
+  .toc a.active{background:var(--navy);color:#fff;}
+
+  /* ---------- 章节 ---------- */
+  section{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:12px;
+    box-shadow:0 1px 4px rgba(24,38,70,.05);
+    padding:30px 36px 26px;
+    margin-bottom:26px;
+  }
+  h2{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    font-size:21px;
+    color:var(--navy);
+    margin:0 0 6px;
+    line-height:1.4;
+  }
+  h2 .chip{
+    flex:none;
+    background:var(--navy);
+    color:#fff;
+    font-size:13px;
+    font-weight:700;
+    border-radius:6px;
+    padding:2px 10px;
+    letter-spacing:1px;
+  }
+  h2 .h2sub{font-size:13px;color:var(--faint);font-weight:400;margin-left:2px;}
+  .h2rule{
+    height:3px;
+    border:none;
+    margin:4px 0 18px;
+    background:linear-gradient(90deg,var(--navy) 0%,var(--steel) 42%,transparent 100%);
+    border-radius:2px;
+  }
+  h3{
+    font-size:16.5px;
+    color:var(--navy);
+    margin:26px 0 10px;
+    display:flex;
+    align-items:center;
+    gap:9px;
+    line-height:1.5;
+  }
+  h3::before{
+    content:"";
+    flex:none;
+    width:5px;height:17px;
+    background:var(--steel);
+    border-radius:2px;
+  }
+  h4{font-size:14.5px;color:var(--navy-2);margin:18px 0 6px;}
+  p{margin:8px 0;}
+  .lead{font-size:15.5px;}
+  ul,ol{margin:8px 0;padding-left:24px;}
+  li{margin:5px 0;}
+  b,strong{color:var(--navy);}
+  .muted{color:var(--muted);}
+  .small{font-size:13px;}
+
+  code{
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.3px;
+    background:var(--code-bg);
+    border:1px solid #dde3ee;
+    border-radius:4px;
+    padding:1px 6px;
+    color:#28406e;
+    word-break:break-all;
+  }
+
+  /* 术语白话 */
+  .term{font-weight:600;color:var(--navy-2);}
+  .explain{color:var(--muted);font-size:13.2px;}
+
+  .glossary{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+    gap:4px 26px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:14px 20px;
+    margin:14px 0 4px;
+    font-size:13.4px;
+  }
+  .glossary div{line-height:1.65;padding:2px 0;}
+  .glossary b{color:var(--navy);}
+
+  /* 指标卡 */
+  .metric-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(138px,1fr));
+    gap:12px;
+    margin:18px 0 6px;
+  }
+  .metric{
+    border:1px solid var(--line);
+    border-top:3px solid var(--navy);
+    border-radius:9px;
+    padding:12px 12px 10px;
+    background:#fbfcfe;
+    text-align:center;
+  }
+  .metric .num{
+    font-size:25px;
+    font-weight:700;
+    color:var(--navy);
+    line-height:1.25;
+    letter-spacing:.5px;
+  }
+  .metric .num small{font-size:13px;font-weight:600;color:var(--steel);}
+  .metric .lbl{font-size:12px;color:var(--muted);line-height:1.5;margin-top:3px;}
+
+  /* 结论要点 */
+  .keyfindings{
+    list-style:none;
+    padding:0;
+    margin:14px 0 4px;
+  }
+  .keyfindings li{
+    position:relative;
+    padding:7px 12px 7px 38px;
+    margin:7px 0;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:9px;
+  }
+  .keyfindings li::before{
+    content:"✓";
+    position:absolute;
+    left:11px;
+    top:8px;
+    width:19px;height:19px;
+    background:var(--navy);
+    color:#fff;
+    border-radius:50%;
+    font-size:12px;
+    line-height:19px;
+    text-align:center;
+    font-weight:700;
+  }
+
+  /* 提示框 */
+  .callout{
+    background:var(--panel);
+    border-left:4px solid var(--steel);
+    border-radius:7px;
+    padding:11px 16px;
+    margin:14px 0;
+    font-size:13.8px;
+    line-height:1.75;
+  }
+  .callout.warn{background:#fbf4ea;border-left-color:var(--warn);}
+  .callout.risk{background:#fbf1f0;border-left-color:var(--risk);}
+  .callout.ok{background:#eef6f1;border-left-color:var(--ok);}
+  .callout .ct{font-weight:700;color:var(--navy);display:block;margin-bottom:2px;}
+
+  /* 表格 */
+  .tblwrap{overflow-x:auto;margin:14px 0 6px;}
+  table.tbl{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13.2px;
+    line-height:1.65;
+    background:#fff;
+  }
+  table.tbl caption{
+    caption-side:top;
+    text-align:left;
+    font-size:12.5px;
+    color:var(--faint);
+    padding-bottom:6px;
+  }
+  table.tbl th{
+    background:var(--navy);
+    color:#fff;
+    font-weight:600;
+    text-align:left;
+    padding:8px 12px;
+    font-size:13px;
+    letter-spacing:.5px;
+    white-space:nowrap;
+  }
+  table.tbl td{
+    border-bottom:1px solid #e4e8ef;
+    padding:8px 12px;
+    vertical-align:top;
+  }
+  table.tbl tbody tr:nth-child(even){background:#f7f9fc;}
+  table.tbl td.c{text-align:center;white-space:nowrap;}
+  table.tbl td.rid{
+    font-weight:700;
+    color:var(--risk);
+    text-align:center;
+    white-space:nowrap;
+  }
+
+  /* 图示 */
+  figure{
+    margin:18px 0 10px;
+    padding:14px 12px 8px;
+    background:#fbfcfe;
+    border:1px solid var(--line);
+    border-radius:10px;
+  }
+  figure svg{display:block;width:100%;height:auto;font-family:inherit;}
+  figcaption{
+    text-align:center;
+    font-size:12.5px;
+    color:var(--muted);
+    padding:8px 6px 4px;
+    line-height:1.6;
+  }
+  figcaption b{color:var(--navy);}
+
+  /* 仓库拓扑 */
+  .repo-root{
+    background:var(--navy);
+    color:#fff;
+    border-radius:9px;
+    padding:9px 16px;
+    font-size:13.8px;
+    text-align:center;
+    margin:14px 0 0;
+  }
+  .repo-root b{color:#fff;}
+  .repo-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:12px;
+    margin-top:12px;
+  }
+  .repo-card{
+    border:1px solid var(--line);
+    border-top:3px solid var(--steel);
+    border-radius:9px;
+    padding:12px 14px;
+    background:#fbfcfe;
+    font-size:13.2px;
+    line-height:1.65;
+  }
+  .repo-card .rc-name{font-weight:700;color:var(--navy);font-size:13.6px;word-break:break-all;}
+  .repo-card .rc-tag{
+    display:inline-block;
+    font-size:11.5px;
+    border-radius:999px;
+    padding:1px 10px;
+    margin:5px 0 6px;
+    background:#e7edf8;
+    color:var(--steel);
+    border:1px solid #c9d6ec;
+    font-weight:600;
+  }
+  .repo-card .rc-tag.doc{background:#f1f0ea;color:#7a6a35;border-color:#ddd4b4;}
+  .repo-card .rc-tag.lock{background:#eaf3ee;color:var(--ok);border-color:#c6dfd1;}
+  .repo-card code{font-size:11.6px;}
+
+  /* 启动链 */
+  ol.chain{
+    list-style:none;
+    counter-reset:step;
+    padding:0;
+    margin:14px 0 6px;
+  }
+  ol.chain li{
+    counter-increment:step;
+    position:relative;
+    padding:8px 14px 8px 52px;
+    margin:0 0 8px;
+    border:1px solid var(--line);
+    border-radius:9px;
+    background:#fbfcfe;
+    font-size:13.8px;
+  }
+  ol.chain li::before{
+    content:counter(step,decimal-leading-zero);
+    position:absolute;
+    left:12px;
+    top:10px;
+    font-size:13px;
+    font-weight:700;
+    color:#fff;
+    background:var(--steel);
+    border-radius:6px;
+    padding:1px 7px;
+    font-family:ui-monospace,Consolas,monospace;
+  }
+  ol.chain li.final{border-left:3px solid var(--navy);background:var(--panel);}
+
+  /* 问答卡 */
+  .qa{
+    border:1px solid var(--line);
+    border-radius:10px;
+    margin:16px 0;
+    overflow:hidden;
+  }
+  .qa .q{
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+    padding:11px 18px;
+    font-size:15px;
+    font-weight:700;
+    color:var(--navy);
+    display:flex;
+    gap:10px;
+    align-items:baseline;
+  }
+  .qa .q .qno{
+    flex:none;
+    font-size:12.5px;
+    background:var(--navy);
+    color:#fff;
+    border-radius:6px;
+    padding:2px 9px;
+    font-weight:700;
+  }
+  .qa .a{padding:6px 18px 12px;}
+
+  /* 防线小节 */
+  .layer-head{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin:28px 0 8px;
+    padding-bottom:8px;
+    border-bottom:1px dashed var(--line);
+  }
+  .layer-head .lno{
+    flex:none;
+    background:var(--navy);
+    color:#fff;
+    font-weight:700;
+    font-size:13px;
+    border-radius:7px;
+    padding:3px 11px;
+    letter-spacing:1px;
+  }
+  .layer-head .lname{font-size:16.5px;font-weight:700;color:var(--navy);}
+  .layer-head .lphase{
+    margin-left:auto;
+    font-size:12px;
+    color:var(--steel);
+    background:#e7edf8;
+    border:1px solid #c9d6ec;
+    border-radius:999px;
+    padding:2px 12px;
+    font-weight:600;
+    white-space:nowrap;
+  }
+  .layer-block{font-size:13.3px;color:var(--faint);margin:0 0 8px;letter-spacing:.5px;}
+  .duty{margin:6px 0;}
+  .duty b{display:inline-block;background:#e7edf8;border-radius:5px;padding:0 8px;margin-right:6px;font-size:13.2px;color:var(--navy-2);}
+  .codepos{
+    font-size:12.8px;
+    color:var(--muted);
+    background:var(--panel);
+    border:1px dashed #c9d3e4;
+    border-radius:7px;
+    padding:7px 12px;
+    margin:10px 0 0;
+    line-height:1.9;
+  }
+  .codepos b{color:var(--navy);}
+
+  /* 页脚 */
+  footer{
+    text-align:center;
+    color:var(--muted);
+    font-size:12.5px;
+    line-height:2;
+    padding:18px 10px 8px;
+  }
+  footer .fbar{
+    display:inline-block;
+    border-top:2px solid var(--navy);
+    padding-top:10px;
+  }
+  footer .secret{
+    color:var(--risk);
+    font-weight:700;
+    letter-spacing:2px;
+  }
+
+  /* ---------- 打印 ---------- */
+  @media print{
+    @page{size:A4;margin:13mm 11mm;}
+    html{font-size:12px;scroll-behavior:auto;}
+    body{background:#fff;color:#000;}
+    .page{max-width:none;padding:0;}
+    .toc{display:none;}
+    .hero{
+      background:#fff !important;
+      color:var(--navy) !important;
+      border:none;
+      border-bottom:3px double var(--navy);
+      border-radius:0;
+      padding:6px 2px 14px;
+      margin:0 0 14px;
+    }
+    .hero .badge{border-color:var(--risk);color:var(--risk);background:#fff;}
+    .hero h1{color:var(--navy) !important;font-size:24px;}
+    .hero .sub{color:var(--muted) !important;}
+    .hero .meta{color:var(--muted);border-top-color:var(--line);}
+    .hero .meta b{color:var(--navy);}
+    section{
+      box-shadow:none;
+      border:1px solid #c9ced6;
+      border-radius:6px;
+      padding:16px 18px 12px;
+      break-inside:auto;
+    }
+    .chapter{break-before:page;}
+    h2,h3,h4{break-after:avoid;}
+    figure,table.tbl,.metric,.callout,.qa,.repo-card,.glossary{break-inside:avoid;}
+    tr,td,th{break-inside:avoid;}
+    figure svg{max-width:100%;}
+    a{color:inherit;text-decoration:none;}
+    table.tbl th{
+      background:#eef1f6 !important;
+      color:var(--navy) !important;
+      border-bottom:2px solid var(--navy);
+      -webkit-print-color-adjust:exact;
+      print-color-adjust:exact;
+    }
+    .keyfindings li::before,.toc a.active{background:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    ol.chain li::before,.layer-head .lno,.metric,.repo-card,.qa .q .qno,h2 .chip{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .metric{border-top-color:var(--navy);}
+    .repo-root{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .repo-root b{color:var(--navy);}
+    p,li{orphans:3;widows:3;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ======================= 页眉 ======================= -->
+<header class="hero">
+  <span class="badge">密级 · 内部资料</span>
+  <h1>DSH Desktop 架构与安全策略说明书</h1>
+  <p class="sub">锁定部署与插件供应链管控 · 管理层汇报版 —— 结论先行，技术细节附白话解释</p>
+  <div class="meta">
+    <span>日期：<b>2026 年 8 月 27 日</b></span>
+    <span>文档版本：<b>v1.0</b></span>
+    <span>呈报对象：<b>公司管理层</b></span>
+    <span>范围：<b>DSH Desktop 桌面产品（公司版）</b></span>
+    <span>数据来源：<b>2026-08-27 代码 review 核实结果</b></span>
+  </div>
+</header>
+
+<!-- ======================= 目录导航 ======================= -->
+<nav class="toc" id="toc" aria-label="目录导航">
+  <span class="toc-label">目录</span>
+  <a href="#summary">执行摘要</a>
+  <a href="#ch1">01 产品与仓库结构</a>
+  <a href="#ch2">02 运行架构</a>
+  <a href="#ch3">03 安全架构 · 五层防线</a>
+  <a href="#ch4">04 关键问题澄清</a>
+  <a href="#ch5">05 残余风险与建议</a>
+</nav>
+
+<main class="page">
+
+<!-- ======================= 执行摘要 ======================= -->
+<section id="summary">
+  <h2>执行摘要<span class="h2sub">30 秒版本</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>一句话结论：</b>本项目在开源 DSH Desktop（社区版 v2.0.2）基础上叠加公司安全护栏层，
+  已实现<b>「锁定部署」</b>——用户只能安装经过公司审核并签名的插件；同时<b>上游源码零修改</b>，
+  护栏全部以外围层实现，社区版本升级可以持续跟随，不会形成无人维护的私有分叉。</p>
+
+  <div class="metric-grid">
+    <div class="metric"><div class="num">72</div><div class="lbl">安全 commit<br>（公司护栏层 · P1–P4 四阶段）</div></div>
+    <div class="metric"><div class="num">0</div><div class="lbl">上游源码修改<br>（pinned 只读 submodule）</div></div>
+    <div class="metric"><div class="num">6<small> / 6</small></div><div class="lbl">插件安装入口<br>全部管控</div></div>
+    <div class="metric"><div class="num">5</div><div class="lbl">层安全防线<br>（纵深防御）</div></div>
+    <div class="metric"><div class="num">11</div><div class="lbl">运行时补丁<br>（yarn patch · 公司自有 2 个）</div></div>
+    <div class="metric"><div class="num">7</div><div class="lbl">残余风险已登记<br>（3 项有明确缓解路径）</div></div>
+  </div>
+
+  <ul class="keyfindings">
+    <li><b>项目构成：</b>开源 DSH Desktop（社区版 v2.0.2）＋ 公司安全护栏层（72 个安全 commit，分 P1–P4 四阶段）。
+      核心目标：锁定部署，用户只能安装公司审签过的插件。</li>
+    <li><b>上游零修改：</b>上游 DeepSeek Harness 源码以固定版本只读 submodule 方式钉定，护栏全部在外围层实现——
+      因此上游发布新版本时，公司版可以跟随升级。</li>
+    <li><b>没有私有分叉：</b>桌面产品本身也以标准插件形式接入运行时（「万物皆插件」），
+      我们没有 fork 出一套私有代码。</li>
+    <li><b>当前防线：</b>插件安装 6 类入口全部管控；安装 + 启动双重验签（ed25519 签名）；
+      Electron 加固（fuses 保险丝、强制签名更新、独立 Node 运行时）。</li>
+    <li><b>残余风险：</b>已知 7 项已登记在案，其中 3 项有明确缓解路径，<b>待管理层确认签收</b>（见第 5 章）。</li>
+  </ul>
+
+  <div class="glossary">
+    <div><b>锁定部署：</b>桌面端出厂即固定为公司审定的配置，用户无法自行切换插件来源。</div>
+    <div><b>submodule（子模块）：</b>以固定版本「钉」在本仓库内的上游代码只读副本，仅供审计对照。</div>
+    <div><b>fail-closed（默认拒绝）：</b>任何配置缺失或校验失败，一律按「不安全」处理，宁可不用也不放行。</div>
+    <div><b>ed25519：</b>一种高效数字签名算法——公司用私钥「盖章」，客户端用公钥验章，内容被篡改即刻被发现。</div>
+    <div><b>Cordis 容器：</b>DSH 的插件运行容器，负责装载、隔离并连接各个插件。</div>
+    <div><b>yarn patch：</b>对 npm 已发布包打补丁的官方机制，不需要改动上游源码仓库。</div>
+    <div><b>integrity（完整性指纹）：</b>npm 官方为每个包版本计算的防篡改校验值。</div>
+    <div><b>app.asar：</b>Electron 应用的资源打包档案（可整体校验完整性的「封装盒」）。</div>
+    <div><b>loopback（127.0.0.1 回环）：</b>仅本机进程可访问的网络通道，外部机器无法连入。</div>
+    <div><b>序列号棘轮：</b>只增不减的计数器，旧目录无法冒充新目录（防回滚、防重放）。</div>
+    <div><b>Electron fuses（保险丝）：</b>Electron 官方提供的开关，可永久关闭危险能力（如以 Node 模式运行程序）。</div>
+  </div>
+</section>
+
+<!-- ======================= 第 1 章 ======================= -->
+<section id="ch1" class="chapter">
+  <h2><span class="chip">01</span>产品与仓库结构<span class="h2sub">本项目由什么构成</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>本章结论：</b>仓库 = 一个根工作区 + 四个职责清晰的组成部分；上游源码只读钉定、零修改，
+  我们发布的运行时 100% 来自 npm 官方包。公司价值全部沉淀在护栏层，不产生维护分叉的长期负担。</p>
+
+  <div class="repo-root">根仓库（Yarn workspace）＝ <b>公司 fork：社区版 v2.0.2 之后新增 72 个安全 commit</b>（origin 指向社区上游 anywhere-labs）</div>
+  <div class="repo-grid">
+    <div class="repo-card">
+      <div class="rc-name">deepseek-harness/</div>
+      <span class="rc-tag lock">只读 · 零修改</span>
+      <div>上游源码，pinned git submodule（固定在 <code>b150a55</code> / <code>v0.1.1-rc.2</code>）。
+      只作审计对照、<b>不参与构建</b>；<code>verify-layout.mjs</code> 强制校验其「干净且与 pin 一致」。</div>
+    </div>
+    <div class="repo-card">
+      <div class="rc-name">dsh-plugin-desktop/</div>
+      <span class="rc-tag">公司主力 · 已实装</span>
+      <div>Electron 桌面壳。<b>它本身就是一个标准 DSH 插件</b>，与第三方插件走同一套接入机制（详见第 2 章）。</div>
+    </div>
+    <div class="repo-card">
+      <div class="rc-name">dsh-community-market/</div>
+      <span class="rc-tag lock">已实装 · 已锁定</span>
+      <div>插件市场。已实装并内置于产品，<b>锁定为公司签名目录</b>——市场上能看到的插件全部经公司审签。</div>
+    </div>
+    <div class="repo-card">
+      <div class="rc-name">dsh-community-fabric/</div>
+      <span class="rc-tag doc">纯文档</span>
+      <div>社区插件契约 RFC（第三方插件如何合规接入的规范草案），当前不含可执行代码。</div>
+    </div>
+  </div>
+
+  <h3>关键事实</h3>
+  <ul>
+    <li><b>发布产物中的 DSH 运行时 100% 来自 npm 官方包</b> <code>@deepseek-ai/*@0.1.1-rc.2</code>，
+      其中 11 个包经 <span class="term">yarn patch</span><span class="explain">（对官方发布包打补丁，不动上游源码）</span>修补。</li>
+    <li>submodule 仅为审计参照：构建产物不来自它，校验脚本却时刻盯着它——一旦有人改动上游目录，构建即失败。</li>
+    <li>git 拓扑：origin = 社区上游 <code>anywhere-labs</code>；fork = 公司版。公司在 <b>v2.0.2 之后新增 72 个安全 commit</b>，全部位于护栏层。</li>
+  </ul>
+
+  <div class="callout">
+    <span class="ct">为什么坚持「上游零修改」？</span>
+    改上游源码 = 制造私有分叉 = 社区每次升级都要人工合并，长期成本最高。护栏放外围层（策略、签名、验签、打包），
+    上游升级时护栏代码无需合并冲突处理，跟随成本最低。
+  </div>
+</section>
+
+<!-- ======================= 第 2 章 ======================= -->
+<section id="ch2" class="chapter">
+  <h2><span class="chip">02</span>运行架构<span class="h2sub">「桌面即插件」—— 没有分叉，只有组合</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>本章结论：</b>桌面壳不是「魔改版 DSH」，而是以<b>标准插件</b>身份接入官方运行时容器；
+  界面运行在强沙箱的渲染进程里，只通过本机回环通道取数据。这是字面上的架构事实，不是宣传口号。</p>
+
+  <figure>
+    <svg viewBox="0 0 980 380" role="img" aria-label="系统架构图：用户经 Electron 桌面壳进入 DSH Host 的 Cordis 容器，Host 通过仅本机的 loopback 通道服务沙箱化 Web 渲染进程">
+      <defs>
+        <marker id="mk-a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#1c2e52"/>
+        </marker>
+        <marker id="mk-a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#8a93a2"/>
+        </marker>
+      </defs>
+
+      <!-- 回环说明虚线 -->
+      <path d="M 850 112 C 850 26, 92 26, 86 148" fill="none" stroke="#8a93a2" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#mk-a2)"/>
+      <text x="470" y="20" text-anchor="middle" font-size="10.5" fill="#6a7482">用户看到的全部界面 = 右侧沙箱渲染进程呈现的官方 Web UI</text>
+
+      <!-- 用户 -->
+      <circle cx="78" cy="170" r="13" fill="#1c2e52"/>
+      <path d="M 52 224 C 52 198, 104 198, 104 224 Z" fill="#1c2e52"/>
+      <text x="78" y="246" text-anchor="middle" font-size="13" font-weight="700" fill="#1c2e52">用户</text>
+      <line x1="108" y1="203" x2="146" y2="203" stroke="#1c2e52" stroke-width="1.8" marker-end="url(#mk-a1)"/>
+
+      <!-- Electron 桌面壳 -->
+      <rect x="150" y="118" width="186" height="170" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <rect x="150" y="118" width="186" height="34" rx="10" fill="#1c2e52"/>
+      <rect x="150" y="136" width="186" height="16" fill="#1c2e52"/>
+      <text x="243" y="140" text-anchor="middle" font-size="13.5" font-weight="700" fill="#ffffff">Electron 桌面壳</text>
+      <text x="243" y="165" text-anchor="middle" font-size="10.5" fill="#6a7482">主进程 · 单实例锁</text>
+      <rect x="164" y="174" width="158" height="26" rx="13" fill="#f0f4fa" stroke="#c9d3e4"/>
+      <text x="243" y="191" text-anchor="middle" font-size="11.5" fill="#22345c">窗口 · 托盘</text>
+      <rect x="164" y="206" width="158" height="26" rx="13" fill="#f0f4fa" stroke="#c9d3e4"/>
+      <text x="243" y="223" text-anchor="middle" font-size="11.5" fill="#22345c">终端</text>
+      <rect x="164" y="238" width="158" height="26" rx="13" fill="#f0f4fa" stroke="#c9d3e4"/>
+      <text x="243" y="255" text-anchor="middle" font-size="11.5" fill="#22345c">更新</text>
+      <line x1="340" y1="203" x2="376" y2="203" stroke="#1c2e52" stroke-width="1.8" marker-end="url(#mk-a1)"/>
+
+      <!-- DSH Host -->
+      <rect x="380" y="64" width="280" height="300" rx="10" fill="#f4f7fb" stroke="#1c2e52" stroke-width="1.5"/>
+      <rect x="380" y="64" width="280" height="36" rx="10" fill="#1c2e52"/>
+      <rect x="380" y="82" width="280" height="18" fill="#1c2e52"/>
+      <text x="520" y="87" text-anchor="middle" font-size="13.5" font-weight="700" fill="#ffffff">上游 DSH Host（Cordis 容器）</text>
+
+      <rect x="390" y="110" width="250" height="48" rx="8" fill="#ffffff" stroke="#c9d3e4"/>
+      <rect x="398" y="118" width="38" height="16" rx="8" fill="#22345c"/>
+      <text x="417" y="130" text-anchor="middle" font-size="9.5" fill="#ffffff">官方</text>
+      <text x="444" y="130" font-size="12.5" font-weight="700" fill="#22345c">dsh-base · dsh-web-app</text>
+      <text x="444" y="147" font-size="10" fill="#6a7482">上游官方插件，npm 官方包直出</text>
+
+      <rect x="390" y="164" width="250" height="48" rx="8" fill="#ffffff" stroke="#c9d3e4"/>
+      <rect x="398" y="172" width="38" height="16" rx="8" fill="#2f5fa8"/>
+      <text x="417" y="184" text-anchor="middle" font-size="9.5" fill="#ffffff">桌面</text>
+      <text x="444" y="184" font-size="12.5" font-weight="700" fill="#22345c">桌面插件 · 7 个模块</text>
+      <text x="444" y="201" font-size="9.8" fill="#6a7482">shell / 终端 / 更新 / 诊断 / 通知 / pnpm / profiles</text>
+
+      <rect x="390" y="218" width="250" height="48" rx="8" fill="#ffffff" stroke="#c9d3e4"/>
+      <rect x="398" y="226" width="38" height="16" rx="8" fill="#2e7d5b"/>
+      <text x="417" y="238" text-anchor="middle" font-size="9.5" fill="#ffffff">市场</text>
+      <text x="444" y="238" font-size="12.5" font-weight="700" fill="#22345c">dsh-community-market</text>
+      <text x="444" y="255" font-size="10" fill="#6a7482">已实装 · 锁定为公司签名目录</text>
+
+      <rect x="390" y="272" width="250" height="48" rx="8" fill="#ffffff" stroke="#c9d3e4"/>
+      <rect x="398" y="280" width="38" height="16" rx="8" fill="#b4541c"/>
+      <text x="417" y="292" text-anchor="middle" font-size="9.5" fill="#ffffff">三方</text>
+      <text x="444" y="292" font-size="12.5" font-weight="700" fill="#22345c">白名单第三方插件</text>
+      <text x="444" y="309" font-size="10" fill="#6a7482">仅限签名目录内条目（现 1 个试点插件）</text>
+
+      <text x="520" y="348" text-anchor="middle" font-size="10.5" font-style="italic" fill="#6a7482">四类插件装载进同一个 Cordis 运行时（「桌面即插件」）</text>
+
+      <!-- loopback 通道 -->
+      <line x1="664" y1="203" x2="776" y2="203" stroke="#1c2e52" stroke-width="1.8" marker-end="url(#mk-a1)"/>
+      <text x="720" y="184" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1c2e52">loopback HTTP/WS</text>
+      <text x="720" y="226" text-anchor="middle" font-size="10" fill="#6a7482">127.0.0.1（仅本机）</text>
+
+      <!-- 沙箱渲染进程 -->
+      <rect x="780" y="118" width="164" height="170" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <rect x="780" y="118" width="164" height="34" rx="10" fill="#1c2e52"/>
+      <rect x="780" y="136" width="164" height="16" fill="#1c2e52"/>
+      <text x="862" y="140" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">沙箱化 Web 渲染进程</text>
+      <text x="792" y="172" font-size="10.2" fill="#22345c">· sandbox 强制开启</text>
+      <text x="792" y="192" font-size="10.2" fill="#22345c">· contextIsolation 隔离</text>
+      <text x="792" y="212" font-size="10.2" fill="#22345c">· nodeIntegration 禁用</text>
+      <text x="792" y="232" font-size="10.2" fill="#22345c">· 仅加载官方 Web UI</text>
+      <text x="792" y="252" font-size="10.2" fill="#22345c">· preload 仅 1 个文件 API</text>
+      <text x="792" y="272" font-size="10.2" fill="#22345c">· 无 renderer IPC 插件面</text>
+    </svg>
+    <figcaption><b>图 1 · 系统架构总览。</b>用户经由 Electron 桌面壳进入上游 DSH Host（Cordis 容器）；
+    Host 内并列装载四类插件；界面通过仅本机可达的 loopback 通道（127.0.0.1）提供给强沙箱化的 Web 渲染进程。</figcaption>
+  </figure>
+
+  <h3>启动链（自上而下依次装载）</h3>
+  <ol class="chain">
+    <li>Electron 主进程启动，<b>单实例锁</b>生效（防止多开导致的会话分裂）。</li>
+    <li>调用<b>上游官方 <code>boot()</code></b>（不是我们的定制入口），建立 Cordis 容器 root。</li>
+    <li>Loader 依次挂载：<b>官方 <code>dsh-base</code> + <code>dsh-web-app</code></b>。</li>
+    <li>挂载<b>桌面插件 7 个模块</b>：desktop-shell（窗口/托盘）、terminal（终端）、updates（更新）、diagnostics（诊断）、notifications（通知）、pnpm（包管理）、profiles（配置档案）。</li>
+    <li>挂载<b>锁定版 community-market</b>（公司签名目录）。</li>
+    <li class="final">挂载<b>白名单第三方插件</b>（仅签名目录内条目）。以上全部组成<b>同一个 Cordis 运行时</b>。</li>
+  </ol>
+
+  <h3>「桌面即插件」的实现依据</h3>
+  <ul>
+    <li><code>dsh-plugin-desktop</code> 的 <code>package.json</code> 声明了标准 DSH 插件字段：
+      <code>dsh.client.inject</code> 与 <code>dsh.bundle.patch: cordis.patch.yml</code>——
+      与第三方插件走<b>同一套组合机制</b>。</li>
+    <li>对第三方插件仅公开 <b>2 个服务契约</b>：<code>dsh-plugin-desktop/profile-service</code> 与 <code>dsh-plugin-desktop/pnpm</code>。
+      攻击面小、边界清晰。</li>
+  </ul>
+
+  <h3>渲染层安全（用户界面的隔离）</h3>
+  <ul>
+    <li>BrowserWindow 强制 <code>sandbox</code> + <code>contextIsolation</code>，禁用 <code>nodeIntegration</code><span class="explain">（页面代码碰不到 Node 系统能力，彼此隔离）</span>。</li>
+    <li>页面只加载 <b>127.0.0.1 loopback</b> 上的官方 Web UI<span class="explain">（外部网络根本连不进这条通道）</span>。</li>
+    <li>preload 脚本仅暴露 <b>1 个文件路径 API</b>；没有 renderer IPC 插件面<span class="explain">（界面层没有可供插件利用的通信后门）</span>。</li>
+  </ul>
+</section>
+
+<!-- ======================= 第 3 章 ======================= -->
+<section id="ch3" class="chapter">
+  <h2><span class="chip">03</span>安全架构 · 五层防线<span class="h2sub">核心章节</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>本章结论：</b>安全设计遵循「纵深防御」——不依赖任何单点，五层各自独立承重：
+  即使某一层被突破，下一层仍能拦截。安装时拦一次（L1–L3），启动时再拦一次（L4），产品自身供应链再加固一次（L5）。
+  所有防线的默认行为都是 fail-closed（默认拒绝）。</p>
+
+  <figure>
+    <svg viewBox="0 0 780 612" role="img" aria-label="五层安全防线纵向堆叠图：自上而下为 L5 供应链与发布加固、L4 启动验签承重墙、L3 签名插件目录、L2 全安装入口封堵、L1 嵌入式部署策略，底部为上游 DSH 运行时零修改基座">
+      <defs>
+        <marker id="mk-b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#a83a3a"/>
+        </marker>
+      </defs>
+
+      <!-- 攻击路径 -->
+      <text x="64" y="32" text-anchor="middle" font-size="10.5" fill="#a83a3a">插件攻击面</text>
+      <line x1="64" y1="44" x2="64" y2="470" stroke="#a83a3a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#mk-b1)"/>
+      <text x="46" y="260" text-anchor="middle" font-size="11" fill="#a83a3a" transform="rotate(-90 46 260)">未签名 / 恶意插件进入尝试</text>
+      <circle cx="64" cy="205" r="11" fill="#ffffff" stroke="#a83a3a" stroke-width="1.6"/>
+      <line x1="58" y1="199" x2="70" y2="211" stroke="#a83a3a" stroke-width="1.8"/>
+      <line x1="70" y1="199" x2="58" y2="211" stroke="#a83a3a" stroke-width="1.8"/>
+      <circle cx="64" cy="393" r="11" fill="#ffffff" stroke="#a83a3a" stroke-width="1.6"/>
+      <line x1="58" y1="387" x2="70" y2="399" stroke="#a83a3a" stroke-width="1.8"/>
+      <line x1="70" y1="387" x2="58" y2="399" stroke="#a83a3a" stroke-width="1.8"/>
+      <text x="140" y="490" text-anchor="end" font-size="10.5" fill="#a83a3a">拦截于 L2（安装入口）</text>
+      <text x="140" y="506" text-anchor="end" font-size="10.5" fill="#a83a3a">与 L4（启动验签）</text>
+
+      <!-- L5 -->
+      <rect x="150" y="70" width="560" height="82" rx="8" fill="#f6f3ec" stroke="#b9c5d8" stroke-width="1.3"/>
+      <circle cx="186" cy="111" r="17" fill="#1c2e52"/>
+      <text x="186" y="116" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">L5</text>
+      <text x="216" y="106" font-size="14" font-weight="700" fill="#22345c">供应链与发布加固</text>
+      <text x="216" y="130" font-size="11" fill="#5a6572">Electron fuses · 强制签名更新 · 独立 Node 运行时 · 发布前门禁</text>
+      <text x="692" y="106" text-anchor="end" font-size="11" fill="#8a93a2">P3 / P4</text>
+
+      <!-- L4 -->
+      <rect x="150" y="164" width="560" height="82" rx="8" fill="#e9eef9" stroke="#22345c" stroke-width="2"/>
+      <circle cx="186" cy="205" r="17" fill="#1c2e52"/>
+      <text x="186" y="210" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">L4</text>
+      <text x="216" y="200" font-size="14" font-weight="700" fill="#22345c">启动验签承重墙</text>
+      <text x="216" y="224" font-size="11" fill="#5a6572">每次启动、加载任何插件前逐个验签；不通过即拒载（剔除插件，应用照常启动）</text>
+      <text x="692" y="200" text-anchor="end" font-size="11" fill="#8a93a2">P2</text>
+      <text x="692" y="224" text-anchor="end" font-size="10.5" fill="#a83a3a">承重墙 · 最终兜底</text>
+
+      <!-- L3 -->
+      <rect x="150" y="258" width="560" height="82" rx="8" fill="#e9eef9" stroke="#b9c5d8" stroke-width="1.3"/>
+      <circle cx="186" cy="299" r="17" fill="#1c2e52"/>
+      <text x="186" y="304" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">L3</text>
+      <text x="216" y="294" font-size="14" font-weight="700" fill="#22345c">签名插件目录</text>
+      <text x="216" y="318" font-size="11" fill="#5a6572">ed25519 签名 · 90 天有效期 · 序列号单调棘轮（防回滚 / 重放）</text>
+      <text x="692" y="294" text-anchor="end" font-size="11" fill="#8a93a2">P2</text>
+
+      <!-- L2 -->
+      <rect x="150" y="352" width="560" height="82" rx="8" fill="#eef2f9" stroke="#b9c5d8" stroke-width="1.3"/>
+      <circle cx="186" cy="393" r="17" fill="#1c2e52"/>
+      <text x="186" y="398" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">L2</text>
+      <text x="216" y="388" font-size="14" font-weight="700" fill="#22345c">全安装入口封堵</text>
+      <text x="216" y="412" font-size="11" fill="#5a6572">市场 UI、CLI、pnpm、home patch、源切换、外部直装 —— 6 类入口全部管控</text>
+      <text x="692" y="388" text-anchor="end" font-size="11" fill="#8a93a2">P1</text>
+
+      <!-- L1 -->
+      <rect x="150" y="446" width="560" height="82" rx="8" fill="#eef2f9" stroke="#b9c5d8" stroke-width="1.3"/>
+      <circle cx="186" cy="487" r="17" fill="#1c2e52"/>
+      <text x="186" y="492" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">L1</text>
+      <text x="216" y="482" font-size="14" font-weight="700" fill="#22345c">嵌入式部署策略</text>
+      <text x="216" y="506" font-size="11" fill="#5a6572">策略内嵌 app.asar · 默认锁定变体（fail-closed）· 封死本地改明文 JSON 的通道</text>
+      <text x="692" y="482" text-anchor="end" font-size="11" fill="#8a93a2">P1</text>
+
+      <!-- 基座 -->
+      <rect x="150" y="540" width="560" height="54" rx="6" fill="#e7edf6" stroke="#b9c5d8" stroke-width="1.2"/>
+      <text x="430" y="562" text-anchor="middle" font-size="12" font-weight="700" fill="#22345c">上游 DSH 运行时 · 源码零修改</text>
+      <text x="430" y="580" text-anchor="middle" font-size="10.5" fill="#5a6572">npm 官方包 @deepseek-ai/*@0.1.1-rc.2 ＋ 11 个 yarn patch（均为外围修补）</text>
+
+      <!-- 阶段括号 -->
+      <path d="M 726 152 h -8 V 70 h 8" fill="none" stroke="#9aa5b5" stroke-width="1.2"/>
+      <text x="736" y="115" font-size="11" fill="#5a6572">P3·P4</text>
+      <path d="M 726 340 h -8 V 164 h 8" fill="none" stroke="#9aa5b5" stroke-width="1.2"/>
+      <text x="736" y="256" font-size="11" fill="#5a6572">P2</text>
+      <path d="M 726 528 h -8 V 352 h 8" fill="none" stroke="#9aa5b5" stroke-width="1.2"/>
+      <text x="736" y="444" font-size="11" fill="#5a6572">P1</text>
+    </svg>
+    <figcaption><b>图 2 · 五层安全防线（纵深防御）。</b>L1–L5 全部构筑在「上游零修改」的基座之上；
+    未签名插件在 L2（安装入口）与 L4（启动验签）被双重拦截。</figcaption>
+  </figure>
+
+  <div class="tblwrap">
+    <table class="tbl">
+      <caption>表 1 · P1–P4 四阶段成果（合计 72 个安全 commit，均在社区版 v2.0.2 之后新增、位于公司护栏层）</caption>
+      <thead>
+        <tr><th style="width:64px;">阶段</th><th style="width:150px;">主题</th><th style="width:96px;">对应防线</th><th>核心成果</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="c"><b>P1</b></td><td>策略锁定与入口封堵</td><td class="c">L1 · L2</td>
+            <td>策略资产内嵌 app.asar、默认锁定变体（fail-closed）；6 类安装入口全部管控；CLI 门禁与 home patch 拒启</td></tr>
+        <tr><td class="c"><b>P2</b></td><td>签名体系</td><td class="c">L3 · L4</td>
+            <td>ed25519 签名目录与发布管线；安装三链合流；启动验签承重墙与免疫名单；签名私钥仅存环境变量</td></tr>
+        <tr><td class="c"><b>P3</b></td><td>打包加固</td><td class="c">L5</td>
+            <td>Electron fuses 全集（禁 runAsNode、ASAR integrity）；更新包强制 detached ed25519 签名；捆绑独立 Node 运行时</td></tr>
+        <tr><td class="c"><b>P4</b></td><td>检测与发布门禁</td><td class="c">L5</td>
+            <td>启动自检报告；篡改证据链手册与残余风险签收单（R1–R7）；发布前 preflight 门禁</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ---------- L1 ---------- -->
+  <div class="layer-head">
+    <span class="lno">L1</span><span class="lname">嵌入式部署策略</span><span class="lphase">阶段 P1</span>
+  </div>
+  <p class="layer-block">拦什么：产品出厂后被改成「非锁定」配置的可能。怎么拦：把策略焊死在应用包内部。</p>
+  <ul>
+    <li>策略为 <b>6 字段冻结 schema</b>：locked（锁定开关）、公司目录源、manifest URL、禁 home patch、禁手动装插件、ed25519 信任根。</li>
+    <li>构建时将策略资产<b>嵌入 app.asar 内</b>；默认出货 release（锁定）变体——<b>即使构建时忘记配置，出厂的也是锁定版</b>（fail-closed）。</li>
+    <li>运行时<b>优先读取 asar 虚拟归档内的策略副本</b>，封死「改本地明文 JSON 文件」这条最廉价的篡改通道。</li>
+  </ul>
+  <div class="codepos"><b>关键代码位置：</b><code>desktop-policy.ts</code></div>
+
+  <!-- ---------- L2 ---------- -->
+  <div class="layer-head">
+    <span class="lno">L2</span><span class="lname">全安装入口封堵</span><span class="lphase">阶段 P1</span>
+  </div>
+  <p class="layer-block">拦什么：用户绕过市场、从任何旁路把插件装进来的尝试。怎么拦：六个入口逐一设卡，无死角。</p>
+
+  <div class="tblwrap">
+    <table class="tbl">
+      <caption>表 2 · 安装入口管控矩阵（6 类入口全部管控）</caption>
+      <thead>
+        <tr><th style="width:170px;">安装入口</th><th>管控方式</th><th style="width:250px;">关键实现</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>市场 UI 安装</b></td>
+          <td>签名目录 ∩ npm registry 元数据 ∩ 安装后实测树摘要，<b>三链合流</b>，任一不符即回滚</td>
+          <td><code>dsh-community-market/src/install/service.ts</code></td>
+        </tr>
+        <tr>
+          <td><b>终端 / CLI</b><br><span class="muted small"><code>dsh plugin add</code></span></td>
+          <td>锁定版只放行「包名@精确版本」且签名目录内存在<b>未吊销</b>条目；否则拒绝，且拒绝发生在加载上游 CLI 之前</td>
+          <td><code>desktop-cli.ts</code> · <code>cli-install-channel.ts</code></td>
+        </tr>
+        <tr>
+          <td><b>受管 pnpm 直装</b></td>
+          <td>选项白名单 ＋ registry 钉死官方 npmjs ＋ 强制精确版本</td>
+          <td><code>pnpm.ts</code></td>
+        </tr>
+        <tr>
+          <td><b>home 级 cordis patch</b></td>
+          <td>锁定版下该文件<b>存在即拒绝启动</b></td>
+          <td><code>profile.ts</code></td>
+        </tr>
+        <tr>
+          <td><b>市场 provider / 源切换</b></td>
+          <td>非公司源一律拒绝（403）</td>
+          <td><code>desktop-market.ts</code> · <code>dsh-community-market/src/catalog/source-store.ts</code></td>
+        </tr>
+        <tr>
+          <td><b>外部 CLI 直接写 profile 目录</b></td>
+          <td>不拦安装，<b>启动时拒载</b>（L4 兜底）</td>
+          <td><code>boot-verification.ts</code>（见 L4）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <span class="ct">补充机制：策略的安全交接</span>
+    策略经<b>环境变量安全交接</b>传递给安装子进程（防止 asar 之外的明文副本被篡改），交接缺失即 fail-closed——
+    子进程宁可拒装，也不接受来路不明的策略。
+  </div>
+
+  <!-- ---------- L3 ---------- -->
+  <div class="layer-head">
+    <span class="lno">L3</span><span class="lname">签名插件目录</span><span class="lphase">阶段 P2</span>
+  </div>
+  <p class="layer-block">拦什么：目录本身被伪造或篡改。怎么拦：整条目录由公司私钥签名，客户端只认签名。</p>
+
+  <figure>
+    <svg viewBox="0 0 980 340" role="img" aria-label="签名目录管线流程图：allowlist.json 经 npm registry 抓取 integrity、组装、ed25519 签名、内嵌或受控分发，最终安装时与启动时双重验签">
+      <defs>
+        <marker id="mk-c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#1c2e52"/>
+        </marker>
+      </defs>
+
+      <!-- 第一行 -->
+      <rect x="36" y="42" width="264" height="76" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.4"/>
+      <circle cx="58" cy="64" r="11" fill="#1c2e52"/>
+      <text x="58" y="68.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">1</text>
+      <text x="76" y="68" font-size="13" font-weight="700" fill="#22345c">allowlist.json</text>
+      <text x="52" y="90" font-size="10.5" fill="#6a7482">唯一人工输入（公司审批动作）</text>
+      <text x="52" y="106" font-size="10.5" fill="#6a7482">现含 1 个试点插件 dsh-better-sidebar@0.15.2</text>
+
+      <line x1="304" y1="80" x2="352" y2="80" stroke="#1c2e52" stroke-width="1.7" marker-end="url(#mk-c1)"/>
+
+      <rect x="358" y="42" width="264" height="76" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.4"/>
+      <circle cx="380" cy="64" r="11" fill="#1c2e52"/>
+      <text x="380" y="68.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">2</text>
+      <text x="398" y="68" font-size="13" font-weight="700" fill="#22345c">抓取 npm registry integrity</text>
+      <text x="374" y="90" font-size="10.5" fill="#6a7482">从 npm 官方注册表现场抓取防篡改指纹</text>
+      <text x="374" y="106" font-size="10.5" fill="#6a7482">不信任任何本地文件</text>
+
+      <line x1="626" y1="80" x2="674" y2="80" stroke="#1c2e52" stroke-width="1.7" marker-end="url(#mk-c1)"/>
+
+      <rect x="680" y="42" width="264" height="76" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.4"/>
+      <circle cx="702" cy="64" r="11" fill="#1c2e52"/>
+      <text x="702" y="68.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">3</text>
+      <text x="720" y="68" font-size="13" font-weight="700" fill="#22345c">组装目录 manifest</text>
+      <text x="696" y="90" font-size="10.5" fill="#6a7482">canonical JSON 组装（键排序、零空白，</text>
+      <text x="696" y="106" font-size="10.5" fill="#6a7482">防搬运拼接）</text>
+
+      <line x1="812" y1="122" x2="812" y2="190" stroke="#1c2e52" stroke-width="1.7" marker-end="url(#mk-c1)"/>
+
+      <!-- 第二行（自右向左） -->
+      <rect x="680" y="196" width="264" height="76" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.4"/>
+      <circle cx="702" cy="218" r="11" fill="#1c2e52"/>
+      <text x="702" y="222.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">4</text>
+      <text x="720" y="222" font-size="13" font-weight="700" fill="#22345c">ed25519 签名</text>
+      <text x="696" y="244" font-size="10.5" fill="#6a7482">私钥仅存环境变量、永不落盘</text>
+      <text x="696" y="260" font-size="10.5" fill="#6a7482">签名覆盖目录全部条目</text>
+
+      <line x1="676" y1="234" x2="628" y2="234" stroke="#1c2e52" stroke-width="1.7" marker-end="url(#mk-c1)"/>
+
+      <rect x="358" y="196" width="264" height="76" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.4"/>
+      <circle cx="380" cy="218" r="11" fill="#1c2e52"/>
+      <text x="380" y="222.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">5</text>
+      <text x="398" y="222" font-size="13" font-weight="700" fill="#22345c">内嵌资产 / 受控分发</text>
+      <text x="374" y="244" font-size="10.5" fill="#6a7482">随应用包内嵌，或经受控源发布</text>
+      <text x="374" y="260" font-size="10.5" fill="#6a7482">信任根指纹随策略一并分发</text>
+
+      <line x1="354" y1="234" x2="306" y2="234" stroke="#1c2e52" stroke-width="1.7" marker-end="url(#mk-c1)"/>
+
+      <rect x="36" y="196" width="264" height="76" rx="10" fill="#ffffff" stroke="#a83a3a" stroke-width="1.8"/>
+      <circle cx="58" cy="218" r="11" fill="#a83a3a"/>
+      <text x="58" y="222.5" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">6</text>
+      <text x="76" y="222" font-size="13" font-weight="700" fill="#a83a3a">双重验签</text>
+      <text x="52" y="244" font-size="10.5" fill="#6a7482">安装时验签 ＋ 每次启动验签</text>
+      <text x="52" y="260" font-size="10.5" fill="#6a7482">任一失败 = 整个目录不可信、安装通道闭锁</text>
+
+      <rect x="36" y="290" width="908" height="38" rx="8" fill="#f4f7fb" stroke="#c9d3e4"/>
+      <text x="490" y="313" text-anchor="middle" font-size="11.5" fill="#22345c">附加约束：签名 90 天过期 · 序列号单调棘轮（防回滚 / 重放）· 信任根指纹随策略内嵌 · 验签失败即整目录闭锁</text>
+    </svg>
+    <figcaption><b>图 3 · 签名目录管线。</b>全程仅第 ① 步需要人工（审批 allowlist），其余环节全部自动化、可复核；
+    integrity 一律现查 npm 官方注册表，不信任任何本地输入。</figcaption>
+  </figure>
+
+  <!-- ---------- L4 ---------- -->
+  <div class="layer-head">
+    <span class="lno">L4</span><span class="lname">启动验签承重墙</span><span class="lphase">阶段 P2 · 最终兜底</span>
+  </div>
+  <p class="layer-block">拦什么：一切绕过安装环节的「既成事实」——包括外部工具直接写盘的插件。怎么拦：每次启动重新验一遍，装了也白装。</p>
+  <ul>
+    <li><b>时机最早：</b>每次启动、<b>解析任何不可信配置之前</b>执行，不给恶意代码任何先跑起来的机会。</li>
+    <li><b>逐项校验：</b>对每个第三方插件依次验证——签名 → 精确条目 → lockfile 一致 → 安装回执树摘要。</li>
+    <li><b>不通过即拒载：</b>剔除该插件，但<b>应用本身正常启动</b>（单个坏插件不能瘫痪整个产品）。</li>
+    <li><b>免疫名单：</b>官方插件、桌面插件、市场核心插件在免疫名单中<b>永不过滤</b>（它们由官方渠道与 L5 保障，避免误伤基本功能）。</li>
+  </ul>
+  <div class="callout ok">
+    <span class="ct">为什么叫「承重墙」</span>
+    这是最后一道独立承重的防线：哪怕 L2 的某个入口将来出现疏漏，只要插件未经公司签名，启动时就进不了运行时——
+    「装得进、跑不起来」。
+  </div>
+
+  <!-- ---------- L5 ---------- -->
+  <div class="layer-head">
+    <span class="lno">L5</span><span class="lname">供应链与发布加固</span><span class="lphase">阶段 P3 / P4</span>
+  </div>
+  <p class="layer-block">拦什么：对产品自身的攻击（篡改程序、劫持更新、伪装运行时）。怎么拦：发布物全链路签名与门禁。</p>
+  <ul>
+    <li><b>Electron fuses：</b>禁 runAsNode（防把桌面程序当 Node 脚本引擎滥用）、启用 ASAR integrity（应用资源被改即拒绝运行）。</li>
+    <li><b>更新强制验签：</b>更新包必须携带 detached ed25519 签名，验签失败绝不落盘。</li>
+    <li><b>独立 Node 运行时：</b>捆绑自带、校验过的 Node 运行时，不依赖用户机器上来源不明的 Node。</li>
+    <li><b>启动自检报告：</b>启动时生成安全自检结果，供诊断导出与审计。</li>
+    <li><b>发布前 preflight 门禁：</b>缺信任根、目录未验签——<b>直接构建失败</b>，不合格产物出不了门。</li>
+  </ul>
+</section>
+
+<!-- ======================= 第 4 章 ======================= -->
+<section id="ch4" class="chapter">
+  <h2><span class="chip">04</span>关键问题澄清<span class="h2sub">管理层最可能问的两个问题</span></h2>
+  <hr class="h2rule">
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q1</span>我们是否修改了上游？以后升级能不能跟上？</div>
+    <div class="a">
+      <ul>
+        <li><b>源码层：零修改。</b>submodule 被强制校验「干净 + pin 一致」（<code>verify-layout.mjs</code>），任何对上游目录的改动都会被构建拦下。</li>
+        <li><b>运行时层：11 个官方 npm 包经 yarn patch 修补。</b>其中 9 个是社区版自带（UI 修补），
+          公司自有的仅 <b>2 个行为级修复</b>：<code>dsh-agent-loop</code>（空名工具调用防护）、<code>dsh-token-meter</code>（计量缓存修复）。</li>
+        <li><b>跟进能力：有文档化的升级流程</b>（pin 更新独立提交、<code>upstream.json</code> 三重校验）。</li>
+        <li><b>成本点（需要管理层知悉）：</b>patch 打在编译产物上，上游大版本升级时 11 个 patch 需要重放；
+          且上游社区版已领先我方基线 <b>184 commits</b>，需要安排升级窗口（见第 5 章建议 ③）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q2</span>桌面产品本身是不是 DSH 插件？这样做到底图什么？</div>
+    <div class="a">
+      <ul>
+        <li><b>是。</b>桌面壳以标准插件声明（<code>dsh.client.inject</code> ＋ <code>dsh.bundle.patch: cordis.patch.yml</code>）
+          接入官方运行时容器，与第三方插件使用同一套组合机制——「桌面即插件」是字面的架构事实。</li>
+        <li><b>收益一（安全）：</b>护栏通过官方组合机制施加，<b>不被绕过</b>的同时不制造私有分叉。</li>
+        <li><b>收益二（兼容）：</b>市场锁定也是通过组合层<b>剥离不可信 provider 行</b>实现的，无需改动上游一行代码，
+          与上游生态保持兼容。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 第 5 章 ======================= -->
+<section id="ch5" class="chapter">
+  <h2><span class="chip">05</span>残余风险与建议<span class="h2sub">待管理层决策事项</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>本章结论：</b>五层防线落地后，剩余风险均为<b>已知、已登记、可管理</b>的项；
+  无「未知暴露」。请管理层重点关注下表与文末四条建议。</p>
+
+  <div class="tblwrap">
+    <table class="tbl">
+      <caption>表 3 · 残余风险表 —— 摘自已登记的 R1–R7 风险登记表（完整 7 项见《残余风险签收单》，其中 3 项已有明确缓解路径）<b>待管理层签收</b></caption>
+      <thead>
+        <tr><th style="width:52px;">编号</th><th style="width:150px;">风险</th><th>说明</th><th style="width:280px;">现状 / 缓解</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="rid">R1</td><td><b>本地改应用本体</b></td>
+          <td>在启用操作系统级代码签名（Authenticode）之前，本地提权用户理论上可篡改应用文件绕过策略</td>
+          <td>已规划 Authenticode / WDAC <b>零改动升级点</b>（无需重构）</td>
+        </tr>
+        <tr>
+          <td class="rid">R2</td><td><b>外部 CLI 直装</b></td>
+          <td>用户用外部下载的 dsh CLI 写入 profile 目录：<b>装得进、加载被拒</b></td>
+          <td>L4 启动拒载兜底；残余风险仅为磁盘残留文件</td>
+        </tr>
+        <tr>
+          <td class="rid">R3</td><td><b>内嵌 manifest 可写</b></td>
+          <td>per-user 安装模式下，内嵌目录资产用户可改</td>
+          <td>序列号棘轮抬高篡改成本；即便回放，内容仍限于公司签名目录</td>
+        </tr>
+        <tr>
+          <td class="rid">R6</td><td><b>Linux fuse 缺失</b></td>
+          <td>Linux 版 asar integrity 为 no-op（不生效）</td>
+          <td>我方发布仅 Windows / macOS，<b>暂不适用</b></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout risk">
+    <span class="ct">签收请求</span>
+    R1–R7 残余风险登记表（P4-3 签收单）已完成编制，请管理层确认签收。签收即表示：上述残余风险及其缓解路径已知悉并接受，
+    作为后续 Authenticode 等升级项的决策基线。
+  </div>
+
+  <h3>建议（按优先级排序）</h3>
+  <ol class="chain">
+    <li><b>推送 6 个未推送的安全相关 commit</b>（含 2 个新 patch）——确保远端与本地安全基线一致，避免单点丢失。</li>
+    <li><b>更新过时的根 <code>AGENTS.md</code></b>——其中仍描述「market 未实装」，与现状不符，会误导后续维护与审计。</li>
+    <li><b>规划上游升级窗口</b>——上游已领先我方基线 184 commits；同时评估将公司自有 2 个 patch（dsh-agent-loop、dsh-token-meter）回推上游，以降低长期维护成本。</li>
+    <li class="final"><b>管理层签收 R1–R7 残余风险登记表</b>——完成本轮安全治理的闭环。</li>
+  </ol>
+</section>
+
+</main>
+
+<footer>
+  <div class="fbar">
+    <span class="secret">内部资料 · 请勿外传</span><br>
+    DSH Desktop 架构与安全策略说明书 · 管理层汇报版 · 2026-08-27 · v1.0<br>
+    本文全部数据与结论来自 2026-08-27 代码 review 核实结果，关键论断均可在仓库内对应代码位置复核。
+  </div>
+</footer>
+
+<script>
+(function () {
+  try {
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+    var secs = links.map(function (a) {
+      return document.querySelector(a.getAttribute('href'));
+    });
+    function onScroll() {
+      var y = window.scrollY + 140, idx = 0, i;
+      for (i = 0; i < secs.length; i++) {
+        if (secs[i] && secs[i].offsetTop <= y) idx = i;
+      }
+      for (i = 0; i < links.length; i++) {
+        links[i].classList.toggle('active', i === idx);
+      }
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    onScroll();
+  } catch (e) {
+    /* 目录高亮仅为显示增强，失败时静默降级，不影响阅读与打印 */
+  }
+})();
+</script>
+
+</body>
+</html>

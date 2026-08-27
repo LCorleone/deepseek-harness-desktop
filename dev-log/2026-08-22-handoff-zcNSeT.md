@@ -89,6 +89,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 6. VM 验证 `ELECTRON_RUN_AS_NODE=1 ./app` 不进 node 模式；mac 签名机确认捆绑 node 二进制被签
 7. v1 receipt 升级引导文案（存量用户全部拒载后重装）；推广前同事机器安装实测
 8. onlyBuiltDependencies 目前硬编码三元组（node-pty/esbuild/protobufjs，`dsh-plugin-desktop/src/profile-pnpm-policy.ts`）：目录里第二个插件若携带其它原生构建依赖（sharp/sqlite3/bcrypt…）会复现 ERR_PNPM_IGNORED_BUILDS——长期方案是从签名 manifest 条目驱动批准清单，而非逐包扩硬编码
+9. **[已立卡 2026-08-27]「manifest 权威化」（收紧本地篡改防护 + B 合并）**：背景——用户装了认可插件后本地改实现：只改文件会被启动验签拒（rootDigest 比对 receipt）；但删/伪造 receipt 可绕（receipt 在用户可写 settings 里且是期望摘要唯一记录，删后降级 manifest-only 不查磁盘，代码注释自认 advisory 定位，另会话 review 结论一致）。方案：① **树摘要签进 manifest**（schema 加 packages[].treeDigest + 每插件构建批准 approvedBuilds——与原待办 ⑧/B 合并；验签侧改为以签名为准，receipt 降级为缓存，删/伪造均无效）② manifest-only 模式策略决策待定（改拒载代价是 receipt 异常环境下正版用户也用不了，试点期不动，等误报数据）③ OS 级签名仍是 R1 既定路线零改动升级点。范围：company-catalog schema+build/verify、market 验签两侧、boot-verification 锚点迁移、桌面 approvedBuilds 消费；改动面与 P2 相当，试点验收后排期
 
 ## Artifacts
 - `dev-log/2026-08-22-company-market-lockdown-plan-v2.md` — 实施计划 v2（唯一权威版）
