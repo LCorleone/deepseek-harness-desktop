@@ -31,7 +31,7 @@ const input: DesktopSetupWizardInput = {
   micaSupported: false,
   mode: 'extended',
   macosMaterial: 'transparent',
-  windowsMaterial: 'acrylic',
+  windowsMaterial: 'off',
   openBrowser: false,
   networkExposure: 'loopback',
   market: 'community-market',

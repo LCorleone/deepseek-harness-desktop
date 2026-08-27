@@ -131,7 +131,7 @@ describe('Desktop settings API', () => {
         value: {
           mode: 'compatibility' as const,
           macosMaterial: 'transparent' as const,
-          windowsMaterial: 'acrylic' as const,
+          windowsMaterial: 'off' as const,
           port: 43_120,
           openBrowser: true,
           networkExposure: 'lan' as const,

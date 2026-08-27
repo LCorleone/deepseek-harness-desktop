@@ -6,7 +6,6 @@ import { DESKTOP_FRAME_HEIGHT } from '../src/window-chrome.ts'
 
 const terminal = vi.hoisted(() => ({ open: vi.fn() }))
 const diagnostics = vi.hoisted(() => ({ export: vi.fn() }))
-const windowsAcrylic = vi.hoisted(() => ({ set: vi.fn(() => true) }))
 const updater = vi.hoisted(() => ({
   download: vi.fn(),
   filename: vi.fn(),
@@ -59,9 +58,6 @@ vi.mock('../src/diagnostic-export.ts', () => ({
   exportDesktopDiagnostics: diagnostics.export,
 }))
 
-vi.mock('../src/windows-acrylic.ts', () => ({
-  setWindowsAcrylic: windowsAcrylic.set,
-}))
 
 vi.mock('../src/update-download.ts', () => ({
   desktopUpdateFilename: updater.filename,
@@ -286,7 +282,7 @@ vi.mock('electron', () => ({
 const spec: DesktopShellSpec = {
   mode: 'compatibility',
   macosMaterial: 'transparent',
-  windowsMaterial: 'acrylic',
+  windowsMaterial: 'off',
   material: 'off',
   width: 1280,
   height: 840,
@@ -335,8 +331,6 @@ describe('Electron desktop runtime', () => {
     updater.resolve.mockReset()
     updater.resolve.mockResolvedValue(undefined)
     diagnostics.export.mockReset()
-    windowsAcrylic.set.mockReset()
-    windowsAcrylic.set.mockReturnValue(true)
     electron.loadURL.mockReset()
     electron.loadURL.mockResolvedValue(undefined)
     electron.app.getPreferredSystemLanguages.mockReturnValue(['en-US'])
@@ -2175,7 +2169,7 @@ describe('Electron desktop runtime', () => {
     await release()
   })
 
-  it('uses native acrylic for an extended Windows 10 window', async () => {
+  it('keeps an extended Windows 10 window opaque when material is off', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
     electron.nativeTheme.themeSource = 'light'
     const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
@@ -2183,7 +2177,7 @@ describe('Electron desktop runtime', () => {
     const release = runtime.schedule({
       ...spec,
       mode: 'extended',
-      material: 'acrylic',
+      material: 'off',
       windowsBuild: 19_045,
       readThemeSource: () => 'dark',
     })
@@ -2191,12 +2185,11 @@ describe('Electron desktop runtime', () => {
     await runtime.mountScheduled()
 
     expect(electron.browserWindowOptions[0]).toEqual(expect.objectContaining({
-      transparent: true,
+      backgroundColor: '#202124',
       titleBarOverlay: expect.objectContaining({ height: DESKTOP_FRAME_HEIGHT }),
     }))
+    expect(electron.browserWindowOptions[0]).not.toHaveProperty('transparent')
     expect(electron.browserWindowOptions[0]).not.toHaveProperty('backgroundMaterial')
-    expect(windowsAcrylic.set).toHaveBeenCalledOnce()
-    expect(windowsAcrylic.set).toHaveBeenCalledWith(electron.browserWindows[0], true, true)
     expect(electron.menuTemplates[0]).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Switch to Enhanced Mode', enabled: true }),
     ]))
@@ -2204,7 +2197,7 @@ describe('Electron desktop runtime', () => {
     await release()
   })
 
-  it('uses the Windows 11 system Acrylic backdrop without the legacy transparent helper', async () => {
+  it('does not install a native backdrop when Windows material is off', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
     electron.nativeTheme.themeSource = 'light'
     const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
@@ -2212,7 +2205,7 @@ describe('Electron desktop runtime', () => {
     const release = runtime.schedule({
       ...spec,
       mode: 'extended',
-      material: 'acrylic',
+      material: 'off',
       windowsBuild: 22_621,
       readThemeSource: () => 'dark',
     })
@@ -2220,18 +2213,15 @@ describe('Electron desktop runtime', () => {
     await runtime.mountScheduled()
 
     expect(electron.browserWindowOptions[0]).toEqual(expect.objectContaining({
-      backgroundMaterial: 'acrylic',
+      backgroundColor: '#202124',
       roundedCorners: true,
       thickFrame: true,
     }))
     expect(electron.browserWindowOptions[0]).not.toHaveProperty('transparent')
-    expect(windowsAcrylic.set).not.toHaveBeenCalled()
-
     const window = electron.browserWindows[0]
     window?.setBackgroundMaterial.mockClear()
     runtime.setThemeSource('light')
-    expect(window?.setBackgroundMaterial).toHaveBeenCalledOnce()
-    expect(window?.setBackgroundMaterial).toHaveBeenCalledWith('acrylic')
+    expect(window?.setBackgroundMaterial).not.toHaveBeenCalled()
 
     await release()
   })

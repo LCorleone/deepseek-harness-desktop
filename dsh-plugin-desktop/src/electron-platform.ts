@@ -40,7 +40,7 @@ class WindowsPlatformStrategy implements ElectronPlatformStrategy {
   }
 
   refreshThemeMaterial(window: BrowserWindow, material: DesktopWindowMaterial): void {
-    if (material === 'mica' || material === 'acrylic') window.setBackgroundMaterial(material)
+    if (material === 'mica') window.setBackgroundMaterial(material)
   }
 }
 

@@ -73,7 +73,7 @@ import {
   effectiveDesktopWindowMaterial,
   type DesktopWindowMaterial,
   type MacosWindowMaterial,
-  type WindowsWindowMaterial,
+  type PersistedWindowsWindowMaterial,
   windowsSupportsMica,
 } from './window-material.ts'
 
@@ -97,7 +97,7 @@ export interface DesktopSettings {
   /** Native translucency preference used on macOS custom-chrome modes. */
   macosMaterial: MacosWindowMaterial
   /** Native backdrop preference used on Windows custom-chrome modes. */
-  windowsMaterial: WindowsWindowMaterial
+  windowsMaterial: PersistedWindowsWindowMaterial
   /** Loopback Web port selected for the next application generation; zero requests a random port. */
   port: number
   /** Whether Desktop advertises its marker-free compatibility client for browser use. */
@@ -126,7 +126,7 @@ export interface Config {
   /** Native translucency preference used on macOS custom-chrome modes. */
   macosMaterial: MacosWindowMaterial
   /** Native backdrop preference used on Windows custom-chrome modes. */
-  windowsMaterial: WindowsWindowMaterial
+  windowsMaterial: PersistedWindowsWindowMaterial
   /** Configured loopback Web port used to detect restart-applied settings changes. */
   port: number
   /** Configured listener exposure used to detect restart-applied settings changes. */

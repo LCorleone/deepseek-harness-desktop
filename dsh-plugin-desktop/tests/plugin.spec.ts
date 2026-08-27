@@ -27,7 +27,7 @@ import { RENDERER_BOOT_REPORT_PATH, type RendererBootReport } from '../src/rende
 const config: DesktopConfig = {
   mode: 'compatibility',
   macosMaterial: 'transparent',
-  windowsMaterial: 'acrylic',
+  windowsMaterial: 'off',
   port: 43_120,
   networkExposure: 'loopback',
   width: 1280,
@@ -191,7 +191,7 @@ describe('desktop Host plugin', () => {
     expect(DesktopSettingsSchema({} as DesktopSettings)).toEqual({
       mode: 'compatibility',
       macosMaterial: 'transparent',
-      windowsMaterial: 'acrylic',
+      windowsMaterial: 'off',
       port: 43_120,
       openBrowser: false,
       networkExposure: 'loopback',

@@ -3,7 +3,7 @@
 export type DesktopSetupWizardPlatform = 'darwin' | 'win32' | 'linux'
 export type DesktopSetupWizardMode = 'compatibility' | 'extended' | 'advanced'
 export type DesktopSetupWizardMacosMaterial = 'off' | 'transparent'
-export type DesktopSetupWizardWindowsMaterial = 'off' | 'acrylic' | 'mica'
+export type DesktopSetupWizardWindowsMaterial = 'off' | 'mica'
 export type DesktopSetupWizardNetworkExposure = 'loopback' | 'lan'
 export type DesktopSetupWizardMarket = 'disabled' | 'community-market' | 'dsh-market'
 
@@ -74,7 +74,7 @@ function isMacosMaterial(value: unknown): value is DesktopSetupWizardMacosMateri
 }
 
 function isWindowsMaterial(value: unknown): value is DesktopSetupWizardWindowsMaterial {
-  return value === 'off' || value === 'acrylic' || value === 'mica'
+  return value === 'off' || value === 'mica'
 }
 
 function isNetworkExposure(value: unknown): value is DesktopSetupWizardNetworkExposure {

@@ -125,7 +125,7 @@ function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizard
     mode,
     macosMaterial: input.macosMaterial,
     windowsMaterial: input.platform === 'win32' && input.windowsMaterial === 'mica' && !input.micaSupported
-      ? 'acrylic'
+      ? 'off'
       : input.windowsMaterial,
     openBrowser: browserAccess,
     networkExposure: browserAccess ? input.networkExposure : 'loopback',
@@ -297,7 +297,6 @@ function MaterialOptions({
     { value: 'transparent', title: copy.materialTransparent, body: copy.materialTransparentBody },
   ] : input.platform === 'win32' ? [
     { value: 'off', title: copy.materialOff, body: copy.materialOffBody },
-    { value: 'acrylic', title: copy.materialAcrylic, body: copy.materialAcrylicBody },
     ...(input.micaSupported ? [{ value: 'mica' as const, title: copy.materialMica, body: copy.materialMicaBody }] : []),
   ] : [
     { value: 'off', title: copy.materialOff, body: copy.unavailableOnLinux },
@@ -307,7 +306,7 @@ function MaterialOptions({
   const choose = (value: MaterialOption['value']): void => {
     if (input.platform === 'darwin' && (value === 'off' || value === 'transparent')) {
       update({ ...selection, macosMaterial: value })
-    } else if (input.platform === 'win32' && (value === 'off' || value === 'acrylic' || value === 'mica')) {
+    } else if (input.platform === 'win32' && (value === 'off' || value === 'mica')) {
       update({ ...selection, windowsMaterial: value })
     }
   }
@@ -316,7 +315,7 @@ function MaterialOptions({
     aria-orientation="vertical"
     name="setup-window-material"
     onValueChange={value => {
-      if (value === 'off' || value === 'transparent' || value === 'acrylic' || value === 'mica') choose(value)
+      if (value === 'off' || value === 'transparent' || value === 'mica') choose(value)
     }}
     value={selected}
   >{options.map(option => <Choice

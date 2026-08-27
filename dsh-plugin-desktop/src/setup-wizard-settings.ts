@@ -219,8 +219,8 @@ function normalizedUpdate(
   if (value.macosMaterial !== 'off' && value.macosMaterial !== 'transparent') {
     throw new TypeError(`${BIN_NAME}: macOS Setup Wizard material must be off or transparent`)
   }
-  if (value.windowsMaterial !== 'off' && value.windowsMaterial !== 'acrylic' && value.windowsMaterial !== 'mica') {
-    throw new TypeError(`${BIN_NAME}: Windows Setup Wizard material must be off, acrylic, or mica`)
+  if (value.windowsMaterial !== 'off' && value.windowsMaterial !== 'mica') {
+    throw new TypeError(`${BIN_NAME}: Windows Setup Wizard material must be off or mica`)
   }
   if (typeof value.openBrowser !== 'boolean') {
     throw new TypeError(`${BIN_NAME}: Setup Wizard openBrowser must be a boolean`)
@@ -406,6 +406,45 @@ export async function migrateDesktopBrowserAccessSettings(
     nextDesktop.openBrowser = migration.browserAccess
     nextDesktop.networkExposure = migration.networkExposure
     root[DESKTOP_NAMESPACE] = nextDesktop
+    output = `${JSON.stringify(root, undefined, 2)}\n`
+  }
+  await writeFileAtomic(path, output, {
+    mode: DOCUMENT_FILE_MODE,
+    dirMode: DOCUMENT_DIRECTORY_MODE,
+  })
+  return true
+}
+
+/**
+ * Replace the removed Acrylic preference without making an old settings file
+ * a startup failure. Runtime parsing already treats Acrylic as off, so a
+ * read-only document remains safe even when this durable migration cannot run.
+ */
+export async function migrateDesktopWindowMaterialSettings(
+  documentPath: string,
+): Promise<boolean> {
+  const path = settingsPath(documentPath)
+
+  const needsMigration = (loaded: LoadedSettingsDocument): boolean => {
+    // Validate every known Wizard-owned value before changing the legacy leaf.
+    projectSettings(loaded.root)
+    return section(loaded.root, DESKTOP_NAMESPACE).windowsMaterial === 'acrylic'
+  }
+
+  if (!needsMigration(loadSettingsDocument(path))) return false
+
+  ensureDocumentDirectory(path)
+  const loaded = loadSettingsDocument(path)
+  if (!needsMigration(loaded)) return false
+
+  let output: string
+  if (loaded.format === 'yaml') {
+    loaded.yaml!.setIn([DESKTOP_NAMESPACE, 'windowsMaterial'], 'off')
+    output = loaded.yaml!.toString()
+  } else {
+    const root = structuredClone(loaded.root)
+    const desktop = { ...section(root, DESKTOP_NAMESPACE), windowsMaterial: 'off' }
+    root[DESKTOP_NAMESPACE] = desktop
     output = `${JSON.stringify(root, undefined, 2)}\n`
   }
   await writeFileAtomic(path, output, {

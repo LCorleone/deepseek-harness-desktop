@@ -96,6 +96,7 @@ import {
 } from './setup-wizard-state.ts'
 import {
   migrateDesktopBrowserAccessSettings,
+  migrateDesktopWindowMaterialSettings,
   readDesktopSetupWizardSettings,
   updateDesktopSetupWizardSettings,
 } from './setup-wizard-settings.ts'
@@ -655,7 +656,19 @@ async function start(): Promise<void> {
       marketSelection,
       preparationHooks,
     )
-    if (await migrateDesktopBrowserAccessSettings(prepared.settingsDocument)) {
+    const browserAccessMigrated = await migrateDesktopBrowserAccessSettings(prepared.settingsDocument)
+    let windowMaterialMigrated = false
+    try {
+      windowMaterialMigrated = await migrateDesktopWindowMaterialSettings(prepared.settingsDocument)
+    } catch (cause) {
+      // Legacy Acrylic is already normalized to off by the read boundary. A
+      // read-only settings file must not turn removal of the effect into a
+      // startup failure merely because the durable cleanup could not be saved.
+      electronLogger.error(
+        `${BIN_NAME}: failed to persist removed Acrylic material migration: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
+    if (browserAccessMigrated || windowMaterialMigrated) {
       prepared = prepareDesktopProfile(
         process.env.DSH_TELEMETRY_DISABLED,
         homeDir,

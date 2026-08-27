@@ -346,7 +346,7 @@ export function DesktopSettingsSection({
         }
         await desktopSettings.set('macosMaterial', next)
       } else if (platform === 'win32') {
-        if (next !== 'off' && next !== 'acrylic' && (next !== 'mica' || !micaSupported)) {
+        if (next !== 'off' && (next !== 'mica' || !micaSupported)) {
           throw new Error(`dsh-plugin-desktop: unavailable Windows material ${JSON.stringify(next)}`)
         }
         await desktopSettings.set('windowsMaterial', next)
@@ -562,9 +562,10 @@ export function DesktopSettingsSection({
               className="dshDesktopSettingsSelect"
               value={platform === 'darwin'
                 ? desktop.value?.macosMaterial ?? 'transparent'
-                : !micaSupported && desktop.value?.windowsMaterial === 'mica'
-                  ? 'acrylic'
-                  : desktop.value?.windowsMaterial ?? 'acrylic'}
+                : desktop.value?.windowsMaterial === 'acrylic'
+                  || (!micaSupported && desktop.value?.windowsMaterial === 'mica')
+                  ? 'off'
+                  : desktop.value?.windowsMaterial ?? 'off'}
               disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
               onChange={event => { setMaterial(event.currentTarget.value) }}
             >
@@ -573,7 +574,6 @@ export function DesktopSettingsSection({
                 ? <option value="transparent">{t('windowMaterialTransparent')}</option>
                 : (
                     <>
-                      <option value="acrylic">{t('windowMaterialAcrylic')}</option>
                       {micaSupported && <option value="mica">{t('windowMaterialMica')}</option>}
                     </>
                   )}
