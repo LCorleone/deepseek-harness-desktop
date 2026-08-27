@@ -168,12 +168,14 @@ export function diagnosticsViewKeyFingerprint(publicKeyBase64: string): string {
 /**
  * RFC 0004 evidence class `resolved` for one allowed bundle: the evidence
  * the boot decision actually measured. `evidence` is the P2-4 boot evidence
- * grade — `receipt` means the installed tree matched its market install
- * receipt digest, `manifest-only` means the signed entry and lockfile
- * integrity bound the bundle without a usable receipt.
+ * grade — `signed-tree` means the installed tree matched the tree digest
+ * pinned in the signed company manifest entry (the authority anchor),
+ * `receipt` means it matched its market install receipt digest (entries
+ * without a signed tree digest), and `manifest-only` means the signed entry
+ * and lockfile integrity bound the bundle without a usable receipt.
  */
 export interface DesktopSelfCheckResolvedEvidence {
-  readonly evidence: 'receipt' | 'manifest-only'
+  readonly evidence: 'receipt' | 'manifest-only' | 'signed-tree'
   readonly manifestSequence: number
   readonly keyId: string
 }
@@ -544,7 +546,7 @@ function isDesktopBootVerification(value: unknown): value is DesktopBootVerifica
       const bundle = entry as Record<string, unknown>
       if (typeof bundle.packageName !== 'string' || bundle.packageName.length === 0) return false
       if (list === object.allowed) {
-        if (bundle.evidence !== 'receipt' && bundle.evidence !== 'manifest-only') return false
+        if (bundle.evidence !== 'receipt' && bundle.evidence !== 'manifest-only' && bundle.evidence !== 'signed-tree') return false
         const sequence: unknown = bundle.manifestSequence
         if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 1) return false
         if (typeof bundle.keyId !== 'string' || bundle.keyId.length === 0) return false

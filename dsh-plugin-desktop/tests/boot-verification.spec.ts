@@ -442,6 +442,122 @@ describe('desktop boot bundle verification', () => {
   })
 })
 
+describe('signed tree digest authority (entries carrying treeDigest)', () => {
+  // The manifest-authority anchor: when the signed entry pins the expected
+  // installed-tree digest, that value — not the user-writable receipt — is
+  // the expectation the measured disk tree must equal.
+  const authorityEntry = (digest: string): Record<string, unknown> => packageEntry({ treeDigest: digest })
+
+  it('allows a bundle whose measured tree equals the signed digest, with signed-tree evidence and no receipt', () => {
+    const bundle = bundleInput()
+    const result = verify(
+      signedManifestText([authorityEntry(computeDesktopBootTreeRootDigest(bundle.packageDir!))]),
+      [bundle],
+      {},
+    )
+    expect(result).toEqual({
+      manifestTrusted: true,
+      manifestSequence,
+      keyId,
+      manifestFailure: undefined,
+      allowed: [{ packageName, evidence: 'signed-tree', manifestSequence, keyId }],
+      rejected: [],
+    })
+  })
+
+  it('rejects a bundle whose measured tree differs from the signed digest (the core negative)', () => {
+    const bundle = bundleInput()
+    const result = verify(
+      signedManifestText([authorityEntry('ab'.repeat(32))]),
+      [bundle],
+      {},
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.rejected).toEqual([{
+      packageName,
+      reason: `the installed files of ${packageName}@${version} differ from the tree digest pinned in the signed company manifest`,
+    }])
+  })
+
+  it('rejects tampered files even when the receipt is forged to match the tampered tree', () => {
+    const original = bundleInput()
+    const digest = computeDesktopBootTreeRootDigest(original.packageDir!)
+    // Tamper the installed tree, then rewrite the receipt to the digest of
+    // the tampered tree: the receipt is no longer the comparison target, so
+    // the tamper stands out against the signed digest.
+    const tampered = bundleInput()
+    writeFileSync(join(tampered.packageDir!, 'lib/payload.js'), 'export const marker = 2\n')
+    const forged = receiptFor(tampered)
+    const result = verify(signedManifestText([authorityEntry(digest)]), [tampered], { receipts: [forged] })
+    expect(result.allowed).toEqual([])
+    expect(result.rejected[0]?.reason).toContain('differ from the tree digest pinned in the signed company manifest')
+  })
+
+  it('rejects tampered files even when an intact receipt still pins the signed digest (no receipt-keyed skip)', () => {
+    const original = bundleInput()
+    const digest = computeDesktopBootTreeRootDigest(original.packageDir!)
+    // Tamper the installed tree but leave the legitimate receipt — which
+    // still records the signed digest — untouched. A receipt match must not
+    // skip the measurement: the receipt lives in user-writable storage, so
+    // honoring it as a pass would reintroduce the deleted-receipt bypass.
+    const tampered = bundleInput({
+      packageDir: installedPackage({ ...defaultFiles, 'lib/payload.js': 'export const marker = 2\n' }),
+    })
+    const result = verify(
+      signedManifestText([authorityEntry(digest)]),
+      [tampered],
+      { receipts: [receiptFor(original, { rootDigest: digest })] },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.rejected[0]?.reason).toContain('differ from the tree digest pinned in the signed company manifest')
+  })
+
+  it('allows a matching tree while ignoring a divergent receipt, keeping signed-tree evidence', () => {
+    const bundle = bundleInput()
+    const digest = computeDesktopBootTreeRootDigest(bundle.packageDir!)
+    // A stale receipt (recorded from an older install with a different
+    // layout) disagrees with the signed digest; the disk tree matches the
+    // signed value, so the bundle loads — the receipt is advisory only.
+    const result = verify(
+      signedManifestText([authorityEntry(digest)]),
+      [bundle],
+      { receipts: [receiptFor(bundle, { rootDigest: 'cd'.repeat(32) })] },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName, evidence: 'signed-tree', manifestSequence, keyId }])
+  })
+
+  it('rejects a bundle whose tree cannot be measured in authority mode, receipt or not', () => {
+    const reference = installedPackage(defaultFiles)
+    const bundle = bundleInput({ packageDir: join(temporaryDirectory(), 'missing') })
+    const result = verify(
+      signedManifestText([authorityEntry(computeDesktopBootTreeRootDigest(reference))]),
+      [bundle],
+      { receipts: [receiptFor({ ...bundle, packageDir: reference })] },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.rejected[0]?.reason).toContain('could not be measured')
+  })
+
+  it('keeps receipt-mode evidence for peer entries without a signed tree digest in the same manifest', () => {
+    const authoritative = bundleInput()
+    const receiptAnchored = bundleInput({ packageName: 'dsh-plugin-receipt-anchored' })
+    const result = verify(
+      signedManifestText([
+        authorityEntry(computeDesktopBootTreeRootDigest(authoritative.packageDir!)),
+        packageEntry({ packageName: receiptAnchored.packageName }),
+      ]),
+      [authoritative, receiptAnchored],
+      { receipts: [receiptFor(receiptAnchored)] },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([
+      { packageName: authoritative.packageName, evidence: 'signed-tree', manifestSequence, keyId },
+      { packageName: receiptAnchored.packageName, evidence: 'receipt', manifestSequence, keyId },
+    ])
+  })
+})
+
 describe('boot verification target selection', () => {
   it('exempts upstream, desktop, and market bundles from verification', () => {
     const declared = [

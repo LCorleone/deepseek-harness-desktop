@@ -27,8 +27,10 @@
 4. **`bootVerification`**：
    - `available: false` —— 报告内没有锁定启动记录。在公司下发的锁定安装上属异常（唯一例外：任何启动完成之前运行的首次 CLI `--export-diagnostics` 导出）；按发现项记录并比照第 3 步调查。
    - `manifestTrusted: false` + `manifestFailure.code` —— 该次启动 catalog manifest 被拒（回滚/过期/坏签名）。全部第三方 bundle 应出现在 `refused[]`。
-   - `refused[]` —— 磁盘上存在但被策略拒载的插件。`decided.refusedBy: boot-verification` 的原因串与 P2-4 拒载码一一对应（`not in the signed company manifest`、integrity 不匹配文案、receipt 树摘要不符文案）。
+   - `refused[]` —— 磁盘上存在但被策略拒载的插件。`decided.refusedBy: boot-verification` 的原因串与 P2-4 拒载码一一对应（`not in the signed company manifest`、integrity 不匹配文案、receipt 树摘要不符文案、签名树摘要不符文案）。
    - `allowed[]` 且 `resolved.evidence: manifest-only` —— bundle 匹配签名 manifest 与 lockfile integrity 但无可用 receipt（全新安装路径或 receipt 被删）。本身不构成发现项。
+   - `allowed[]` 且 `resolved.evidence: signed-tree` —— 该 bundle 的签名条目携带 `treeDigest`，且实测磁盘树与签名值一致：可获得的最强安装树证据（伪造或删除 receipt 都无法产生）。签名 manifest 未钉 `treeDigest` 的条目不可能出现该级别。
+   - 签名 manifest 已钉 `treeDigest` 的条目上出现 `allowed[]` 且 `resolved.evidence: receipt` —— 真实启动决策不可能产生（该锚点对此类条目恒为 `signed-tree`）；按伪造报告对待。
 5. **`policy`**：
    - 公司下发的安装上 `locked: false` —— 要么部署了解锁变体（部署失误），要么策略资产被替换（拿 `policy.sha256` 对比该 appVersion 的公司公布值）。
    - `available: false` —— 策略资产读不到；锁定构建上属启动路径异常，按篡改信号对待。

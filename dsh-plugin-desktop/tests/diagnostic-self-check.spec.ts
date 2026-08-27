@@ -88,6 +88,12 @@ function lockedBootVerification(): DesktopBootVerification {
         manifestSequence: 21,
         keyId: 'company-catalog-2026.01',
       },
+      {
+        packageName: 'dsh-plugin-anchored',
+        evidence: 'signed-tree',
+        manifestSequence: 21,
+        keyId: 'company-catalog-2026.01',
+      },
     ],
     rejected: [
       {
@@ -171,6 +177,15 @@ describe('boot verification snapshots', () => {
     const path = writeSnapshot(dir, untrustedManifestBootVerification())
     const snapshot = readDesktopBootVerificationSnapshot(path)
     expect(snapshot?.bootVerification).toEqual(untrustedManifestBootVerification())
+  })
+
+  it('round-trips the signed-tree evidence grade of the manifest-authority anchor', () => {
+    const dir = temporaryDirectory('dsh-self-check-snapshot-')
+    const decision = lockedBootVerification()
+    const path = writeSnapshot(dir, decision)
+    const snapshot = readDesktopBootVerificationSnapshot(path)
+    expect(snapshot?.bootVerification?.allowed
+      .find(bundle => bundle.packageName === 'dsh-plugin-anchored')?.evidence).toBe('signed-tree')
   })
 
   it('records unlocked boots as null and invalidates stale locked records', () => {
@@ -283,6 +298,11 @@ describe('unsigned reports (direction B: always unsigned)', () => {
         {
           packageName: 'dsh-plugin-audited',
           resolved: { evidence: 'manifest-only', manifestSequence: 21, keyId: 'company-catalog-2026.01' },
+          decided: { allowedBy: 'signed-company-manifest' },
+        },
+        {
+          packageName: 'dsh-plugin-anchored',
+          resolved: { evidence: 'signed-tree', manifestSequence: 21, keyId: 'company-catalog-2026.01' },
           decided: { allowedBy: 'signed-company-manifest' },
         },
       ],

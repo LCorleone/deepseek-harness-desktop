@@ -1,5 +1,5 @@
 # Bilingual-pair consistency record: the git blob hash of each side as of the last
 # confirmed-consistent state. Both languages carry equal authority. Update both files
 # and re-record their hashes with git hash-object after editing either side.
-tamper-evidence.md: 3a49bfeb69d223b40969fe8072d42a1b55bc20e6
-tamper-evidence.zh.md: f29a5998f40ad5893c814c93dfa9e1819dc24e1a
+tamper-evidence.md: ce24214664610438d29430a06f3f9b9b47f20476
+tamper-evidence.zh.md: dabfca4764538c88ab5dedb88ac46610c096dae9

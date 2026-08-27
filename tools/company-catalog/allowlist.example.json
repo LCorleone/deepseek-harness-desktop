@@ -9,7 +9,12 @@
       "cordisRuntimeVersion": "^3.0.0",
       "nodeRuntimeVersion": "^22.19.0"
     },
-    "revoked": false
+    "revoked": false,
+    "treeDigest": "d1f0a9c8b7e6d4a2c0e9b8d7f6a5c4e3b2a1908f7e6d5c4b3a29180f7e6d5c4b",
+    "approvedBuilds": [
+      "sharp",
+      "sqlite3"
+    ]
   },
   {
     "packageName": "@company/scoped-plugin",

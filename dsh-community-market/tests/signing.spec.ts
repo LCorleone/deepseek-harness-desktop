@@ -222,6 +222,44 @@ describe('company manifest verification', () => {
     }
   })
 
+  it('round-trips optional authority fields (treeDigest, approvedBuilds) through verification', () => {
+    const treeDigest = 'a3f5d09c6b21e84f7d3a9c5b2e8f4a6d0c1b9e7d5f3a8c2b6e4d0f9a7c5b3e1d'
+    const approvedBuilds = ['node-pty', '@scope/native-helper']
+    const text = signedText(unsignedManifest({
+      packages: [packageEntry({ treeDigest, approvedBuilds }), packageEntry({ packageName: 'dsh-plugin-peer' })],
+    }))
+    const result = verify(text)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(findCompanyManifestPackage(result.manifest, 'dsh-plugin-safe', '1.2.3')).toMatchObject({
+        treeDigest,
+        approvedBuilds,
+      })
+      // Entries without the optional fields keep the gradual-enablement
+      // baseline: the fields are simply absent, never defaulted.
+      expect(findCompanyManifestPackage(result.manifest, 'dsh-plugin-peer', '1.2.3')).not.toHaveProperty('treeDigest')
+      expect(findCompanyManifestPackage(result.manifest, 'dsh-plugin-peer', '1.2.3')).not.toHaveProperty('approvedBuilds')
+    }
+  })
+
+  it('rejects malformed authority fields the schema pins down', () => {
+    const treeDigest = 'a3f5d09c6b21e84f7d3a9c5b2e8f4a6d0c1b9e7d5f3a8c2b6e4d0f9a7c5b3e1d'
+    const cases: readonly [string, Record<string, unknown>][] = [
+      ['uppercase treeDigest', unsignedManifest({ packages: [packageEntry({ treeDigest: treeDigest.toUpperCase() })] })],
+      ['non-hex treeDigest', unsignedManifest({ packages: [packageEntry({ treeDigest: `z${treeDigest.slice(1)}` })] })],
+      ['truncated treeDigest', unsignedManifest({ packages: [packageEntry({ treeDigest: treeDigest.slice(0, 63) })] })],
+      ['base64-spelled treeDigest', unsignedManifest({ packages: [packageEntry({ treeDigest: Buffer.alloc(32).toString('base64') })] })],
+      ['empty approvedBuilds list', unsignedManifest({ packages: [packageEntry({ approvedBuilds: [] })] })],
+      ['empty approvedBuilds name', unsignedManifest({ packages: [packageEntry({ approvedBuilds: ['node-pty', ''] })] })],
+      ['non-string approvedBuilds entry', unsignedManifest({ packages: [packageEntry({ approvedBuilds: ['node-pty', 7] })] })],
+      ['invalid approvedBuilds name', unsignedManifest({ packages: [packageEntry({ approvedBuilds: ['node pty'] })] })],
+      ['duplicate approvedBuilds names', unsignedManifest({ packages: [packageEntry({ approvedBuilds: ['node-pty', 'node-pty'] })] })],
+    ]
+    for (const [label, manifest] of cases) {
+      expect(verify(signedText(manifest)), label).toMatchObject({ ok: false, code: 'invalid-manifest' })
+    }
+  })
+
   it('rejects malformed JSON', () => {
     expect(verify('not json')).toMatchObject({ ok: false, code: 'malformed-json' })
     expect(verify('[]')).toMatchObject({ ok: false, code: 'malformed-json' })

@@ -136,6 +136,13 @@ export interface DesktopPluginInstallRequest {
   /** Absolute caller directory used to anchor relative package specifications. */
   readonly invokingDir: string
   readonly recovery: DesktopPluginInstallRecovery
+  /**
+   * Signed build-script approvals of the installed plugin's catalog entry
+   * (`approvedBuilds`), supplied by the market install boundary after the
+   * signed allow decision. Unioned with the built-in triple inside the
+   * workspace approval; absent entries approve the built-in list only.
+   */
+  readonly approvedBuildDependencies?: readonly string[]
   readonly signal?: AbortSignal
 }
 
@@ -440,8 +447,15 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     assertAbsolutePath('plugin invoking directory', request.invokingDir)
     // Approve the trusted builds before the recovery WAL snapshots the
     // profile, so a later rollback restores a workspace that still carries
-    // the approval instead of stripping it from under the next install.
-    ensureProfilePnpmBuildApproval(this.bootstrap.activeProfileDir)
+    // the approval instead of stripping it from under the next install. The
+    // signed entry's approvedBuilds (when the market supplied one) widen the
+    // built-in triple for exactly this install's dependency tree.
+    ensureProfilePnpmBuildApproval(
+      this.bootstrap.activeProfileDir,
+      request.approvedBuildDependencies === undefined
+        ? {}
+        : { approvedBuildDependencies: request.approvedBuildDependencies },
+    )
     if (this.closed) throw new Error(`${BIN_NAME}: desktop pnpm generation is closed`)
     if (this.active !== undefined || this.installPreparationActive) {
       throw new Error(`${BIN_NAME}: another desktop pnpm operation is already running`)

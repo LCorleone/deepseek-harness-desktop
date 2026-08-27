@@ -407,6 +407,40 @@ describe('desktop pnpm Host service', () => {
     }
   })
 
+  it('unions the signed approvedBuilds of the install request into the workspace approval', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-approved-builds-'))
+    const selectedBootstrap = bootstrap(root)
+    const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: {} }))
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const operation = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'example-plugin',
+          packageVersion: '1.0.0',
+          receiptId: 'receipt:test-approved-builds-0001',
+        },
+        approvedBuildDependencies: ['sharp', 'node-pty', '@scope/native-helper'],
+      })
+      finish(child)
+      await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
+
+      // Built-in triple first, signed extras unioned in (node-pty deduped),
+      // both pnpm spellings — exactly what the market boundary hands over
+      // after a signed allow decision.
+      const workspace = readFileSync(join(selectedBootstrap.activeProfileDir, 'pnpm-workspace.yaml'), 'utf8')
+      expect(workspace).toContain('- node-pty\n  - esbuild\n  - protobufjs\n  - sharp\n  - \'@scope/native-helper\'\n')
+      expect(workspace).toContain("node-pty: true\n  esbuild: true\n  protobufjs: true\n  sharp: true\n  '@scope/native-helper': true")
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps the v2.0.1 recoverable install interface for an exact receipt target', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-legacy-install-'))
     const selectedBootstrap = bootstrap(root)

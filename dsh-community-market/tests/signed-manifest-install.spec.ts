@@ -130,6 +130,18 @@ describe('signed manifest install target authority', () => {
     })
   })
 
+  it('carries the signed approvedBuilds of a matching entry as install evidence', async () => {
+    const { provider } = await scannedCompanySource([
+      packageEntry({ approvedBuilds: ['sharp', '@scope/native-helper'] }),
+    ])
+    const authority = createSignedManifestInstallTargetAuthority(provider)
+
+    expect(authority.canInstall(candidate)).toEqual({
+      allowed: true,
+      evidence: { manifestSequence: 42, keyId, approvedBuildDependencies: ['sharp', '@scope/native-helper'] },
+    })
+  })
+
   it('rejects an integrity mismatch naming both digests', async () => {
     const { provider } = await scannedCompanySource([packageEntry()])
     const authority = createSignedManifestInstallTargetAuthority(provider)
@@ -371,7 +383,11 @@ describe('market install service behind the signed manifest', () => {
     }))
   }
 
-  function runner(profileDir: string, calls: string[][]): MarketDesktopPnpm {
+  function runner(
+    profileDir: string,
+    calls: string[][],
+    installRequests: { approvedBuildDependencies?: readonly string[] }[] = [],
+  ): MarketDesktopPnpm {
     return {
       runPlugin(args) {
         calls.push([...args])
@@ -383,6 +399,11 @@ describe('market install service behind the signed manifest', () => {
         return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
       },
       async installPlugin(request) {
+        installRequests.push({
+          ...(request.approvedBuildDependencies === undefined
+            ? {}
+            : { approvedBuildDependencies: request.approvedBuildDependencies }),
+        })
         return this.runPlugin([
           'add',
           ...(request.pnpmOptions ?? []),
@@ -415,6 +436,7 @@ describe('market install service behind the signed manifest', () => {
     readonly profileDir: string
     readonly settings: ReturnType<typeof memoryScope>
     readonly calls: string[][]
+    readonly installRequests?: { approvedBuildDependencies?: readonly string[] }[]
     readonly verifyIntegrity?: string
     readonly authority?: (provider: Awaited<ReturnType<typeof scannedCompanySource>>['provider']) => SignedManifestInstallTargetAuthority
   }) {
@@ -423,7 +445,7 @@ describe('market install service behind the signed manifest', () => {
     const service = new MarketInstallService(
       options.settings.scope,
       () => ({ name: 'web', dir: options.profileDir }),
-      runner(options.profileDir, options.calls),
+      runner(options.profileDir, options.calls, options.installRequests),
       { verify: vi.fn(async () => ({ ...verification, integrity: options.verifyIntegrity ?? verification.integrity })) },
       { installTargetAuthority: authority },
     )
@@ -485,6 +507,45 @@ describe('market install service behind the signed manifest', () => {
     const removed = await service.executePreview(uninstallPreview.intent, new AbortController().signal)
     expect(removed).toMatchObject({ action: 'uninstall', receiptId: receipt.receiptId, packageName })
     expect(settings.receipts()).toEqual([])
+  })
+
+  it('forwards the signed approvedBuilds to the package-manager install boundary', async () => {
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const calls: string[][] = []
+    const installRequests: { approvedBuildDependencies?: readonly string[] }[] = []
+    const { service } = await signedService(
+      [packageEntry({ approvedBuilds: ['sharp', 'node-pty'] })],
+      { profileDir, settings, calls, installRequests },
+    )
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const result = await service.executeInstall(preview.intent, new AbortController().signal)
+
+    expect(result.receipt.receiptVersion).toBe(2)
+    expect(calls.map(args => args[0])).toEqual(['add'])
+    // The signed approval list reaches the desktop install boundary exactly
+    // as signed; the receipt itself keeps the v2 shape (no approval copy).
+    expect(installRequests).toEqual([{ approvedBuildDependencies: ['sharp', 'node-pty'] }])
+    expect(result.receipt).not.toHaveProperty('approvedBuildDependencies')
+  })
+
+  it('omits approvedBuildDependencies when the signed entry carries no approvedBuilds', async () => {
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const calls: string[][] = []
+    const installRequests: { approvedBuildDependencies?: readonly string[] }[] = []
+    const { service } = await signedService([packageEntry()], {
+      profileDir,
+      settings,
+      calls,
+      installRequests,
+    })
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(preview.intent, new AbortController().signal)
+
+    expect(installRequests).toEqual([{}])
   })
 
   it('rejects a registry integrity that disagrees with the signed manifest', async () => {

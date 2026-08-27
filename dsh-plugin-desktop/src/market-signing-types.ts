@@ -46,6 +46,10 @@ export interface CompanyManifestPackage {
   readonly bundlePatch: string
   readonly revoked: boolean
   readonly runtime: CompanyManifestRuntimeRanges
+  /** Optional signed expected root digest of the installed tree (64 lowercase hex); enables the signed-authority boot check. */
+  readonly treeDigest?: string
+  /** Optional signed dependency build-script approval list transported from the entry. */
+  readonly approvedBuilds?: readonly string[]
 }
 
 export interface CompanyManifestSignature {

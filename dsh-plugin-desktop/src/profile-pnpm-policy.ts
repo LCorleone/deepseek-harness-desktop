@@ -19,12 +19,60 @@ import { join } from 'node:path'
  * esbuild/protobufjs are the two most common harmless build-time
  * dependencies — approving these keeps ordinary plugin installs from
  * derailing on pnpm's build firewall.
+ *
+ * Plugins whose signed company catalog entry carries `approvedBuilds`
+ * extend this list per install — see
+ * {@link ProfilePnpmBuildApprovalOptions.approvedBuildDependencies}. This
+ * module stays a pure text policy: it never reads the manifest itself, so
+ * callers without market context keep the built-in triple only.
  */
 const DESKTOP_APPROVED_BUILD_DEPENDENCIES: readonly string[] = [
   'node-pty',
   'esbuild',
   'protobufjs',
 ]
+
+/** npm dependency name grammar accepted for approved build dependencies. */
+const BUILD_DEPENDENCY_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
+
+/**
+ * Options for {@link ensureProfilePnpmBuildApproval}. The default — no
+ * options — approves exactly the built-in triple everywhere.
+ */
+export interface ProfilePnpmBuildApprovalOptions {
+  /**
+   * Additional dependency names to approve beside the built-in triple:
+   * the `approvedBuilds` list of the signed catalog entry being installed,
+   * passed in by the market install boundary after the signed allow decision
+   * and before pnpm materializes the dependency tree. Names are unioned with
+   * (never a replacement for) the built-in list, so a signed entry can widen
+   * the approvals of one install but never shrink another profile's.
+   */
+  readonly approvedBuildDependencies?: readonly string[]
+}
+
+/**
+ * Render one dependency name as a YAML scalar. pnpm's approval keys accept
+ * scoped names (`@scope/native`), but `@` is a YAML reserved indicator that
+ * may not start a plain scalar, so scoped names are single-quoted; the
+ * reader (`listItemName`) already strips that quoting.
+ */
+function yamlScalar(name: string): string {
+  return name.startsWith('@') ? `'${name}'` : name
+}
+
+/** Validated approved-build list: built-in triple first, extras deduped after. */
+function approvedBuildList(extra: readonly string[] | undefined): readonly string[] {
+  if (extra === undefined) return DESKTOP_APPROVED_BUILD_DEPENDENCIES
+  const merged = [...DESKTOP_APPROVED_BUILD_DEPENDENCIES]
+  for (const name of extra) {
+    if (typeof name !== 'string' || !BUILD_DEPENDENCY_NAME_PATTERN.test(name)) {
+      throw new TypeError(`approved build dependency names must be npm names (scoped allowed, lowercase): ${JSON.stringify(name)}`)
+    }
+    if (!merged.includes(name)) merged.push(name)
+  }
+  return merged
+}
 
 /**
  * pnpm 11 defaults `strictDepBuilds` to true: any ignored build script
@@ -66,7 +114,7 @@ function listItemName(item: string): string {
 function mergeListBlock(lines: string[], key: string, names: readonly string[]): void {
   const keyIndex = lines.findIndex(line => line.startsWith(key))
   if (keyIndex === -1) {
-    const block = [key, ...names.map(name => `${DEFAULT_LIST_INDENT}- ${name}`)]
+    const block = [key, ...names.map(name => `${DEFAULT_LIST_INDENT}- ${yamlScalar(name)}`)]
     if (lines.at(-1) === '') lines.splice(lines.length - 1, 0, ...block)
     else lines.push('', ...block)
     return
@@ -80,7 +128,7 @@ function mergeListBlock(lines: string[], key: string, names: readonly string[]):
       if (name.length > 0) existing.push(name)
     }
     const merged = [...existing, ...names.filter(name => !existing.includes(name))]
-    lines.splice(keyIndex, 1, key, ...merged.map(name => `${DEFAULT_LIST_INDENT}- ${name}`))
+    lines.splice(keyIndex, 1, key, ...merged.map(name => `${DEFAULT_LIST_INDENT}- ${yamlScalar(name)}`))
     return
   }
   const existing: string[] = []
@@ -96,7 +144,7 @@ function mergeListBlock(lines: string[], key: string, names: readonly string[]):
   }
   const missing = names.filter(name => !existing.includes(name))
   if (missing.length > 0) {
-    lines.splice(lastItemIndex + 1, 0, ...missing.map(name => `${itemIndent}- ${name}`))
+    lines.splice(lastItemIndex + 1, 0, ...missing.map(name => `${itemIndent}- ${yamlScalar(name)}`))
   }
 }
 
@@ -104,7 +152,7 @@ function mergeListBlock(lines: string[], key: string, names: readonly string[]):
 function mergeMapBlock(lines: string[], key: string, names: readonly string[]): void {
   const keyIndex = lines.findIndex(line => line.startsWith(key))
   if (keyIndex === -1) {
-    const block = [key, ...names.map(name => `${DEFAULT_LIST_INDENT}${name}: true`)]
+    const block = [key, ...names.map(name => `${DEFAULT_LIST_INDENT}${yamlScalar(name)}: true`)]
     if (lines.at(-1) === '') lines.splice(lines.length - 1, 0, ...block)
     else lines.push('', ...block)
     return
@@ -133,7 +181,7 @@ function mergeMapBlock(lines: string[], key: string, names: readonly string[]): 
   }
   const missing = names.filter(name => !existing.includes(name))
   if (missing.length > 0) {
-    lines.splice(lastEntryIndex + 1, 0, ...missing.map(name => `${entryIndent}${name}: true`))
+    lines.splice(lastEntryIndex + 1, 0, ...missing.map(name => `${entryIndent}${yamlScalar(name)}: true`))
   }
 }
 
@@ -150,12 +198,14 @@ function ensureLenientStrictDepBuilds(lines: string[]): void {
  * pnpm spellings (`onlyBuiltDependencies` list for ≤11.22 and the
  * `allowBuilds` map for ≥11.23, which deletes the legacy key on write) plus
  * the transitional `strictDepBuilds: false` so an unlisted build dependency
- * warns instead of failing the install.
+ * warns instead of failing the install. `names` is the validated union of
+ * the built-in triple and (when a signed entry supplied one) its
+ * `approvedBuilds` list.
  */
-function withDesktopApprovedBuilds(content: string): string {
+function withDesktopApprovedBuilds(content: string, names: readonly string[]): string {
   const lines = content.split('\n')
-  mergeListBlock(lines, ONLY_BUILT_DEPENDENCIES_KEY, DESKTOP_APPROVED_BUILD_DEPENDENCIES)
-  mergeMapBlock(lines, ALLOW_BUILDS_KEY, DESKTOP_APPROVED_BUILD_DEPENDENCIES)
+  mergeListBlock(lines, ONLY_BUILT_DEPENDENCIES_KEY, names)
+  mergeMapBlock(lines, ALLOW_BUILDS_KEY, names)
   ensureLenientStrictDepBuilds(lines)
   return lines.join('\n')
 }
@@ -166,13 +216,18 @@ function withDesktopApprovedBuilds(content: string): string {
  * when absent. Idempotent: an already-approved workspace is not rewritten,
  * and every other key keeps its bytes.
  * @param profileDir - the profile directory, as resolved by upstream `resolveProfileDir`.
+ * @param options - optional extra approved names (the signed entry's `approvedBuilds`), unioned after the built-in triple; never read from the manifest here.
  */
-export function ensureProfilePnpmBuildApproval(profileDir: string): void {
+export function ensureProfilePnpmBuildApproval(
+  profileDir: string,
+  options: ProfilePnpmBuildApprovalOptions = {},
+): void {
+  const approved = approvedBuildList(options.approvedBuildDependencies)
   const workspacePath = join(profileDir, 'pnpm-workspace.yaml')
   const current = existsSync(workspacePath)
     ? readFileSync(workspacePath, 'utf8')
     : TEMPLATE_PNPM_WORKSPACE
-  const updated = withDesktopApprovedBuilds(current)
+  const updated = withDesktopApprovedBuilds(current, approved)
   if (updated === current) return
   mkdirSync(profileDir, { recursive: true })
   // Write through a sibling temporary file and rename it into place: a crash

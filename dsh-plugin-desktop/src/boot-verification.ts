@@ -20,16 +20,33 @@
  *    Absent entries, other-version pins, and revoked entries are rejected.
  * 3. The profile lockfile must pin the same npm dist integrity the manifest
  *    signed. A missing or diverging lockfile record is rejected.
- * 4. Receipt evidence: the deterministic tree digest is never part of the
- *    manifest — market install receipts (v2) are the only recorded
- *    measurement. With a usable receipt the measured `rootDigest` of the
- *    installed tree must equal `receipt.rootDigest` byte for byte, which is
- *    the tamper check for files already on disk. Without a usable receipt
- *    (absent, legacy v1, or malformed) the bundle degrades to
- *    "manifest-only": the signed entry and lock integrity still hold, the
- *    bundle stays loadable, and its allow decision carries
- *    `evidence: 'manifest-only'` so diagnostics can flag the missing
- *    receipt until the next install records one.
+ * 4. Installed-tree evidence. Which anchor the check uses is decided by the
+ *    signed entry itself (gradual enablement):
+ *
+ *    - **Signed tree digest (the authority mode).** When the entry carries
+ *      the optional `treeDigest`, that signed value is the authoritative
+ *      expectation: the on-disk tree is measured (the same deterministic
+ *      walk the receipts use) and must equal the signed digest or the bundle
+ *      is refused. The market install receipt is demoted to an advisory
+ *      cache with no decision power: deleting it cannot degrade the bundle
+ *      to manifest-only, and forging it cannot legitimize tampered files,
+ *      because the comparison target is the signed digest, never the
+ *      receipt. A receipt whose rootDigest equals the signed digest must not
+ *      skip the measurement either — the receipt lives in user-writable
+ *      storage, so honoring it as a pass would reintroduce exactly the
+ *      bypass this anchor removes (repeat-boot cost stays bounded by the
+ *      persisted stat-fingerprint measure cache wired by the Host). The
+ *      allow decision carries `evidence: 'signed-tree'`.
+ *    - **Receipt anchor (entries without `treeDigest`).** With a usable
+ *      receipt the measured `rootDigest` of the installed tree must equal
+ *      `receipt.rootDigest` byte for byte, which is the tamper check for
+ *      files already on disk. Without a usable receipt (absent, legacy v1,
+ *      or malformed) the bundle degrades to "manifest-only": the signed
+ *      entry and lock integrity still hold, the bundle stays loadable, and
+ *      its allow decision carries `evidence: 'manifest-only'` so
+ *      diagnostics can flag the missing receipt until the next install
+ *      records one. This degradation is a recorded policy decision, not an
+ *      oversight — see the dev-log manifest-authority card.
  *
  * Scope guarantee (the compatibility red line): the caller only submits
  * third-party bundle names — the upstream Web template bundles,
@@ -143,7 +160,7 @@ export interface DesktopBootVerificationOptions {
 }
 
 /** How much evidence allowed a bundle to load. */
-export type DesktopBootEvidence = 'receipt' | 'manifest-only'
+export type DesktopBootEvidence = 'receipt' | 'manifest-only' | 'signed-tree'
 
 /** One bundle cleared for this boot. */
 export interface DesktopBootAllowedBundle {
@@ -330,11 +347,13 @@ export interface CachedBootTreeDigestMeasureOptions {
  * cache file is ignored and rebuilt; a failed write is skipped (the next boot
  * simply re-measures).
  *
- * Advisory positioning: the cache lives in user-writable `<userData>` beside
- * the user-writable receipt store the tamper check compares against, so it
- * adds no new authority — it trades the repeat-boot content hash for
- * stat-level change detection on those already-advisory surfaces. The first
- * boot after any tree change always performs the full measurement.
+ * Advisory positioning: the cache lives in user-writable `<userData>` and
+ * trades the repeat-boot content hash for stat-level change detection — a
+ * pre-existing, documented tradeoff (L2 P1④) of the measurement seam itself.
+ * It never decides what a boot expects: the expectation comes from the
+ * signed manifest entry (`treeDigest`, when present) or, for entries without
+ * it, from the user-writable receipt store as before, so a tampered or
+ * removed cache file can only cost a full re-measurement.
  */
 export function createCachedDesktopBootTreeRootDigestMeasure(
   cachePath: string,
@@ -860,6 +879,30 @@ export function verifyDesktopBootBundles(
     }
     if (bundle.lockIntegrity !== entry.integrity) {
       reject(`the profile lockfile pins ${bundle.packageName}@${bundle.version} to integrity ${bundle.lockIntegrity}, but the signed company manifest pins ${entry.integrity}`)
+      continue
+    }
+    if (entry.treeDigest !== undefined) {
+      // Authority mode: the signed digest is the expectation. The receipt is
+      // advisory only — see step 4 of the module documentation — so the disk
+      // tree is measured and compared against the signed value whether or
+      // not a receipt exists and whatever it says.
+      let measured: string
+      try {
+        measured = measure(bundle.packageDir)
+      } catch (cause) {
+        reject(`the installed tree of ${bundle.packageName} could not be measured: ${messageOf(cause)}`)
+        continue
+      }
+      if (measured !== entry.treeDigest) {
+        reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree digest pinned in the signed company manifest`)
+        continue
+      }
+      allowed.push({
+        packageName: bundle.packageName,
+        evidence: 'signed-tree',
+        manifestSequence: manifest.sequence,
+        keyId,
+      })
       continue
     }
     const receipt = usableReceipt(receipts, bundle.packageName, bundle.version)

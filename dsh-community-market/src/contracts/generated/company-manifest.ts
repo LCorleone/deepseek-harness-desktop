@@ -1,9 +1,17 @@
 /* Generated from docs/schemas by scripts/generate-contract-types.mjs. Do not edit. */
 
 export type HttpsUri = string
+/**
+ * Optional expected SHA-256 root digest (64 lowercase hex) of the installed package tree, computed with the market install tree-digest contract (package-relative POSIX paths, per-file SHA-256, records sorted by path, root digest over the sha256:<path>\n<digest>\n lines). The digest depends on the installing environment's package-manager layout, so the publishing pipeline cannot derive it: the field is omitted until the expected value is measured in a clean reference environment and reviewed into the allowlist. Clients enable the installed-tree check against this signed expectation only for entries that carry it; entries without it keep the receipt-anchored behavior.
+ */
+export type TreeDigest = string
+/**
+ * npm dependency name whose build scripts the signed entry approves.
+ */
+export type ApprovedBuildDependency = string
 
 /**
- * The company-signed install allowlist for DSH Desktop. Each package entry pins an exact npm package version, its npm dist SHA-512 integrity, the in-package bundle patch path, a revocation flag, and the DSH runtime compatibility ranges the entry supports. The manifest is signed with a company ed25519 key: the signature block is detached (the signed bytes are the canonical JSON serialization of the document without the signature block itself) and carries the keyId plus the raw public key whose SHA-256 fingerprint must match the deployment policy trust root pinned for that keyId. Without a server-side revocation channel, freshness is enforced by the monotonic sequence (clients reject any manifest whose sequence does not strictly exceed the highest previously verified value) and expiresAt (the entire catalog is untrusted after the RFC 3339 instant). Canonical JSON rules for this schema: object keys sorted in UTF-16 code-unit order, no insignificant whitespace, minimal JSON string escaping with non-ASCII characters kept literal and encoded as UTF-8, and sequence as the only number (a safe integer in plain decimal); every other value is a string, boolean, null, array, or object. Verification additionally requires the raw manifest bytes to equal the canonical re-serialization of their parsed value byte for byte, which rejects reordered keys, added whitespace, alternate escapes, and non-canonical number spellings.
+ * The company-signed install allowlist for DSH Desktop. Each package entry pins an exact npm package version, its npm dist SHA-512 integrity, the in-package bundle patch path, a revocation flag, and the DSH runtime compatibility ranges the entry supports; two optional fields extend the anchor per entry — `treeDigest` pins the expected installed-tree digest so the client verifies the disk tree against the signed value instead of a user-writable receipt, and `approvedBuilds` carries the signed dependency build-script approval list. The manifest is signed with a company ed25519 key: the signature block is detached (the signed bytes are the canonical JSON serialization of the document without the signature block itself) and carries the keyId plus the raw public key whose SHA-256 fingerprint must match the deployment policy trust root pinned for that keyId. Without a server-side revocation channel, freshness is enforced by the monotonic sequence (clients reject any manifest whose sequence does not strictly exceed the highest previously verified value) and expiresAt (the entire catalog is untrusted after the RFC 3339 instant). Canonical JSON rules for this schema: object keys sorted in UTF-16 code-unit order, no insignificant whitespace, minimal JSON string escaping with non-ASCII characters kept literal and encoded as UTF-8, and sequence as the only number (a safe integer in plain decimal); every other value is a string, boolean, null, array, or object. Verification additionally requires the raw manifest bytes to equal the canonical re-serialization of their parsed value byte for byte, which rejects reordered keys, added whitespace, alternate escapes, and non-canonical number spellings.
  */
 export interface CompanyManifest {
   manifestVersion: '1.0.0'
@@ -42,6 +50,14 @@ export interface PackageEntry {
    */
   bundlePatch: string
   repository: Repository
+  treeDigest?: TreeDigest
+  /**
+   * Optional signed build-script approval list: the native dependency names inside this plugin's dependency tree whose install scripts the client may pre-approve in its package-manager workspace. Entries without the field keep the client's built-in approval list only; publishing it is a per-plugin decision, so the field is absent until a reviewed entry carries it.
+   *
+   * @minItems 1
+   * @maxItems 128
+   */
+  approvedBuilds?: [ApprovedBuildDependency, ...ApprovedBuildDependency[]]
   /**
    * true withdraws the entry while keeping the signed audit trail intact. Revoked entries stay verifiable and readable but must be treated as uninstallable.
    */

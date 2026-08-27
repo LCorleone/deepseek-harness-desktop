@@ -131,6 +131,15 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
         repository,
         revoked: entry.revoked,
         runtime: entry.runtime,
+        // Optional authority fields, signed verbatim when the reviewed
+        // allowlist carries them and omitted otherwise (gradual enablement):
+        // `treeDigest` is the expected installed-tree root digest measured in
+        // a clean reference environment — the pipeline has no such
+        // environment (the digest depends on the pnpm layout), so it never
+        // guesses the value — and `approvedBuilds` is the signed build-script
+        // approval list desktop merges into its workspace approvals.
+        ...(entry.treeDigest === undefined ? {} : { treeDigest: entry.treeDigest }),
+        ...(entry.approvedBuilds === undefined ? {} : { approvedBuilds: [...entry.approvedBuilds] }),
       }
     })
   if (typeof expiresAt === 'string' ? Number.isNaN(Date.parse(expiresAt)) : !(expiresAt instanceof Date)) {

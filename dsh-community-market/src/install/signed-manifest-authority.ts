@@ -126,6 +126,10 @@ export function createSignedManifestInstallTargetAuthority(
       const evidence: InstallTargetEvidence = {
         manifestSequence: verification.sequence,
         keyId: verification.keyId,
+        // The optional signed approval list rides with the evidence so the
+        // service can hand it to the package-manager boundary; entries
+        // without the field contribute no key at all (gradual enablement).
+        ...(entry.approvedBuilds === undefined ? {} : { approvedBuildDependencies: [...entry.approvedBuilds] }),
       }
       return { allowed: true, evidence }
     },

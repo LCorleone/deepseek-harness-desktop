@@ -61,10 +61,20 @@ a signature.
    - `refused[]` — plugins present on disk that the policy refused to load.
      `decided.refusedBy: boot-verification` with reason strings maps 1:1 to
      the P2-4 rejection codes (`not in the signed company manifest`,
-     integrity-mismatch texts, receipt tree-digest mismatch).
+     integrity-mismatch texts, receipt tree-digest mismatch, signed tree
+     digest mismatch).
    - `allowed[]` with `resolved.evidence: manifest-only` — the bundle matched
      the signed manifest and lockfile integrity but had no usable receipt
      (fresh install path or deleted receipt). Not a finding by itself.
+   - `allowed[]` with `resolved.evidence: signed-tree` — the bundle's entry
+     carries a signed `treeDigest` and the measured on-disk tree matched that
+     signed value: the strongest installed-tree evidence available (a forged
+     or deleted receipt cannot produce it). Entries whose signed manifest
+     carries no `treeDigest` can never show this grade.
+   - `allowed[]` with `resolved.evidence: receipt` on an entry whose signed
+     manifest **does** pin a `treeDigest` — impossible from a genuine boot
+     decision (the signed anchor always produces `signed-tree` for such
+     entries); treat as a forged report.
 5. **`policy`**:
    - `locked: false` on a company-issued install — either an unlocked build
      variant is deployed (deployment error) or the policy asset was replaced

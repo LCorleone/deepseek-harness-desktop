@@ -543,6 +543,42 @@ expectInvalid(
   },
   'a company manifest with a prerelease version',
 )
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  {
+    ...companyManifestExample,
+    packages: companyManifestExample.packages.map((entry, index) =>
+      index === 0 ? { ...entry, treeDigest: 'A3F5D09C6B21E84F7D3A9C5B2E8F4A6D0C1B9E7D5F3A8C2B6E4D0F9A7C5B3E1D' } : entry),
+  },
+  'a company manifest with an uppercase treeDigest',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  {
+    ...companyManifestExample,
+    packages: companyManifestExample.packages.map((entry, index) =>
+      index === 0 ? { ...entry, treeDigest: entry.treeDigest.slice(0, 63) } : entry),
+  },
+  'a company manifest with a truncated treeDigest',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  {
+    ...companyManifestExample,
+    packages: companyManifestExample.packages.map((entry, index) =>
+      index === 0 ? { ...entry, approvedBuilds: [] } : entry),
+  },
+  'a company manifest with an empty approvedBuilds list',
+)
+expectInvalid(
+  'docs/schemas/company-manifest.schema.json',
+  {
+    ...companyManifestExample,
+    packages: companyManifestExample.packages.map((entry, index) =>
+      index === 0 ? { ...entry, approvedBuilds: ['node-pty', ''] } : entry),
+  },
+  'a company manifest with an empty approvedBuilds name',
+)
 
 const markdownFiles = publicFiles.filter(path => path.endsWith('.md'))
 for (const path of markdownFiles) {

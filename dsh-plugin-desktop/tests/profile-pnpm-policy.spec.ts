@@ -179,3 +179,107 @@ strictDepBuilds:
     }
   })
 })
+
+describe('signed approvedBuilds extension', () => {
+  it('unions extra approved names after the built-in triple in both spellings', () => {
+    const { root, dir } = profileRoot()
+
+    try {
+      ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: ['sharp', 'node-pty'] })
+
+      // Built-in triple first (node-pty is not repeated), signed extras after.
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:
+  - node-pty
+  - esbuild
+  - protobufjs
+  - sharp
+allowBuilds:
+  node-pty: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
+strictDepBuilds:
+  false
+`,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('single-quotes scoped dependency names, which YAML reserves as plain-scalar starters', () => {
+    const { root, dir } = profileRoot(`${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - esbuild\n`)
+
+    try {
+      ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: ['@scope/native-helper'] })
+
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:\n  - esbuild\n  - node-pty\n  - protobufjs\n  - '@scope/native-helper'\n`
+        + 'allowBuilds:\n  node-pty: true\n  esbuild: true\n  protobufjs: true\n  \'@scope/native-helper\': true\nstrictDepBuilds:\n  false\n',
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('merges signed extras into a workspace that already carries them partially', () => {
+    const { root, dir } = profileRoot(
+      `${UPSTREAM_TEMPLATE}allowBuilds:\n  sharp: true\n`,
+    )
+
+    try {
+      ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: ['sharp', 'sqlite3'] })
+
+      const content = readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')
+      // sharp is deduped against the existing entry; sqlite3 appends after
+      // the built-ins the same pass merged in. The seeded file already ends
+      // with a newline, so the new blocks splice in without separator lines.
+      expect(content).toBe(
+        `${UPSTREAM_TEMPLATE}allowBuilds:\n  sharp: true\n  node-pty: true\n  esbuild: true\n  protobufjs: true\n  sqlite3: true\n`
+        + 'onlyBuiltDependencies:\n  - node-pty\n  - esbuild\n  - protobufjs\n  - sharp\n  - sqlite3\nstrictDepBuilds:\n  false\n',
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the built-in triple untouched when no extras are supplied', () => {
+    const { root, dir } = profileRoot()
+
+    try {
+      ensureProfilePnpmBuildApproval(dir, {})
+
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(
+        `${UPSTREAM_TEMPLATE}onlyBuiltDependencies:
+  - node-pty
+  - esbuild
+  - protobufjs
+allowBuilds:
+  node-pty: true
+  esbuild: true
+  protobufjs: true
+strictDepBuilds:
+  false
+`,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses dependency names outside the npm grammar, staying a pure text policy', () => {
+    const { root, dir } = profileRoot()
+
+    try {
+      expect(() => ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: ['sharp: false'] }))
+        .toThrow(TypeError)
+      expect(() => ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: [''] })).toThrow(TypeError)
+      expect(() => ensureProfilePnpmBuildApproval(dir, { approvedBuildDependencies: ['Node-Pty'] })).toThrow(TypeError)
+      // Nothing was written: a refused list leaves no workspace behind.
+      expect(existsSync(join(dir, 'pnpm-workspace.yaml'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

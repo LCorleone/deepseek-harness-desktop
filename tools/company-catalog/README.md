@@ -52,6 +52,8 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     "runtime": {                          // dshRuntimeVersion required; cordis/node optional node-semver ranges
       "dshRuntimeVersion": "^0.1.1"
     },
+    "treeDigest": "<64 lowercase hex>",   // optional: expected installed-tree root digest (see below)
+    "approvedBuilds": ["sharp"],          // optional: signed build-script approval list (see below)
     "revoked": false                      // revocation state, set by `revoke`
   }
 ]
@@ -106,6 +108,67 @@ false` 把新字段当未知字段拒收），新验证器拒旧清单（字段�
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。
+
+### Optional authority fields · 可选权威字段
+
+Two **optional** entry fields extend the per-plugin anchor from the
+user-writable install receipt to the signed manifest. Both are gradual-
+enablement fields: they are signed verbatim when the reviewed allowlist entry
+carries them and omitted otherwise, so a manifest that never uses them (such
+as sequence 3 on GitLab) keeps verifying on every client unchanged.
+
+两个**可选**条目字段把单插件的完整性锚点从用户可写的安装 receipt 扩展到签名
+manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名，否则省略——
+从未使用它们的清单（如 GitLab 上的 sequence 3）在所有客户端上照常验签。
+
+- **`treeDigest`** — the expected root digest (64 lowercase hex SHA-256) of
+  the plugin's **installed package tree**, computed with the market
+  install tree-digest contract (`computeInstallTreeDigest`: package-relative
+  POSIX paths, per-file SHA-256, sorted records, root digest over the
+  `sha256:<path>\n<digest>\n` lines). Desktop boot verification treats this
+  signed value as the authoritative expectation and measures the on-disk tree
+  against it — deleting or forging the local install receipt can no longer
+  skip the check. The digest **depends on the installing environment's pnpm
+  layout**, so the pipeline never derives it: measure the post-install tree in
+  a clean reference environment (the same OS/package-manager matrix the fleet
+  deploys), then review the measured value into the allowlist entry and
+  reissue. Entries without the field keep the receipt-anchored behavior
+  (receipt present → tree measured against it; receipt absent → manifest-only
+  load, advisory) until the field lands.
+- **`treeDigest`** ——插件**安装后文件树**的期望根摘要（64 位小写十六进制
+  SHA-256），按 market 安装树摘要契约计算（`computeInstallTreeDigest`：包内
+  相对 POSIX 路径、逐文件 SHA-256、记录按路径排序、根摘要覆盖
+  `sha256:<path>\n<digest>\n` 行）。桌面启动验签以该签名值为权威期望值并实
+  测磁盘树比对——本地删掉或伪造安装 receipt 都无法再绕过检查。该摘要**依赖
+  安装环境的 pnpm 布局**，管线绝不自行推导：在与部署机一致的标准环境中实
+  测安装后的树，把实测值评审入 allowlist 条目并重发清单。没有该字段的条目
+  维持 receipt 锚定行为（有 receipt → 实测树比对 receipt；无 receipt →
+  manifest-only 放行，advisory）直至字段落地。
+- **`approvedBuilds`** — the plugin's signed dependency build-script approval
+  list (`string[]`, npm names, scoped allowed, non-empty, unique). Desktop
+  pre-approves a small built-in triple (`node-pty`, `esbuild`, `protobufjs`)
+  in every profile workspace; after a signed market install of an entry
+  carrying this field, Desktop merges `built-in ∪ approvedBuilds` into the
+  workspace before pnpm materializes the dependency tree, so a catalog plugin
+  with other native build dependencies (sharp/sqlite3/…) no longer trips
+  pnpm's build firewall. Entries without the field use the built-in list only.
+  The list extends the built-in approvals — it can never shrink them.
+- **`approvedBuilds`**——该插件依赖树的签名构建脚本批准清单（`string[]`，npm
+  名，允许 scope，非空且不重复）。桌面默认在每个 profile 工作区预批一组内置
+  三元组（`node-pty`、`esbuild`、`protobufjs`）；市场安装携带该字段的签名条
+  目成功后、pnpm 物化依赖树之前，桌面会把「内置三元组 ∪ approvedBuilds」合
+  入工作区，携带其它原生构建依赖（sharp/sqlite3/…）的目录插件不再触发 pnpm
+  构建防火墙。没有该字段的条目仅用内置清单。该清单只能扩展内置批准，绝不
+  能收缩。
+
+Both fields fail closed at every gate: the allowlist validator refuses
+malformed values (non-hex or truncated digests, empty/duplicate/invalid
+names) at review time, and the manifest schema rejects them again at
+verification, so a bad value can never be signed by accident.
+
+两个字段在每道门禁都 fail-closed：allowlist 校验器在评审时拒绝畸形值（非十六
+进制/截断的摘要、空串/重复/非法名单项），manifest schema 在验签时再次拒绝，
+坏值不可能被意外签出。
 
 ## Keys · 密钥
 

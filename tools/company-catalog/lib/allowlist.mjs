@@ -19,7 +19,12 @@ export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'version']
+const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'treeDigest', 'version']
+
+/** Lowercase hex SHA-256 shape of an expected installed-tree digest. */
+export const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
+/** Upper bound of one entry's signed build-approval list; mirrors the manifest schema. */
+const MAX_APPROVED_BUILDS = 128
 
 /** Mirror of the market's safeBundlePatchPath guard plus the schema character class. */
 export function isSafeBundlePatchPath(value) {
@@ -85,12 +90,16 @@ export function repositoryFromPackument(value) {
 
 /**
  * Validate and normalize one allowlist entry. Returns
- * `{ok: true, value: {packageName, version, bundlePatch, repository?, revoked, runtime}}`
+ * `{ok: true, value: {packageName, version, bundlePatch, repository?, revoked, runtime, treeDigest?, approvedBuilds?}}`
  * or `{ok: false, reason}`. Optional runtime ranges are kept only when
  * present; their node-semver validity is enforced later by the market
  * verifier, which owns the semver grammar. The optional `repository` override
  * pins the VCS identity to sign; when absent the build derives it from the
- * registry metadata.
+ * registry metadata. The optional `treeDigest` and `approvedBuilds` are
+ * passthrough authority fields: the pipeline cannot derive them (the tree
+ * digest depends on the installing environment's package-manager layout, so
+ * it is measured in a clean reference environment and reviewed in), so they
+ * are validated here and signed verbatim when — and only when — present.
  */
 export function validateAllowlistEntry(entry, at) {
   if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
@@ -130,6 +139,33 @@ export function validateAllowlistEntry(entry, at) {
   if (typeof normalizedRuntime.dshRuntimeVersion !== 'string') {
     return { ok: false, reason: `${at}.runtime.dshRuntimeVersion is required` }
   }
+  const treeDigest = entry.treeDigest
+  if (treeDigest !== undefined
+    && (typeof treeDigest !== 'string' || !TREE_DIGEST_PATTERN.test(treeDigest))) {
+    return {
+      ok: false,
+      reason: `${at}.treeDigest must be the expected installed-tree root digest as 64 lowercase hex characters (measured in a clean reference environment; omit the field until then)`,
+    }
+  }
+  const approvedBuilds = entry.approvedBuilds
+  if (approvedBuilds !== undefined) {
+    if (!Array.isArray(approvedBuilds) || approvedBuilds.length === 0) {
+      return { ok: false, reason: `${at}.approvedBuilds must be a non-empty array of dependency names (omit the field instead of signing an empty list)` }
+    }
+    if (approvedBuilds.length > MAX_APPROVED_BUILDS) {
+      return { ok: false, reason: `${at}.approvedBuilds must list at most ${String(MAX_APPROVED_BUILDS)} dependency names` }
+    }
+    const seenBuilds = new Set()
+    for (const name of approvedBuilds) {
+      if (typeof name !== 'string' || !PACKAGE_NAME_PATTERN.test(name)) {
+        return { ok: false, reason: `${at}.approvedBuilds entries must be npm dependency names (scoped names allowed, lowercase)` }
+      }
+      if (seenBuilds.has(name)) {
+        return { ok: false, reason: `${at}.approvedBuilds must not repeat ${name}` }
+      }
+      seenBuilds.add(name)
+    }
+  }
   return {
     ok: true,
     value: {
@@ -139,6 +175,8 @@ export function validateAllowlistEntry(entry, at) {
       ...(repository === undefined ? {} : { repository }),
       revoked,
       runtime: normalizedRuntime,
+      ...(treeDigest === undefined ? {} : { treeDigest }),
+      ...(approvedBuilds === undefined ? {} : { approvedBuilds }),
     },
   }
 }

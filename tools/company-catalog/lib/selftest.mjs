@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyRevocation, entryKey, loadAllowlist, repositoryFromPackument } from './allowlist.mjs'
+import { applyRevocation, entryKey, loadAllowlist, repositoryFromPackument, validateAllowlistEntry } from './allowlist.mjs'
 import { createEphemeralKeyPair, fingerprintOfRawPublicKey, rawPublicKeyBytes } from './keys.mjs'
 import { fetchPackageDist, probeRegistry } from './registry.mjs'
 import {
@@ -179,6 +179,71 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     ok(
       'repository-identity',
       `${String(entries.length)} signed entr${entries.length === 1 ? 'y carries' : 'ies carry'} the market-normalized repository identity; object packument form + directory→subdirectory verified on a fixed offline fixture`,
+    )
+
+    // Segment: the optional authority fields (treeDigest, approvedBuilds)
+    // flow from the allowlist into the signed manifest verbatim, and entries
+    // without them keep the gradual-enablement baseline (no defaulted keys).
+    // The values are never derived here: a tree digest is only meaningful
+    // when measured in a clean reference environment, so the pipeline signs
+    // exactly what review put in the allowlist — nothing.
+    const treeDigest = 'b7c1e0d94a2f6d3c5e8f4a6d0c1b9e7d5f3a8c2b6e4d0f9a7c5b3e1d24680ace'
+    const authorityEntry = {
+      packageName: 'company-authority-plugin',
+      version: '2.0.0',
+      bundlePatch: './cordis.patch.yml',
+      repository: 'https://github.com/example/company-authority-plugin',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      treeDigest,
+      approvedBuilds: ['sharp', '@scope/native-helper'],
+    }
+    const authorityDist = {
+      integrity: `sha512-${createHash('sha512').update('company-authority-plugin selftest dist').digest('base64')}`,
+    }
+    const authorityUnsigned = assembleUnsignedManifest({
+      market,
+      sequence: 91,
+      expiresAt: new Date(Date.now() + DAY_MS),
+      entries: [authorityEntry],
+      dists: new Map([[entryKey(authorityEntry), authorityDist]]),
+    })
+    const authoritySigned = signUnsignedManifest(market, authorityUnsigned, privateKey, keyId)
+    const authorityVerified = verifyManifestText(market, authoritySigned.text, { ...trustRoot, lastSeenSequence: 90 })
+    assert(authorityVerified.ok, `an entry carrying treeDigest + approvedBuilds must sign and verify (${why(authorityVerified)})`)
+    const signedAuthorityEntry = authorityVerified.manifest.packages[0]
+    assert(
+      signedAuthorityEntry.treeDigest === treeDigest
+        && JSON.stringify(signedAuthorityEntry.approvedBuilds) === JSON.stringify(authorityEntry.approvedBuilds),
+      'the signed authority fields differ from the allowlist values',
+    )
+    const baselineUnsigned = assembleUnsignedManifest({
+      market,
+      sequence: 91,
+      expiresAt: new Date(Date.now() + DAY_MS),
+      entries: [monoEntry],
+      dists: new Map([[entryKey(monoEntry), monoDist]]),
+    })
+    assert(
+      !('treeDigest' in baselineUnsigned.packages[0]) && !('approvedBuilds' in baselineUnsigned.packages[0]),
+      'entries without the authority fields must not gain defaulted keys',
+    )
+    for (const [field, bad, hint] of [
+      ['treeDigest', 'XYZ', '64 lowercase hex'],
+      ['treeDigest', 'ab'.repeat(31), '64 lowercase hex'],
+      ['approvedBuilds', [], 'non-empty array'],
+      ['approvedBuilds', ['ok', ''], 'npm dependency names'],
+      ['approvedBuilds', ['dup', 'dup'], 'must not repeat'],
+    ]) {
+      const result = validateAllowlistEntry({ ...authorityEntry, [field]: bad }, 'entry[0]')
+      assert(
+        result.ok === false && result.reason.includes(hint),
+        `the allowlist accepted a malformed ${field} (${JSON.stringify(bad)}): ${result.ok === true ? 'accepted' : result.reason}`,
+      )
+    }
+    ok(
+      'authority-fields',
+      'treeDigest + approvedBuilds pass through allowlist → assembly → signature verbatim; entries without them stay unchanged; malformed values are refused at load time',
     )
 
     // Segment: assembly must refuse an entry with no repository identity from

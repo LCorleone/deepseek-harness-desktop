@@ -68,6 +68,8 @@ export interface MarketDesktopPnpm {
       readonly packageVersion: string
       readonly receiptId: string
     }
+    /** Signed build-script approvals of the installed plugin's entry; see {@link InstallTargetEvidence}. */
+    readonly approvedBuildDependencies?: readonly string[]
     readonly signal?: AbortSignal
   }): Promise<MarketDesktopPnpmHandle>
   recoveredInstallReceiptIds(): Promise<readonly string[]>
@@ -180,15 +182,23 @@ export interface InstallTargetCandidate {
 }
 
 /**
- * Signed-manifest provenance attached to an allow decision (P2-3). Copied
- * verbatim into the version-2 install receipt; the service treats it as
- * opaque and never derives an allow decision from it.
+ * Signed-manifest provenance attached to an allow decision (P2-3). The
+ * sequence and keyId are copied verbatim into the version-2 install receipt;
+ * `approvedBuildDependencies` transports the entry's signed build-script
+ * approval list to the package-manager boundary instead. The service treats
+ * all of it as opaque provenance and never derives an allow decision from it.
  */
 export interface InstallTargetEvidence {
   /** Sequence of the signed company manifest whose entry matched the target. */
   readonly manifestSequence: number
   /** keyId of the trust root whose key verified that manifest. */
   readonly keyId: string
+  /**
+   * Signed `approvedBuilds` of the matched entry, copied when the entry
+   * carries the optional field; absent entries contribute nothing. Hosts use
+   * it to extend (never replace) their built-in build-script approvals.
+   */
+  readonly approvedBuildDependencies?: readonly string[]
 }
 
 /** Whitelist decision for one verified npm install target. */
@@ -999,6 +1009,10 @@ export class MarketInstallService {
             packageVersion: candidate.version,
             receiptId,
           },
+          // The signed entry's build-script approvals ride along so the
+          // package-manager boundary can widen its workspace approval list
+          // before pnpm materializes the dependency tree.
+          decision.evidence?.approvedBuildDependencies,
         )
       } catch (cause) {
         if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
@@ -1325,6 +1339,7 @@ export class MarketInstallService {
       readonly packageVersion: string
       readonly receiptId: string
     },
+    approvedBuildDependencies?: readonly string[],
   ): Promise<void> {
     const combinedSignal = includeGeneration ? AbortSignal.any([signal, this.generation.signal]) : signal
     combinedSignal.throwIfAborted()
@@ -1336,6 +1351,7 @@ export class MarketInstallService {
             pnpmOptions: args,
             invokingDir: profile.dir,
             recovery: installRecovery,
+            ...(approvedBuildDependencies === undefined ? {} : { approvedBuildDependencies }),
             signal: combinedSignal,
           })
     }
