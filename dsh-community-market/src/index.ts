@@ -150,7 +150,7 @@ export interface CommunityMarketCompanyCatalogWiring {
   readonly companySource: LocalSourceRecord
   /** Catalog-service adapter registration; reports scan failures to the authority. */
   readonly adapters: readonly CatalogAdapter[]
-  /** HTTP clients keyed by adapter id; origin mode pins a body-bounded client. */
+  /** HTTP clients keyed by adapter id; origin mode pins a body-bounded client (Host-injectable). */
   readonly adapterHttpClients: ReadonlyMap<string, CatalogHttpClient>
   /** Install whitelist over the provider's last verified manifest. */
   readonly installTargetAuthority: SignedManifestInstallTargetAuthority
@@ -164,6 +164,22 @@ export interface CommunityMarketCompanyCatalogOptions {
   readonly moduleUrl?: string
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Host-injected HTTP client serving origin-mode manifest fetches. The
+   * embedding Host provides it when its own network boundary is the only one
+   * that can reach the pinned origin — the Electron Desktop main process
+   * routes through the Chromium network stack because Node's fetch ignores
+   * the OS certificate store (corporate-CA origins fail the TLS handshake)
+   * and the portable restricted client's private-network blocklist refuses
+   * internal hosting addresses by design. The injected client takes over the
+   * restricted client's guarantees for this one policy-pinned URL: pinned
+   * origin, refused redirects, bounded body and time. Without it the portable
+   * restricted client applies unchanged (community sources are never
+   * affected). The Host delivers it through the `desktopCompanyCatalogHttp`
+   * context capability; this package only defines the consumed interface
+   * ({@link CatalogHttpClient}) and never imports the Host implementation.
+   */
+  readonly originHttpClient?: CatalogHttpClient
 }
 
 /** Forward one catalog scan task, reporting untrusted verdicts to the authority. */
@@ -225,10 +241,19 @@ export function createCommunityMarketCompanyCatalog(
   const adapterHttpClients = new Map<string, CatalogHttpClient>()
   if (policy.companyCatalogOrigin !== null) {
     // The origin is policy-pinned; the provider re-asserts `allowedOrigin` on
-    // every request through this client.
-    adapterHttpClients.set(COMPANY_CATALOG_ADAPTER_ID, createRestrictedHttpClient({
-      maxBodyBytes: COMPANY_MANIFEST_MAX_BODY_BYTES,
-    }))
+    // every request through this client. A Host-injected client (see
+    // `CommunityMarketCompanyCatalogOptions.originHttpClient`) replaces the
+    // portable restricted client for exactly this adapter — e.g. the Electron
+    // Desktop main process routing through the Chromium network stack — and
+    // must carry the same pinned-origin, refused-redirect, and bounded-body
+    // guarantees for the manifest URL. Community sources and every other
+    // adapter keep the restricted client regardless.
+    adapterHttpClients.set(
+      COMPANY_CATALOG_ADAPTER_ID,
+      options.originHttpClient ?? createRestrictedHttpClient({
+        maxBodyBytes: COMPANY_MANIFEST_MAX_BODY_BYTES,
+      }),
+    )
   }
   return {
     companySource: Object.freeze({
@@ -255,6 +280,13 @@ const npmRegistryHttp = createRestrictedHttpClient({
 export function apply(ctx: Context): void {
   const scope = registerMarketSettings(ctx)
   const policy = ctx.get('desktopPolicy') as DesktopPolicyView | undefined
+  // Origin-mode Host injection (see
+  // `CommunityMarketCompanyCatalogOptions.originHttpClient`): the Electron
+  // Desktop main process provides `desktopCompanyCatalogHttp`, a
+  // CatalogHttpClient whose fetch rides the Chromium network stack with the
+  // policy origin pinned. A missing capability keeps the portable restricted
+  // client — standalone deployments included.
+  const companyCatalogHttp = ctx.get('desktopCompanyCatalogHttp') as CatalogHttpClient | undefined
   const locked = policy?.locked === true
   // L2 wiring: a locked deployment with pinned trust roots serves the signed
   // company catalog end to end. A locked policy without trust roots cannot
@@ -262,7 +294,9 @@ export function apply(ctx: Context): void {
   // keeps the Phase-1 placeholder — the company release gate rejects it at
   // packaging time, and the host keeps booting either way.
   const companyCatalog = locked && policy !== undefined && policy.trustRoots.length > 0
-    ? createCommunityMarketCompanyCatalog(policy, scope)
+    ? createCommunityMarketCompanyCatalog(policy, scope, {
+      ...(companyCatalogHttp === undefined ? {} : { originHttpClient: companyCatalogHttp }),
+    })
     : undefined
   if (locked && companyCatalog === undefined) {
     ctx.logger.warn(

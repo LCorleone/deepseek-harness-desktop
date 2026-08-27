@@ -22,6 +22,7 @@ describe('market signing type facade runtime parity', () => {
       'ed25519PublicKeyFingerprint',
       'createCompanyManifestSignature',
       'verifyCompanyManifest',
+      'createCompanyCatalogProvider',
     ])
   })
 

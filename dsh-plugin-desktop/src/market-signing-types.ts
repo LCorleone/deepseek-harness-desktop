@@ -11,9 +11,11 @@
  * facade for typechecking only: bundlers, vitest, and the packaged runtime
  * keep resolving the real package by its exports map, and the specs exercise
  * the real runtime implementation. Keep the declarations structurally in
- * sync with `dsh-community-market/src/signing` and `src/api-types.ts`
- * (receipt v2); the surface here is exactly what desktop is allowed to
- * consume over the public export face.
+ * sync with `dsh-community-market/src/signing`, `src/api-types.ts`
+ * (receipt v2), and the company catalog provider surface of
+ * `src/catalog/company-provider.ts` + `src/contracts/types.ts`; the surface
+ * here is exactly what desktop is allowed to consume over the public export
+ * face.
  */
 
 export interface CompanyManifestTrustRoot {
@@ -151,3 +153,86 @@ export declare function verifyCompanyManifest(
   raw: string | Uint8Array,
   options: VerifyCompanyManifestOptions,
 ): CompanyManifestVerification
+
+// ---------------------------------------------------------------------------
+// Company catalog provider surface (market `src/catalog/company-provider.ts`
+// and `src/contracts/types.ts`). Desktop consumes it to compose the locked
+// market's origin-mode catalog scan in tests with the Electron-boundary HTTP
+// client injected through the `desktopCompanyCatalogHttp` host capability.
+// ---------------------------------------------------------------------------
+
+/** Structural mirror of the market's `CatalogHttpRequestPolicy`. */
+export interface MarketCatalogHttpRequestPolicy {
+  /** Reject a cross-origin redirect before the destination is contacted. */
+  readonly allowedOrigin?: string
+  /** Bypass and replace any completed or in-flight catalog response cache entry. */
+  readonly cacheMode?: 'default' | 'reload'
+}
+
+/** Structural mirror of the market's `CatalogHttpResponse`. */
+export interface MarketCatalogHttpResponse {
+  readonly value: unknown
+  readonly finalUrl: string
+}
+
+/** Structural mirror of the market's `CatalogHttpClient` host-injection contract. */
+export interface MarketCatalogHttpClient {
+  getJson(
+    url: string,
+    signal: AbortSignal,
+    policy?: MarketCatalogHttpRequestPolicy,
+  ): Promise<MarketCatalogHttpResponse>
+}
+
+/** Persisted anti-rollback record of the highest verified manifest sequence. */
+export interface MarketCompanyManifestSequenceRecord {
+  readonly sequence: number
+  readonly keyId: string
+  readonly verifiedAt: string
+  readonly bytesSha256?: string
+}
+
+/** Narrow injectable persistence for the anti-rollback sequence. */
+export interface MarketCompanyManifestSequenceStore {
+  load(): Promise<MarketCompanyManifestSequenceRecord | undefined>
+  save(record: MarketCompanyManifestSequenceRecord): Promise<void>
+}
+
+/** Structural mirror of the provider options the Desktop composition uses. */
+export interface CompanyCatalogProviderOptionsView {
+  /** Origin mode: credential-free HTTPS URL of the signed manifest. */
+  readonly companyManifestUrl?: string
+  /** Content mode: manifest bytes supplied by the embedding Host. */
+  readonly manifestContentProvider?: () => string | Uint8Array | Promise<string | Uint8Array>
+  /** Deployment-policy pinned signing keys; at least one root is required. */
+  readonly trustRoots: readonly CompanyManifestTrustRoot[]
+  /** Persists the highest verified sequence. */
+  readonly sequenceStore?: MarketCompanyManifestSequenceStore
+  /** Clock deciding manifest expiry; defaults to `Date.now`. */
+  readonly now?: () => number
+}
+
+/** Structural mirror of the company catalog provider's public query surface. */
+export interface CompanyCatalogProviderView {
+  scanCatalog(
+    query: Record<string, unknown>,
+    context: {
+      readonly signal: AbortSignal
+      readonly http: MarketCatalogHttpClient
+      readonly source: Record<string, unknown>
+    },
+  ): Promise<readonly { readonly items: readonly { readonly id: string }[] }[]>
+  verification(): {
+    readonly mode: 'origin' | 'content'
+    readonly sequence: number
+    readonly keyId: string
+    readonly fingerprint: string
+    readonly verifiedAt: string
+    readonly expiresAt: string
+  } | undefined
+}
+
+/** Build a company catalog provider from deployment-policy injection. */
+export declare function createCompanyCatalogProvider(
+  options: CompanyCatalogProviderOptionsView,
+): CompanyCatalogProviderView

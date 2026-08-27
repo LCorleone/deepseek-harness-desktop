@@ -77,7 +77,7 @@ import {
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
 } from './boot-verification.ts'
-import { fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
+import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
 import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
@@ -949,6 +949,20 @@ async function start(): Promise<void> {
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
         hostCtx.provide('desktopPolicy', policy)
+        if (policy.companyCatalogOrigin !== null) {
+          // Origin-mode market catalog fetches ride the same Chromium network
+          // boundary boot verification uses: the community market's portable
+          // restricted client refuses the internal GitLab origin's
+          // private-network addresses by design and Node's https does not
+          // trust the corporate CA, so the host injects this client (the
+          // market's `desktopCompanyCatalogHttp` capability) for exactly the
+          // policy-pinned manifest URL. Community sources keep the restricted
+          // client; the signature gate over the returned bytes is unchanged.
+          hostCtx.provide(
+            'desktopCompanyCatalogHttp',
+            companyCatalogHttpOverElectronNet(policy),
+          )
+        }
         await hostCtx.plugin(DesktopActionsService, {
           openTerminal: () => { runtime.openTerminal() },
           requestRestart: () => runtime.requestRestart(),

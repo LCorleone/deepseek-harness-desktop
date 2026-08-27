@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -385,6 +386,93 @@ describe('locked plugin-add authorization', () => {
       .toThrow('must be absolute without NUL')
     expect(() => companyManifestFileRequest('/tmp/manifest\0.json'))
       .toThrow('must be absolute without NUL')
+  })
+
+  it.skipIf(process.platform === 'win32')('falls back to the network boundary when the staged path is not a regular file', async () => {
+    // A planted device node (or any non-regular file) must never stream into
+    // the manifest boundary: `fstat` rejects it and the request degrades to
+    // the restricted network fetch. `/dev/zero` is a real character device
+    // this container serves, so the guard is exercised against the kernel.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    const network = vi.fn(async () => new Response(manifestText))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest('/dev/zero', network) } },
+    )
+
+    expect(decision.allowed).toBe(true)
+    expect(network).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the network boundary when the staged file exceeds the manifest body bound', async () => {
+    // A huge sparse file (5 MiB against the 4 MiB cap) is refused by `fstat`
+    // before a byte is read — an unbounded staging file is unusable, not a
+    // manifest — and the request degrades to the network fetch.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    const network = vi.fn(async () => new Response(manifestText))
+    const oversized = join(roots, 'staged-oversized', 'company-manifest.json')
+    mkdirSync(dirname(oversized), { recursive: true })
+    writeFileSync(oversized, 'x')
+    truncateSync(oversized, 4 * 1024 * 1024 + 1)
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(oversized, network) } },
+    )
+
+    expect(decision.allowed).toBe(true)
+    expect(network).toHaveBeenCalledTimes(1)
+  })
+
+  it.skipIf(process.platform === 'win32')('falls back to the network boundary when the staged path is a symlink', async () => {
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    const network = vi.fn(async () => new Response(manifestText))
+    const target = writeCatalog(unsignedCatalog(), join(roots, 'staged-target'))
+    const link = join(roots, 'staged-link', 'company-manifest.json')
+    mkdirSync(dirname(link), { recursive: true })
+    symlinkSync(target, link)
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(link, network) } },
+    )
+
+    expect(decision.allowed).toBe(true)
+    expect(network).toHaveBeenCalledTimes(1)
+  })
+
+  it.skipIf(process.platform === 'win32')('stops a stalled staged read at the whole-request bound instead of hanging', async () => {
+    // A FIFO with no writer stalls the open forever; the staged read must
+    // stay bounded by the caller's whole-request abort signal (the same
+    // bound capping the network fetch) and the cancellation must propagate
+    // — the network fallback is not attempted for a torn-down request.
+    const fifo = join(roots, 'stalled-fifo', 'company-manifest.json')
+    mkdirSync(dirname(fifo), { recursive: true })
+    spawnSync('mkfifo', [fifo])
+    const network = vi.fn(async () => new Response('never read'))
+    const boundary = companyManifestFileRequest(fifo, network)
+
+    await expect(boundary('https://market.company.example/catalog-manifest.json', {
+      redirect: 'error',
+      signal: AbortSignal.timeout(150),
+    })).rejects.toThrow()
+    expect(network).not.toHaveBeenCalled()
   })
 
   it('denies origin policies whose manifest URL escapes the pinned origin before any request', async () => {

@@ -17,7 +17,8 @@
  * transport, provide the authenticity decision.
  */
 
-import { readFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { open, readFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { fetchUpdateChannelBytes, type UpdateChannelRequest } from './update-manifest.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
@@ -39,6 +40,62 @@ export interface CompanyManifestFetchOptions {
 }
 
 const defaultRequest: UpdateChannelRequest = (url, init) => globalThis.fetch(url, init)
+
+/** Open flags for the staged manifest read: read-only, never through a symlink. */
+const STAGED_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+
+function isAbortFailure(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'name' in value && value.name === 'AbortError'
+}
+
+/**
+ * Read the staged manifest bytes within the transport bounds: a regular
+ * file, at most {@link COMPANY_MANIFEST_MAX_BYTES} by `fstat` and again after
+ * the read (the file could grow in between), and never past the caller's
+ * whole-request abort signal — the same bound that caps the network fetch,
+ * so a stalled filesystem cannot hold the request open indefinitely. Every
+ * failure throws for the caller's network-fallback handling.
+ */
+async function readStagedCompanyManifestBytes(
+  manifestFile: string,
+  requestSignal: AbortSignal | null | undefined,
+): Promise<Buffer> {
+  const signal = requestSignal ?? undefined
+  const operation = (async () => {
+    const handle = await open(manifestFile, STAGED_FILE_OPEN_FLAGS)
+    try {
+      const info = await handle.stat()
+      if (!info.isFile()) throw new Error(`${BIN_NAME}: the staged company manifest is not a regular file`)
+      if (info.size > COMPANY_MANIFEST_MAX_BYTES) {
+        throw new Error(`${BIN_NAME}: the staged company manifest exceeds ${String(COMPANY_MANIFEST_MAX_BYTES)} bytes`)
+      }
+      return await readFile(handle)
+    } finally {
+      await handle.close().catch(() => undefined)
+    }
+  })()
+  if (signal === undefined) return await operation
+  return await new Promise<Buffer>((resolve, reject) => {
+    const finish = (settle: () => void) => {
+      signal.removeEventListener('abort', onAbort)
+      settle()
+    }
+    const onAbort = () => finish(() => reject(
+      signal.reason ?? new DOMException('The operation was aborted', 'AbortError'),
+    ))
+    // Forward the read's settlement first so an abort that wins the race
+    // never leaves its eventual failure unhandled.
+    void operation.then(
+      bytes => finish(() => resolve(bytes)),
+      cause => finish(() => reject(cause)),
+    )
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 /** Environment key carrying the launcher-staged manifest bytes to CLI children. */
 export const DESKTOP_COMPANY_MANIFEST_FILE_ENV = 'DSH_COMPANY_MANIFEST_FILE'
@@ -89,10 +146,12 @@ export async function fetchCompanyManifestText(
  * down; the child still runs them through the same signature gate, so the
  * trust decision stays with `verifyCompanyManifest`, not the file.
  *
- * A missing, unreadable, or empty staging file (a stale shim after a restart,
- * a crashed generation) falls back to the shared restricted network fetch —
- * the online behavior, never a softer denial — and every network failure
- * keeps failing closed through the caller.
+ * A missing, unreadable, empty, non-regular (for example a device node),
+ * or over-sized staging file — a stale shim after a restart, a crashed
+ * generation, a planted `/dev/zero` — falls back to the shared restricted
+ * network fetch (the online behavior, never a softer denial); only caller
+ * cancellation propagates, like every other abort on this boundary. Every
+ * network failure keeps failing closed through the caller.
  *
  * @param manifestFile - absolute launcher-staged manifest path, no NUL.
  * @param network - network fallback boundary; defaults to `globalThis.fetch`
@@ -111,11 +170,14 @@ export function companyManifestFileRequest(
   return async (url, init) => {
     let bytes: Buffer
     try {
-      bytes = await readFile(manifestFile)
-    } catch {
+      bytes = await readStagedCompanyManifestBytes(manifestFile, init.signal)
+    } catch (cause) {
+      // Caller cancellation is the fetch contract's one propagated failure;
+      // anything else about the staging file only makes it unusable.
+      if (init.signal?.aborted === true || isAbortFailure(cause)) throw cause
       return await network(url, init)
     }
-    if (bytes.byteLength === 0) {
+    if (bytes.byteLength === 0 || bytes.byteLength > COMPANY_MANIFEST_MAX_BYTES) {
       return await network(url, init)
     }
     // Copy into a plain ArrayBuffer view: the DOM BodyInit types accept a

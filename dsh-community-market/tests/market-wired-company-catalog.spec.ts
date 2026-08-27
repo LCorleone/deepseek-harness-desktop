@@ -327,3 +327,84 @@ describe('locked company catalog wiring', () => {
     }).toThrow(/empty or dot path segments/u)
   })
 })
+
+describe('origin-mode host HTTP client injection', () => {
+  const gitlabLikeOrigin = 'https://gitlab.company.example'
+  const manifestUrl = `${gitlabLikeOrigin}/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json`
+
+  function originPolicy(): DesktopPolicyView {
+    return {
+      locked: true,
+      trustRoots,
+      companyCatalogOrigin: gitlabLikeOrigin,
+      companyManifestUrl: manifestUrl,
+    }
+  }
+
+  it('serves the origin-mode catalog scan through the host-injected client', async () => {
+    // The Electron Desktop main process injects its Chromium-stack client for
+    // corporate-CA origins whose addresses the portable restricted client
+    // refuses; the scan must run entirely through that client — the pinned
+    // URL and `allowedOrigin` policy included — while the shared restricted
+    // client is never contacted.
+    const injected: CatalogHttpClient = {
+      getJson: vi.fn(async (url: string, signal: AbortSignal, policy?: { allowedOrigin?: string }) => {
+        expect(url).toBe(manifestUrl)
+        expect(policy?.allowedOrigin).toBe(gitlabLikeOrigin)
+        expect(signal.aborted).toBe(false)
+        return { value: JSON.parse(signedManifestText([
+          packageEntry(safePackage, safeVersion, safeIntegrity),
+        ], 3)), finalUrl: url }
+      }),
+    }
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog(originPolicy(), scope, {
+      originHttpClient: injected,
+      now: () => verifiedAt,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters, adapterHttpClients: wiring.adapterHttpClients },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      `npm:${safePackage}@${safeVersion}`,
+    ])
+    expect(injected.getJson).toHaveBeenCalledTimes(1)
+    expect(unusedHttp.getJson).not.toHaveBeenCalled()
+    // Origin mode keeps the strict-increase ratchet and records no bytes
+    // digest (that replay allowance is content-mode only).
+    expect(scope.document().companyManifest).toEqual({
+      sequence: 3,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+    })
+    expect(wiring.provider.verification()).toMatchObject({ mode: 'origin', sequence: 3 })
+  })
+
+  it('keeps the restricted client without injection: a private-network origin stays refused', async () => {
+    // The portable default must not be weakened for the company path: an
+    // origin pinned to a loopback address is refused deterministically by the
+    // restricted client's blocklist (no DNS, no request) — the internal-
+    // hosting case the Desktop host solves by injecting its own client.
+    const scope = memoryScope()
+    const wiring = createCommunityMarketCompanyCatalog({
+      locked: true,
+      trustRoots,
+      companyCatalogOrigin: 'https://127.0.0.1',
+      companyManifestUrl: 'https://127.0.0.1/catalog-manifest.json',
+    }, scope, { now: () => verifiedAt })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters, adapterHttpClients: wiring.adapterHttpClients },
+    )
+
+    await expect(service.scanCatalog(new AbortController().signal))
+      .rejects.toThrow('blocked-address')
+    expect(scope.document().companyManifest).toBeUndefined()
+  })
+})
