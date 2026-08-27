@@ -50,6 +50,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { extractFile, listPackage } from '@electron/asar'
+import { sep as pathSep } from 'node:path'
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(scriptRoot)
@@ -135,6 +136,22 @@ function pinnedBundledNodeVersion() {
 /** Normalize ASAR listing entries the way scripts/verify-packaged-runtime.ts does. */
 function normalizeArchiveEntry(entry) {
   return entry.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+/**
+ * Windows-packed archives store entry paths with backslashes, so
+ * extractFile must receive the stored spelling rather than the normalized
+ * POSIX form used for matching.
+ */
+let archiveEntries = []
+function extractArchiveFile(posixPath) {
+  const stored = archiveEntries.find(entry => normalizeArchiveEntry(entry) === posixPath)
+  if (stored === undefined) {
+    throw new Error(`"${posixPath}" was not found in this archive`)
+  }
+  // @electron/asar 3.x searchNodeFromPath splits on path.sep, so hand it the
+  // platform-native separator form (backslashes on Windows) of the entry.
+  return extractFile(artifact.asarPath, normalizeArchiveEntry(stored).split('/').join(pathSep))
 }
 
 /** Find one compiled chunk file below the packaged lib tree by name prefix. */
@@ -266,7 +283,8 @@ let policy = undefined
 {
   let entries
   try {
-    entries = new Set(listPackage(artifact.asarPath, { isPack: false }).map(normalizeArchiveEntry))
+    archiveEntries = listPackage(artifact.asarPath, { isPack: false })
+    entries = new Set(archiveEntries.map(normalizeArchiveEntry))
   } catch (cause) {
     fail('a2', `cannot list ${artifact.asarPath}: ${cause instanceof Error ? cause.message : String(cause)}`)
   }
@@ -287,7 +305,7 @@ let policy = undefined
   }
 
   try {
-    policy = JSON.parse(extractFile(artifact.asarPath, 'lib/policy/desktop-policy.json').toString('utf8'))
+    policy = JSON.parse(extractArchiveFile('lib/policy/desktop-policy.json').toString('utf8'))
     if (policy.locked === true) {
       pass('a3', 'in-ASAR lib/policy/desktop-policy.json is locked=true')
     } else {
@@ -299,7 +317,7 @@ let policy = undefined
   }
 
   try {
-    const manifestText = extractFile(artifact.asarPath, 'lib/company-market/catalog-manifest.json').toString('utf8')
+    const manifestText = extractArchiveFile('lib/company-market/catalog-manifest.json').toString('utf8')
     const market = await import(pathToFileURL(join(artifact.unpackedRoot, 'node_modules', 'dsh-community-market', 'lib', 'index.js')).href)
     const verification = market.verifyCompanyManifest(manifestText, { trustRoots: policy.trustRoots })
     if (verification.ok) {
@@ -341,7 +359,7 @@ function sentinelPolicyEnvironment() {
   })
   let dshVersion = undefined
   try {
-    dshVersion = JSON.parse(extractFile(artifact.asarPath, 'node_modules/@deepseek-ai/dsh/package.json').toString('utf8')).version
+    dshVersion = JSON.parse(extractArchiveFile('node_modules/@deepseek-ai/dsh/package.json').toString('utf8')).version
   } catch {
     dshVersion = undefined
   }
