@@ -34,7 +34,10 @@
  * tarball integrity of the allowed entry is enforced downstream: the install
  * transaction resolves the exact version through pnpm's registry dist
  * integrity, and boot verification (P2-4) reconciles installed trees against
- * the same signed catalog on every start.
+ * the same signed catalog on every start. The allow decision also carries
+ * the entry's signed `approvedBuilds` (when present) so the terminal
+ * execution side can widen the profile's pnpm build approvals exactly like
+ * the market install path.
  */
 
 import { readFileSync } from 'node:fs'
@@ -66,7 +69,18 @@ export interface CliPluginAddPackage {
 
 /** Fail-closed verdict of the locked terminal plugin-add gate. */
 export type LockedPluginAddDecision =
-  | { readonly allowed: true; readonly packages: readonly CliPluginAddPackage[] }
+  | {
+      readonly allowed: true
+      readonly packages: readonly CliPluginAddPackage[]
+      /**
+       * Signed `approvedBuilds` of the allowed entry, copied when it carries
+       * the optional field; the terminal execution side merges it into the
+       * profile's pnpm build approvals exactly like the market install path
+       * (built-in triple ∪ signed list). Only the signed entry can widen the
+       * approval list; entries without the field contribute no key.
+       */
+      readonly approvedBuildDependencies?: readonly string[]
+    }
   | { readonly allowed: false; readonly reason: string }
 
 /** Overrides for focused tests; production uses the embedded asset and wall clock. */
@@ -235,5 +249,12 @@ export async function authorizeLockedPluginAdd(
   if (entry.revoked) {
     return denied(`${target.packageName}@${target.version} is revoked in the signed company plugin catalog. ${MARKET_GUIDANCE}`)
   }
-  return { allowed: true, packages: [target] }
+  return {
+    allowed: true,
+    packages: [target],
+    // The signed approval list rides with the allow decision so the
+    // execution side can widen the workspace approvals before pnpm runs —
+    // the same transport the market install path uses for its evidence.
+    ...(entry.approvedBuilds === undefined ? {} : { approvedBuildDependencies: [...entry.approvedBuilds] }),
+  }
 }

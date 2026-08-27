@@ -94,7 +94,7 @@
           "items": {
             "$ref": "#/$defs/approvedBuildDependency"
           },
-          "description": "Optional signed build-script approval list: the native dependency names inside this plugin's dependency tree whose install scripts the client may pre-approve in its package-manager workspace. Entries without the field keep the client's built-in approval list only; publishing it is a per-plugin decision, so the field is absent until a reviewed entry carries it."
+          "description": "Optional signed build-script approval list: dependency names whose install scripts the client may pre-approve in its package-manager workspace. The approval is profile-global and persistent: names are unioned with (never replace) the client's built-in approvals, remain in the workspace after the install — including after a rollback, because the merge happens before the install's WAL snapshot — and apply across entries, so a name approved for one plugin's entry also grants build approval to the same-named dependency of any other plugin in that profile. The name set itself is only as trustworthy as the company signature that pins it. Entries without the field keep the client's built-in approval list only; publishing it is a per-plugin decision, so the field is absent until a reviewed entry carries it."
         },
         "revoked": {
           "type": "boolean",

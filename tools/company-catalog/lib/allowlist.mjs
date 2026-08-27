@@ -13,6 +13,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 /** npm package name grammar accepted by the manifest schema. */
 export const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
+/** npm's package-name length bound, mirrored by the manifest schema's `maxLength: 214`. */
+export const MAX_PACKAGE_NAME_LENGTH = 214
 /** Exact stable semver — prerelease and build metadata are not signable. */
 export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
 /** Characters the schema forbids inside bundlePatch (controls and bidi marks). */
@@ -25,6 +27,10 @@ const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repositor
 export const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
 /** Upper bound of one entry's signed build-approval list; mirrors the manifest schema. */
 const MAX_APPROVED_BUILDS = 128
+
+/** npm dependency name of an approved build, schema-shaped: the grammar plus the 214-character bound. */
+const isValidBuildDependencyName = (name) =>
+  typeof name === 'string' && PACKAGE_NAME_PATTERN.test(name) && name.length <= MAX_PACKAGE_NAME_LENGTH
 
 /** Mirror of the market's safeBundlePatchPath guard plus the schema character class. */
 export function isSafeBundlePatchPath(value) {
@@ -110,6 +116,9 @@ export function validateAllowlistEntry(entry, at) {
   if (typeof packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(packageName)) {
     return { ok: false, reason: `${at}.packageName must be an npm package name (scoped names allowed, lowercase)` }
   }
+  if (packageName.length > MAX_PACKAGE_NAME_LENGTH) {
+    return { ok: false, reason: `${at}.packageName must be at most ${String(MAX_PACKAGE_NAME_LENGTH)} characters long (npm's bound, mirrored by the manifest schema)` }
+  }
   if (typeof version !== 'string' || !STABLE_VERSION_PATTERN.test(version)) {
     return { ok: false, reason: `${at}.version must be an exact stable semver (X.Y.Z, no prerelease or build metadata)` }
   }
@@ -157,8 +166,8 @@ export function validateAllowlistEntry(entry, at) {
     }
     const seenBuilds = new Set()
     for (const name of approvedBuilds) {
-      if (typeof name !== 'string' || !PACKAGE_NAME_PATTERN.test(name)) {
-        return { ok: false, reason: `${at}.approvedBuilds entries must be npm dependency names (scoped names allowed, lowercase)` }
+      if (!isValidBuildDependencyName(name)) {
+        return { ok: false, reason: `${at}.approvedBuilds entries must be npm dependency names (scoped names allowed, lowercase, at most ${String(MAX_PACKAGE_NAME_LENGTH)} characters)` }
       }
       if (seenBuilds.has(name)) {
         return { ok: false, reason: `${at}.approvedBuilds must not repeat ${name}` }

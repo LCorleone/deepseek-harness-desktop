@@ -34,9 +34,13 @@
  *      receipt. A receipt whose rootDigest equals the signed digest must not
  *      skip the measurement either — the receipt lives in user-writable
  *      storage, so honoring it as a pass would reintroduce exactly the
- *      bypass this anchor removes (repeat-boot cost stays bounded by the
- *      persisted stat-fingerprint measure cache wired by the Host). The
- *      allow decision carries `evidence: 'signed-tree'`.
+ *      bypass this anchor removes. The authority measurement is always a
+ *      full read of the file contents: it never consults the persisted
+ *      stat-fingerprint measure cache, because that cache also lives in
+ *      user-writable storage and a cache hit would return a recorded value
+ *      instead of the measured one (see
+ *      {@link createCachedDesktopBootTreeRootDigestMeasure}).
+ *      The allow decision carries `evidence: 'signed-tree'`.
  *    - **Receipt anchor (entries without `treeDigest`).** With a usable
  *      receipt the measured `rootDigest` of the installed tree must equal
  *      `receipt.rootDigest` byte for byte, which is the tamper check for
@@ -141,9 +145,11 @@ export interface DesktopBootVerificationInputs {
   /**
    * Installed-tree measurement override for focused tests and the persisted
    * fingerprint cache (see {@link createCachedDesktopBootTreeRootDigestMeasure});
-   * defaults to the full synchronous measurement.
+   * defaults to the full synchronous measurement. Receives the anchor the
+   * measurement serves so cache-backed implementations can bypass the cache
+   * for {@link DesktopBootTreeMeasurePurpose} `'signed-tree'`.
    */
-  readonly measureTreeRootDigest?: (packageDir: string) => string
+  readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
 }
 
 export interface DesktopBootVerificationOptions {
@@ -155,12 +161,22 @@ export interface DesktopBootVerificationOptions {
   readonly lastSeenSequence?: number
   /** Clock injection for manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
-  /** Installed-tree measurement override for focused tests. */
-  readonly measureTreeRootDigest?: (packageDir: string) => string
+  /** Installed-tree measurement override for focused tests; see {@link DesktopBootVerificationInputs.measureTreeRootDigest}. */
+  readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
 }
 
 /** How much evidence allowed a bundle to load. */
 export type DesktopBootEvidence = 'receipt' | 'manifest-only' | 'signed-tree'
+
+/**
+ * Which boot anchor one installed-tree measurement serves: `'signed-tree'`
+ * for entries whose signed `treeDigest` is the authoritative expectation,
+ * `'receipt'` for the receipt-anchored comparison. The persisted
+ * stat-fingerprint cache serves `'receipt'` only — authority measurements
+ * must always read the tree contents (see
+ * {@link createCachedDesktopBootTreeRootDigestMeasure}).
+ */
+export type DesktopBootTreeMeasurePurpose = 'signed-tree' | 'receipt'
 
 /** One bundle cleared for this boot. */
 export interface DesktopBootAllowedBundle {
@@ -347,18 +363,24 @@ export interface CachedBootTreeDigestMeasureOptions {
  * cache file is ignored and rebuilt; a failed write is skipped (the next boot
  * simply re-measures).
  *
- * Advisory positioning: the cache lives in user-writable `<userData>` and
- * trades the repeat-boot content hash for stat-level change detection — a
- * pre-existing, documented tradeoff (L2 P1④) of the measurement seam itself.
- * It never decides what a boot expects: the expectation comes from the
- * signed manifest entry (`treeDigest`, when present) or, for entries without
- * it, from the user-writable receipt store as before, so a tampered or
- * removed cache file can only cost a full re-measurement.
+ * Security positioning, stated honestly: the cache file lives in
+ * user-writable `<userData>`, and a hit returns the recorded digest instead
+ * of reading the tree contents — so a forged cache entry can present any
+ * digest as a "measurement". The cache therefore serves receipt-mode
+ * entries only (purpose `'receipt'`, including the omitted-purpose default
+ * of direct callers): there the comparison target is the equally
+ * user-writable receipt, so the cache only accelerates a comparison between
+ * two user-writable values and cannot weaken a signed expectation. Authority
+ * entries (purpose `'signed-tree'`) bypass the cache entirely — no read, no
+ * write — and always get the full content measurement, because trusting a
+ * recorded digest there would let a tampered tree boot forever after one
+ * forged cache line. A removed or damaged cache file only costs a full
+ * re-measurement.
  */
 export function createCachedDesktopBootTreeRootDigestMeasure(
   cachePath: string,
   options: CachedBootTreeDigestMeasureOptions = {},
-): (packageDir: string) => string {
+): (packageDir: string, purpose?: DesktopBootTreeMeasurePurpose) => string {
   const measure = options.measure ?? computeDesktopBootTreeRootDigest
   const readFile = options.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
   const writeFile = options.writeFile ?? ((path: string, body: string) => { writeFileSync(path, body) })
@@ -388,7 +410,14 @@ export function createCachedDesktopBootTreeRootDigestMeasure(
       // A failed write only costs the next boot a full measurement.
     }
   }
-  return (packageDir: string) => {
+  return (packageDir, purpose = 'receipt') => {
+    if (purpose === 'signed-tree') {
+      // Authority entries never touch the user-writable cache: the signed
+      // treeDigest is the expectation and only a full content measurement
+      // may answer for the disk tree. The cache is neither read nor updated
+      // on this path.
+      return measure(packageDir)
+    }
     const cache = load()
     const fingerprint = desktopBootTreeStatFingerprint(packageDir)
     const cached = cache.get(packageDir)
@@ -543,7 +572,7 @@ export interface DesktopBootVerificationInputOptions {
     policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
   ) => Promise<string>
   /** Installed-tree measurement override (the persisted fingerprint cache). */
-  readonly measureTreeRootDigest?: (packageDir: string) => string
+  readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
 }
 
 /**
@@ -850,7 +879,8 @@ export function verifyDesktopBootBundles(
   }
 
   const { manifest, keyId } = verified
-  const measure = options.measureTreeRootDigest ?? computeDesktopBootTreeRootDigest
+  const measure: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string =
+    options.measureTreeRootDigest ?? computeDesktopBootTreeRootDigest
   const allowed: DesktopBootAllowedBundle[] = []
   const rejected: DesktopBootRejectedBundle[] = []
   for (const bundle of uniqueBundles) {
@@ -885,10 +915,13 @@ export function verifyDesktopBootBundles(
       // Authority mode: the signed digest is the expectation. The receipt is
       // advisory only — see step 4 of the module documentation — so the disk
       // tree is measured and compared against the signed value whether or
-      // not a receipt exists and whatever it says.
+      // not a receipt exists and whatever it says. The measurement is
+      // requested with the `'signed-tree'` purpose so cache-backed
+      // implementations bypass the user-writable fingerprint cache and
+      // always read the tree contents.
       let measured: string
       try {
-        measured = measure(bundle.packageDir)
+        measured = measure(bundle.packageDir, 'signed-tree')
       } catch (cause) {
         reject(`the installed tree of ${bundle.packageName} could not be measured: ${messageOf(cause)}`)
         continue
@@ -919,7 +952,7 @@ export function verifyDesktopBootBundles(
     }
     let measured: string
     try {
-      measured = measure(bundle.packageDir)
+      measured = measure(bundle.packageDir, 'receipt')
     } catch (cause) {
       reject(`the installed tree of ${bundle.packageName} could not be measured: ${messageOf(cause)}`)
       continue

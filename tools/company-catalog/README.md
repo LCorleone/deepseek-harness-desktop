@@ -86,7 +86,13 @@ Schema evolution: adding or removing required manifest fields is breaking in
 treats the new field as unknown) and new verifiers reject old ones (the
 field is required). The `repository` requirement inside `1.0.0` was exactly
 such a change; the next breaking change must bump `manifestVersion` instead
-of mutating `1.0.0` in place.
+of mutating `1.0.0` in place. Optional fields are **not** an exemption:
+old clients reject them too (`additionalProperties: false` refuses any
+unknown key, required or not), so gradual enablement holds in one direction
+only — a *new* client reading an *old* manifest. The first manifest that
+carries `treeDigest`/`approvedBuilds` therefore requires a fleet already
+upgraded to field-aware clients (see the ordering gate in "Optional
+authority fields" below).
 
 每个签名条目必须携带 **repository 身份**——桌面端安装期验证器用它与真实 npm
 元数据回链比对，没有它的包无法上架。默认情况下 `build` 从产出 integrity 的
@@ -104,7 +110,10 @@ URL 直接中止——这类条目虽能作为 manifest 验签，却会在每台
 schema 演进：增删必填字段是**双向不兼容**变更——旧验证器拒新清单（`additionalProperties:
 false` 把新字段当未知字段拒收），新验证器拒旧清单（字段必填）。`1.0.0` 内引入
 `repository` 必填正是这样一次变更；下次破坏性变更必须升 `manifestVersion`，
-禁止原地改 `1.0.0`。
+禁止原地改 `1.0.0`。可选字段**不是**豁免：旧客户端同样拒收（`additionalProperties:
+false` 对任何未知键一视同仁，与是否必填无关），渐进性只在「新客户端读旧清单」
+这一个方向成立。首次发布携带 `treeDigest`/`approvedBuilds` 的清单前，必须先把
+fleet 升级到认识这些字段的客户端（见下方「Optional authority fields」的顺序门禁）。
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。
@@ -144,22 +153,51 @@ manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名�
   测安装后的树，把实测值评审入 allowlist 条目并重发清单。没有该字段的条目
   维持 receipt 锚定行为（有 receipt → 实测树比对 receipt；无 receipt →
   manifest-only 放行，advisory）直至字段落地。
-- **`approvedBuilds`** — the plugin's signed dependency build-script approval
-  list (`string[]`, npm names, scoped allowed, non-empty, unique). Desktop
+- **`approvedBuilds`** — the plugin's signed build-script approval list
+  (`string[]`, npm names, scoped allowed, non-empty, unique). Desktop
   pre-approves a small built-in triple (`node-pty`, `esbuild`, `protobufjs`)
-  in every profile workspace; after a signed market install of an entry
-  carrying this field, Desktop merges `built-in ∪ approvedBuilds` into the
-  workspace before pnpm materializes the dependency tree, so a catalog plugin
-  with other native build dependencies (sharp/sqlite3/…) no longer trips
-  pnpm's build firewall. Entries without the field use the built-in list only.
-  The list extends the built-in approvals — it can never shrink them.
-- **`approvedBuilds`**——该插件依赖树的签名构建脚本批准清单（`string[]`，npm
-  名，允许 scope，非空且不重复）。桌面默认在每个 profile 工作区预批一组内置
-  三元组（`node-pty`、`esbuild`、`protobufjs`）；市场安装携带该字段的签名条
-  目成功后、pnpm 物化依赖树之前，桌面会把「内置三元组 ∪ approvedBuilds」合
-  入工作区，携带其它原生构建依赖（sharp/sqlite3/…）的目录插件不再触发 pnpm
-  构建防火墙。没有该字段的条目仅用内置清单。该清单只能扩展内置批准，绝不
-  能收缩。
+  in every profile workspace; after a signed install of an entry carrying
+  this field (market install or locked terminal add), Desktop merges
+  `built-in ∪ approvedBuilds` into the workspace before pnpm materializes
+  the dependency tree, so a catalog plugin with other native build
+  dependencies (sharp/sqlite3/…) no longer trips pnpm's build firewall.
+  Scope semantics, stated honestly: the merge is **profile-global and
+  persistent** — the approved names stay in the workspace after the install,
+  including after a rollback (the merge runs before the install's WAL
+  snapshot), and a name approved for one plugin's entry also grants build
+  approval to the same-named dependency of any other plugin in that profile;
+  the name set itself is exactly as trustworthy as the company signature
+  that pinned it. Entries without the field use the built-in list only, and
+  the list extends the built-in approvals — it can never shrink them.
+- **`approvedBuilds`**——签名条目携带的构建脚本批准清单（`string[]`，npm 名，
+  允许 scope，非空且不重复）。桌面默认在每个 profile 工作区预批一组内置
+  三元组（`node-pty`、`esbuild`、`protobufjs`）；携带该字段的签名条目安装（市
+  场安装或锁定终端 add）后、pnpm 物化依赖树之前，桌面会把「内置三元组 ∪
+  approvedBuilds」合入工作区，携带其它原生构建依赖（sharp/sqlite3/…）的目录
+  插件不再触发 pnpm 构建防火墙。如实声明其语义：该合入是**profile 全局且驻
+  留**的——批准名在安装后留在工作区，回滚后也在（合入先于安装的 WAL 快照），
+  且为插件 A 的条目批准的名字会让同 profile 内其它插件的同名依赖同样获得构
+  建批准；名字集合本身的可信度即公司签名对它的约束。没有该字段的条目仅用内
+  置清单，且该清单只能扩展内置批准，绝不能收缩。
+
+**Fleet upgrade ordering (publication gate).** Both fields are optional to
+the *signer*, not to the fleet: before any manifest carrying
+`treeDigest`/`approvedBuilds` is published, **every** client must already
+run a build that knows the fields — older clients verify with
+`additionalProperties: false`, so one unknown key makes them reject the
+**entire** manifest and the whole catalog goes dark on those machines (not
+just the one plugin). The publication order is therefore fixed: upgrade the
+fleet → measure `treeDigest` in the reference environment → re-sign with a
+strictly higher `sequence` (the counter never rolls back, so a bad publish
+can only be superseded, never un-published) → push the manifest.
+
+**fleet 升级顺序（发布门禁）**。这两个字段对签名者是可选的，对 fleet 不是：
+任何携带 `treeDigest`/`approvedBuilds` 的清单上架前，**全部**客户端必须已运行
+认识这些字段的构建——旧客户端以 `additionalProperties: false` 验签，一个未知
+键就会让它拒收**整份**清单，受影响机器上整个目录瘫痪（而不只是这一个插件）。
+因此发布顺序固定：先升级 fleet → 在标准参考环境实测 `treeDigest` → 以严格更
+高的 `sequence` 重签（计数器不可回退，坏发布只能被更高 sequence 覆盖，无法
+撤销）→ 再 push 清单。
 
 Both fields fail closed at every gate: the allowlist validator refuses
 malformed values (non-hex or truncated digests, empty/duplicate/invalid

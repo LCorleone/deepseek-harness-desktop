@@ -31,6 +31,7 @@ import {
   verifyDesktopBootBundles,
   type DesktopBootBundle,
   type DesktopBootReceipt,
+  type DesktopBootTreeMeasurePurpose,
 } from '../src/boot-verification.ts'
 
 const keyId = 'company-catalog-2026.01'
@@ -150,7 +151,12 @@ function marketV2Receipt(overrides: Record<string, unknown> = {}): Record<string
 const verify = (
   manifestBytes: string | undefined,
   bundles: readonly DesktopBootBundle[],
-  options: { receipts?: readonly DesktopBootReceipt[]; lastSeenSequence?: number; now?: () => number } = {},
+  options: {
+    receipts?: readonly DesktopBootReceipt[]
+    lastSeenSequence?: number
+    now?: () => number
+    measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
+  } = {},
 ) => verifyDesktopBootBundles(manifestBytes, bundles, { trustRoots, ...options })
 
 describe('desktop boot tree digest', () => {
@@ -555,6 +561,101 @@ describe('signed tree digest authority (entries carrying treeDigest)', () => {
       { packageName: authoritative.packageName, evidence: 'signed-tree', manifestSequence, keyId },
       { packageName: receiptAnchored.packageName, evidence: 'receipt', manifestSequence, keyId },
     ])
+  })
+})
+
+describe('signed tree digest authority bypasses the fingerprint cache', () => {
+  // The attack these tests model: the fingerprint cache lives in
+  // user-writable <userData> and a hit returns the recorded digest without
+  // reading the tree, so an attacker who can tamper a plugin can also forge
+  // a cache line claiming the signed digest for the tampered tree. Every
+  // test uses a real installed tree, a real signed manifest, and a real
+  // forged cache document — only the authority path's cache bypass keeps
+  // the decision honest.
+  const tamperedFiles: Record<string, string> = {
+    ...defaultFiles,
+    'lib/payload.js': 'export const marker = 2\n',
+  }
+
+  /** Forge a fingerprint cache that will hit for the given tree with the given digest. */
+  function forgedFingerprintCache(packageDir: string, digest: string): string {
+    const fingerprint = desktopBootTreeStatFingerprint(packageDir)
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    writeFileSync(cachePath, `${JSON.stringify({
+      [packageDir]: { mtime: fingerprint.mtime, size: fingerprint.size, digest },
+    }, null, 2)}\n`)
+    return cachePath
+  }
+
+  it('rejects tampered files even when the forged cache records the signed digest (the core negative)', () => {
+    const signedDigest = computeDesktopBootTreeRootDigest(installedPackage(defaultFiles))
+    const tampered = bundleInput({ packageDir: installedPackage(tamperedFiles) })
+    // The forged cache line carries the signed digest and a stat fingerprint
+    // matching the tampered tree, so a cache-consuming measurement would
+    // return the signed value without ever reading the tampered files.
+    const cachePath = forgedFingerprintCache(tampered.packageDir!, signedDigest)
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+    // Attack proof: the forged line really is a cache hit — the receipt-mode
+    // measurement returns the signed digest without calling the full measure.
+    expect(cached(tampered.packageDir!)).toBe(signedDigest)
+    expect(measure).not.toHaveBeenCalled()
+
+    const result = verify(
+      signedManifestText([packageEntry({ treeDigest: signedDigest })]),
+      [tampered],
+      { measureTreeRootDigest: cached },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.rejected).toEqual([{
+      packageName,
+      reason: `the installed files of ${packageName}@${version} differ from the tree digest pinned in the signed company manifest`,
+    }])
+    // The authority path measured the tampered contents for real.
+    expect(measure).toHaveBeenCalledTimes(1)
+    // And the bypass left the forged document untouched: a receipt-mode
+    // measurement afterwards still hits the forged line (no full measure,
+    // still the forged digest) instead of one rewritten with the truth.
+    expect(cached(tampered.packageDir!)).toBe(signedDigest)
+    expect(measure).toHaveBeenCalledTimes(1)
+  })
+
+  it('measures in full on a cache hit for authority entries, ignoring a forged clean cache both ways', () => {
+    const digest = computeDesktopBootTreeRootDigest(installedPackage(defaultFiles))
+    const matching = bundleInput()
+    // A forged "clean" cache line claims a divergent digest for a tree that
+    // actually matches the signed value: the authority decision must come
+    // from the measured tree, so the bundle still loads.
+    const cachePath = forgedFingerprintCache(matching.packageDir!, 'cd'.repeat(32))
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+    expect(cached(matching.packageDir!)).toBe('cd'.repeat(32))
+    expect(measure).not.toHaveBeenCalled()
+
+    const result = verify(
+      signedManifestText([packageEntry({ treeDigest: digest })]),
+      [matching],
+      { measureTreeRootDigest: cached },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName, evidence: 'signed-tree', manifestSequence, keyId }])
+    expect(measure).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps serving receipt-mode entries from a valid cache (repeat-boot acceleration unchanged)', () => {
+    const bundle = bundleInput()
+    const receipt = receiptFor(bundle)
+    const manifest = signedManifestText([packageEntry()])
+    const cachePath = join(temporaryDirectory(), DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME)
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const cached = createCachedDesktopBootTreeRootDigestMeasure(cachePath, { measure })
+
+    const first = verify(manifest, [bundle], { receipts: [receipt], measureTreeRootDigest: cached })
+    const second = verify(manifest, [bundle], { receipts: [receipt], measureTreeRootDigest: cached })
+    expect(first.allowed).toEqual([{ packageName, evidence: 'receipt', manifestSequence, keyId }])
+    expect(second.allowed).toEqual([{ packageName, evidence: 'receipt', manifestSequence, keyId }])
+    // The first boot measured the tree; the repeat boot hit the cache.
+    expect(measure).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -234,6 +234,8 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       ['approvedBuilds', [], 'non-empty array'],
       ['approvedBuilds', ['ok', ''], 'npm dependency names'],
       ['approvedBuilds', ['dup', 'dup'], 'must not repeat'],
+      ['approvedBuilds', ['sharp', 'n'.repeat(215)], 'at most 214 characters'],
+      ['packageName', 'p'.repeat(215), 'at most 214 characters'],
     ]) {
       const result = validateAllowlistEntry({ ...authorityEntry, [field]: bad }, 'entry[0]')
       assert(
@@ -243,7 +245,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     }
     ok(
       'authority-fields',
-      'treeDigest + approvedBuilds pass through allowlist → assembly → signature verbatim; entries without them stay unchanged; malformed values are refused at load time',
+      'treeDigest + approvedBuilds pass through allowlist → assembly → signature verbatim; entries without them stay unchanged; malformed values (shape, duplicates, and the 214-character name bound) are refused at load time',
     )
 
     // Segment: assembly must refuse an entry with no repository identity from

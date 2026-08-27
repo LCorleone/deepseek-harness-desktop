@@ -310,6 +310,42 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
+  it('merges the signed entry approvedBuilds into the workspace for a locked terminal add', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-approved-builds-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    // The signed entry carries the optional authority field: the CLI channel
+    // must transport it to the same workspace merge the market install path
+    // performs (built-in triple ∪ signed list) before pnpm runs.
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({
+      packages: [catalogEntry({ approvedBuilds: ['sharp', '@scope/native-helper'] })],
+    }))
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      const load = vi.fn(async () => { process.exit(0) })
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      const workspace = readFileSync(join(profileDir, 'pnpm-workspace.yaml'), 'utf8')
+      // The signed approvals widen — never replace — the built-in triple.
+      for (const name of ['node-pty', 'esbuild', 'protobufjs', 'sharp', "'@scope/native-helper'"]) {
+        expect(workspace).toContain(name)
+      }
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a terminal plugin add in a locked build when the embedded manifest asset is missing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-missing-catalog-'))
     const homeDir = join(root, 'home')

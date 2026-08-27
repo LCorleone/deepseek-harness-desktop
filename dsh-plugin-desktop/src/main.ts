@@ -655,10 +655,13 @@ async function start(): Promise<void> {
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings
     // document, the embedded catalog asset (content mode), or one restricted
-    // pre-composition fetch (origin mode); the receipt tree digests are
-    // checked through the persisted stat-fingerprint cache so repeat boots
-    // skip the full content hash. Without this the receipt reconciliation and
-    // the sequence ratchet would never run outside tests.
+    // pre-composition fetch (origin mode). The injected measure wraps the
+    // full tree measurement with the persisted stat-fingerprint cache so
+    // receipt-anchored repeat boots skip the full content hash; authority
+    // entries (signed `treeDigest`) signal the `'signed-tree'` purpose and
+    // the wrapper bypasses the user-writable cache, measuring those trees in
+    // full on every boot. Without this the receipt reconciliation and the
+    // sequence ratchet would never run outside tests.
     const bootVerificationInputs = policy.locked
       ? await desktopBootVerificationInputs(
         policy,

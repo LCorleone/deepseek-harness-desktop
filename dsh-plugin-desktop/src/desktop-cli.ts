@@ -243,6 +243,11 @@ export async function runDesktopDshCli(
   const homeDir = environment[DSH_HOME]
   const installCommand = pluginAddCommand(argv.slice(2))
   if (installCommand !== undefined) {
+    // Signed approvals the locked channel may allow for this add: the
+    // entry's `approvedBuilds`, widened into the workspace below. Unlocked
+    // (and denied) adds keep undefined — the built-in triple only — so only
+    // a signed catalog entry can ever extend the approval list.
+    let approvedBuildDependencies: readonly string[] | undefined
     // Locked state and trust roots arrive through the launcher-injected
     // environment hand-off: this process runs under the bundled Node binary,
     // which cannot read inside app.asar, and the physical policy copy under
@@ -271,6 +276,7 @@ export async function runDesktopDshCli(
         process.exitCode = 1
         return
       }
+      approvedBuildDependencies = decision.approvedBuildDependencies
       // `addIndex` counts inside the `argv.slice(2)` window, so the absolute
       // argv position of `add` is two further in.
       injectSaveExactFlag(argv, installCommand.addIndex + 2)
@@ -280,8 +286,13 @@ export async function runDesktopDshCli(
       // script is not pre-approved in the profile's pnpm-workspace.yaml, and
       // the upstream profile template ships no approval list. Desktop's
       // trusted builders must be allow-listed before the upstream CLI spawns
-      // pnpm (this path does not go through desktopPnpm).
-      ensureProfilePnpmBuildApproval(resolveProfileDir(installCommand.profileName, homeDir))
+      // pnpm (this path does not go through desktopPnpm). A signed entry's
+      // `approvedBuilds` widen the built-in triple for this add, matching the
+      // market install path's merge.
+      ensureProfilePnpmBuildApproval(
+        resolveProfileDir(installCommand.profileName, homeDir),
+        approvedBuildDependencies === undefined ? {} : { approvedBuildDependencies },
+      )
     }
   }
   if (
