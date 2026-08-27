@@ -7,7 +7,7 @@ import type { ProfileCreateWindowOptions } from './profile-create-window.ts'
 import type {
   DesktopWindowMaterial,
   MacosWindowMaterial,
-  WindowsWindowMaterial,
+  PersistedWindowsWindowMaterial,
 } from './window-material.ts'
 
 /** Electron platforms supported by the DSH Desktop native adapter. */
@@ -29,7 +29,7 @@ export interface DesktopWindowConfig {
   /** macOS material preference retained independently across platforms. */
   macosMaterial: MacosWindowMaterial
   /** Windows material preference retained independently across platforms. */
-  windowsMaterial: WindowsWindowMaterial
+  windowsMaterial: PersistedWindowsWindowMaterial
   /** Initial window width in CSS pixels. */
   width: number
   /** Initial window height in CSS pixels. */

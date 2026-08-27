@@ -128,7 +128,7 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(desktopSetupWizardSelectionIsAvailable(input, input)).toBe(true)
     expect(desktopSetupWizardSelectionIsAvailable(input, { platform: 'win32', micaSupported: false })).toBe(false)
     expect(desktopSetupWizardSelectionIsAvailable(
-      { ...input, mode: 'extended', windowsMaterial: 'acrylic' },
+      { ...input, mode: 'extended', windowsMaterial: 'off' },
       { platform: 'linux', micaSupported: false },
     )).toBe(false)
     expect(desktopSetupWizardSelectionIsAvailable(

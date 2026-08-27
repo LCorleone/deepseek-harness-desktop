@@ -25,8 +25,6 @@ export interface DesktopSetupWizardCopy {
   readonly materialOffBody: string
   readonly materialTransparent: string
   readonly materialTransparentBody: string
-  readonly materialAcrylic: string
-  readonly materialAcrylicBody: string
   readonly materialMica: string
   readonly materialMicaBody: string
   readonly browserTitle: string
@@ -99,8 +97,6 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     materialOffBody: 'Use a solid, opaque window background.',
     materialTransparent: 'Transparent',
     materialTransparentBody: 'Let content behind the window show through the Desktop surface.',
-    materialAcrylic: 'Acrylic',
-    materialAcrylicBody: 'Use the Windows acrylic blur material.',
     materialMica: 'Mica',
     materialMicaBody: 'Use the native Windows Mica material when it is supported.',
     browserTitle: 'Set up browser access',
@@ -171,8 +167,6 @@ const COPY: Record<DesktopLocale, DesktopSetupWizardCopy> = {
     materialOffBody: '使用不透明的纯色窗口背景。',
     materialTransparent: '透明材质',
     materialTransparentBody: '让桌面窗口呈现可透出背后内容的透明效果。',
-    materialAcrylic: '亚克力',
-    materialAcrylicBody: '使用 Windows 亚克力模糊材质。',
     materialMica: 'Mica',
     materialMicaBody: '在系统支持时使用 Windows 原生 Mica 材质。',
     browserTitle: '设置浏览器访问',

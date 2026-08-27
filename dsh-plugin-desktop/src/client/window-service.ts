@@ -26,8 +26,8 @@ export function desktopWindowService(environment: DesktopClientEnvironment): Des
     ? ['off', 'transparent'] as const
     : environment.platform === 'win32'
       ? environment.micaSupported
-        ? ['off', 'acrylic', 'mica'] as const
-        : ['off', 'acrylic'] as const
+        ? ['off', 'mica'] as const
+        : ['off'] as const
       : ['off'] as const)
   if (environment.mode === 'compatibility') {
     if (environment.platform === 'linux') {
