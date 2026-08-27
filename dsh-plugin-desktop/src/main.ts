@@ -77,6 +77,8 @@ import {
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
 } from './boot-verification.ts'
+import { fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
+import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
@@ -655,7 +657,11 @@ async function start(): Promise<void> {
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings
     // document, the embedded catalog asset (content mode), or one restricted
-    // pre-composition fetch (origin mode). The injected measure wraps the
+    // pre-composition fetch (origin mode). The origin-mode fetch rides
+    // Electron's Chromium network stack: the main-process global fetch is
+    // Node's undici with the bundled Mozilla trust store, which ignores the
+    // Windows system certificate store, so corporate-CA origins only verify
+    // through `net.fetch`. The injected measure wraps the
     // full tree measurement with the persisted stat-fingerprint cache so
     // receipt-anchored repeat boots skip the full content hash; authority
     // entries (signed `treeDigest`) signal the `'signed-tree'` purpose and
@@ -668,12 +674,43 @@ async function start(): Promise<void> {
         join(homeDir, 'settings.yaml'),
         import.meta.url,
         {
+          fetchManifestText: fetchCompanyManifestTextOverElectronNet,
           measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(
             join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME),
           ),
         },
       )
       : undefined
+    // Origin-mode CLI byte hand-off: the bundled-Node desktop-cli children
+    // (market installs, terminal adds) cannot reach a corporate-CA origin
+    // with their own fetch, so stage the exact bytes boot verification just
+    // fetched and point every child at them through DSH_COMPANY_MANIFEST_FILE;
+    // the child still verifies the signature itself. The staging file lives
+    // for this generation only — the release hook removes it, and a stale
+    // path degrades to the child's restricted network fetch (fail-closed).
+    // A failed staging write never blocks the boot: the children fall back
+    // to their restricted network fetch exactly like a content-mode build.
+    let companyManifestHandoff: Awaited<ReturnType<typeof stageCompanyManifestForCliChildren>> = undefined
+    if (policy.companyCatalogOrigin !== null) {
+      try {
+        companyManifestHandoff = await stageCompanyManifestForCliChildren(
+          marketUserDataDir,
+          generationId,
+          bootVerificationInputs?.manifestBytes,
+        )
+      } catch (cause) {
+        electronLogger.error(
+          `${BIN_NAME}: staging the company catalog manifest for CLI children failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+    }
+    if (companyManifestHandoff !== undefined) {
+      generation.own(() => { companyManifestHandoff.dispose() })
+    }
+    const cliPolicyEnvironment: Record<string, string> = {
+      ...desktopPolicyEnvironmentEntries(policy),
+      ...(companyManifestHandoff?.environment ?? {}),
+    }
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -734,7 +771,7 @@ async function start(): Promise<void> {
           platform: process.platform,
           nodeExecutable,
           dshBootstrapPath,
-          cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
+          cliPolicyEnvironment,
           profileName: activeProfileName,
           homeDir,
           stateDir: join(app.getPath('userData'), 'host-commands', activeProfileName),
@@ -758,7 +795,7 @@ async function start(): Promise<void> {
       externalMarketInstallEnabled: prepared.market.effective === 'dsh-market',
       // The install child runs the packaged desktop-cli, which cannot read
       // the in-archive policy asset and fails closed without the hand-off.
-      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
+      cliPolicyEnvironment,
     }
     const restoreProfileCheckpoint = async (
       checkpoint: DesktopProfileCheckpoint,
@@ -883,8 +920,9 @@ async function start(): Promise<void> {
       profileDir: prepared.profile.dir,
       homeDir: prepared.homeDir,
       // The bundled-Node CLI child cannot read the in-archive policy asset, so
-      // the locked state and trust roots ride the generated shim (P3 fix).
-      cliPolicyEnvironment: desktopPolicyEnvironmentEntries(policy),
+      // the locked state, trust roots, and any staged origin-mode manifest
+      // bytes ride the generated shim (P3 fix + L2 TLS hand-off).
+      cliPolicyEnvironment,
     })
     recoveryTerminalAvailable = true
     const ctx = await boot(

@@ -10,6 +10,7 @@ import {
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
+import { companyManifestFileRequest, DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
 import { desktopPolicyFromEnvironment, readDesktopPolicy } from './desktop-policy.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
@@ -237,6 +238,15 @@ export async function runDesktopDshCli(
     environment,
     DESKTOP_INSTALL_RECOVERY_STATE_ENV,
   )
+  // Origin-mode byte hand-off: when the trusted Electron launcher staged the
+  // manifest bytes (it can reach corporate-CA origins through the Chromium
+  // network stack; this Node process cannot), prefer that file and keep the
+  // restricted network fetch only as the fallback. The bytes still pass the
+  // same signature gate below either way.
+  const companyManifestFile = takeEnvironmentValue(
+    environment,
+    DESKTOP_COMPANY_MANIFEST_FILE_ENV,
+  )
   if (profileName !== undefined) {
     argv.splice(2, argv.length - 2, ...withDefaultDesktopProfile(argv.slice(2), profileName))
   }
@@ -268,6 +278,9 @@ export async function runDesktopDshCli(
         effectivePolicy,
         {
           ...(manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath }),
+          ...(companyManifestFile === undefined
+            ? {}
+            : { fetch: { request: companyManifestFileRequest(companyManifestFile) } }),
           ...(lastSeenSequence === undefined ? {} : { lastSeenSequence }),
         },
       )

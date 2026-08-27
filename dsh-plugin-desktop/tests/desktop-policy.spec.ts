@@ -275,8 +275,12 @@ describe('shipped desktop policy assets', () => {
     const policy = parseDesktopPolicy(JSON.parse(text))
 
     expect(policy.locked).toBe(true)
-    expect(policy.companyCatalogOrigin).toBe(null)
-    expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
+    // Origin mode: the signed catalog manifest is fetched at runtime from the
+    // pinned GitLab origin instead of the embedded content-mode asset.
+    expect(policy.companyCatalogOrigin).toBe('https://gitlab.s.dai.deloitte.cn')
+    expect(policy.companyManifestUrl).toBe(
+      'https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json',
+    )
     expect(policy.allowHomePatch).toBe(false)
     expect(policy.allowManualPluginAdd).toBe(false)
     expect(policy.trustRoots).toEqual([

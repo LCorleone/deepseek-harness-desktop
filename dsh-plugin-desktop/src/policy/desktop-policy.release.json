@@ -1,8 +1,8 @@
 {
   "allowHomePatch": false,
   "allowManualPluginAdd": false,
-  "companyCatalogOrigin": null,
-  "companyManifestUrl": "company-market/catalog-manifest.json",
+  "companyCatalogOrigin": "https://gitlab.s.dai.deloitte.cn",
+  "companyManifestUrl": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json",
   "locked": true,
   "trustRoots": [
     {

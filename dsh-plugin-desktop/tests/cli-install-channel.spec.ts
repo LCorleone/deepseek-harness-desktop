@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -14,7 +14,7 @@ import {
   companyManifestAssetPath,
   parseExactPluginAddSpec,
 } from '../src/cli-install-channel.ts'
-import { fetchCompanyManifestText } from '../src/company-manifest-origin.ts'
+import { companyManifestFileRequest, fetchCompanyManifestText } from '../src/company-manifest-origin.ts'
 import { parseDesktopPolicy } from '../src/desktop-policy.ts'
 import type { DesktopPolicy } from '../src/desktop-policy.ts'
 
@@ -304,6 +304,87 @@ describe('locked plugin-add authorization', () => {
       expect(decision.reason).toContain('could not be fetched from https://market.company.example')
       expect(decision.reason).toContain('company plugin market')
     }
+  })
+
+  it('allows an exact target from launcher-staged bytes without touching the network', async () => {
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog(), join(roots, 'staged'))
+    const network = vi.fn(async () => new Response('never read', { status: 503 }))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(stagedFile, network) } },
+    )
+
+    expect(decision.allowed).toBe(true)
+    if (decision.allowed) {
+      expect(decision.packages).toEqual([{ packageName: 'example-plugin', version: '1.0.0' }])
+    }
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the restricted network fetch when the staged file is missing or empty', async () => {
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    const network = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://market.company.example/catalog-manifest.json')
+      expect(init.redirect).toBe('error')
+      return new Response(manifestText)
+    })
+
+    const missing = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(join(roots, 'gone', 'company-manifest.json'), network) } },
+    )
+    expect(missing.allowed).toBe(true)
+
+    const emptyFile = join(roots, 'staged-empty', 'company-manifest.json')
+    mkdirSync(dirname(emptyFile), { recursive: true })
+    writeFileSync(emptyFile, '')
+    const empty = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(emptyFile, network) } },
+    )
+    expect(empty.allowed).toBe(true)
+    expect(network).toHaveBeenCalledTimes(2)
+  })
+
+  it('denies staged bytes that fail the signature gate without any network fallback', async () => {
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const tamperedFile = writeCatalog(unsignedCatalog(), join(roots, 'staged-tampered'))
+    writeFileSync(tamperedFile, 'not json at all')
+    const network = vi.fn(async () => new Response('never read'))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: companyManifestFileRequest(tamperedFile, network) } },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('rejected the company catalog manifest')
+    }
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-absolute staged manifest paths loudly', () => {
+    expect(() => companyManifestFileRequest('company-market/catalog-manifest.json'))
+      .toThrow('must be absolute without NUL')
+    expect(() => companyManifestFileRequest('/tmp/manifest\0.json'))
+      .toThrow('must be absolute without NUL')
   })
 
   it('denies origin policies whose manifest URL escapes the pinned origin before any request', async () => {

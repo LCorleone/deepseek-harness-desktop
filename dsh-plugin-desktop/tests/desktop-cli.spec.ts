@@ -13,6 +13,7 @@ import {
   runDesktopDshCli,
   withDefaultDesktopProfile,
 } from '../src/desktop-cli.ts'
+import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from '../src/company-manifest-origin.ts'
 import {
   desktopPolicyEnvironmentEntries,
   desktopPolicyFromEnvironment,
@@ -51,6 +52,18 @@ function companyLockedPolicy(): DesktopPolicy {
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
+    locked: true,
+    trustRoots: catalogTrustRoots,
+  })
+}
+
+/** Locked origin-mode policy whose trust roots match the catalog key fixture. */
+function companyLockedOriginPolicy(): DesktopPolicy {
+  return parseDesktopPolicy({
+    allowHomePatch: false,
+    allowManualPluginAdd: false,
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
     trustRoots: catalogTrustRoots,
   })
@@ -815,6 +828,61 @@ describe('packaged dsh bootstrap policy hand-off', () => {
       ])
       expect(environment).toEqual({})
     } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows an origin-mode terminal add from the launcher-staged manifest file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-env-origin-staged-'))
+    const stagedFile = writeCompanyCatalogAsset(root, unsignedCatalog())
+    try {
+      const environment: NodeJS.ProcessEnv = {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        ...desktopPolicyEnvironmentEntries(companyLockedOriginPolicy()),
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: stagedFile,
+      }
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli(environment, load, argv)
+
+      // The staged bytes satisfied the origin-mode gate without any network
+      // fetch, and the whole hand-off was consumed out of the environment.
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
+      expect(environment).toEqual({})
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to the restricted network fetch when the staged manifest file is gone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-env-origin-stale-'))
+    const manifestText = readFileSync(writeCompanyCatalogAsset(root, unsignedCatalog()), 'utf8')
+    const network = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://market.company.example/catalog-manifest.json')
+      expect(init?.redirect).toBe('error')
+      return new Response(manifestText)
+    })
+    vi.stubGlobal('fetch', network)
+    try {
+      const environment: NodeJS.ProcessEnv = {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        ...desktopPolicyEnvironmentEntries(companyLockedOriginPolicy()),
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: join(root, 'gone', 'company-market', 'catalog-manifest.json'),
+      }
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli(environment, load, argv)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(network).toHaveBeenCalledTimes(1)
+      expect(environment).toEqual({})
+    } finally {
+      vi.unstubAllGlobals()
       rmSync(root, { recursive: true, force: true })
     }
   })

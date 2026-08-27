@@ -385,6 +385,40 @@ describe('packaged desktop runtime verification', () => {
 
   it('rejects a provisioned-roots build that omits the packaged catalog manifest asset', () => {
     const runtimeContext = context('/build', 'win32')
+    const root = mkdtempSync(join(tmpdir(), 'dsh-release-checklist-missing-asset-'))
+    try {
+      // A content-mode release policy staged in a temporary repository root:
+      // the checked-in release variant serves the catalog from an origin now,
+      // and the checklist's content-mode gate keeps its own coverage here.
+      const releasePolicyText = `${JSON.stringify(provisionedReleasePolicy())}\n`
+      mkdirSync(join(root, 'src', 'policy'), { recursive: true })
+      writeFileSync(join(root, 'src', 'policy', 'desktop-policy.release.json'), releasePolicyText)
+      writeFileSync(join(root, 'src', 'update-verification.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'electron-runtime.ts'), '// placeholder source\n')
+      writeFileSync(join(root, 'src', 'update-lifecycle.ts'), '// placeholder source\n')
+      const readPackagedFile = (filename: string) => {
+        if (filename === join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json')) {
+          return releasePolicyText
+        }
+        throw new Error(`unexpected packaged read: ${filename}`)
+      }
+
+      // The provisioned policy needs the embedded asset, so the L2 checklist
+      // advances past key provisioning and stops at the missing manifest.
+      expect(() => verifyCompanyReleaseChecklist(
+        readCompanyReleaseChecklistSources(
+          runtimeContext,
+          relativePath => readFileSync(join(root, relativePath), 'utf8'),
+          readPackagedFile,
+        ),
+      )).toThrow('content-mode release builds must embed the company catalog manifest')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts the checked-in origin-mode release policy without a packaged manifest asset', () => {
+    const runtimeContext = context('/build', 'win32')
     const readPackagedFile = (filename: string) => {
       if (filename === join(resolvePackagedUnpackedRoot(runtimeContext), 'lib', 'policy', 'desktop-policy.json')) {
         return readFileSync(new URL('../src/policy/desktop-policy.release.json', import.meta.url), 'utf8')
@@ -392,12 +426,13 @@ describe('packaged desktop runtime verification', () => {
       throw new Error(`unexpected packaged read: ${filename}`)
     }
 
-    // The release policy now ships the pinned company trust root, so the L2
-    // checklist advances past key provisioning and stops at the next gap:
-    // content-mode builds must package the signed manifest asset.
+    // The repository's release policy now serves the company catalog from the
+    // pinned GitLab origin: the checklist keeps requiring the locked policy,
+    // its packaged equality, and the pinned roots, but an origin-mode release
+    // no longer embeds — or build-time-verifies — the manifest asset.
     expect(() => verifyCompanyReleaseChecklist(
       readCompanyReleaseChecklistSources(runtimeContext, undefined, readPackagedFile),
-    )).toThrow('content-mode release builds must embed the company catalog manifest')
+    )).not.toThrow()
   })
 
   it('accepts a provisioned repository as a company release candidate', () => {
