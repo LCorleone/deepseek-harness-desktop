@@ -1,9 +1,9 @@
 /** Fail-loud verification of the runtime entries sealed into Electron's app.asar. */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { listPackage } from '@electron/asar'
 import AdmZip from 'adm-zip'
@@ -11,6 +11,16 @@ import {
   FORBIDDEN_MACOS_UNIVERSAL_ENTRIES,
   MACOS_UNIVERSAL_NATIVE_ENTRIES,
 } from './mac-universal.ts'
+
+const DSH_PACKAGE_ROOT = dirname(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'))
+
+/** Every generated JavaScript file shipped by the installed DSH CLI package. */
+export const REQUIRED_DSH_CLI_RUNTIME_ENTRIES = Object.freeze(
+  readdirSync(join(DSH_PACKAGE_ROOT, 'lib'), { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.js'))
+    .map(entry => `node_modules/@deepseek-ai/dsh/lib/${entry.name}`)
+    .sort(),
+)
 
 /** AfterPack fields consumed without importing Electron Builder's incomplete declaration graph. */
 export interface PackagedRuntimeContext {
@@ -52,8 +62,7 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/updates.js',
   'lib/windows-acl-runner.js',
   'lib/windows-subprocess.js',
-  'node_modules/@deepseek-ai/dsh/lib/bin.js',
-  'node_modules/@deepseek-ai/dsh/lib/plugin-9h8shc4d.js',
+  ...REQUIRED_DSH_CLI_RUNTIME_ENTRIES,
   'node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
   'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
@@ -92,8 +101,7 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/agent.cordis.yml',
   'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/skills/cordis-plugin-development/SKILL.md',
   'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/skills/editing-cordis-compositions/SKILL.md',
-  'node_modules/@deepseek-ai/dsh/lib/bin.js',
-  'node_modules/@deepseek-ai/dsh/lib/plugin-9h8shc4d.js',
+  ...REQUIRED_DSH_CLI_RUNTIME_ENTRIES,
   'node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js',
   'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',

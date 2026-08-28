@@ -17,12 +17,21 @@ import {
   clearDesktopSetupWizardState,
   completeOrSkipDesktopSetupWizard,
   desktopSetupWizardProfileHash,
+  desktopSetupWizardRequired,
   desktopSetupWizardStateConstants,
   desktopSetupWizardStatePath,
   readDesktopSetupWizardState,
+  type DesktopSetupWizardOutcome,
+  type DesktopSetupWizardVersions,
 } from '../src/setup-wizard-state.ts'
 
 const temporaryDirectories: string[] = []
+const RECORDED_AT = '2026-08-28T04:05:06.789Z'
+const CURRENT_VERSIONS: DesktopSetupWizardVersions = Object.freeze({
+  desktopVersion: '2.0.3',
+  dshVersion: '0.1.2-alpha.1',
+  setupRevision: desktopSetupWizardStateConstants.setupRevision,
+})
 
 function temporaryDirectory(label: string): string {
   const directory = mkdtempSync(join(tmpdir(), label))
@@ -35,6 +44,25 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+function recordSetup(
+  userData: string,
+  profile: string,
+  outcome: DesktopSetupWizardOutcome,
+  versions: DesktopSetupWizardVersions = CURRENT_VERSIONS,
+) {
+  return completeOrSkipDesktopSetupWizard(userData, profile, outcome, versions, RECORDED_AT)
+}
+
+function writeState(userData: string, profile: string, value: unknown): string {
+  const path = desktopSetupWizardStatePath(userData, profile)
+  mkdirSync(join(userData, 'profile-setup', desktopSetupWizardProfileHash(profile)), {
+    recursive: true,
+    mode: 0o700,
+  })
+  writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+  return path
+}
 
 describe('Desktop Setup Wizard state', () => {
   it('isolates explicit completion and skip markers by sha256(Profile directory)', async () => {
@@ -52,12 +80,14 @@ describe('Desktop Setup Wizard state', () => {
     )
     expect(readDesktopSetupWizardState(userData, work)).toBeUndefined()
 
-    await expect(completeOrSkipDesktopSetupWizard(userData, work, 'completed')).resolves.toEqual({
-      version: 1,
+    await expect(recordSetup(userData, work, 'completed')).resolves.toEqual({
+      version: 2,
       profileHash: expectedHash,
       outcome: 'completed',
+      ...CURRENT_VERSIONS,
+      recordedAt: RECORDED_AT,
     })
-    await completeOrSkipDesktopSetupWizard(userData, personal, 'skipped')
+    await recordSetup(userData, personal, 'skipped')
 
     expect(readDesktopSetupWizardState(userData, work)?.outcome).toBe('completed')
     expect(readDesktopSetupWizardState(userData, personal)?.outcome).toBe('skipped')
@@ -71,14 +101,16 @@ describe('Desktop Setup Wizard state', () => {
     const userData = temporaryDirectory('dsh-setup-state-user-')
     const profile = temporaryDirectory('dsh-setup-state-profile-')
 
-    await completeOrSkipDesktopSetupWizard(userData, profile, 'completed')
+    await recordSetup(userData, profile, 'completed')
     const statePath = desktopSetupWizardStatePath(userData, profile)
     const directory = join(userData, 'profile-setup', desktopSetupWizardProfileHash(profile))
 
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual({
-      version: 1,
+      version: 2,
       profileHash: desktopSetupWizardProfileHash(profile),
       outcome: 'completed',
+      ...CURRENT_VERSIONS,
+      recordedAt: RECORDED_AT,
     })
     expect(readdirSync(directory)).toEqual(['state.json'])
     if (process.platform !== 'win32') {
@@ -86,6 +118,94 @@ describe('Desktop Setup Wizard state', () => {
       expect(statSync(directory).mode & 0o777).toBe(0o700)
       expect(statSync(statePath).mode & 0o777).toBe(0o600)
     }
+  })
+
+  it('reads legacy V1 markers and replaces them with current V2 evidence after Setup', async () => {
+    const userData = temporaryDirectory('dsh-setup-state-user-')
+    const profile = temporaryDirectory('dsh-setup-state-profile-')
+    const profileHash = desktopSetupWizardProfileHash(profile)
+    writeState(userData, profile, {
+      version: 1,
+      profileHash,
+      outcome: 'skipped',
+    })
+
+    const legacy = readDesktopSetupWizardState(userData, profile)
+    expect(legacy).toEqual({ version: 1, profileHash, outcome: 'skipped' })
+    expect(desktopSetupWizardRequired(legacy, CURRENT_VERSIONS)).toBe(true)
+
+    await recordSetup(userData, profile, 'completed')
+    expect(readDesktopSetupWizardState(userData, profile)).toEqual({
+      version: 2,
+      profileHash,
+      outcome: 'completed',
+      ...CURRENT_VERSIONS,
+      recordedAt: RECORDED_AT,
+    })
+  })
+
+  it('requires Setup only for monotonic Desktop, DSH, or Wizard revision upgrades', async () => {
+    const userData = temporaryDirectory('dsh-setup-state-user-')
+    const profile = temporaryDirectory('dsh-setup-state-profile-')
+    await recordSetup(userData, profile, 'completed')
+    const state = readDesktopSetupWizardState(userData, profile)
+
+    expect(desktopSetupWizardRequired(undefined, CURRENT_VERSIONS)).toBe(true)
+    expect(desktopSetupWizardRequired(state, CURRENT_VERSIONS)).toBe(false)
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      desktopVersion: '2.0.4',
+    })).toBe(true)
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      dshVersion: '0.1.2-alpha.2',
+    })).toBe(true)
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      setupRevision: CURRENT_VERSIONS.setupRevision + 1,
+    })).toBe(true)
+
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      desktopVersion: '2.0.2',
+    })).toBe(false)
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      dshVersion: '0.1.1',
+    })).toBe(false)
+    expect(desktopSetupWizardRequired(state, {
+      ...CURRENT_VERSIONS,
+      desktopVersion: '2.0.4',
+      dshVersion: '0.1.1',
+    })).toBe(true)
+  })
+
+  it('strictly rejects malformed V2 version evidence and write inputs', async () => {
+    const userData = temporaryDirectory('dsh-setup-state-user-')
+    const profile = temporaryDirectory('dsh-setup-state-profile-')
+    const valid = {
+      version: 2,
+      profileHash: desktopSetupWizardProfileHash(profile),
+      outcome: 'completed',
+      ...CURRENT_VERSIONS,
+      recordedAt: RECORDED_AT,
+    }
+
+    writeState(userData, profile, { ...valid, desktopVersion: 'v2.0.3' })
+    expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('desktopVersion')
+    writeState(userData, profile, { ...valid, dshVersion: '0.1' })
+    expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('dshVersion')
+    writeState(userData, profile, { ...valid, setupRevision: 0 })
+    expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('setupRevision')
+    writeState(userData, profile, { ...valid, recordedAt: '2026-08-28' })
+    expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('recordedAt')
+    writeState(userData, profile, { ...valid, extra: true })
+    expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('unexpected fields')
+
+    await expect(recordSetup(userData, profile, 'completed', {
+      ...CURRENT_VERSIONS,
+      dshVersion: 'invalid',
+    })).rejects.toThrow('invalid Setup Wizard versions')
   })
 
   it('records Setup after an interrupted older run stranded lock and temp siblings', async () => {
@@ -97,7 +217,7 @@ describe('Desktop Setup Wizard state', () => {
     writeFileSync(`${statePath}.lock`, '12345\n', { mode: 0o600 })
     writeFileSync(`${statePath}.interrupted.tmp`, '', { mode: 0o600 })
 
-    await expect(completeOrSkipDesktopSetupWizard(userData, profile, 'skipped')).resolves.toMatchObject({
+    await expect(recordSetup(userData, profile, 'skipped')).resolves.toMatchObject({
       outcome: 'skipped',
     })
     expect(readDesktopSetupWizardState(userData, profile)?.outcome).toBe('skipped')
@@ -119,7 +239,7 @@ describe('Desktop Setup Wizard state', () => {
 
     writeFileSync(statePath, '{not-json}\n', { mode: 0o600 })
     expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('valid JSON')
-    await expect(completeOrSkipDesktopSetupWizard(userData, profile, 'completed')).rejects.toThrow('valid JSON')
+    await expect(recordSetup(userData, profile, 'completed')).rejects.toThrow('valid JSON')
 
     writeFileSync(statePath, `${JSON.stringify({
       version: 1,
@@ -149,7 +269,7 @@ describe('Desktop Setup Wizard state', () => {
   it.runIf(process.platform !== 'win32')('rejects public marker and state-directory permissions', async () => {
     const userData = temporaryDirectory('dsh-setup-state-user-')
     const profile = temporaryDirectory('dsh-setup-state-profile-')
-    await completeOrSkipDesktopSetupWizard(userData, profile, 'completed')
+    await recordSetup(userData, profile, 'completed')
     const statePath = desktopSetupWizardStatePath(userData, profile)
 
     chmodSync(statePath, 0o644)
@@ -174,7 +294,7 @@ describe('Desktop Setup Wizard state', () => {
     symlinkSync(outside, statePath)
 
     expect(() => readDesktopSetupWizardState(userData, profile)).toThrow('regular file')
-    await expect(completeOrSkipDesktopSetupWizard(userData, profile, 'completed')).rejects.toThrow('regular file')
+    await expect(recordSetup(userData, profile, 'completed')).rejects.toThrow('regular file')
     await expect(clearDesktopSetupWizardState(userData, profile)).rejects.toThrow('regular file')
     expect(readFileSync(outside, 'utf8')).toBe('outside\n')
   })

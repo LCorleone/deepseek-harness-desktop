@@ -467,7 +467,10 @@ describe('published package surface', () => {
     const setupState = main.indexOf('readDesktopSetupWizardState(', prepare)
     const setupWindow = main.indexOf('new DesktopSetupWizardWindow({', setupState)
     const setupRun = main.indexOf('await setupWizardWindow.run()', setupWindow)
-    const updateSettings = main.indexOf('await updateDesktopSetupWizardSettings(', setupRun)
+    const skipBranch = main.indexOf("if (setupResult.action === 'skip')", setupRun)
+    const completeBranch = main.indexOf('} else {', skipBranch)
+    const profilePreferences = main.indexOf('profilePreferences = await writeDesktopProfilePreferences(', completeBranch)
+    const updateSettings = main.indexOf('await updateDesktopSetupWizardSettings(', profilePreferences)
     const selectMarket = main.indexOf('await selectDesktopMarketProvider(', updateSettings)
     const reprepare = main.indexOf('prepared = prepareDesktopProfile(', selectMarket)
     const completeMarker = main.indexOf("'completed',", reprepare)
@@ -480,7 +483,10 @@ describe('published package surface', () => {
     expect(setupState).toBeGreaterThan(prepare)
     expect(setupWindow).toBeGreaterThan(setupState)
     expect(setupRun).toBeGreaterThan(setupWindow)
-    expect(updateSettings).toBeGreaterThan(setupRun)
+    expect(skipBranch).toBeGreaterThan(setupRun)
+    expect(main.slice(skipBranch, completeBranch)).not.toContain('writeDesktopProfilePreferences(')
+    expect(profilePreferences).toBeGreaterThan(completeBranch)
+    expect(updateSettings).toBeGreaterThan(profilePreferences)
     expect(selectMarket).toBeGreaterThan(updateSettings)
     expect(reprepare).toBeGreaterThan(selectMarket)
     expect(completeMarker).toBeGreaterThan(reprepare)
@@ -490,7 +496,60 @@ describe('published package surface', () => {
     expect(main).toContain("setupResult.action === 'quit'")
     expect(main).toContain("setupResult.action === 'skip'")
     expect(main).toContain("'skipped',")
-    expect(main).toContain('clearDesktopSetupWizardState(app.getPath(\'userData\'), profileDir)')
+    expect(main).toContain('clearDesktopSetupWizardState(marketUserDataDir, profileDir)')
+  })
+
+  it('keeps active Profile preferences as the lazy source and serializes runtime mirrors', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const projection = main.indexOf('function desktopProfilePreferencesFromSettings(')
+    const projectionEnd = main.indexOf('function setupSettingsWithProfilePreferences(', projection)
+    const readPreferences = main.indexOf('readDesktopProfilePreferences(marketUserDataDir, activeProfileDir)')
+    const profileMarket = main.indexOf('desktopProfileMarketSnapshot(profilePreferences.market)', readPreferences)
+    const firstPrepare = main.indexOf('let prepared = prepareDesktopProfile(', profileMarket)
+    const missingState = main.indexOf('if (profilePreferences === undefined)', firstPrepare)
+    const browserMigration = main.indexOf('migrateDesktopBrowserAccessSettings(', missingState)
+    const materialMigration = main.indexOf('migrateDesktopWindowMaterialSettings(', browserMigration)
+    const lazyImport = main.indexOf('profilePreferences = await writeDesktopProfilePreferences(', materialMigration)
+    const existingState = main.indexOf('} else {', lazyImport)
+    const mirrorSettings = main.indexOf('mirrorDesktopProfilePreferences(prepared.settingsDocument, profilePreferences)', existingState)
+    const retryMaterialMigration = main.indexOf('migrateDesktopWindowMaterialSettings(', mirrorSettings)
+    const mirrorMarket = main.indexOf('selectDesktopMarketProvider(marketUserDataDir, profilePreferences.market)', retryMaterialMigration)
+    const runtimeQueue = main.indexOf('const enqueueProfilePreferencesWrite = (')
+    const flushEffect = main.indexOf("'dsh-plugin-desktop: flush Profile preference writes'", runtimeQueue)
+    const marketController = main.indexOf('selectMarket: async provider => {', flushEffect)
+    const marketStateWrite = main.indexOf('await enqueueProfilePreferencesWrite(', marketController)
+    const marketLegacyMirror = main.indexOf('await selectDesktopMarketProvider(marketUserDataDir, provider)', marketStateWrite)
+    const deleteProfile = main.indexOf('await deleteDesktopProfile({')
+    const clearPreferences = main.indexOf('await clearDesktopProfilePreferences(', deleteProfile)
+    const captureDesktop = main.indexOf('namespace !== DESKTOP_SETTINGS_NAMESPACE', marketLegacyMirror)
+    const captureNotifications = main.indexOf('namespace !== DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE', captureDesktop)
+    const captureFailure = main.indexOf('failed to capture active Profile settings', captureNotifications)
+
+    expect(projection).toBeGreaterThanOrEqual(0)
+    const projectionSource = main.slice(projection, projectionEnd)
+    expect(projectionSource).toContain("Pick<DesktopSettings, 'mode' | 'openBrowser' | 'networkExposure'>")
+    expect(projectionSource).not.toContain('port:')
+    expect(projectionSource).not.toContain('macosMaterial')
+    expect(projectionSource).not.toContain('windowsMaterial')
+    expect(projectionSource).not.toContain('logLevel')
+    expect(readPreferences).toBeGreaterThanOrEqual(0)
+    expect(profileMarket).toBeGreaterThan(readPreferences)
+    expect(firstPrepare).toBeGreaterThan(profileMarket)
+    expect(browserMigration).toBeGreaterThan(missingState)
+    expect(materialMigration).toBeGreaterThan(browserMigration)
+    expect(lazyImport).toBeGreaterThan(materialMigration)
+    expect(mirrorSettings).toBeGreaterThan(existingState)
+    expect(retryMaterialMigration).toBeGreaterThan(mirrorSettings)
+    expect(mirrorMarket).toBeGreaterThan(retryMaterialMigration)
+    expect(runtimeQueue).toBeGreaterThan(mirrorMarket)
+    expect(flushEffect).toBeGreaterThan(runtimeQueue)
+    expect(marketStateWrite).toBeGreaterThan(marketController)
+    expect(marketLegacyMirror).toBeGreaterThan(marketStateWrite)
+    expect(clearPreferences).toBeGreaterThan(deleteProfile)
+    expect(captureNotifications).toBeGreaterThan(captureDesktop)
+    expect(captureFailure).toBeGreaterThan(captureNotifications)
+    expect(main.slice(deleteProfile, clearPreferences)).toContain('}, name)')
+    expect(main.slice(clearPreferences, captureDesktop)).toContain('deleted Profile left stale preference state')
   })
 
   it('wires lifecycle evidence through key startup stages and terminal outcomes', () => {
@@ -860,6 +919,14 @@ describe('published package surface', () => {
       join(dirname(appBuilderManifest), 'templates/nsis/include/allowOnlyOneInstallerInstance.nsh'),
       'utf8',
     )
+    const installedNsisExtractor = readFileSync(
+      join(dirname(appBuilderManifest), 'templates/nsis/include/extractAppPackage.nsh'),
+      'utf8',
+    )
+    const installedNsisInstallUtil = readFileSync(
+      join(dirname(appBuilderManifest), 'templates/nsis/include/installUtil.nsh'),
+      'utf8',
+    )
 
     expect(workspaceManifest.resolutions).toMatchObject({
       'app-builder-lib@npm:26.15.7': patchResolution,
@@ -870,6 +937,8 @@ describe('published package surface', () => {
     expect(patch).toContain('"-k", keychainPassword, keychainFile')
     expect(patch).toContain('ManifestLongPathAware true')
     expect(patch).toContain("[System.IO.Path]::GetFileName($$_.Path) -ieq '${_FILE}'")
+    expect(patch).toContain('diff --git a/templates/nsis/include/extractAppPackage.nsh')
+    expect(patch).toContain('diff --git a/templates/nsis/include/installUtil.nsh')
     expect(manifest.build?.toolsets?.nsis).toBe('1.2.1')
     expect(installedCodeSign).toContain('importCerts(keychainFile, certPaths, cscPasswords, keychainPassword)')
     expect(installedCodeSign).toContain('"-k", keychainPassword, keychainFile')
@@ -877,6 +946,21 @@ describe('published package surface', () => {
     expect(installedNsisPortable).toContain('ManifestLongPathAware true')
     expect(installedNsisSingleInstance).toContain("[System.IO.Path]::GetFileName($$_.Path) -ieq '${_FILE}'")
     expect(installedNsisSingleInstance).not.toContain("$$_.Path.StartsWith('$INSTDIR', 'CurrentCultureIgnoreCase')}).Count")
+    expect(installedNsisExtractor).toContain('SetOutPath "$INSTDIR"')
+    expect(installedNsisExtractor).not.toContain('$PLUGINSDIR\\7z-out')
+    expect(installedNsisExtractor).not.toContain('CopyFiles /SILENT')
+    expect(installedNsisInstallUtil).toContain(
+      'Old uninstaller returned code 2; continuing with non-atomic in-place replacement.',
+    )
+    expect(installedNsisInstallUtil).toContain(
+      '# Code 2 is handled by the non-atomic in-place replacement path.',
+    )
+    const legacyCode2Fallback = installedNsisInstallUtil.indexOf(
+      '# Code 2 is handled by the non-atomic in-place replacement path.',
+    )
+    expect(legacyCode2Fallback).toBeGreaterThan(installedNsisInstallUtil.indexOf('CheckResult:'))
+    expect(legacyCode2Fallback).toBeLessThan(installedNsisInstallUtil.indexOf('Sleep 1000', legacyCode2Fallback))
+    expect(installedNsisInstallUtil).toContain('MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"')
   })
 
   it('starts restricted Windows shells with a hidden console show state', () => {

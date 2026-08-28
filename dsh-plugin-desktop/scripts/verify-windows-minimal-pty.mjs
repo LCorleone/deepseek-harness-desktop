@@ -6,7 +6,7 @@ import { dirname, join, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { resolvePwshPath } from '@deepseek-ai/dsh-pwsh-local'
 import LocalSandbox from '@deepseek-ai/dsh-sandbox-local'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
@@ -114,7 +114,7 @@ async function scenario(inputs) {
     const agent = owner(context, `windows-minimal-${inputs.label}`, inputs.packageRoot)
     const execute = (command, signal = new AbortController().signal) => context.tools.execute({
       signal,
-      callId: CallId(`${inputs.label}-${++callNumber}`),
+      callId: ToolCallId(`${inputs.label}-${++callNumber}`),
       name: 'pwsh',
       arguments: { command },
       agent,

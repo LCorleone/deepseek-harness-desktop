@@ -36,6 +36,7 @@ import {
   startDesktopCrashReporting,
   type DesktopRun,
 } from './crash-evidence.ts'
+import { dshProductVersion } from './dsh-product-version.ts'
 import { exportDesktopDiagnostics } from './diagnostic-export.ts'
 import { createDesktopLifecycleRecorder } from './lifecycle-events.ts'
 import type {
@@ -80,8 +81,17 @@ import {
   desktopMarketSnapshotWithEffective,
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
+  type DesktopMarketProvider,
+  type DesktopMarketSnapshot,
 } from './desktop-market.ts'
 import DesktopSettingsController from './desktop-settings-controller.ts'
+import {
+  clearDesktopProfilePreferences,
+  readDesktopProfilePreferences,
+  writeDesktopProfilePreferences,
+  type DesktopProfilePreferences,
+  type DesktopProfilePreferencesStateV1,
+} from './profile-preferences.ts'
 import {
   DesktopStartupRecoveryController,
   DesktopStartupRecoveryControllerError,
@@ -104,6 +114,8 @@ import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profi
 import {
   clearDesktopSetupWizardState,
   completeOrSkipDesktopSetupWizard,
+  desktopSetupWizardRequired,
+  desktopSetupWizardStateConstants,
   readDesktopSetupWizardState,
 } from './setup-wizard-state.ts'
 import {
@@ -111,6 +123,7 @@ import {
   migrateDesktopWindowMaterialSettings,
   readDesktopSetupWizardSettings,
   updateDesktopSetupWizardSettings,
+  type DesktopSetupWizardSettings,
 } from './setup-wizard-settings.ts'
 import type { DesktopSetupWizardResult } from './setup-wizard-contract.ts'
 import { DesktopSetupWizardWindow } from './setup-wizard-window.ts'
@@ -138,6 +151,10 @@ import {
 import type { RendererBootReport } from './renderer-boot-contract.ts'
 import { desktopLocaleFromLanguageTag } from './tray-locale.ts'
 import { desktopNativeCopy } from './native-dialog-copy.ts'
+import {
+  DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE,
+  type DesktopNotificationSettings,
+} from './notifications.ts'
 import {
   desktopDefaultRelaunchArguments,
   desktopRecoveryModeRequested,
@@ -256,6 +273,56 @@ function notifySessionProjectionCacheRecovery(
   }
 }
 
+/** Use one Profile-owned Market request as the first composition input. */
+function desktopProfileMarketSnapshot(market: DesktopMarketProvider): DesktopMarketSnapshot {
+  return Object.freeze({
+    requested: market,
+    effective: market,
+    legacyDefaulted: false,
+  })
+}
+
+/** Project exactly the first-stage Profile fields from an effective settings view. */
+function desktopProfilePreferencesFromSettings(
+  desktop: Pick<DesktopSettings, 'mode' | 'openBrowser' | 'networkExposure'>,
+  notifications: Readonly<DesktopNotificationSettings>,
+  market: DesktopMarketProvider,
+): DesktopProfilePreferences {
+  return Object.freeze({
+    mode: desktop.mode,
+    openBrowser: desktop.openBrowser,
+    networkExposure: desktop.networkExposure,
+    notifications: Object.freeze({ ...notifications }),
+    market,
+  })
+}
+
+/** Preserve device-shared Wizard fields while mirroring one Profile's leaves. */
+function setupSettingsWithProfilePreferences(
+  current: DesktopSetupWizardSettings,
+  preferences: DesktopProfilePreferences,
+): DesktopSetupWizardSettings {
+  return Object.freeze({
+    ...current,
+    mode: preferences.mode,
+    openBrowser: preferences.openBrowser,
+    networkExposure: preferences.networkExposure,
+    notifications: Object.freeze({ ...preferences.notifications }),
+  })
+}
+
+/** Mirror only the Profile-owned settings leaves into the exact prepared document. */
+async function mirrorDesktopProfilePreferences(
+  settingsDocument: string,
+  preferences: DesktopProfilePreferences,
+): Promise<void> {
+  const current = readDesktopSetupWizardSettings(settingsDocument)
+  await updateDesktopSetupWizardSettings(
+    settingsDocument,
+    setupSettingsWithProfilePreferences(current, preferences),
+  )
+}
+
 /** Start one Electron process and leave lifetime to the mounted desktop plugin. */
 async function start(): Promise<void> {
   if (!app.requestSingleInstanceLock()) {
@@ -287,6 +354,11 @@ async function start(): Promise<void> {
   let recoveryTerminalAvailable = false
   let startupStage: DesktopStartupFailureStage = 'electron-ready'
   const appVersion = desktopProductVersion()
+  const setupWizardVersions = Object.freeze({
+    desktopVersion: appVersion,
+    dshVersion: dshProductVersion(),
+    setupRevision: desktopSetupWizardStateConstants.setupRevision,
+  })
   const recoveryModeRequested = desktopRecoveryModeRequested()
   try {
     logSink = new LogFileSink(join(app.getPath('userData'), 'logs'), {
@@ -664,7 +736,11 @@ async function start(): Promise<void> {
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
     const lanAddresses = desktopLanAddresses()
-    let marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
+    const legacyMarketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
+    let profilePreferences = readDesktopProfilePreferences(marketUserDataDir, activeProfileDir)
+    let marketSelection = profilePreferences === undefined
+      ? legacyMarketSelection
+      : desktopProfileMarketSnapshot(profilePreferences.market)
     const preparationHooks = {
       lanAddresses,
       onSettingsDocumentResolved: (settingsDocument: string) => {
@@ -685,19 +761,55 @@ async function start(): Promise<void> {
       marketSelection,
       preparationHooks,
     )
-    const browserAccessMigrated = await migrateDesktopBrowserAccessSettings(prepared.settingsDocument)
-    let windowMaterialMigrated = false
-    try {
-      windowMaterialMigrated = await migrateDesktopWindowMaterialSettings(prepared.settingsDocument)
-    } catch (cause) {
-      // Legacy Acrylic is already normalized to off by the read boundary. A
-      // read-only settings file must not turn removal of the effect into a
-      // startup failure merely because the durable cleanup could not be saved.
-      electronLogger.error(
-        `${BIN_NAME}: failed to persist removed Acrylic material migration: ${cause instanceof Error ? cause.message : String(cause)}`,
+    if (profilePreferences === undefined) {
+      const browserAccessMigrated = await migrateDesktopBrowserAccessSettings(prepared.settingsDocument)
+      let windowMaterialMigrated = false
+      try {
+        windowMaterialMigrated = await migrateDesktopWindowMaterialSettings(prepared.settingsDocument)
+      } catch (cause) {
+        // Legacy Acrylic is already normalized to off by the read boundary. A
+        // read-only settings file must not turn removal of the effect into a
+        // startup failure merely because the durable cleanup could not be saved.
+        electronLogger.error(
+          `${BIN_NAME}: failed to persist removed Acrylic material migration: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+      if (browserAccessMigrated || windowMaterialMigrated) {
+        prepared = prepareDesktopProfile(
+          process.env.DSH_TELEMETRY_DISABLED,
+          homeDir,
+          process.platform,
+          activeProfileName,
+          pluginManagementStatePath,
+          marketSelection,
+          preparationHooks,
+        )
+      }
+      const importedSettings = readDesktopSetupWizardSettings(prepared.settingsDocument)
+      profilePreferences = await writeDesktopProfilePreferences(
+        marketUserDataDir,
+        prepared.profile.dir,
+        desktopProfilePreferencesFromSettings(
+          prepared,
+          importedSettings.notifications,
+          legacyMarketSelection.requested,
+        ),
       )
-    }
-    if (browserAccessMigrated || windowMaterialMigrated) {
+    } else {
+      // Existing Profile state is the source of truth. Mirror it only after the
+      // first prepare has resolved this Profile's exact settings document.
+      await mirrorDesktopProfilePreferences(prepared.settingsDocument, profilePreferences)
+      try {
+        await migrateDesktopWindowMaterialSettings(prepared.settingsDocument)
+      } catch (cause) {
+        // Keep retrying the device-owned Acrylic cleanup on later launches,
+        // even after this Profile has completed its one-time preference import.
+        electronLogger.error(
+          `${BIN_NAME}: failed to persist removed Acrylic material migration: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+      await selectDesktopMarketProvider(marketUserDataDir, profilePreferences.market)
+      marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
       prepared = prepareDesktopProfile(
         process.env.DSH_TELEMETRY_DISABLED,
         homeDir,
@@ -708,7 +820,8 @@ async function start(): Promise<void> {
         preparationHooks,
       )
     }
-    if (readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir) === undefined) {
+    const setupWizardState = readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir)
+    if (desktopSetupWizardRequired(setupWizardState, setupWizardVersions)) {
       const setupSettings = readDesktopSetupWizardSettings(prepared.settingsDocument)
       setupWizardWindow = new DesktopSetupWizardWindow({
         locale: desktopLocaleFromLanguageTag(app.getLocale()),
@@ -737,8 +850,18 @@ async function start(): Promise<void> {
           marketUserDataDir,
           prepared.profile.dir,
           'skipped',
+          setupWizardVersions,
         )
       } else {
+        profilePreferences = await writeDesktopProfilePreferences(
+          marketUserDataDir,
+          prepared.profile.dir,
+          desktopProfilePreferencesFromSettings(
+            setupResult.selection,
+            setupResult.selection.notifications,
+            setupResult.selection.market,
+          ),
+        )
         await updateDesktopSetupWizardSettings(prepared.settingsDocument, {
           mode: setupResult.selection.mode,
           macosMaterial: setupResult.selection.macosMaterial,
@@ -762,6 +885,7 @@ async function start(): Promise<void> {
           marketUserDataDir,
           prepared.profile.dir,
           'completed',
+          setupWizardVersions,
         )
       }
     }
@@ -875,6 +999,35 @@ async function start(): Promise<void> {
       dshBootstrapPath,
     }
     await healDesktopProfileModuleFallback(homeDir, prepared.profile)
+    if (profilePreferences === undefined) {
+      throw new Error(`${BIN_NAME}: active Profile preferences were not initialized`)
+    }
+    let currentProfilePreferences: DesktopProfilePreferences = profilePreferences
+    let profilePreferencesWriteTail: Promise<void> = Promise.resolve()
+    let profilePreferencesStopping = false
+    const enqueueProfilePreferencesWrite = (
+      update: (current: DesktopProfilePreferences) => DesktopProfilePreferences,
+    ): Promise<DesktopProfilePreferencesStateV1> => {
+      if (profilePreferencesStopping) {
+        return Promise.reject(new Error(`${BIN_NAME}: Profile preferences are stopping`))
+      }
+      const write = profilePreferencesWriteTail.then(async () => {
+        const next = update(currentProfilePreferences)
+        const stored = await writeDesktopProfilePreferences(
+          marketUserDataDir,
+          prepared.profile.dir,
+          next,
+        )
+        currentProfilePreferences = stored
+        return stored
+      })
+      profilePreferencesWriteTail = write.then(() => undefined, () => undefined)
+      return write
+    }
+    const flushProfilePreferencesWrites = async (): Promise<void> => {
+      profilePreferencesStopping = true
+      await profilePreferencesWriteTail
+    }
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const releasePackageResolver = installProfilePackageResolver(prepared.bareModuleBaseUrl)
@@ -887,6 +1040,10 @@ async function start(): Promise<void> {
         // profile-overlay resolver used by packaged Electron.
         hostCtx.loader.internal = undefined
         generation.bindHost(hostCtx)
+        hostCtx.effect(
+          () => async () => { await flushProfilePreferencesWrites() },
+          'dsh-plugin-desktop: flush Profile preference writes',
+        )
         hostCtx.effect(
           () => releasePnpmRuntime,
           'dsh-plugin-desktop: packaged pnpm runtime PATH',
@@ -934,17 +1091,26 @@ async function start(): Promise<void> {
             selectionStatePath,
             currentProfileName: activeProfileName,
           }, name),
-          delete: name => deleteDesktopProfile({
-            home: homeDir,
-            selectionStatePath,
-            currentProfileName: activeProfileName,
-            clearDisabledState: () => clearDesktopProfilePluginState(pluginManagementStatePath, name),
-            clearCheckpoint: async () => {
-              const profileDir = resolveProfileDir(name, homeDir)
-              clearDesktopProfileCheckpoint(app.getPath('userData'), profileDir)
-              await clearDesktopSetupWizardState(app.getPath('userData'), profileDir)
-            },
-          }, name),
+          delete: async name => {
+            const profileDir = resolveProfileDir(name, homeDir)
+            await deleteDesktopProfile({
+              home: homeDir,
+              selectionStatePath,
+              currentProfileName: activeProfileName,
+              clearDisabledState: () => clearDesktopProfilePluginState(pluginManagementStatePath, name),
+              clearCheckpoint: async () => {
+                clearDesktopProfileCheckpoint(marketUserDataDir, profileDir)
+                await clearDesktopSetupWizardState(marketUserDataDir, profileDir)
+              },
+            }, name)
+            try {
+              await clearDesktopProfilePreferences(marketUserDataDir, profileDir)
+            } catch (cause) {
+              hostCtx.logger.error(
+                `${BIN_NAME}: deleted Profile left stale preference state: ${cause instanceof Error ? cause.message : String(cause)}`,
+              )
+            }
+          },
           persistSelection: name => { selectDesktopProfile(selectionStatePath, homeDir, name) },
           requestRestart: () => runtime.requestRestart(),
         })
@@ -964,7 +1130,7 @@ async function start(): Promise<void> {
           pendingSettingsRestart = undefined
         }, 'dsh-plugin-desktop: pending Desktop settings restart')
         const readMarket = () => desktopMarketSnapshotWithEffective(
-          readDesktopMarketStateForUserData(marketUserDataDir),
+          desktopProfileMarketSnapshot(currentProfilePreferences.market),
           prepared.market.effective,
         )
         hostCtx.provide('desktopSettingsController', new DesktopSettingsController({
@@ -991,10 +1157,17 @@ async function start(): Promise<void> {
               }),
             }
           },
-          selectMarket: async provider => desktopMarketSnapshotWithEffective(
-            await selectDesktopMarketProvider(marketUserDataDir, provider),
-            prepared.market.effective,
-          ),
+          selectMarket: async provider => {
+            await enqueueProfilePreferencesWrite(current => desktopProfilePreferencesFromSettings(
+              current,
+              current.notifications,
+              provider,
+            ))
+            return desktopMarketSnapshotWithEffective(
+              await selectDesktopMarketProvider(marketUserDataDir, provider),
+              prepared.market.effective,
+            )
+          },
           scheduleRestart: scheduleSettingsRestart,
           scheduleRecoveryRestart: () => {
             void runtime.requestRecoveryRestart().catch((cause: unknown) => {
@@ -1032,8 +1205,25 @@ async function start(): Promise<void> {
     generation.bindHost(ctx)
     fileExporter?.setThreshold((ctx.settings.get(DESKTOP_SETTINGS_NAMESPACE) as DesktopSettings | undefined)?.logLevel ?? 'info')
     ctx.on('settings/updated', (namespace, next) => {
-      if (namespace !== DESKTOP_SETTINGS_NAMESPACE) return
-      fileExporter?.setThreshold((next as DesktopSettings).logLevel)
+      if (namespace === DESKTOP_SETTINGS_NAMESPACE) {
+        fileExporter?.setThreshold((next as DesktopSettings).logLevel)
+      }
+      if (namespace !== DESKTOP_SETTINGS_NAMESPACE
+        && namespace !== DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE) return
+      const write = enqueueProfilePreferencesWrite(current => desktopProfilePreferencesFromSettings(
+        namespace === DESKTOP_SETTINGS_NAMESPACE
+          ? next as DesktopSettings
+          : ctx.settings.get(DESKTOP_SETTINGS_NAMESPACE) as DesktopSettings,
+        namespace === DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE
+          ? next as DesktopNotificationSettings
+          : ctx.settings.get(DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE) as DesktopNotificationSettings,
+        current.market,
+      ))
+      void write.catch((cause: unknown) => {
+        ctx.logger.error(
+          `${BIN_NAME}: failed to capture active Profile settings: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      })
     })
     startupStage = 'renderer-startup'
     lifecycleRecorder.transitionStartupStage(startupStage)
