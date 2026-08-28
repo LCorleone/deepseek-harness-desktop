@@ -8,6 +8,7 @@ import { evaluate, isJsExpr, type EntryOptions } from '@deepseek-ai/cordis-plugi
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import {
   composeEntries,
+  DEFAULT_PROFILE_PATCH_RELOAD,
   healProfilesModuleFallback,
   initProfile,
   loadOptionalPatches,
@@ -19,13 +20,14 @@ import {
   writeProfileManifest,
   type Profile,
   type ProfileManifest,
+  type ProfilePatchReload,
 } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import FileSettingsProvider, {
   resolveSpec as resolveSettingsFileSpec,
   type Config as SettingsFileConfig,
 } from '@deepseek-ai/dsh-settings-file'
-import { parseDocument } from 'yaml'
+import { parseAllDocuments, parseDocument } from 'yaml'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
@@ -222,11 +224,20 @@ export function readDesktopShellMode(config: SettingsFileConfig): DesktopShellMo
 
 /** Resolve the public Web template once and reject an incompatible DSH release. */
 function requiredWebBundles(): string[] {
-  const bundles = PROFILE_TEMPLATES.web
-  if (bundles === undefined) {
+  const template = PROFILE_TEMPLATES.web
+  if (template === undefined) {
     throw new Error(`${BIN_NAME}: installed dsh-app-boot has no web profile template`)
   }
-  return [...bundles]
+  return [...template.bundles]
+}
+
+/** User patch lifecycle inherited from the matching upstream Web profile. */
+function requiredWebPatchReload(): ProfilePatchReload {
+  const template = PROFILE_TEMPLATES.web
+  if (template === undefined) {
+    throw new Error(`${BIN_NAME}: installed dsh-app-boot has no web profile template`)
+  }
+  return template.patchReload
 }
 
 /** Prepared profile inputs consumed by app-boot. */
@@ -303,7 +314,9 @@ function sameList(left: readonly string[], right: readonly string[]): boolean {
  */
 export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   const dir = resolveProfileDir(DESKTOP_PROFILE_NAME, home)
-  if (!existsSync(join(dir, 'package.json'))) initProfile(dir, REQUIRED_BUNDLES)
+  if (!existsSync(join(dir, 'package.json'))) {
+    initProfile(dir, REQUIRED_BUNDLES, requiredWebPatchReload())
+  }
   const manifest = readProfileManifest(BIN_NAME, dir)
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
   if (rawBundles !== undefined
@@ -312,7 +325,8 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   }
   const current = rawBundles === undefined ? [] : rawBundles as string[]
   const bundles = desktopBundleList(current)
-  if (!sameList(current, bundles)) {
+  const patchReload = requiredWebPatchReload()
+  if (!sameList(current, bundles) || manifest.dsh?.profile?.patchReload !== patchReload) {
     writeProfileManifest(dir, {
       ...manifest,
       dsh: {
@@ -320,6 +334,7 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
         profile: {
           ...manifest.dsh?.profile,
           bundles,
+          patchReload,
         },
       },
     })
@@ -453,7 +468,7 @@ function loadRecoveryFilteredProfile(
     if (template === undefined) {
       throw new Error(`${BIN_NAME}: profile ${JSON.stringify(profileName)} does not exist`)
     }
-    initProfile(profileDir, template)
+    initProfile(profileDir, template.bundles, template.patchReload)
   }
   const manifest = readProfileManifest(BIN_NAME, profileDir)
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
@@ -462,6 +477,11 @@ function loadRecoveryFilteredProfile(
     throw new Error(`${BIN_NAME}: dsh.profile.bundles must be an array of package names`)
   }
   const bundles = (rawBundles ?? []) as string[]
+  const rawPatchReload: unknown = manifest.dsh?.profile?.patchReload
+  if (rawPatchReload !== undefined && rawPatchReload !== 'live' && rawPatchReload !== 'startup') {
+    throw new Error(`${BIN_NAME}: dsh.profile.patchReload must be "live" or "startup"`)
+  }
+  const patchReload = rawPatchReload ?? PROFILE_TEMPLATES[profileName]?.patchReload ?? DEFAULT_PROFILE_PATCH_RELOAD
   const selectedBundles = bundles.filter(packageName =>
     packageName !== DESKTOP_MARKET_IDENTITIES.community.packageName
     && (marketProvider === DESKTOP_MARKET_IDENTITIES.dshMarket.provider
@@ -515,6 +535,7 @@ function loadRecoveryFilteredProfile(
       layers,
       patchPath,
       patches: existsSync(patchPath) ? loadOverlayPatches(BIN_NAME, patchPath) : [],
+      patchReload,
     },
     ...(dshMarketFailure === undefined ? {} : { dshMarketFailure }),
   }
@@ -524,7 +545,7 @@ function loadRecoveryFilteredProfile(
 export function shippedPresetRoot(moduleUrl: string = import.meta.url): string {
   const require = createRequire(moduleUrl)
   return unpackedAsarPath(
-    join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'config', 'agent-presets'),
+    join(dirname(require.resolve('@deepseek-ai/dsh-agent-presets/package.json')), 'presets'),
   )
 }
 
@@ -713,6 +734,41 @@ function assertEffectiveMarketRows(
 }
 
 /**
+ * Read the Desktop machine-wide patch without relaxing upstream patch parsing.
+ *
+ * A YAML null document is the natural result of an empty, comment-only, or
+ * explicit `null` file. Desktop treats only that machine-wide state as an
+ * empty patch layer; every non-null document still goes through app-boot's
+ * strict parser, including its `!!js` schema and diagnostics.
+ */
+function loadDesktopMachinePatches(home: string): PatchOptions[] {
+  const path = join(home, PROFILE_PATCH_FILENAME)
+  let content: string
+  try {
+    content = readFileSync(path, 'utf8')
+  } catch {
+    return loadOptionalPatches(BIN_NAME, path) ?? []
+  }
+
+  try {
+    const documents = parseAllDocuments(content, { prettyErrors: true })
+    if (documents.length === 0) return []
+    const [document] = documents
+    if (documents.length === 1
+      && document !== undefined
+      && document.errors.length === 0
+      && document.warnings.length === 0
+      && document.toJS() === null) {
+      return []
+    }
+  } catch {
+    // Preserve app-boot's strict parser and user-facing diagnostic below.
+  }
+
+  return loadOptionalPatches(BIN_NAME, path) ?? []
+}
+
+/**
  * Load and compose one desktop profile generation.
  * @param telemetryDisabled - inherited DSH telemetry opt-out value.
  * @param home - Harness home containing profiles and the machine-wide patch.
@@ -736,7 +792,6 @@ export function prepareDesktopProfile(
     : resolveProfileDir(profileName, home)
   const workspaceChanged = reconcileProfilePnpmWorkspace(profileDir)
   const requiresDependencyMigration = profileDependencyMigrationRequired(profileDir, workspaceChanged, platform)
-  healProfilesModuleFallback(INSTALL_ANCHOR, home)
   // `plugin-management` remains the community market's user-facing scope.
   // Recovery mode no longer reads or writes an independent disable policy:
   // package removal goes through the provider-neutral `dsh plugin remove`.
@@ -779,7 +834,7 @@ export function prepareDesktopProfile(
     throw new Error(`${BIN_NAME}: desktop profile is missing @deepseek-ai/dsh-web-app`)
   }
 
-  const loadedHomePatches = loadOptionalPatches(BIN_NAME, join(home, PROFILE_PATCH_FILENAME)) ?? []
+  const loadedHomePatches = loadDesktopMachinePatches(home)
   const { patches: homePatches, skipped: skippedOptionalEntries } = omitUnresolvedOptionalEntries(
     loadedHomePatches,
     bareModuleBaseUrl,
@@ -1043,6 +1098,15 @@ export function prepareDesktopProfile(
     requiresDependencyMigration,
     ...(marketFailure === undefined ? {} : { marketFailure }),
   }
+}
+
+/** Maintain the upstream module fallback for one fully resolved Desktop profile. */
+export function healDesktopProfileModuleFallback(home: string, profile?: Profile): Promise<void> {
+  return healProfilesModuleFallback({
+    installAnchor: INSTALL_ANCHOR,
+    home,
+    ...(profile === undefined ? {} : { profile }),
+  })
 }
 
 /** Expose the package anchor for focused resolution tests. */

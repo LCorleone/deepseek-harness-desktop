@@ -1,0 +1,12 @@
+diff --git a/lib/client.js b/lib/client.js
+index 5a2f6c0..ebf01b1 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -2629,6 +2629,6 @@ window.__ModuleLoader__.load({
+ 				const persisted = this.selection.getSnapshot().sessionId;
+ 				if (current === void 0) {
+-					if (persisted !== void 0) this.selection.set({});
++					if (phase === "ready" && persisted !== void 0) this.selection.set({});
+ 				} else if (byId[current] !== void 0 && (persisted !== current || this.selection.getSnapshot().subagentAddress?.childSessionId !== currentAddress?.childSessionId || this.selection.getSnapshot().subagentAddress?.parentSessionId !== currentAddress?.parentSessionId || this.selection.getSnapshot().subagentAddress?.mode !== currentAddress?.mode)) this.selection.set({
+ 					sessionId: current,
+ 					...currentAddress === void 0 ? {} : { subagentAddress: currentAddress }

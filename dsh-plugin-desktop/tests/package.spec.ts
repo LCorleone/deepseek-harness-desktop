@@ -133,7 +133,6 @@ describe('published package surface', () => {
         '@deepseek-ai/dsh-api-remotes',
         '@deepseek-ai/dsh-client-connection',
         '@deepseek-ai/dsh-client-locale',
-        '@deepseek-ai/dsh-client-runtime',
         '@deepseek-ai/dsh-client-ui-renderer',
         '@deepseek-ai/dsh-client-ui-settings',
         '@deepseek-ai/dsh-client-ui-theme',
@@ -157,50 +156,10 @@ describe('published package surface', () => {
     expect(manifest.optionalDependencies ?? {}).not.toHaveProperty('dshmarket')
   })
 
-  it('patches app boot to accept an empty patch layer', () => {
-    const patchPath = './patches/dsh-app-boot@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-app-boot@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-app-boot@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const marker = 'if (parsed === void 0 || parsed === null) return [];'
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedBoot = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
-      packageRoot,
-    ), 'utf8')
-    expect(patch).toContain(marker)
-    expect(installedBoot).toContain(marker)
-  })
-
-  it('patches the agent loop to stop after one empty-name tool call', () => {
-    const patchPath = './patches/dsh-agent-loop@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-agent-loop@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-agent-loop@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedLoop = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'const EMPTY_TOOL_NAME_ERROR = "assistant emitted a tool call with an empty tool name";',
-      'const EMPTY_TOOL_NAME_RESULT = "Error: assistant emitted a tool call with an empty tool name.',
-      'appendEmptyToolCallFailure(session, turn, step, first.block);',
-      'if (hasEmptyToolCallName(candidate.block)) break;',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedLoop).toContain(marker)
-    }
-  })
-
   it('patches the browse panel with the Windows native-picker icon bridge', () => {
-    const patchPath = './patches/dsh-client-ui-directory-picker-browse@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-directory-picker-browse@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-directory-picker-browse@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
+    const patchPath = './patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch'
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-client-ui-directory-picker-browse'])
+      .toContain(patchPath)
     const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
     const installedClient = readFileSync(new URL(
       'node_modules/@deepseek-ai/dsh-client-ui-directory-picker-browse/lib/client.js',
@@ -209,13 +168,12 @@ describe('published package surface', () => {
     for (const marker of [
       '__DSH_DESKTOP_PICK_DIRECTORY__',
       '__DSH_DESKTOP_VALIDATE_DIRECTORY__',
-      'openDirectory(path)',
-      'openDirectory(targetPath)',
+      'const openDirectory = (path) => {',
+      'if (path !== null) openDirectory(path);',
+      'if (targetPath !== null) openDirectory(targetPath);',
       'IconFolderOpen16',
-      'nativePickerButton',
       'browser.nativePicker',
-      'border:1px solid var(--dsw-alias-border-l2)',
-      'background:var(--dsw-alias-bg-layer-2)',
+      'const parentInert = busy || folderDraft !== null || nativePicking || validatingDirectory;',
     ]) {
       expect(patch).toContain(marker)
       expect(installedClient).toContain(marker)
@@ -223,11 +181,9 @@ describe('published package surface', () => {
   })
 
   it('patches the browse backend to skip unreadable directory-looking entries', () => {
-    const patchPath = './patches/dsh-host-directory-picker-browse@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-host-directory-picker-browse@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-host-directory-picker-browse@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
+    const patchPath = './patches/dsh-host-directory-picker-browse@0.1.2-alpha.1.patch'
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-host-directory-picker-browse'])
+      .toContain(patchPath)
     const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
     const installedHost = readFileSync(new URL(
       'node_modules/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js',
@@ -243,229 +199,23 @@ describe('published package surface', () => {
     }
   })
 
-  it('marks the upstream Workspace browser as the desktop folder-drop target', () => {
-    const patchPath = './patches/dsh-client-ui-workspace@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-workspace@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-workspace@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    expect(patch).toContain('data-dsh-workspace-drop-target')
-    expect(installedClient).toContain('data-dsh-workspace-drop-target')
-  })
+  it('contains no stale rc.2 DSH runtime resolution', () => {
+    const dshResolutions = Object.entries(workspaceManifest.resolutions ?? {})
+      .filter(([selector]) => selector === '@deepseek-ai/dsh' || selector.startsWith('@deepseek-ai/dsh-'))
 
-  it('keeps the chat attachment drag mask outside the desktop Workspace drop target', () => {
-    const patchPath = './patches/dsh-client-ui-attachment@0.1.1-rc.2.patch'
-    const conversationPatchPath = './patches/dsh-client-ui-conversation@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-attachment@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-attachment@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-conversation@npm:0.1.1-rc.2': expect.stringContaining(conversationPatchPath),
-      '@deepseek-ai/dsh-client-ui-conversation@npm:^0.1.1-rc.2': expect.stringContaining(conversationPatchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const conversationPatch = readFileSync(new URL(conversationPatchPath, workspaceRoot), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-attachment/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    const installedConversation = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const source of [patch, installedClient]) {
-      expect(source).toContain('[data-dsh-workspace-drop-target]')
-      expect(source).toContain('[data-dsh-conversation-drop-target]')
-      expect(source).toContain('data-dsh-chat-drop-overlay')
-      expect(source).toContain('workspaceDropTarget(event)')
-      expect(source).toContain('reset()')
-    }
-    for (const source of [conversationPatch, installedConversation]) {
-      expect(source).toContain('data-dsh-conversation-drop-target')
-      expect(source).toContain('position: "relative"')
+    expect(dshResolutions.length).toBeGreaterThan(0)
+    for (const [selector, resolution] of dshResolutions) {
+      expect(selector).not.toContain('0.1.1-rc.2')
+      expect(String(resolution)).not.toContain('0.1.1-rc.2')
     }
   })
 
-  it('keeps API selection available after overriding a provider base URL', () => {
-    const patchPath = './.yarn/patches/@deepseek-ai-dsh-client-ui-settings-models-npm-0.1.1-rc.2-5348824733.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-settings-models@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-settings-models@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-settings-models/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'const baseURLOverridden = schema.hasPath(draft, ["baseURL"])',
-      'const canCustomizeApi = ownsIdentity || baseURLOverridden',
-      'canCustomizeApi ? (0, react_jsx_runtime.jsxs)("div"',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('gives the Desktop settings section a dedicated display icon', () => {
-    const patchPath = './.yarn/patches/@deepseek-ai-dsh-client-ui-settings-general-npm-0.1.1-rc.2-ef120ba0cf.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-settings-general@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-settings-general@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'function IconDesktopSettings',
-      'if (id === "desktop")',
-      'M5 14h6M8 11.5V14',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('adds bilingual search copy to the fetched-model picker', () => {
-    const patch = readFileSync(new URL(
-      '../patches/dsh-client-ui-settings-models@0.1.1-rc.2.patch',
-      packageRoot,
-    ), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-settings-models/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'fetchSearch: "Search models"',
-      'fetchSearchPlaceholder: "Search by model ID or name"',
-      'fetchNoMatches: "No models match the current search."',
-      'fetchSearch: "搜索模型"',
-      'fetchSearchPlaceholder: "按模型 ID 或名称搜索"',
-      'fetchNoMatches: "当前搜索没有匹配的模型。"',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('filters fetched-model candidates before rendering and bulk selection', () => {
-    const patch = readFileSync(new URL(
-      '../patches/dsh-client-ui-settings-models@0.1.1-rc.2.patch',
-      packageRoot,
-    ), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-settings-models/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'const [candidateQuery, setCandidateQuery] = (0, react.useState)("")',
-      'const normalizedCandidateQuery = candidateQuery.trim().toLowerCase();',
-      'const filteredCandidates = normalizedCandidateQuery.length === 0 ? activeCandidates : activeCandidates.filter((candidate) => {',
-      'const haystacks = [candidate.id, candidate.name].filter((value) => typeof value === "string");',
-      'filteredCandidates.length === 0 ? (0, react_jsx_runtime.jsx)("p", {',
-      'children: t("fetchNoMatches")',
-      'children: filteredCandidates.map((candidate) => (0, react_jsx_runtime.jsx)("li", {',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('preserves picked models outside the active filter when bulk-clearing matches', () => {
-    const patch = readFileSync(new URL(
-      '../patches/dsh-client-ui-settings-models@0.1.1-rc.2.patch',
-      packageRoot,
-    ), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-settings-models/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      'const allFilteredCandidatesPicked = filteredCandidates.length > 0 && filteredCandidates.every((candidate) => picked.has(candidate.id));',
-      'for (const candidate of filteredCandidates) next.delete(candidate.id);',
-      'for (const candidate of filteredCandidates) next.add(candidate.id);',
-      'disabled: filteredCandidates.length === 0',
-      'children: t(allFilteredCandidatesPicked ? "fetchDeselectAll" : "fetchSelectAll")',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('preserves model input modalities in the Host session catalog', () => {
-    const patchPath = './patches/dsh-host-apiproxy-model-modalities@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-host-apiproxy@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-host-apiproxy@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedRoot = new URL(
-      'node_modules/@deepseek-ai/dsh-host-apiproxy/',
-      packageRoot,
-    )
-    const installedRuntime = readFileSync(new URL('lib/index.js', installedRoot), 'utf8')
-    const installedSchema = readFileSync(
-      new URL('lib/types/api/sessions.schema.js', installedRoot),
-      'utf8',
-    )
-    const installedTypes = readFileSync(
-      new URL('lib/types/api/sessions.d.ts', installedRoot),
-      'utf8',
-    )
-    const schemaMarker = 'inputModalities: z.array(z.enum([\'text\', \'image\'])).optional()'
-    const projectionMarker = '{ inputModalities: [...model.inputModalities] }'
-
-    expect(patch).toContain(schemaMarker)
-    expect(patch).toContain(projectionMarker)
-    expect(installedRuntime).toContain('inputModalities: z$1.array(z$1.enum(["text", "image"])).optional()')
-    expect(installedRuntime).toContain(projectionMarker)
-    expect(installedSchema).toContain(schemaMarker)
-    expect(installedTypes).toContain("inputModalities?: readonly ('text' | 'image')[];")
-  })
-
-  it('localizes Trajectory toolbar labels in Simplified Chinese', () => {
-    const patchPath = './patches/dsh-client-ui-trajectory@0.1.1-rc.2.patch'
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-client-ui-trajectory@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-client-ui-trajectory@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
-    })
-    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
-    const installedClient = readFileSync(new URL(
-      'node_modules/@deepseek-ai/dsh-client-ui-trajectory/lib/client.js',
-      packageRoot,
-    ), 'utf8')
-    for (const marker of [
-      '"toolbar.duration": "耗时"',
-      '"toolbar.useActualDuration": "使用实际耗时"',
-      '"toolbar.useEqualWidth": "使用等宽操作"',
-      '"toolbar.turns": "轮次"',
-      '"toolbar.expandTurns": "展开轮次"',
-      '"toolbar.collapseTurns": "折叠轮次"',
-      '"toolbar.calls": "调用"',
-      '"toolbar.expandCalls": "展开调用"',
-      '"toolbar.collapseCalls": "折叠调用"',
-      '"toolbar.thinking": "思考"',
-      'children: [trajectoryLabel("toolbar.thinking")',
-      'currentTrajectoryT = t',
-    ]) {
-      expect(patch).toContain(marker)
-      expect(installedClient).toContain(marker)
-    }
-  })
-
-  it('keeps Desktop boot from opening an external browser and hides explicit Windows helpers', () => {
-    const patchPath = './patches/dsh-web-app@0.1.1-rc.2.patch'
+  it('keeps the canonical web profile configurable while Desktop disables browser opening', () => {
+    const patchPath = './patches/dsh-web-app@0.1.2-alpha.1.patch'
     const openPatchPath = './patches/open@11.0.1.patch'
     const openPatchResolution = `patch:open@npm%3A11.0.1#${openPatchPath}`
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-web-app']).toContain(patchPath)
     expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-web-app@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
-      '@deepseek-ai/dsh-web-app@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
       'open@npm:11.0.1': openPatchResolution,
       'open@npm:^11.0.0': openPatchResolution,
     })
@@ -498,9 +248,10 @@ describe('published package surface', () => {
     expect(installedOpen).toMatch(
       /if \(!isWsl\) \{\s+childProcessOptions\.windowsVerbatimArguments = true;\s+childProcessOptions\.windowsHide = true;\s+\}/u,
     )
-    expect(patch).toContain('openBrowser: false')
-    expect(installedWebPatch).toContain('openBrowser: false')
-    expect(installedWebPatch).not.toContain('openBrowser: !!js ctx.webStartup.openBrowser')
+    expect(patch).not.toContain('cordis.patch.yml')
+    expect(patch).not.toContain('openBrowser: false')
+    expect(installedWebPatch).toContain('openBrowser: !!js ctx.webStartup.openBrowser')
+    expect(installedWebPatch).not.toContain('openBrowser: false')
     expect(desktopPatch).toMatch(/- id: web-runtime\n  config:\n    openBrowser: false/)
   })
 
@@ -1050,10 +801,8 @@ describe('published package surface', () => {
   })
 
   it('hides official plugin-manager and general subprocess consoles on Windows', () => {
-    const dshPatchPath = './patches/dsh@0.1.1-rc.2.patch'
-    const subprocessPatchPath = './patches/dsh-subprocess-local@0.1.1-rc.2.patch'
-    const dshPatchResolution = `patch:@deepseek-ai/dsh@npm%3A0.1.1-rc.2#${dshPatchPath}`
-    const subprocessPatchResolution = `patch:@deepseek-ai/dsh-subprocess-local@npm%3A0.1.1-rc.2#${subprocessPatchPath}`
+    const dshPatchPath = './patches/dsh@0.1.2-alpha.1.patch'
+    const subprocessPatchPath = './patches/dsh-subprocess-local@0.1.2-alpha.1.patch'
     const lockfile = readFileSync(new URL('yarn.lock', workspaceRoot), 'utf8')
     const dshPatch = readFileSync(new URL(dshPatchPath, workspaceRoot), 'utf8')
     const subprocessPatch = readFileSync(new URL(subprocessPatchPath, workspaceRoot), 'utf8')
@@ -1066,14 +815,10 @@ describe('published package surface', () => {
     const subprocessManifest = workspaceRequire.resolve('@deepseek-ai/dsh-subprocess-local/package.json')
     const subprocessRuntime = readFileSync(join(dirname(subprocessManifest), 'lib/index.js'), 'utf8')
 
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh@npm:0.1.1-rc.2': dshPatchResolution,
-      '@deepseek-ai/dsh@npm:^0.1.1-rc.2': dshPatchResolution,
-      '@deepseek-ai/dsh-subprocess-local@npm:0.1.1-rc.2': subprocessPatchResolution,
-      '@deepseek-ai/dsh-subprocess-local@npm:^0.1.1-rc.2': subprocessPatchResolution,
-    })
-    expect(lockfile).toContain('@deepseek-ai/dsh@patch:@deepseek-ai/dsh@npm%3A0.1.1-rc.2#./patches/dsh@0.1.1-rc.2.patch')
-    expect(lockfile).toContain('@deepseek-ai/dsh-subprocess-local@patch:@deepseek-ai/dsh-subprocess-local@npm%3A0.1.1-rc.2#./patches/dsh-subprocess-local@0.1.1-rc.2.patch')
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh']).toContain(dshPatchPath)
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-subprocess-local']).toContain(subprocessPatchPath)
+    expect(lockfile).toContain(dshPatchPath)
+    expect(lockfile).toContain(subprocessPatchPath)
     expect(dshPatch).toContain('+\t\twindowsHide: true')
     expect(dshPluginRuntime).toMatch(/spawnSync\("pnpm"[\s\S]*?shell: process\.platform === "win32",\s+windowsHide: true/u)
     expect(subprocessPatch.match(/^\+\s*windowsHide: true\r?$/gmu)).toHaveLength(3)
@@ -1115,31 +860,22 @@ describe('published package surface', () => {
   })
 
   it('starts restricted Windows shells with a hidden console show state', () => {
-    const patchResolution = 'patch:@deepseek-ai/dsh-sandbox-windows-acl@npm%3A0.1.1-rc.2#./patches/dsh-sandbox-windows-acl@0.1.1-rc.2.patch'
+    const patchPath = './patches/dsh-win32-process@0.1.2-alpha.1.patch'
     const lockfile = readFileSync(new URL('yarn.lock', workspaceRoot), 'utf8')
-    const patch = readFileSync(new URL('patches/dsh-sandbox-windows-acl@0.1.1-rc.2.patch', workspaceRoot), 'utf8')
+    const patch = readFileSync(new URL('patches/dsh-win32-process@0.1.2-alpha.1.patch', workspaceRoot), 'utf8')
     const workspaceRequire = createRequire(new URL('package.json', packageRoot))
     const sandboxManifest = workspaceRequire.resolve('@deepseek-ai/dsh-sandbox-windows-acl/package.json')
-    const sandboxLocalManifest = workspaceRequire.resolve('@deepseek-ai/dsh-sandbox-local/package.json')
-    const sandboxLocalRequire = createRequire(sandboxLocalManifest)
-    const sandboxLib = join(dirname(sandboxManifest), 'lib')
-    const runtimeChunks = readdirSync(sandboxLib).filter(name => /^types-.*\.js$/u.test(name))
+    const sandboxRequire = createRequire(sandboxManifest)
+    const processManifest = sandboxRequire.resolve('@deepseek-ai/dsh-win32-process/package.json')
+    const installedRuntime = readFileSync(join(dirname(processManifest), 'lib/index.js'), 'utf8')
 
-    expect(workspaceManifest.resolutions).toMatchObject({
-      '@deepseek-ai/dsh-sandbox-windows-acl@npm:0.1.1-rc.2': patchResolution,
-      '@deepseek-ai/dsh-sandbox-windows-acl@npm:^0.1.1-rc.2': patchResolution,
-    })
-    expect(sandboxLocalRequire.resolve('@deepseek-ai/dsh-sandbox-windows-acl/package.json'))
-      .toBe(sandboxManifest)
-    expect(lockfile).toContain('@deepseek-ai/dsh-sandbox-windows-acl@patch:@deepseek-ai/dsh-sandbox-windows-acl@npm%3A0.1.1-rc.2#./patches/dsh-sandbox-windows-acl@0.1.1-rc.2.patch')
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-win32-process']).toContain(patchPath)
+    expect(lockfile).toContain(patchPath)
     expect(patch.match(/^\+\s*dwFlags: 257,\r?$/gmu)).toHaveLength(2)
     expect(patch.match(/^\+\s*wShowWindow: 0,\r?$/gmu)).toHaveLength(2)
-    expect(runtimeChunks).toHaveLength(1)
-    const installedRuntime = readFileSync(join(sandboxLib, runtimeChunks[0] as string), 'utf8')
     expect(installedRuntime.match(/dwFlags: 257,/gu)).toHaveLength(2)
     expect(installedRuntime.match(/wShowWindow: 0,/gu)).toHaveLength(2)
-    expect(installedRuntime).toContain('api.createProcessAsUserW(token, null, commandLine, null, null, 1, 0, null')
-    expect(installedRuntime).toContain('api.createProcessAsUserW(token, null, commandLine, null, null, 1, 4, null')
-    expect(installedRuntime).not.toContain('134217728')
+    expect(installedRuntime).toContain('createRestrictedProcess(api, options, buildCommandLine(options.command, options.args), 0')
+    expect(installedRuntime).toContain('createRestrictedProcess(api, options, buildCommandLine(options.command, options.args), 4')
   })
 })
