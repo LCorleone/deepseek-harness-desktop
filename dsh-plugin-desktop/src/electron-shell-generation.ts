@@ -37,6 +37,35 @@ function pairedWebSocketOrigin(origin: string): string {
   return url.origin
 }
 
+/**
+ * Exchange the upstream process token inside the BrowserWindow's own
+ * persistent session before its marker-bearing renderer URL is loaded.
+ * Keeping the exchange separate preserves the Desktop query markers across
+ * the upstream redirect and keeps the launch token out of renderer history.
+ */
+async function authenticateRendererSession(
+  window: BrowserWindow,
+  spec: DesktopShellSpec,
+): Promise<void> {
+  const session = window.webContents.session
+  const headers = {
+    [spec.rendererAccessHeader.name]: spec.rendererAccessHeader.value,
+  }
+  const authenticated = await session.fetch(spec.authenticationUrl, {
+    method: 'GET',
+    credentials: 'include',
+    redirect: 'follow',
+    cache: 'no-store',
+    headers,
+  })
+  if (authenticated.status !== 200) {
+    throw new Error(
+      `dsh-plugin-desktop: browser authentication failed with HTTP ${String(authenticated.status)}`,
+    )
+  }
+  await authenticated.body?.cancel()
+}
+
 function sameRendererCarrierOrigin(requestUrl: string, httpOrigin: string, webSocketOrigin: string): boolean {
   try {
     const origin = new URL(requestUrl).origin
@@ -403,6 +432,7 @@ export class ElectronShellGeneration {
     }
 
     try {
+      await authenticateRendererSession(window, spec)
       removeRendererAccessHeader = installRendererAccessHeader(
         window,
         origin,

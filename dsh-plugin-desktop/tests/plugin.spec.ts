@@ -76,6 +76,12 @@ function createHarness(
     ordinaryBrowserEnabled,
     Buffer.alloc(32, 6).toString('base64url'),
   )
+  const authenticatedUrl = vi.fn((baseUrl: string) => {
+    const url = new URL(baseUrl)
+    url.pathname = '/'
+    url.search = 'token=test-token'
+    return url.href
+  })
   const runtime: DesktopRuntime = {
     platform,
     windowsBuild: platform === 'win32' ? 22_631 : undefined,
@@ -148,6 +154,7 @@ function createHarness(
       }),
     },
     settings,
+    connection: { authenticatedUrl },
     logger: { warn: vi.fn(), error: vi.fn() },
     get: vi.fn((key: unknown) => {
       if (String(key) === 'desktopRuntime') return runtime
@@ -270,6 +277,7 @@ describe('desktop Host plugin', () => {
     apply(harness.ctx, config)
 
     expect(inject).toContain('settings')
+    expect(inject).toContain('connection')
     expect(inject).not.toContain('loader')
     const register = vi.mocked(harness.ctx.settings.register)
     expect(register.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ applies: 'restart' }))
@@ -278,6 +286,7 @@ describe('desktop Host plugin', () => {
     expect(harness.shell()).toEqual(expect.objectContaining({
       mode: 'compatibility',
       url: 'http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-version=2.0.0&dsh-desktop-material=transparent&dsh-desktop-titlebar-inset=36',
+      authenticationUrl: 'http://127.0.0.1:43120/?token=test-token',
       productName: 'DSH Desktop',
       windowTitle: 'DeepSeek Harness Desktop',
       rendererAccessHeader: {

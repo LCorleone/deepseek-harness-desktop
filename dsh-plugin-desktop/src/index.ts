@@ -9,6 +9,7 @@ import {
   type LocaleSettings,
 } from '@deepseek-ai/dsh-client-locale'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import {
   THEME_SETTINGS_NAMESPACE,
   type ThemeSettings,
@@ -82,7 +83,7 @@ export const name = 'desktop-shell'
 
 /** Services required before the shell can register its renderer generation. */
 /** Services required by the desktop shell; `desktopRuntime` is probed, not required. */
-export const inject = ['webServer', 'webRuntime', 'appExit', 'settings']
+export const inject = ['webServer', 'webRuntime', 'appExit', 'settings', 'connection']
 
 /** Standard settings namespace shared by tray and configuration surfaces. */
 export const DESKTOP_SETTINGS_NAMESPACE = settingsNamespace('dsh-desktop')
@@ -383,18 +384,20 @@ export function apply(ctx: Context, config: Config): void {
         config.windowsMaterial,
         runtime.windowsBuild,
       )
+      const url = desktopRendererUrl(
+        ctx.webServer.port,
+        config.mode,
+        runtime.platform,
+        runtime.updates.currentVersion,
+        material,
+        runtime.windowsBuild,
+      )
       return runtime.schedule({
         ...config,
         material,
         ...(runtime.windowsBuild === undefined ? {} : { windowsBuild: runtime.windowsBuild }),
-        url: desktopRendererUrl(
-          ctx.webServer.port,
-          config.mode,
-          runtime.platform,
-          runtime.updates.currentVersion,
-          material,
-          runtime.windowsBuild,
-        ),
+        url,
+        authenticationUrl: ctx.connection.authenticatedUrl(new URL(url).origin),
         rendererAccessHeader: browserAccess.rendererHeader,
         productName: 'DSH Desktop',
         windowTitle: 'DeepSeek Harness Desktop',
