@@ -489,7 +489,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
       ) {
         throw new CompanyCatalogUntrustedError(
           'stale-sequence',
-          `${this.mode === 'origin' ? 'fetched' : 'embedded'} manifest re-observed at sequence ${verification.manifest.sequence} with different bytes`,
+          `${this.mode === 'origin' ? 'fetched' : 'embedded'} manifest re-observed at sequence ${verification.manifest.sequence} with different bytes (recorded digest ${previous.bytesSha256}, computed digest ${bytesSha256})`,
         )
       }
       verifiedBytesSha256 = bytesSha256
