@@ -18,6 +18,9 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 
 ## Current State
 - **流程规则（2026-08-28 用户拍板）**：不主动 push、不主动触发构建——commit 本地可以，push/构建必须等用户确认后再执行
+- **#28 用户验收通过（2026-08-29）**：市场三栏稳定（死锁修复生效）、Deloitte 文案生效 ✅
+- **进行中（2026-08-29）**：① 安装器三件套摘取（`029d7c7aa8` 升级宽限 + `4a78015dd9` in-place 解压提速[#515 终局] + `06f3b91ea4` 遗留退出码继续）② 更新检查止血（locked 构建禁用指向上游 dshdesktop.cn 的检查——用户点 Download 会拉公共版覆盖锁定版，fleet 隐患；未来正式密钥批次切 GitLab 自有签名更新源，选项 A 已记）
+- **上游观察（2026-08-29）**：外层 +223（2.0.4、安装器批、设置向导功能批——只摘安装器）；**子模块 0.1.2-alpha.1（+1079，ptc 大重命名）——钉死不动，等正式版**
 - **里程碑（2026-08-28 晚）：市场三日悬案告破**——settings update() 深合并残留 content 时代 digest（#24 origin 保存不带 digest 字段，旧 {seq2,e59f9c00} 残留到 seq6 记录）→ 每次 scan 正确 digest 66e404≠残留值 → 同序列重放防线死锁目录；观测性补丁（错误码透出+扫描日志+digest 双值）逐层定位。修复 `78c4f3f59e`：mutate set-op 原子替换 + 验签完整通过时 digest 不符 warn+自愈刷新（低 seq 硬拒不松）；market 388 全绿；构建 #28 已触发（含 Deloitte 显示文案 + 本修复）待用户验收
 - **里程碑（2026-08-26）**：试点安装链全程闭合——**dsh-better-sidebar@0.15.2 市场安装成功、重启加载** ✅；tag `v0.1.0-desktop-pilot`（包版本 2.0.3，构建 #21）；E2E 冒烟 12 步自动化已入库（`4d9dfde3af`）
 - **里程碑（2026-08-27）**：上游安全批（pnpm 11.8.0 CVE + 安装器运行中升级 #618 + 三稳定性修复 + P1 补丁，构建 #23）**用户实测通过：开着应用直接升级成功、市场 sidebar 照常** ✅；E2E 冒烟抓到自身 Windows asar 分隔符 bug 已修（`9fe06c3f8e`，下包验证全绿）
@@ -100,6 +103,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 6. VM 验证 `ELECTRON_RUN_AS_NODE=1 ./app` 不进 node 模式；mac 签名机确认捆绑 node 二进制被签
 7. v1 receipt 升级引导文案（存量用户全部拒载后重装）；推广前同事机器安装实测
 8. onlyBuiltDependencies 目前硬编码三元组（node-pty/esbuild/protobufjs，`dsh-plugin-desktop/src/profile-pnpm-policy.ts`）：目录里第二个插件若携带其它原生构建依赖（sharp/sqlite3/bcrypt…）会复现 ERR_PNPM_IGNORED_BUILDS——长期方案是从签名 manifest 条目驱动批准清单，而非逐包扩硬编码
+10. **[待办 2026-08-29] 自有更新源（选项 A，随正式密钥批次做）**：更新检查现指向上游 dshdesktop.cn（update-checker.ts 硬编码端点）——locked 构建已止血禁用；正式批次时：GitLab 托管签名 update-manifest（复用 P3-3 签名通道 + ARTIFACT_TRUST_ROOTS 公司构建替换）→ 客户端提示下载我们自己的安装器，与插件目录同模式「git push 即发版」
 9. **[已立卡 2026-08-27 → 已实施同日 `8feab767be` + 评审修复 `d59ff089f7`，已 commit 未 push]「manifest 权威化」**：交付 D1 schema（treeDigest hex64 + approvedBuilds，渐进可选，旧 sequence-3 目录零影响）/ D2 锚点迁移（条目带签名 treeDigest → 磁盘实测对签名值，receipt 降级无决策权缓存，删/伪造均不能跳测或降级；新证据等级 signed-tree）/ D3 构建批准驱动（内置三元组 ∪ 签名 approvedBuilds，安装链 WAL 快照前合入）。评审修复：H1 权威条目绕过 stat 指纹缓存（缓存用户可写、命中返回记录值非实测值——伪造缓存旁路已堵，缓存仅加速 receipt 模式；安全注释改写为如实版本 + 3 条攻击向测试含变异验证）/ M2 fleet 升级顺序入册 README 双语（旧客户端 additionalProperties:false 整批拒收新清单——顺序：升 fleet→实测→重签→push）/ M3 approvedBuilds 语义勘误（profile 全局/回滚后驻留/跨条目生效）/ L4 锁定 CLI 通道同样消费签名 approvedBuilds / L5 allowlist 214 长度上限。测试 desktop 1140（+18）/ market 372 全绿；E2E 冒烟 12/12。**启用方式**：allowlist 条目填 treeDigest（需实测安装树摘要）+ approvedBuilds → 重签上架；sidebar 启用待实测后填入。原背景与 staged install 备选项见下：
    - 背景：用户装认可插件后本地改实现——只改文件被启动验签拒，但删/伪造 receipt 可绕（receipt 在用户可写 settings 且是期望摘要唯一记录）；manifest-only 拒载的策略决策仍挂起（等误报数据）；OS 级签名仍是 R1 路线
    - staged install 备选（暂不做）：市场下载 tarball→对签名 manifest 验 sha512→暂存→pnpm 装本地文件，消除对 pinned registry 在线不可变性的依赖并把 TLS 摘出安装关键路径；触发条件=切内部 registry/网络环境恶化
