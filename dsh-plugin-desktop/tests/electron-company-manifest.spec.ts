@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -168,8 +168,10 @@ describe('electron main-process manifest boundary', () => {
  * path is taken; every restricted-client guarantee for this one policy-pinned
  * URL (origin pin, refused redirects, bounded body and time) must carry over
  * unchanged, and the market's signature gate over the returned bytes —
- * including the sequence replay rules (a regressed sequence, or the same
- * sequence with different bytes, stays rejected) — stays intact.
+ * including the sequence replay rules (a regressed sequence stays rejected;
+ * the same sequence re-observed with different legitimately signed bytes now
+ * warns and self-heals instead of bricking the catalog — see the market
+ * provider's security note) — stays intact.
  */
 describe('origin-mode market catalog scan over the injected Chromium boundary', () => {
   const gitlabOrigin = 'https://gitlab.company.example'
@@ -244,13 +246,15 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     )
   })
 
-  it('re-verifies a same-sequence re-fetch and rejects changed bytes at that sequence', async () => {
+  it('re-verifies a same-sequence re-fetch and heals changed bytes at that sequence', async () => {
     // The steady state of a statically hosted origin: the same manifest
     // bytes come back on every scan, and a re-scan — same provider, or a
     // fresh process sharing only the persisted ratchet — must keep
-    // verifying instead of failing as a stale replay. Only a regressed
-    // sequence, or the same sequence re-signed over different content,
-    // stays rejected; injecting the transport client never weakens that.
+    // verifying instead of failing as a stale replay. A regressed sequence
+    // still rejects; the same sequence re-signed over different content
+    // now warns and heals (the signature chain is the content authority,
+    // the persisted digest only a local observation cache); injecting the
+    // transport client never changes either rule.
     const store = memorySequenceStore()
     const chromium = vi.fn(async () => new Response(signedManifestText(3)))
     const client = companyCatalogHttpOverElectronNet(gitlabPolicy, { request: chromium })
@@ -271,8 +275,9 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     await expect(provider.scanCatalog({}, context)).resolves.toBeTruthy()
     expect(chromium).toHaveBeenCalledTimes(1)
 
+    const reissuedText = signedManifestText(3, { expiresAt: '2031-01-01T00:00:00Z' })
     const reissued = companyCatalogHttpOverElectronNet(gitlabPolicy, {
-      request: vi.fn(async () => new Response(signedManifestText(3, { expiresAt: '2031-01-01T00:00:00Z' }))),
+      request: vi.fn(async () => new Response(reissuedText)),
     })
     const restart = createCompanyCatalogProvider({
       companyManifestUrl: gitlabPolicy.companyManifestUrl,
@@ -284,7 +289,15 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
       signal: new AbortController().signal,
       http: reissued,
       source: companySource,
-    })).rejects.toThrow('re-observed at sequence 3 with different bytes')
+    })).resolves.toBeTruthy()
+    // The catalog recovered on the freshly verified bytes and the ratchet
+    // re-pinned its digest to them.
+    expect(store.record()).toEqual({
+      sequence: 3,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: createHash('sha256').update(reissuedText, 'utf8').digest('hex'),
+    })
   })
 
   it('refuses any URL or caller-pinned origin outside the policy', async () => {

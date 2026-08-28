@@ -1,4 +1,4 @@
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { SettingsPathOp, SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { MarketInstallReceipt } from '../api-types.js'
 import type { CatalogSnapshot } from '../contracts/generated/catalog-snapshot.js'
 import { validateLocalSourceRecords } from '../contracts/validate.js'
@@ -34,6 +34,26 @@ export interface MarketSettingsDocument {
   readonly installReceipts?: readonly MarketInstallReceipt[]
   readonly catalogCache?: MarketCatalogCache
   readonly companyManifest?: MarketCompanyManifestRecord
+}
+
+/**
+ * The market settings scope plus the settings provider's path-addressed
+ * mutation, when the embedding host can supply it. `update` merges patches
+ * recursively into the stored section (see `mergeLayers` in
+ * `@deepseek-ai/dsh-settings`), which is wrong for the anti-rollback record:
+ * a record saved without `bytesSha256` must *replace* the previous record,
+ * never resurrect its digest (a merge-mode write once left a content-era
+ * digest under an origin-era record and bricked the catalog — see
+ * `SettingsCompanyManifestSequenceStore.save`). The mutation applies one
+ * path op (`{op: 'set', path: ['companyManifest']}`) against the section as
+ * it stands when the write reaches the settings queue, so the subtree is
+ * swapped atomically and sibling fields (`sources`, receipts, cache) are
+ * neither touched nor lost. Scopes without the method keep working through
+ * the store's replace fallback.
+ */
+export type MarketSettingsMutatingScope = SettingsScope<MarketSettingsDocument> & {
+  /** Apply ordered path edits to the namespace's raw user section. */
+  mutate?(ops: readonly SettingsPathOp[]): Promise<void>
 }
 
 /**

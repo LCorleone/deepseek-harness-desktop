@@ -19,6 +19,7 @@ import {
   MemoryCatalogSourceStore,
   type MarketCompanyManifestRecord,
   type MarketSettingsDocument,
+  type MarketSettingsMutatingScope,
 } from '../src/catalog/source-store.js'
 import { DefaultCatalogService } from '../src/catalog/service.js'
 import type { CatalogHttpClient, LocalSourceRecord } from '../src/contracts/index.js'
@@ -114,12 +115,17 @@ function contentContext() {
   }
 }
 
-function contentProviderScan(text: () => string, sequenceStore: CompanyManifestSequenceStore = memorySequenceStore()) {
+function contentProviderScan(
+  text: () => string,
+  sequenceStore: CompanyManifestSequenceStore = memorySequenceStore(),
+  logger?: Pick<Context['logger'], 'warn'>,
+) {
   const provider = createCompanyCatalogProvider({
     manifestContentProvider: contentProvider(text),
     trustRoots,
     sequenceStore,
     now: () => verifiedAt,
+    ...(logger === undefined ? {} : { logger }),
   })
   return { provider, sequenceStore, context: contentContext() }
 }
@@ -140,6 +146,9 @@ const untrusted = async (promise: Promise<unknown>) => {
 }
 
 const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
+
+/** Host logger sink for asserting the self-heal path warns loudly. */
+const warnLogger = () => ({ warn: vi.fn() })
 
 describe('company catalog provider construction', () => {
   it('requires exactly one acquisition mode and at least one trust root', () => {
@@ -338,10 +347,60 @@ describe('company catalog provider (content mode)', () => {
     expect(snapshots[0]?.page.total).toBe(0)
     expect(provider.verifiedPackages()).toEqual([])
   })
+
+  it('self-heals a residual stale digest left by a historical partial write', async () => {
+    // The field incident this regression guards: an origin-era record was
+    // saved without bytesSha256, the merge-mode settings write resurrected
+    // the content-era digest under the new sequence, and every later scan
+    // computed the true digest, mismatched the residual, and rejected the
+    // catalog as stale-sequence with no write path left to recover. The
+    // heal: the bytes that just passed full verification win, the warning
+    // carries both digests, the record refreshes, and the next scan is the
+    // silent steady state again.
+    const text = signedText(unsignedManifest({ sequence: 6 }))
+    const computed = sha256Hex(text)
+    const residual = sha256Hex('content-era sequence-2 bytes')
+    const saved: MarketCompanyManifestRecord[] = [{
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-08-01T00:00:00.000Z',
+      bytesSha256: residual,
+    }]
+    const sequenceStore: CompanyManifestSequenceStore = {
+      async load() { return saved[saved.length - 1] },
+      async save(record) { saved.push(record) },
+    }
+    const logger = warnLogger()
+    const { provider, context } = contentProviderScan(() => text, sequenceStore, logger)
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    expect(snapshots.flatMap(snapshot => snapshot.items)).toHaveLength(2)
+    expect(provider.verification()).toMatchObject({ mode: 'content', sequence: 6 })
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+    expect(logger.warn.mock.calls[0]?.[0]).toContain(`recorded digest ${residual}`)
+    expect(logger.warn.mock.calls[0]?.[0]).toContain(`computed digest ${computed}`)
+    expect(saved.at(-1)).toEqual({
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: computed,
+    })
+
+    // Healed: the follow-up scan is the silent same-bytes steady state.
+    const steady = contentProviderScan(() => text, sequenceStore, logger)
+    await expect(steady.provider.scanCatalog!({}, steady.context)).resolves.toBeTruthy()
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('company catalog provider (origin mode)', () => {
-  function originScan(text: string, finalUrl = MANIFEST_URL, sequenceStore: CompanyManifestSequenceStore = memorySequenceStore()) {
+  function originScan(
+    text: string,
+    finalUrl = MANIFEST_URL,
+    sequenceStore: CompanyManifestSequenceStore = memorySequenceStore(),
+    logger?: Pick<Context['logger'], 'warn'>,
+  ) {
     const getJson = vi.fn(async () => ({ value: JSON.parse(text), finalUrl }))
     const http: CatalogHttpClient = { getJson }
     const provider = createCompanyCatalogProvider({
@@ -349,6 +408,7 @@ describe('company catalog provider (origin mode)', () => {
       trustRoots,
       sequenceStore,
       now: () => verifiedAt,
+      ...(logger === undefined ? {} : { logger }),
     })
     const context = {
       source: source(),
@@ -418,21 +478,44 @@ describe('company catalog provider (origin mode)', () => {
     expect(sequenceStore.records).toHaveLength(3)
   })
 
-  it('rejects a same-sequence fetch whose bytes changed', async () => {
+  it('warns and heals when a same-sequence fetch re-issues different legitimately signed bytes', async () => {
     const sequenceStore = memorySequenceStore()
-    const first = originScan(signedText(unsignedManifest({ sequence: 6 })), MANIFEST_URL, sequenceStore)
+    const published = signedText(unsignedManifest({ sequence: 6 }))
+    const first = originScan(published, MANIFEST_URL, sequenceStore)
     await first.provider.scanCatalog!({}, first.context)
 
     // Tampering the bytes breaks the signature, so the honest construction
     // is a different legitimately signed manifest at the same sequence (an
-    // operator re-issuing content without bumping); it must not replay over
-    // the verified one.
+    // operator re-issuing content without bumping). The signature chain is
+    // the content authority and the sequence did not regress, so the scan
+    // proceeds on the new bytes — with a loud warning, and the persisted
+    // record refreshed to the new digest instead of bricking the catalog.
     const reissued = signedText(unsignedManifest({ sequence: 6, expiresAt: '2031-01-01T00:00:00Z' }))
-    const second = originScan(reissued, MANIFEST_URL, sequenceStore)
-    const error = await untrusted(second.provider.scanCatalog!({}, second.context))
-    expect(error.code).toBe('stale-sequence')
-    expect(error.message).toContain('re-observed at sequence 6 with different bytes')
-    expect(sequenceStore.records).toHaveLength(1)
+    const logger = warnLogger()
+    const second = originScan(reissued, MANIFEST_URL, sequenceStore, logger)
+    await expect(second.provider.scanCatalog!({}, second.context)).resolves.toBeTruthy()
+    expect(second.provider.verification()).toMatchObject({ mode: 'origin', sequence: 6 })
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+    expect(logger.warn.mock.calls[0]?.[0]).toContain('re-observed at sequence 6 with different bytes')
+    expect(logger.warn.mock.calls[0]?.[0]).toContain(`recorded digest ${sha256Hex(published)}`)
+    expect(logger.warn.mock.calls[0]?.[0]).toContain(`computed digest ${sha256Hex(reissued)}`)
+    expect(sequenceStore.records).toEqual([{
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(published),
+    }, {
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(reissued),
+    }])
+
+    // The heal restored the steady state: replaying the re-issued bytes is
+    // the silent static-hosting normal from here on.
+    const replay = originScan(reissued, MANIFEST_URL, sequenceStore, logger)
+    await expect(replay.provider.scanCatalog!({}, replay.context)).resolves.toBeTruthy()
+    expect(logger.warn).toHaveBeenCalledTimes(1)
   })
 
   it('backfills the persisted bytes digest when a legacy record carries none', async () => {
@@ -461,14 +544,15 @@ describe('company catalog provider (origin mode)', () => {
   })
 
   it('admits one unknown same-sequence manifest against a digest-less legacy record, then pins it', async () => {
-    // The accepted residual (review Low): a legacy record pins the sequence
-    // but not the bytes, so a same-sequence manifest with different — yet
-    // legitimately signed — bytes cannot be told apart from the last verified
-    // bytes. It is admitted exactly once and the digest is backfilled:
-    // replays of those very bytes keep verifying, any other same-sequence
-    // bytes are rejected from then on. Manufacturing the window requires the
-    // signing key, with which a strictly higher sequence is publishable
-    // anyway; this test pins the boundary so no refactor quietly widens it.
+    // A legacy record pins the sequence but not the bytes, so a
+    // same-sequence manifest with different — yet legitimately signed —
+    // bytes cannot be told apart from the last verified bytes. It is
+    // admitted exactly once and the digest is backfilled: from then on the
+    // record observes every same-sequence byte change loudly (warn + heal,
+    // see the module security note) while the digest-less window itself
+    // still requires the signing key to enter, with which a strictly higher
+    // sequence is publishable anyway; this test pins the boundary so no
+    // refactor quietly widens it.
     const reissued = signedText(unsignedManifest({ sequence: 42, expiresAt: '2031-01-01T00:00:00Z' }))
     const saved: MarketCompanyManifestRecord[] = [{ sequence: 42, keyId, verifiedAt: '2026-08-01T00:00:00.000Z' }]
     const sequenceStore: CompanyManifestSequenceStore = {
@@ -488,16 +572,17 @@ describe('company catalog provider (origin mode)', () => {
     const replay = originScan(reissued, MANIFEST_URL, sequenceStore)
     await expect(replay.provider.scanCatalog!({}, replay.context)).resolves.toBeTruthy()
 
-    // Any other same-sequence bytes are a replay attack from here on.
-    const swapped = originScan(
-      signedText(unsignedManifest({ sequence: 42, expiresAt: '2032-01-01T00:00:00Z' })),
-      MANIFEST_URL,
-      sequenceStore,
-    )
-    const error = await untrusted(swapped.provider.scanCatalog!({}, swapped.context))
-    expect(error.code).toBe('stale-sequence')
-    expect(error.message).toContain('re-observed at sequence 42 with different bytes')
-    expect(saved).toHaveLength(3)
+    // Any other same-sequence bytes diverge from the pinned observation:
+    // detected loudly, admitted on the freshly verified bytes, and the
+    // record re-pinned to them.
+    const swappedText = signedText(unsignedManifest({ sequence: 42, expiresAt: '2032-01-01T00:00:00Z' }))
+    const logger = warnLogger()
+    const swapped = originScan(swappedText, MANIFEST_URL, sequenceStore, logger)
+    await expect(swapped.provider.scanCatalog!({}, swapped.context)).resolves.toBeTruthy()
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('re-observed at sequence 42 with different bytes'))
+    // legacy, admitted+backfilled, steady replay, divergent+re-pinned
+    expect(saved).toHaveLength(4)
+    expect(saved.at(-1)?.bytesSha256).toBe(sha256Hex(swappedText))
   })
 
   it('rejects a fetched sequence that regressed below the persisted ratchet', async () => {
@@ -586,7 +671,8 @@ describe('company catalog provider verification failures', () => {
 
     // Same-sequence replay of the identical embedded asset is the normal
     // content-mode every-scan case and must keep verifying; the same
-    // sequence with different bytes is a replay attack and stays rejected.
+    // sequence with different legitimately signed bytes warns and heals
+    // (record refreshed), never bricks the catalog.
     const equal = signedText(unsignedManifest({ sequence: 42 }))
     const repeating = contentProviderScan(() => equal, sequenceStore)
     await expect(repeating.provider.scanCatalog!({}, repeating.context)).resolves.toBeTruthy()
@@ -595,8 +681,11 @@ describe('company catalog provider verification failures', () => {
       sequence: 42,
       packages: [packageEntry(), packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '9.9.9', revoked: false })],
     }))
-    const replaying = contentProviderScan(() => mutated, sequenceStore)
-    expect((await untrusted(replaying.provider.scanCatalog!({}, replaying.context))).code).toBe('stale-sequence')
+    const logger = warnLogger()
+    const replaying = contentProviderScan(() => mutated, sequenceStore, logger)
+    await expect(replaying.provider.scanCatalog!({}, replaying.context)).resolves.toBeTruthy()
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('re-observed at sequence 42 with different bytes'))
+    expect(sequenceStore.records.at(-1)?.bytesSha256).toBe(sha256Hex(mutated))
   })
 
   it('refuses to adopt a manifest when the sequence ratchet cannot be persisted', async () => {
@@ -748,6 +837,72 @@ describe('settings-backed company manifest sequence store', () => {
       verifiedAt: '2026-09-01T00:00:00.000Z',
     } satisfies MarketSettingsDocument['companyManifest'])
     expect(await store.load()).toEqual({ sequence: 42, keyId, verifiedAt: '2026-09-01T00:00:00.000Z' })
+  })
+
+  it('replaces the record atomically: a digest-less save never resurrects the previous digest', async () => {
+    // The write-path half of the field incident: merge-mode `update` deep-
+    // merged the stored section, so saving the origin-era record shape
+    // (no bytesSha256) over a content-era record (with one) left the stale
+    // digest parked under the new sequence. The store must swap the whole
+    // subtree, and the read-back after the save must be exactly the record.
+    const { scope } = await bootMarketSettings()
+    const store = new SettingsCompanyManifestSequenceStore(scope)
+
+    await store.save({
+      sequence: 2,
+      keyId,
+      verifiedAt: '2026-08-01T00:00:00.000Z',
+      bytesSha256: sha256Hex('content-era sequence-2 bytes'),
+    })
+    await store.save({ sequence: 6, keyId, verifiedAt: '2026-09-01T00:00:00.000Z' })
+
+    expect(scope.get().companyManifest).toEqual({
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+    } satisfies MarketSettingsDocument['companyManifest'])
+    expect(await store.load()).toEqual({ sequence: 6, keyId, verifiedAt: '2026-09-01T00:00:00.000Z' })
+  })
+
+  it('writes through a path set-op when the scope provides mutation, never a merge', async () => {
+    const mutate = vi.fn(async () => {})
+    const scope: MarketSettingsMutatingScope = {
+      get: () => ({ sources: [] }),
+      watch: () => () => {},
+      update: vi.fn(async () => {}),
+      replace: vi.fn(async () => {}),
+      mutate,
+    }
+    const store = new SettingsCompanyManifestSequenceStore(scope)
+    const record: MarketCompanyManifestRecord = { sequence: 6, keyId, verifiedAt: '2026-09-01T00:00:00.000Z' }
+
+    await store.save(record)
+
+    expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['companyManifest'], value: record }])
+    expect(scope.update).not.toHaveBeenCalled()
+    expect(scope.replace).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a wholesale section replace that preserves sibling fields', async () => {
+    // Scopes without path mutation (narrower hosts, focused fakes) still
+    // get subtree-replacement semantics: the section is replaced wholesale
+    // with the current document and the record swapped in, so `sources`
+    // and the other siblings survive and no stale field can linger.
+    const document: MarketSettingsDocument = { sources: [source()] }
+    const replace = vi.fn(async (_section: MarketSettingsDocument) => {})
+    const scope: MarketSettingsMutatingScope = {
+      get: () => document,
+      watch: () => () => {},
+      update: vi.fn(async () => {}),
+      replace,
+    }
+    const store = new SettingsCompanyManifestSequenceStore(scope)
+    const record: MarketCompanyManifestRecord = { sequence: 6, keyId, verifiedAt: '2026-09-01T00:00:00.000Z' }
+
+    await store.save(record)
+
+    expect(replace).toHaveBeenCalledWith({ sources: [source()], companyManifest: record })
+    expect(scope.update).not.toHaveBeenCalled()
   })
 
   it('blocks rollback for a fresh provider instance sharing only settings', async () => {

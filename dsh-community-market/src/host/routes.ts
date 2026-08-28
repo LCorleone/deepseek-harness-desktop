@@ -38,6 +38,7 @@ import {
   type CatalogSourceLockOptions,
   type MarketCatalogCache,
   type MarketSettingsDocument,
+  type MarketSettingsMutatingScope,
 } from '../catalog/source-store.js'
 import { MARKET_MEDIA_ASSET_REF_PATTERN } from '../media/ref.js'
 import { createRestrictedImageFetcher } from '../media/restricted-image.js'
@@ -1444,8 +1445,22 @@ export function registerMarketRoutes(
   }
 }
 
-export function registerMarketSettings(ctx: Context): SettingsScope<MarketSettingsDocument> {
-  return ctx.settings.register(MARKET_SETTINGS_NAMESPACE, SETTINGS_SCHEMA, { applies: 'live' })
+export function registerMarketSettings(ctx: Context): MarketSettingsMutatingScope {
+  const scope = ctx.settings.register(MARKET_SETTINGS_NAMESPACE, SETTINGS_SCHEMA, { applies: 'live' })
+  // Hand back the registered scope widened with the settings provider's
+  // path-addressed mutation: `SettingsCompanyManifestSequenceStore.save`
+  // replaces its anti-rollback subtree atomically instead of merging into
+  // it (merge-mode writes once resurrected a stale bytesSha256 under a newer
+  // sequence and bricked the catalog). The delegation object keeps the
+  // registered scope's own methods authoritative; only `mutate` is added,
+  // bound to this namespace.
+  return {
+    get: () => scope.get(),
+    watch: callback => scope.watch(callback),
+    update: patch => scope.update(patch),
+    replace: section => scope.replace(section),
+    mutate: ops => ctx.settings.mutate(MARKET_SETTINGS_NAMESPACE, ops),
+  }
 }
 
 export const marketRoutes = {

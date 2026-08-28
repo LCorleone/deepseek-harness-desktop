@@ -26,10 +26,26 @@
  * sequence is the normal steady state of a catalog that has not been
  * republished, and is admitted when the verified bytes match the persisted
  * digest (see the replay rule in `scanCatalog`).
+ *
+ * Security semantics of the persisted digest: the content authority is the
+ * signature chain — bytes that verify against a pinned trust root at a
+ * sequence that does not regress are the catalog, whatever a local record
+ * claims. The digest is only a local observation cache for replay detection,
+ * and it can be wrong: a merge-mode settings write once deep-merged sequence
+ * records across acquisition-mode eras and left a stale `bytesSha256` under a
+ * newer sequence, which made every later scan fail as `stale-sequence` with no
+ * path to recovery — a denial of service by stale local state, not by an
+ * attacker. So a same-sequence digest mismatch is now a loud warning plus a
+ * record refresh (the scan continues on the freshly verified bytes and the
+ * save below rewrites the record atomically), never a rejection; an operator
+ * re-signing the same sequence gets a loud warning instead of a bricked
+ * catalog. The hard lines stay hard: a strictly lower sequence is rejected
+ * here and inside verification, and every signature/expiry/canonical-form
+ * failure still fails the whole scan closed.
  */
 
 import { createHash } from 'node:crypto'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { Context } from '@deepseek-ai/cordis'
 import type { CatalogQuery } from '../contracts/generated/catalog-query.js'
 import type { CatalogSnapshot } from '../contracts/generated/catalog-snapshot.js'
 import { parseCatalogSnapshot } from '../contracts/validate.js'
@@ -45,7 +61,7 @@ import {
   type CompanyManifestVerificationCode,
 } from '../signing/index.js'
 import { isCompanyManifestKeyId, normalizeCompanyManifestTrustRoots } from '../signing/keys.js'
-import type { MarketCompanyManifestRecord, MarketSettingsDocument } from './source-store.js'
+import type { MarketCompanyManifestRecord, MarketSettingsMutatingScope } from './source-store.js'
 
 /** Adapter identity of the signed company catalog in the local registry. */
 export const COMPANY_CATALOG_ADAPTER_ID = 'market.company-manifest-v1'
@@ -134,6 +150,13 @@ export interface CompanyCatalogProviderOptions {
   readonly sequenceStore?: CompanyManifestSequenceStore
   /** Clock injection, defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Host logger for the loud same-sequence digest-mismatch warning on the
+   * self-heal path in `scanCatalog` (see the module security note); the
+   * embedding Host delivers it from its apply context so `--export-diagnostics`
+   * file logs explain the heal. Diagnostic sink only, never a behavior gate.
+   */
+  readonly logger?: Pick<Context['logger'], 'warn'>
 }
 
 function validCompanyManifestRecord(value: unknown): value is MarketCompanyManifestRecord {
@@ -161,7 +184,7 @@ function validCompanyManifestRecord(value: unknown): value is MarketCompanyManif
  * receipts, so rollback protection survives process restarts.
  */
 export class SettingsCompanyManifestSequenceStore implements CompanyManifestSequenceStore {
-  constructor(private readonly scope: SettingsScope<MarketSettingsDocument>) {}
+  constructor(private readonly scope: MarketSettingsMutatingScope) {}
 
   async load(): Promise<MarketCompanyManifestRecord | undefined> {
     const record = this.scope.get().companyManifest
@@ -178,7 +201,23 @@ export class SettingsCompanyManifestSequenceStore implements CompanyManifestSequ
     if (!validCompanyManifestRecord(record)) {
       throw new TypeError('invalid company manifest sequence record')
     }
-    await this.scope.update({ companyManifest: record })
+    // Atomic subtree replacement, never a merge. `scope.update` merges the
+    // patch recursively into the stored section, so a record saved without
+    // `bytesSha256` (the origin-mode shape before digest persistence) would
+    // resurrect the previous record's digest under the new sequence — the
+    // field incident that left every later scan mismatching a stale digest
+    // with no write path left to correct it. The path-addressed `set` op
+    // swaps the whole `companyManifest` subtree in one queued write, leaving
+    // sibling fields untouched and the read-back exactly the saved record.
+    const mutate = this.scope.mutate
+    if (mutate !== undefined) {
+      await mutate.call(this.scope, [{ op: 'set', path: ['companyManifest'], value: record }])
+      return
+    }
+    // Fallback for scopes without path mutation: replace the section
+    // wholesale with the current resolved document and the record swapped
+    // in, preserving sibling fields (sources, receipts, cache).
+    await this.scope.replace({ ...this.scope.get(), companyManifest: record })
   }
 }
 
@@ -409,6 +448,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   private readonly trustRoots: readonly CompanyManifestTrustRoot[]
   private readonly sequenceStore: CompanyManifestSequenceStore | undefined
   private readonly now: () => number
+  private readonly logger: Pick<Context['logger'], 'warn'> | undefined
   private scan: CompanyCatalogScan | undefined
 
   constructor(options: CompanyCatalogProviderOptions) {
@@ -433,6 +473,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     this.trustRoots = trustRoots
     this.sequenceStore = options.sequenceStore
     this.now = options.now ?? Date.now
+    this.logger = options.logger
   }
 
   async fetch(query: CatalogQuery, context: CatalogFetchContext): Promise<CatalogSnapshot> {
@@ -457,10 +498,16 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     // it in the explicit check below. The same sequence is a replay, which is
     // the normal steady state — a statically hosted origin serves the same
     // manifest bytes on every scan, and the embedded asset is unchanged — so
-    // it is admitted only when the verified bytes are identical to the last
+    // it is admitted when the verified bytes are identical to the last
     // verified ones (byte digests match, or the persisted record predates
     // digest persistence and has none to compare). The same sequence with
-    // different bytes is a replay attack and is rejected.
+    // different bytes is not a rejection: the content authority is the
+    // signature chain (these bytes just verified against a pinned trust
+    // root, and the sequence did not regress), while the persisted digest is
+    // a local observation cache that partial writes have corrupted before —
+    // hard-rejecting on it once bricked the catalog with no recovery path.
+    // It warns loudly instead, and the save below refreshes the record with
+    // the just-verified digest; the rollback floor above stays hard.
     const verification = verifyCompanyManifest(loaded.raw, {
       trustRoots: this.trustRoots,
       ...(this.mode === 'origin' && previous !== undefined
@@ -487,9 +534,17 @@ export class CompanyCatalogProvider implements CatalogAdapter {
         && previous?.bytesSha256 !== undefined
         && previous.bytesSha256 !== bytesSha256
       ) {
-        throw new CompanyCatalogUntrustedError(
-          'stale-sequence',
-          `${this.mode === 'origin' ? 'fetched' : 'embedded'} manifest re-observed at sequence ${verification.manifest.sequence} with different bytes (recorded digest ${previous.bytesSha256}, computed digest ${bytesSha256})`,
+        // Self-heal, not reject (see the module security note): the recorded
+        // digest disagrees with bytes that just passed full ed25519
+        // verification at a non-regressing sequence. Either the record is
+        // polluted local state (the historical merge-mode partial write) or
+        // an operator re-issued the same sequence — both are served by
+        // continuing on the verified bytes while the warning makes the
+        // divergence loud for operators; the refresh below re-pins the
+        // digest through the atomic store save.
+        this.logger?.warn(
+          `dsh-community-market: ${this.mode === 'origin' ? 'fetched' : 'embedded'} manifest re-observed at sequence ${verification.manifest.sequence} with different bytes (recorded digest ${previous.bytesSha256}, computed digest ${bytesSha256}); `
+          + `the bytes just passed full ed25519 verification against trust root ${verification.keyId}, so the local digest record is treated as stale (historical partial write or same-sequence re-issue) and refreshed — a lower sequence still rejects as rollback`,
         )
       }
       verifiedBytesSha256 = bytesSha256

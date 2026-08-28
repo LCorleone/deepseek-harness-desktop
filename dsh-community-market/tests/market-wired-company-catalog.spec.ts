@@ -18,7 +18,7 @@
  * repository identity — the surface the L2 wiring owns.
  */
 
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -43,6 +43,7 @@ const keyId = 'company-catalog-2026.01'
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
 const trustRoots = [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }]
 const verifiedAt = Date.parse('2026-09-01T00:00:00.000Z')
+const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
 
 const safePackage = 'dsh-plugin-safe'
 const safeVersion = '1.2.3'
@@ -282,7 +283,7 @@ describe('locked company catalog wiring', () => {
       packageEntry(safePackage, safeVersion, safeIntegrity),
     ]))
     const scope = memoryScope()
-    const logger = { error: vi.fn() }
+    const logger = { error: vi.fn(), warn: vi.fn() }
     const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
       moduleUrl: fixture.moduleUrl,
       now: () => verifiedAt,
@@ -310,6 +311,65 @@ describe('locked company catalog wiring', () => {
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining(`company catalog scan failed: [${cause.code}]`),
     )
+  })
+
+  it('self-heals a residual stale digest in the settings ratchet and warns through the host logger', async () => {
+    // The field incident at wired level: the settings document carries a
+    // record whose bytesSha256 is a merge-era leftover that matches nothing
+    // being served. The scan must recover the catalog on the freshly
+    // verified bytes, surface the divergence through the injected host
+    // logger (the desktop wiring hands it ctx.logger), and refresh the
+    // settings-backed record so the next scan is the silent steady state.
+    const manifestText = signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+    ], 3)
+    const fixture = packagedAppFixture(manifestText)
+    const residual = sha256Hex('merge-era leftover bytes')
+    let document: MarketSettingsDocument = {
+      sources: [],
+      companyManifest: { sequence: 3, keyId, verifiedAt: '2026-08-01T00:00:00.000Z', bytesSha256: residual },
+    }
+    const scope: SettingsScope<MarketSettingsDocument> = {
+      get: () => document,
+      watch: () => () => {},
+      update: vi.fn(async (patch: Partial<MarketSettingsDocument>) => {
+        document = { ...document, ...patch } as MarketSettingsDocument
+      }),
+      replace: vi.fn(async (section: MarketSettingsDocument) => { document = section }),
+    }
+    const logger = { error: vi.fn(), warn: vi.fn() }
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+      logger,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
+      .toEqual([`npm:${safePackage}@${safeVersion}`])
+    expect(logger.error).not.toHaveBeenCalled()
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(`recorded digest ${residual}`))
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(
+      `computed digest ${sha256Hex(manifestText)}`,
+    ))
+    expect(document.companyManifest).toEqual({
+      sequence: 3,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(manifestText),
+    })
+
+    // The healed ratchet serves the steady state silently from here on.
+    const steady = await service.scanCatalog(new AbortController().signal, { force: true })
+    expect(steady?.snapshots).toBeTruthy()
+    expect(logger.warn).toHaveBeenCalledTimes(1)
   })
 
   it('fails closed when the packaged manifest asset is missing', async () => {

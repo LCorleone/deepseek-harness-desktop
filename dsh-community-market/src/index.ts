@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import {
   registerMarketRoutes,
   registerMarketSettings,
@@ -19,8 +18,7 @@ import {
   type MarketDesktopProfile,
 } from './install/service.js'
 import { createSignedManifestInstallTargetAuthority, type SignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'
-import type { CatalogSourceLockOptions } from './catalog/source-store.js'
-import type { MarketSettingsDocument } from './catalog/source-store.js'
+import type { CatalogSourceLockOptions, MarketSettingsMutatingScope } from './catalog/source-store.js'
 import {
   COMPANY_CATALOG_ADAPTER_ID,
   COMPANY_CATALOG_BUILT_IN_KEY,
@@ -182,11 +180,13 @@ export interface CommunityMarketCompanyCatalogOptions {
   readonly originHttpClient?: CatalogHttpClient
   /**
    * Host logger receiving company catalog scan failures (error level, with the
-   * fine-grained failure code). The Host delivers it from its apply context so
-   * `--export-diagnostics` file logs can explain origin-mode scan incidents
-   * that the Client-facing routes collapse to a coarse `catalog-unavailable`.
+   * fine-grained failure code) and the loud same-sequence digest-mismatch
+   * warning of the self-heal path (see the provider's security note). The
+   * Host delivers it from its apply context so `--export-diagnostics` file
+   * logs can explain origin-mode scan incidents that the Client-facing
+   * routes collapse to a coarse `catalog-unavailable`.
    */
-  readonly logger?: Pick<Context['logger'], 'error'>
+  readonly logger?: Pick<Context['logger'], 'error' | 'warn'>
 }
 
 /** One-line scan failure identity: the cause's `code` when it carries one, else its constructor name. */
@@ -233,7 +233,7 @@ async function reportUntrustedCatalogScan<T>(
  */
 export function createCommunityMarketCompanyCatalog(
   policy: DesktopPolicyView,
-  scope: SettingsScope<MarketSettingsDocument>,
+  scope: MarketSettingsMutatingScope,
   options: CommunityMarketCompanyCatalogOptions = {},
 ): CommunityMarketCompanyCatalogWiring {
   if (policy.locked !== true) {
@@ -254,6 +254,7 @@ export function createCommunityMarketCompanyCatalog(
     trustRoots: policy.trustRoots,
     sequenceStore: new SettingsCompanyManifestSequenceStore(scope),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
   })
   const installTargetAuthority = createSignedManifestInstallTargetAuthority(
     provider,
