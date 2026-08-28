@@ -47,4 +47,3 @@ describe('installed DSH product version', () => {
     expect(() => dshProductVersion(invalidVersion.moduleUrl)).toThrow('not canonical')
   })
 })
-
