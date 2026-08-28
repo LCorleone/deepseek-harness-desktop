@@ -1472,6 +1472,36 @@ describe('Electron desktop runtime', () => {
     expect(notification?.once).not.toHaveBeenCalled()
   })
 
+  it('exposes the policy lock and explains managed updates in the active locale', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const unlocked = new ElectronDesktopRuntime(async () => {})
+    expect(unlocked.updates.locked).toBe(false)
+
+    const runtime = new ElectronDesktopRuntime(async () => {}, undefined, undefined, undefined, true)
+    expect(runtime.updates).toMatchObject({ locked: true })
+
+    await runtime.updates.showManagedUpdatesNotice()
+    expect(electron.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'info',
+      title: 'Updates Are Managed by Your Company',
+      message: 'This DSH Desktop build is managed by your company.',
+      detail: 'Updates are distributed by IT. This build does not check for or download updates on its own.',
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true,
+    }))
+
+    runtime.setLocalePreference('zh')
+    await runtime.updates.showManagedUpdatesNotice()
+    expect(electron.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: '更新由公司管理',
+      message: '此 DSH Desktop 构建由公司统一管理。',
+      detail: '更新由 IT 统一分发，应用不会自行检查或下载更新。',
+      buttons: ['OK'],
+    }))
+  })
+
   it('starts the downloaded Windows installer before requesting orderly exit', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
     updater.download.mockResolvedValueOnce('C:\\Updates\\DSH-Desktop-2.1.0-windows.exe')

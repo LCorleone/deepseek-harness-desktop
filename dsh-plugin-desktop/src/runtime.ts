@@ -92,6 +92,17 @@ export interface DesktopUpdateAdapter {
   readonly isPackaged: boolean
   /** Whether this platform has a fixed installer download endpoint. */
   readonly canDownload: boolean
+  /**
+   * Whether company policy locks updates to IT distribution.
+   *
+   * Locked builds skip every update check — automatic polls and the manual
+   * tray command alike — so a fleet build can never compare against, or
+   * download from, the public upstream endpoints. Stopgap (plan B) until the
+   * company runs its own update source (a GitLab-hosted signed manifest over
+   * the existing verification channel); flipping the policy then re-enables
+   * the untouched checker and download path.
+   */
+  readonly locked: boolean
   /** Installed desktop product version. */
   readonly currentVersion: string
   /** Private file used for update-prompt history. */
@@ -104,6 +115,8 @@ export interface DesktopUpdateAdapter {
   confirmDownload(version: string): Promise<boolean>
   /** Present the outcome of a user-triggered version check. */
   showManualCheckResult(result: UpdateCheckResult | null): Promise<void>
+  /** Explain that a locked build receives updates through company distribution. */
+  showManagedUpdatesNotice(): Promise<void>
   /** Download and hand one confirmed update to the platform installer. */
   downloadAndOpen(version: string, signal: AbortSignal): Promise<void>
   /** Present a native status notification without blocking the Host tree. */

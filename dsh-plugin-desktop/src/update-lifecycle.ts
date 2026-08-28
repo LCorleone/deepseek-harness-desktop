@@ -77,7 +77,12 @@ class DesktopUpdateLifecycleOwner implements DesktopUpdateLifecycle {
       label: () => this.trayLabel(),
       invoke: () => this.runManualCheck(),
     })
-    if (options.adapter.isPackaged && options.policy.enabled) {
+    // Locked (company-managed) builds never poll: the checker's endpoints
+    // point at the public upstream service, and a version race must not be
+    // able to offer its installer over the fleet build. Stopgap until the
+    // company update source (GitLab-hosted signed manifest) ships, after
+    // which the policy flag flips back and this gate reopens the same path.
+    if (options.adapter.isPackaged && options.policy.enabled && !options.adapter.locked) {
       this.scheduleBackgroundCheck(options.policy.initialDelayMs)
     }
   }
@@ -127,6 +132,9 @@ class DesktopUpdateLifecycleOwner implements DesktopUpdateLifecycle {
 
   private startCheck(): Promise<UpdateCheckResult | null> {
     if (this.checkTask !== undefined) return this.checkTask
+    // Defense in depth for the locked gate in the constructor and the manual
+    // entry: a company-managed build must never reach the network checker.
+    if (this.options.adapter.locked) return Promise.resolve(null)
     this.checking = true
     this.registration.refresh()
     const controller = new AbortController()
@@ -214,6 +222,13 @@ class DesktopUpdateLifecycleOwner implements DesktopUpdateLifecycle {
 
   private runManualCheck(): Promise<void> {
     this.manualTask ??= (async () => {
+      // Manual entry for a locked build answers with the managed-distribution
+      // notice instead of silently doing nothing — and without touching the
+      // public upstream endpoints.
+      if (this.options.adapter.locked) {
+        await this.options.adapter.showManagedUpdatesNotice()
+        return
+      }
       if (this.availableVersion !== undefined) {
         await this.offerDownload(this.availableVersion, false)
         return

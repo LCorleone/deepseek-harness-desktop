@@ -120,6 +120,8 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     private readonly onRendererBoot: (report: RendererBootReport) => boolean | void = () => {},
     private readonly logger: DesktopLogger | undefined = undefined,
     workspaceVolumeQuery: WindowsVolumeQuery | undefined = undefined,
+    /** Whether company policy locks updates to IT distribution (DesktopPolicy.locked). */
+    updatesLocked: boolean = false,
   ) {
     this.platformStrategy = electronPlatformStrategy()
     this.platform = this.platformStrategy.platform
@@ -139,11 +141,15 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       get isPackaged() { return app.isPackaged },
       get canDownload() { return app.isPackaged && platformStrategy.updateDownloadPlatform !== undefined },
       get currentVersion() { return PRODUCT_VERSION },
+      // Locked comes from the embedded desktop policy the launcher parsed;
+      // the runtime never re-reads the policy asset itself.
+      locked: updatesLocked,
       get statePath() { return join(app.getPath('userData'), 'updates', 'state.json') },
       get sequenceStatePath() { return desktopUpdateSequenceStatePath(app.getPath('userData')) },
       request: (url, init) => net.fetch(url, init),
       confirmDownload: version => this.confirmUpdateDownload(version),
       showManualCheckResult: result => this.showManualUpdateCheckResult(result),
+      showManagedUpdatesNotice: () => this.showManagedUpdatesNotice(),
       downloadAndOpen: (version, signal) => this.downloadAndOpenUpdate(version, signal),
       notify: notification => { this.showNotification(notification) },
     }
@@ -561,6 +567,30 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       title: 'DSH Desktop Update Available',
       message: `DSH Desktop ${result.latestVersion} is available.`,
       detail: 'Installer downloads are unavailable in this build.',
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true,
+    })
+  }
+
+  /**
+   * Explain that a locked build receives updates through company distribution.
+   *
+   * Stopgap (plan B) while the checker still points at the public upstream
+   * service: a fleet build must not compare versions against it, let alone
+   * download its installer. Once the formal company key batch ships and the
+   * update source moves to our own GitLab-hosted signed manifest, the policy
+   * lock flips off and the untouched checker/download channel takes over.
+   */
+  private async showManagedUpdatesNotice(): Promise<void> {
+    const zh = this.currentLocale === 'zh'
+    await dialog.showMessageBox({
+      type: 'info',
+      title: zh ? '更新由公司管理' : 'Updates Are Managed by Your Company',
+      message: zh ? '此 DSH Desktop 构建由公司统一管理。' : 'This DSH Desktop build is managed by your company.',
+      detail: zh
+        ? '更新由 IT 统一分发，应用不会自行检查或下载更新。'
+        : 'Updates are distributed by IT. This build does not check for or download updates on its own.',
       buttons: ['OK'],
       defaultId: 0,
       noLink: true,

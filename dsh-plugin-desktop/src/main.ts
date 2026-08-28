@@ -394,6 +394,10 @@ async function start(): Promise<void> {
     },
   )
   let restartRequested = false
+  // Parsed once for the whole launch: the locked flag feeds the runtime's
+  // update wiring below, and the same immutable policy document reaches the
+  // profile composition (boot verification, market, CLI environment).
+  const policy = readDesktopPolicy()
   runtime = new ElectronDesktopRuntime(async () => {
     if (shutdown === undefined) {
       throw new Error('dsh-plugin-desktop: shutdown coordinator is not ready')
@@ -412,7 +416,7 @@ async function start(): Promise<void> {
     // Main owns every pre-health failure branch. Returning true prevents the
     // legacy Renderer recovery dialog from racing the native startup window.
     return report.status === 'failed'
-  }, electronLogger)
+  }, electronLogger, undefined, policy.locked)
   const finalExit = (code: number): void => { nativeExit.finish(code) }
   shutdown = createDesktopShutdown(
     async () => { await generation.release() },
@@ -652,7 +656,6 @@ async function start(): Promise<void> {
     startupStage = 'profile-composition'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
-    const policy = readDesktopPolicy()
     const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings

@@ -29,6 +29,7 @@ interface Harness {
   readonly warnings: unknown[][]
   readonly confirmDownload: ReturnType<typeof vi.fn>
   readonly showManualCheckResult: ReturnType<typeof vi.fn>
+  readonly showManagedUpdatesNotice: ReturnType<typeof vi.fn>
   readonly downloadAndOpen: ReturnType<typeof vi.fn>
   readonly refresh: ReturnType<typeof vi.fn>
   readonly registrationDispose: ReturnType<typeof vi.fn>
@@ -38,6 +39,7 @@ interface Harness {
 async function createHarness(options: {
   readonly packaged?: boolean
   readonly canDownload?: boolean
+  readonly locked?: boolean
   readonly config?: UpdateConfig
   readonly request?: DesktopRuntime['updates']['request']
   readonly confirmDownload?: (version: string) => Promise<boolean>
@@ -59,6 +61,7 @@ async function createHarness(options: {
   const registrationDispose = vi.fn()
   const confirmDownload = vi.fn(options.confirmDownload ?? (async () => false))
   const showManualCheckResult = vi.fn(options.showManualCheckResult ?? (async () => {}))
+  const showManagedUpdatesNotice = vi.fn(async () => {})
   const downloadAndOpen = vi.fn(options.downloadAndOpen ?? (async () => {}))
   let tray: DesktopTrayItem | undefined
   let disposer: (() => void | Promise<void>) | undefined
@@ -69,9 +72,11 @@ async function createHarness(options: {
       currentVersion: '2.0.0',
       statePath,
       canDownload: options.canDownload ?? true,
+      locked: options.locked ?? false,
       request: options.request ?? (async () => versionResponse('2.0.0')),
       confirmDownload,
       showManualCheckResult,
+      showManagedUpdatesNotice,
       downloadAndOpen,
       notify: options.notify ?? ((notification: DesktopNotification) => { notifications.push(notification) }),
     },
@@ -98,6 +103,7 @@ async function createHarness(options: {
     warnings,
     confirmDownload,
     showManualCheckResult,
+    showManagedUpdatesNotice,
     downloadAndOpen,
     refresh,
     registrationDispose,
@@ -128,6 +134,32 @@ describe('desktop update Host plugin', () => {
     expect(harness.tray.label()).toBe('检查更新…')
 
     await harness.dispose()
+  })
+
+  it('never checks the network in a locked build and answers manual checks with the managed notice', async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(async () => versionResponse('9.9.9'))
+    const harness = await createHarness({ locked: true, request })
+
+    await vi.advanceTimersByTimeAsync(testConfig.initialDelayMs + testConfig.intervalMs)
+    expect(request).not.toHaveBeenCalled()
+
+    await harness.tray.invoke()
+    expect(harness.showManagedUpdatesNotice).toHaveBeenCalledOnce()
+    expect(request).not.toHaveBeenCalled()
+    expect(harness.showManualCheckResult).not.toHaveBeenCalled()
+    expect(harness.confirmDownload).not.toHaveBeenCalled()
+    expect(harness.downloadAndOpen).not.toHaveBeenCalled()
+    expect(harness.notifications).toEqual([])
+    expect(harness.warnings).toEqual([])
+    expect(harness.tray.label()).toBe('Check for Updates…')
+
+    await harness.tray.invoke()
+    expect(harness.showManagedUpdatesNotice).toHaveBeenCalledTimes(2)
+    expect(request).not.toHaveBeenCalled()
+
+    await harness.dispose()
+    expect(harness.registrationDispose).toHaveBeenCalledOnce()
   })
 
   it.each([
