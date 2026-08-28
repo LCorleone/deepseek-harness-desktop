@@ -38,4 +38,3 @@ export function dshProductVersion(moduleUrl: string | URL = import.meta.url): st
   }
   return version
 }
-
