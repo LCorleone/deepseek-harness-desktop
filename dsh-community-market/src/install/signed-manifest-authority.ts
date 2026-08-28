@@ -21,8 +21,12 @@
  * verification — any `CompanyCatalogUntrustedError` caught around catalog
  * scans — through {@link SignedManifestInstallTargetAuthority.reportUntrustedCatalog}.
  * From that moment every decision fails closed with the recorded cause until
- * the provider verifies a strictly newer manifest sequence, which re-arms the
- * authority. A manifest whose signed `expiresAt` has passed (checked against
+ * the source verifies a manifest again: a strictly newer sequence re-arms
+ * the authority, and so does a fresh same-sequence verification (byte-level
+ * recovery — the static origin went back to serving verified bytes after
+ * the untrusted observation; the pre-report verification state itself never
+ * re-arms). A sequence below the recorded floor is a rollback and never
+ * re-arms. A manifest whose signed `expiresAt` has passed (checked against
  * the injected clock) is equally untrusted. Before the first verified scan
  * there is nothing to consult and every decision fails closed as well.
  */
@@ -39,7 +43,12 @@ import type { InstallTargetAuthority, InstallTargetEvidence } from './service.js
 export interface SignedManifestPackageSource {
   /** Signed entry of the last verified manifest, revoked entries included. */
   findSignedPackage(packageName: string, version: string): CompanyManifestPackage | undefined
-  /** Summary of the last successful manifest verification, or undefined before the first verified scan. */
+  /**
+   * Summary of the last successful manifest verification, or undefined before
+   * the first verified scan. The observation must be one stable object between
+   * scans and a fresh one after each successful scan: recovery detection in
+   * the authority compares observations by identity.
+   */
   verification(): CompanyCatalogVerification | undefined
 }
 
@@ -55,9 +64,10 @@ export interface SignedManifestInstallTargetAuthority extends InstallTargetAutho
    * Record one failed manifest verification observed by the embedding Host
    * (the propagation strategy: forward every `CompanyCatalogUntrustedError`
    * caught around catalog scans). Every decision fails closed with the
-   * recorded cause until the source verifies a strictly newer manifest
-   * sequence. The cause is only rendered into bounded rejection reasons and
-   * never influences an allow decision.
+   * recorded cause until the source verifies a manifest again: a strictly
+   * newer sequence re-arms, and so does a fresh same-sequence verification
+   * (byte-level recovery). The cause is only rendered into bounded rejection
+   * reasons and never influences an allow decision.
    */
   reportUntrustedCatalog(cause: unknown): void
 }
@@ -87,7 +97,14 @@ export function createSignedManifestInstallTargetAuthority(
     throw new TypeError('signed manifest authority requires findSignedPackage and verification functions')
   }
   const now = options.now ?? Date.now
-  let untrusted: { readonly reason: string; readonly sequence: number } | undefined
+  let untrusted:
+    | {
+      readonly reason: string
+      readonly sequence: number
+      /** Verification state observed when the failure was reported; re-arm requires a fresher one. */
+      readonly observation: CompanyCatalogVerification | undefined
+    }
+    | undefined
   return {
     canInstall(candidate) {
       const verification = source.verification()
@@ -95,7 +112,17 @@ export function createSignedManifestInstallTargetAuthority(
         return { allowed: false, reason: 'no verified company manifest is available yet' }
       }
       if (untrusted !== undefined) {
-        if (verification.sequence <= untrusted.sequence) {
+        // Re-arm only on byte-level recovery: the source replaces its
+        // verification observation exclusively after a scan that fully
+        // verified again, so a different observation with a sequence at or
+        // above the recorded floor means verified bytes came back — the
+        // equal-sequence case is the static-origin steady state after an
+        // interposed hijack. The pre-report observation itself never re-arms
+        // (that would void the fail-closed propagation), and a sequence
+        // below the floor is a rollback that stays locked.
+        const recovered = verification !== untrusted.observation
+          && verification.sequence >= untrusted.sequence
+        if (!recovered) {
           return { allowed: false, reason: `the company catalog is not trusted: ${untrusted.reason}` }
         }
         untrusted = undefined
@@ -134,7 +161,8 @@ export function createSignedManifestInstallTargetAuthority(
       return { allowed: true, evidence }
     },
     reportUntrustedCatalog(cause) {
-      untrusted = { reason: boundedReason(cause), sequence: source.verification()?.sequence ?? 0 }
+      const observation = source.verification()
+      untrusted = { reason: boundedReason(cause), sequence: observation?.sequence ?? 0, observation }
     },
   }
 }

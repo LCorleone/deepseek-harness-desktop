@@ -291,7 +291,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       'sequence 1 manifest signed and verified from disk (canonical bytes, schema, trust root, signature); assembly aborts on missing and market-unrepresentable repository identities',
     )
 
-    // Segment: sequence strict monotonicity both ways.
+    // Segment: the sequence floor — strictly lower is stale, equal replays.
     const second = publishManifest({
       market,
       entries,
@@ -307,9 +307,11 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     })
     const secondVerified = verifyManifestText(market, second.text, { ...trustRoot, lastSeenSequence: 1 })
     assert(secondVerified.ok, `reissued manifest must verify above sequence 1 (${why(secondVerified)})`)
-    const stale = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 1 })
-    assert(!stale.ok && stale.code === 'stale-sequence', `old sequence must be rejected as stale-sequence (${why(stale)})`)
-    ok('sequence', 'reissue 1→2 verifies; the earlier manifest is rejected as stale-sequence')
+    const replay = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 1 })
+    assert(replay.ok, `an equal floor must replay the same-sequence manifest (${why(replay)})`)
+    const stale = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 2 })
+    assert(!stale.ok && stale.code === 'stale-sequence', `a lower sequence must be rejected as stale-sequence (${why(stale)})`)
+    ok('sequence', 'reissue 1→2 verifies; the sequence-1 manifest replays against floor 1 and is rejected as stale-sequence against floor 2')
 
     // Segment: revocation reissue — flag flips, entry stays signed and readable.
     const { entries: revokedEntries, matches } = applyRevocation(entries, entries[0].packageName)

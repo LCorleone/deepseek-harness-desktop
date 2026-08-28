@@ -460,6 +460,46 @@ describe('company catalog provider (origin mode)', () => {
     ])
   })
 
+  it('admits one unknown same-sequence manifest against a digest-less legacy record, then pins it', async () => {
+    // The accepted residual (review Low): a legacy record pins the sequence
+    // but not the bytes, so a same-sequence manifest with different — yet
+    // legitimately signed — bytes cannot be told apart from the last verified
+    // bytes. It is admitted exactly once and the digest is backfilled:
+    // replays of those very bytes keep verifying, any other same-sequence
+    // bytes are rejected from then on. Manufacturing the window requires the
+    // signing key, with which a strictly higher sequence is publishable
+    // anyway; this test pins the boundary so no refactor quietly widens it.
+    const reissued = signedText(unsignedManifest({ sequence: 42, expiresAt: '2031-01-01T00:00:00Z' }))
+    const saved: MarketCompanyManifestRecord[] = [{ sequence: 42, keyId, verifiedAt: '2026-08-01T00:00:00.000Z' }]
+    const sequenceStore: CompanyManifestSequenceStore = {
+      async load() { return saved[saved.length - 1] },
+      async save(record) { saved.push(record) },
+    }
+    const admitted = originScan(reissued, MANIFEST_URL, sequenceStore)
+    await expect(admitted.provider.scanCatalog!({}, admitted.context)).resolves.toBeTruthy()
+    expect(saved.at(-1)).toEqual({
+      sequence: 42,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(reissued),
+    })
+
+    // Replaying the now-pinned bytes is the static-hosting steady state.
+    const replay = originScan(reissued, MANIFEST_URL, sequenceStore)
+    await expect(replay.provider.scanCatalog!({}, replay.context)).resolves.toBeTruthy()
+
+    // Any other same-sequence bytes are a replay attack from here on.
+    const swapped = originScan(
+      signedText(unsignedManifest({ sequence: 42, expiresAt: '2032-01-01T00:00:00Z' })),
+      MANIFEST_URL,
+      sequenceStore,
+    )
+    const error = await untrusted(swapped.provider.scanCatalog!({}, swapped.context))
+    expect(error.code).toBe('stale-sequence')
+    expect(error.message).toContain('re-observed at sequence 42 with different bytes')
+    expect(saved).toHaveLength(3)
+  })
+
   it('rejects a fetched sequence that regressed below the persisted ratchet', async () => {
     const sequenceStore = memorySequenceStore()
     const first = originScan(signedText(unsignedManifest({ sequence: 7 })), MANIFEST_URL, sequenceStore)

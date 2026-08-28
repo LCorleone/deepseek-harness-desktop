@@ -12,7 +12,8 @@
  * Verification chain per bundle, fail-closed at every step:
  *
  * 1. The manifest itself must verify (canonical JSON, trust-root binding,
- *    detached ed25519 signature, strictly increasing sequence, unexpired).
+ *    detached ed25519 signature, an anti-rollback sequence floor — strictly
+ *    lower is stale, an equal sequence replays — unexpired).
  *    A missing, untrusted, rolled-back, or expired manifest rejects EVERY
  *    third-party bundle while the upstream Web client keeps booting: boot
  *    verification never refuses the whole startup, only third-party content.

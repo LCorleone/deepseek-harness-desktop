@@ -197,6 +197,33 @@ describe('signed manifest install target authority', () => {
     })
   })
 
+  it('re-arms on byte-level recovery: the same sequence verifying again', async () => {
+    // The live-drill shape: scan sequence N ok → the origin serves hijacked
+    // garbage (invalid-manifest) and the host reports it → the origin
+    // recovers and serves the same verified bytes at the same sequence.
+    // Installs must unlock again without a sequence bump, but only the fresh
+    // verification may re-arm — the pre-report state itself stays locked.
+    const source = await scannedCompanySource([packageEntry()])
+    const authority = createSignedManifestInstallTargetAuthority(source.provider)
+    expect(authority.canInstall(candidate).allowed).toBe(true)
+
+    authority.reportUntrustedCatalog(new CompanyCatalogUntrustedError('invalid-manifest', 'schema validation failed'))
+    expect(authority.canInstall(candidate).allowed).toBe(false)
+
+    await source.rescan([packageEntry()], 42)
+    expect(authority.canInstall(candidate)).toEqual({
+      allowed: true,
+      evidence: { manifestSequence: 42, keyId },
+    })
+
+    // A rolled-back sequence never re-arms: the provider keeps its verified
+    // sequence-42 state, the stale scan is reported, and installs lock again
+    // until a verified sequence at or above the floor comes back.
+    await expect(source.rescan([packageEntry()], 41)).rejects.toThrow(CompanyCatalogUntrustedError)
+    authority.reportUntrustedCatalog(new CompanyCatalogUntrustedError('stale-sequence', 'rollback observed'))
+    expect(authority.canInstall(candidate).allowed).toBe(false)
+  })
+
   it('fails closed once the verified manifest expired on the injected clock', async () => {
     const { provider } = await scannedCompanySource([packageEntry()])
     const authority = createSignedManifestInstallTargetAuthority(provider, { now: () => Date.parse('2031-01-01T00:00:00.000Z') })
