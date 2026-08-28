@@ -1515,8 +1515,31 @@ describe('MarketSettingsTab', () => {
     render(<MarketSettingsTab {...props} />)
 
     expect(await screen.findByRole('heading', { name: en.catalogError })).toBeTruthy()
-    expect(screen.getByText('Source: Fixture catalog. The catalog request timed out.')).toBeTruthy()
+    expect(screen.getByText('Source: Fixture catalog. The catalog request timed out. [catalog-timeout]')).toBeTruthy()
     expect(screen.queryByText(/private upstream URL/u)).toBeNull()
+  })
+
+  it('appends the raw failure code from the serialized Host error to the unavailable fallback', async () => {
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockRejectedValue({
+      status: 502,
+      code: 'catalog-unavailable',
+      message: 'private upstream URL and response detail',
+    })
+    render(<MarketSettingsTab {...props} />)
+
+    expect(await screen.findByRole('heading', { name: en.catalogError })).toBeTruthy()
+    expect(screen.getByText('Source: Fixture catalog. The catalog source could not be reached. [catalog-unavailable]')).toBeTruthy()
+    expect(screen.queryByText(/private upstream URL/u)).toBeNull()
+  })
+
+  it('keeps the unavailable fallback unchanged when the failure carries no code', async () => {
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockRejectedValue(new Error('fetch dropped'))
+    render(<MarketSettingsTab {...props} />)
+
+    expect(await screen.findByRole('heading', { name: en.catalogError })).toBeTruthy()
+    expect(screen.getByText('Source: Fixture catalog. The catalog source could not be reached.')).toBeTruthy()
   })
 
   it('does not let reads interrupt a pending source selection and aborts it on unmount', async () => {

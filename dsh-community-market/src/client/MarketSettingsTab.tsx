@@ -127,6 +127,13 @@ function operationErrorMessage(cause: unknown, fallback: string): string {
     : fallback
 }
 
+/** Raw serialized Host failure code appended to safe fallback texts for live diagnostics, e.g. ` [catalog-unavailable]`. */
+function errorCodeSuffix(cause: unknown): string {
+  if (cause === null || typeof cause !== 'object' || !('code' in cause)) return ''
+  const code = (cause as { code?: unknown }).code
+  return typeof code === 'string' && code.trim().length > 0 ? ` [${code}]` : ''
+}
+
 function catalogFailureMessage(
   cause: unknown,
   source: MarketSourceView,
@@ -140,7 +147,7 @@ function catalogFailureMessage(
     : code === 'catalog-invalid-response'
       ? t('catalogFailureInvalidResponse')
       : t('catalogFailureUnavailable')
-  return `${t('catalogFailureSource')}: ${source.name}. ${reason}`
+  return `${t('catalogFailureSource')}: ${source.name}. ${reason}${errorCodeSuffix(cause)}`
 }
 
 function PluginIcon({ item, large = false }: { item: MarketItem; large?: boolean }) {
@@ -439,8 +446,9 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       return { installations: response.installations }
     } catch (cause) {
       if (request.signal.aborted || installationsRequest.current !== request) return
-      const message = isDesktopUnavailable(cause) ? t('desktopUnavailable') : t('installationsError')
-      setInstallationsUnavailable(isDesktopUnavailable(cause))
+      const unavailable = isDesktopUnavailable(cause)
+      const message = `${unavailable ? t('desktopUnavailable') : t('installationsError')}${errorCodeSuffix(cause)}`
+      setInstallationsUnavailable(unavailable)
       setInstallationsError(message)
       return { error: message }
     } finally {
@@ -471,8 +479,9 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       if (request.signal.aborted || installableRequest.current !== request) return
       setInstallableIndex(undefined)
       setInstallableLoaded(false)
-      setInstallableUnavailable(isDesktopUnavailable(cause))
-      setInstallableError(isDesktopUnavailable(cause) ? t('desktopUnavailable') : t('installableError'))
+      const unavailable = isDesktopUnavailable(cause)
+      setInstallableUnavailable(unavailable)
+      setInstallableError(`${unavailable ? t('desktopUnavailable') : t('installableError')}${errorCodeSuffix(cause)}`)
     } finally {
       if (installableRequest.current === request) {
         installableRequest.current = undefined

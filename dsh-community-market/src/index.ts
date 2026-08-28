@@ -180,16 +180,42 @@ export interface CommunityMarketCompanyCatalogOptions {
    * ({@link CatalogHttpClient}) and never imports the Host implementation.
    */
   readonly originHttpClient?: CatalogHttpClient
+  /**
+   * Host logger receiving company catalog scan failures (error level, with the
+   * fine-grained failure code). The Host delivers it from its apply context so
+   * `--export-diagnostics` file logs can explain origin-mode scan incidents
+   * that the Client-facing routes collapse to a coarse `catalog-unavailable`.
+   */
+  readonly logger?: Pick<Context['logger'], 'error'>
+}
+
+/** One-line scan failure identity: the cause's `code` when it carries one, else its constructor name. */
+function catalogScanFailureLabel(cause: unknown): string {
+  if (cause !== null && typeof cause === 'object') {
+    const code = (cause as { code?: unknown }).code
+    if (typeof code === 'string' && code.length > 0) return code
+    return cause.constructor.name
+  }
+  return typeof cause
 }
 
 /** Forward one catalog scan task, reporting untrusted verdicts to the authority. */
 async function reportUntrustedCatalogScan<T>(
   task: () => Promise<T>,
   authority: SignedManifestInstallTargetAuthority,
+  logger?: Pick<Context['logger'], 'error'>,
 ): Promise<T> {
   try {
     return await task()
   } catch (cause) {
+    // Observability only — never a behavior change: the failure code is the
+    // diagnostic fact the Client-facing catalog route drops, so record it in
+    // the host file log before the error keeps propagating unchanged.
+    if (logger !== undefined) {
+      const label = catalogScanFailureLabel(cause)
+      const message = cause instanceof Error ? cause.message : String(cause)
+      logger.error(`dsh-community-market: company catalog scan failed: [${label}] ${message}`)
+    }
     // Propagation strategy (P2-3): every CompanyCatalogUntrustedError caught
     // around a catalog scan closes the install authority until a strictly
     // newer manifest sequence verifies again.
@@ -235,8 +261,8 @@ export function createCommunityMarketCompanyCatalog(
   )
   const adapters: readonly CatalogAdapter[] = [{
     adapterId: COMPANY_CATALOG_ADAPTER_ID,
-    fetch: (query, context) => reportUntrustedCatalogScan(async () => await provider.fetch(query, context), installTargetAuthority),
-    scanCatalog: (query, context) => reportUntrustedCatalogScan(async () => await provider.scanCatalog(query, context), installTargetAuthority),
+    fetch: (query, context) => reportUntrustedCatalogScan(async () => await provider.fetch(query, context), installTargetAuthority, options.logger),
+    scanCatalog: (query, context) => reportUntrustedCatalogScan(async () => await provider.scanCatalog(query, context), installTargetAuthority, options.logger),
   }]
   const adapterHttpClients = new Map<string, CatalogHttpClient>()
   if (policy.companyCatalogOrigin !== null) {
@@ -296,6 +322,7 @@ export function apply(ctx: Context): void {
   const companyCatalog = locked && policy !== undefined && policy.trustRoots.length > 0
     ? createCommunityMarketCompanyCatalog(policy, scope, {
       ...(companyCatalogHttp === undefined ? {} : { originHttpClient: companyCatalogHttp }),
+      logger: ctx.logger,
     })
     : undefined
   if (locked && companyCatalog === undefined) {

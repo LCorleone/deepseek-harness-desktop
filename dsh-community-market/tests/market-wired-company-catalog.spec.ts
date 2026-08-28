@@ -277,6 +277,41 @@ describe('locked company catalog wiring', () => {
     expect(denied.reason).toContain('the company catalog is not trusted')
   })
 
+  it('logs the fine-grained failure code to the injected host logger before propagating', async () => {
+    const fixture = packagedAppFixture(signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+    ]))
+    const scope = memoryScope()
+    const logger = { error: vi.fn() }
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, scope, {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+      logger,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(scope, { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    // Tamper with the packaged asset so the forced scan fails verification.
+    const tampered = JSON.parse(signedManifestText([
+      packageEntry(safePackage, '9.9.9', safeIntegrity),
+    ])) as Record<string, unknown>
+    const packages = tampered.packages as Record<string, unknown>[]
+    packages[0] = { ...packages[0]!, version: safeVersion }
+    writeFileSync(fixture.assetPath, canonicalJsonText(tampered))
+
+    const cause = await service.scanCatalog(new AbortController().signal, { force: true })
+      .then(() => { throw new Error('the tampered scan must fail') })
+      .catch((error: unknown) => error as CompanyCatalogUntrustedError)
+    expect(cause).toBeInstanceOf(CompanyCatalogUntrustedError)
+    expect(logger.error).toHaveBeenCalledOnce()
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining(`company catalog scan failed: [${cause.code}]`),
+    )
+  })
+
   it('fails closed when the packaged manifest asset is missing', async () => {
     const fixture = packagedAppFixture('unused')
     rmSync(fixture.assetPath)
