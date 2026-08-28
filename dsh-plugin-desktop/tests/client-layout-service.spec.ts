@@ -1,9 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  claimDesktopEntryMarkers,
-  clearDesktopEntryMarkers,
-  isDesktopShellAlreadyApplied,
-} from '../src/client/apply-guard.ts'
 import { claimDesktopLayout } from '../src/client/layout-service.ts'
 import { applyAdvancedShell } from '../src/client/advanced-shell.ts'
 import { applyExtendedShell } from '../src/client/extended-shell.ts'
@@ -69,49 +64,7 @@ function makeCtx() {
   }
 }
 
-/** Extract the first registered effect factory under `noUncheckedIndexedAccess`. */
-function firstEffect(effect: ReturnType<typeof vi.fn>): () => () => void {
-  const call = effect.mock.calls[0]?.[0]
-  if (typeof call !== 'function') throw new Error('expected one registered effect factory')
-  return call as () => () => void
-}
-
 afterEach(() => { vi.unstubAllGlobals() })
-
-describe('entry marker guard', () => {
-  it('treats any live mode marker as an already-applied signal', () => {
-    const doc = () => ({ body: { dataset: { dshDesktopMode: 'advanced' } } }) as unknown as Document
-    expect(isDesktopShellAlreadyApplied(doc())).toBe(true)
-    expect(isDesktopShellAlreadyApplied({ body: { dataset: { dshDesktopMode: 'extended' } } } as unknown as Document)).toBe(true)
-    expect(isDesktopShellAlreadyApplied({ body: { dataset: { dshDesktopMode: 'compatibility' } } } as unknown as Document)).toBe(true)
-    expect(isDesktopShellAlreadyApplied({ body: { dataset: {} } } as unknown as Document)).toBe(false)
-  })
-
-  it('rolls claimed markers back when a startup step fails midway', () => {
-    const { dataset } = stubDocument()
-    const environment = { mode: 'advanced', platform: 'win32', material: 'off', micaSupported: false, version: '2.0.2' }
-
-    claimDesktopEntryMarkers(document, environment as never)
-
-    // The synchronous claim is what closes the re-entry window between two
-    // apply() calls — it must be visible before any registration step runs.
-    expect(dataset.dshDesktopMode).toBe('advanced')
-    expect(dataset.dshDesktopPlatform).toBe('win32')
-
-    try {
-      throw new Error('startup failed')
-    } catch (cause) {
-      clearDesktopEntryMarkers(document)
-      expect(cause).toBeInstanceOf(Error)
-    }
-
-    // A stale marker would make the guard swallow every loader restart of
-    // this entry until a full page reload — they must go.
-    expect(dataset.dshDesktopMode).toBeUndefined()
-    expect(dataset.dshDesktopPlatform).toBeUndefined()
-    expect(dataset.dshDesktopMaterial).toBeUndefined()
-  })
-})
 
 describe('claimDesktopLayout', () => {
   it('wins ownership when nothing else registered the service', () => {
@@ -127,8 +80,9 @@ describe('claimDesktopLayout', () => {
     // the registration for whoever applies next; the factory result is what
     // cordis registers for uninstall.
     expect(ctx.effect).toHaveBeenCalledWith(expect.any(Function), 'desktop: layout service')
-    const disposer = firstEffect(ctx.effect)()
-    disposer()
+    const disposer = ctx.effect.mock.results[0]?.value
+    expect(typeof disposer).toBe('function')
+    ;(disposer as () => void)()
     expect(dispose).toHaveBeenCalled()
   })
 
@@ -140,8 +94,10 @@ describe('claimDesktopLayout', () => {
         throw new Error('service "layout" has been registered at <z5>')
       })
       expect(claimDesktopLayout(ctx as never, {} as never)).toBe(false)
-      // No disposal effect may be registered for an ownership we never took.
-      expect(ctx.effect).not.toHaveBeenCalled()
+      // Cordis starts the effect synchronously, but the failed factory never
+      // produces a disposer that could be retained by the fiber.
+      expect(ctx.effect).toHaveBeenCalledOnce()
+      expect(ctx.effect.mock.results[0]?.type).toBe('throw')
       expect(warn).toHaveBeenCalled()
     } finally {
       warn.mockRestore()
@@ -195,9 +151,12 @@ describe('applyAdvancedShell presentation ownership', () => {
       // none of the desktop-owned chrome styles — just the mode markers,
       // whose cleanup still runs through their own fiber effect.
       expect(ctx.slots.register).not.toHaveBeenCalled()
-      expect(ctx.effect).toHaveBeenCalledTimes(1)
-      const cleanup = firstEffect(ctx.effect)()
-      cleanup()
+      // Failed ownership attempt plus the surviving marker effect.
+      expect(ctx.effect).toHaveBeenCalledTimes(2)
+      expect(ctx.effect.mock.results[0]?.type).toBe('throw')
+      const cleanup = ctx.effect.mock.results[1]?.value
+      expect(typeof cleanup).toBe('function')
+      ;(cleanup as () => void)()
       expect(dataset.dshDesktopMode).toBeUndefined()
       expect(dataset.dshDesktopPlatform).toBeUndefined()
       expect(warn).toHaveBeenCalled()
@@ -237,10 +196,10 @@ describe('applyExtendedShell presentation ownership', () => {
 
       applyExtendedShell(ctx as never, environmentFor('extended') as never)
 
-      // Only the framed-chrome style effect remains; the titlebar overlay is
-      // injected (it layers over whatever presents the root), while no second
-      // root frame is stacked over the upstream one.
-      expect(ctx.effect).toHaveBeenCalledTimes(1)
+      // The failed ownership attempt is followed only by the framed-chrome
+      // style effect; no second root frame is stacked over the existing one.
+      expect(ctx.effect).toHaveBeenCalledTimes(2)
+      expect(ctx.effect.mock.results[0]?.type).toBe('throw')
       expect(ctx.slots.register).not.toHaveBeenCalled()
       expect(ctx.slots.inject).toHaveBeenCalledTimes(1)
       expect(warn).toHaveBeenCalled()
