@@ -147,7 +147,7 @@ interface Copy {
 
 const COPY: Record<Locale, Copy> = {
   en: {
-    title: 'DSH Desktop Recovery',
+    title: 'Deloitte DSH Desktop Recovery',
     lead: 'The active Profile could not start. Diagnose the problem, restore a healthy configuration, or choose another Profile.',
     currentProfile: 'Current',
     startupError: 'Startup error',
@@ -206,7 +206,7 @@ const COPY: Record<Locale, Copy> = {
     working: 'Applying the recovery action…',
   },
   zh: {
-    title: 'DSH Desktop 恢复助手',
+    title: 'Deloitte DSH Desktop 恢复助手',
     lead: '当前配置无法启动。你可以诊断问题、恢复健康配置，或切换到其他配置。',
     currentProfile: '当前',
     startupError: '启动错误',
@@ -382,8 +382,9 @@ function RecoveryContent({ state, copy }: { readonly state: RecoveryState; reado
 
 export function RecoveryApp(): JSX.Element {
   const state = decodeState()
-  if (state === undefined) return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTriangle /><AlertTitle>DSH Desktop Recovery</AlertTitle><AlertDescription>The recovery state could not be read. Quit and start DSH Desktop again.</AlertDescription></Alert></main>
+  if (state === undefined) return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTriangle /><AlertTitle>Deloitte DSH Desktop Recovery</AlertTitle><AlertDescription>The recovery state could not be read. Quit and start DSH Desktop again.</AlertDescription></Alert></main>
   const copy = COPY[state.locale]
+  document.title = copy.title
   return <main className={cn('h-screen overflow-hidden p-5 sm:p-7', state.busy && 'pointer-events-none opacity-70')}><div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-4">
     <header className="shrink-0 space-y-2"><h1 className="text-2xl font-semibold tracking-tight">{copy.title}</h1><p className="text-sm leading-relaxed text-muted-foreground">{copy.lead}</p>{state.snapshot === undefined ? null : <p className="text-xs text-muted-foreground">{copy.currentProfile}: {state.snapshot.profileName}</p>}</header>
     <ScrollArea className="min-h-0 flex-1 pr-3"><div className="space-y-4 pb-2">

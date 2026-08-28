@@ -197,7 +197,7 @@ const electron = vi.hoisted(() => {
     Menu: {
       buildFromTemplate: vi.fn((template: unknown[]) => {
         const first = template[0] as { label?: unknown, submenu?: unknown } | undefined
-        if (first?.label === 'DSH Desktop' && Array.isArray(first.submenu)) {
+        if (first?.label === 'Deloitte DSH Desktop' && Array.isArray(first.submenu)) {
           applicationMenuTemplates.push(template)
         } else {
           menuTemplates.push(template)
@@ -245,8 +245,8 @@ const spec: DesktopShellSpec = {
   minWidth: 900,
   minHeight: 640,
   url: 'http://127.0.0.1:43120/',
-  productName: 'DSH Desktop',
-  windowTitle: 'DeepSeek Harness Desktop',
+  productName: 'Deloitte DSH Desktop',
+  windowTitle: 'Deloitte DSH Desktop',
   iconPath: '/tmp/app-icon.png',
   trayIcons: {
     templatePath: '/tmp/tray-iconTemplate.png',
@@ -338,13 +338,13 @@ describe('Electron desktop runtime', () => {
     ]) {
       expect(options).not.toHaveProperty(option)
     }
-    expect(electron.browserWindows[0]?.accessibleTitle).toBe('DeepSeek Harness Desktop')
+    expect(electron.browserWindows[0]?.accessibleTitle).toBe('Deloitte DSH Desktop')
     expect(spec.readThemeSource).not.toHaveBeenCalled()
     expect(electron.nativeTheme.themeSource).toBe('system')
     expect(electron.browserWindows[0]?.removeMenu).not.toHaveBeenCalled()
     expect(electron.app.dock.setIcon).toHaveBeenCalledWith(electron.appIcon)
     expect(electron.applicationMenuTemplates[0]?.map(item => (item as { label?: string }).label)).toEqual([
-      'DSH Desktop', '文件', '编辑', '显示', '窗口',
+      'Deloitte DSH Desktop', '文件', '编辑', '显示', '窗口',
     ])
     expect(electron.Menu.setApplicationMenu).toHaveBeenCalledWith({
       template: electron.applicationMenuTemplates[0],
@@ -375,10 +375,10 @@ describe('Electron desktop runtime', () => {
     await runtime.mountScheduled()
 
     expect(electron.browserWindowOptions[0]).toEqual(expect.objectContaining({
-      title: 'DeepSeek Harness Desktop',
+      title: 'Deloitte DSH Desktop',
       autoHideMenuBar: true,
     }))
-    expect(electron.browserWindows[0]?.accessibleTitle).toBe('DeepSeek Harness Desktop')
+    expect(electron.browserWindows[0]?.accessibleTitle).toBe('Deloitte DSH Desktop')
     expect(electron.browserWindows[0]?.removeMenu).toHaveBeenCalledOnce()
     expect(electron.app.dock.setIcon).not.toHaveBeenCalled()
     expect(electron.Menu.setApplicationMenu).not.toHaveBeenCalled()
@@ -626,7 +626,7 @@ describe('Electron desktop runtime', () => {
     expect(runtime.locale).toBe('zh')
     expect((electron.menuTemplates.at(-1) as Array<{ label?: string }>).map(item => item.label))
       .toEqual(expect.arrayContaining([
-        '打开 DSH Desktop',
+        '打开 Deloitte DSH Desktop',
         '切换到高级模式',
         '退出',
       ]))
@@ -635,7 +635,7 @@ describe('Electron desktop runtime', () => {
     expect(runtime.locale).toBe('en')
     expect((electron.menuTemplates.at(-1) as Array<{ label?: string }>).map(item => item.label))
       .toEqual(expect.arrayContaining([
-        'Open DSH Desktop',
+        'Open Deloitte DSH Desktop',
         'Switch to Advanced Mode',
         'Quit',
       ]))
@@ -645,7 +645,7 @@ describe('Electron desktop runtime', () => {
     expect(runtime.locale).toBe('zh')
     expect((electron.menuTemplates.at(-1) as Array<{ label?: string }>).map(item => item.label))
       .toEqual(expect.arrayContaining([
-        '打开 DSH Desktop',
+        '打开 Deloitte DSH Desktop',
         '切换到高级模式',
         '退出',
       ]))
@@ -1044,7 +1044,7 @@ describe('Electron desktop runtime', () => {
 
     const labels = (electron.menuTemplates.at(-1) as Array<{ label?: string }>).map(item => item.label)
     expect(labels).toEqual([
-      'Open DSH Desktop', undefined,
+      'Open Deloitte DSH Desktop', undefined,
       'Earlier Tool', 'Later Tool', undefined,
       'Check for Updates…', undefined,
       'Switch to Advanced Mode', undefined,
@@ -1105,7 +1105,7 @@ describe('Electron desktop runtime', () => {
     const application = (electron.applicationMenuTemplates.at(-1) as Array<{
       label?: string
       submenu?: Array<{ label?: string, submenu?: unknown }>
-    }>).find(item => item.label === 'DSH Desktop')
+    }>).find(item => item.label === 'Deloitte DSH Desktop')
     expect(application?.submenu).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Profile: desktop' }),
     ]))

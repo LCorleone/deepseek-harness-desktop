@@ -306,8 +306,8 @@ export function apply(ctx: Context, config: Config): void {
     () => runtime.schedule({
       ...config,
       url: desktopRendererUrl(ctx.webServer.port, config.mode, runtime.platform),
-      productName: 'DSH Desktop',
-      windowTitle: 'DeepSeek Harness Desktop',
+      productName: 'Deloitte DSH Desktop',
+      windowTitle: 'Deloitte DSH Desktop',
       iconPath,
       trayIcons,
       readLocalePreference: () => {

@@ -233,7 +233,7 @@ interface RecoveryCopy {
 
 const COPY: Record<DesktopLocale, RecoveryCopy> = {
   en: {
-    title: 'DSH Desktop Recovery',
+    title: 'Deloitte DSH Desktop Recovery',
     lead: 'The active profile could not start. Save diagnostics, restore the last protected installation, or temporarily disable a plugin before trying again.',
     currentProfile: 'Active profile',
     startupError: 'Startup error',
@@ -292,7 +292,7 @@ const COPY: Record<DesktopLocale, RecoveryCopy> = {
     openProfileDirectory: 'Open configuration folder',
   },
   zh: {
-    title: 'DSH Desktop 恢复',
+    title: 'Deloitte DSH Desktop 恢复',
     lead: '当前配置无法启动。你可以先保存诊断信息，然后恢复最近一次受保护安装，或暂时禁用一个插件后重试。',
     currentProfile: '当前配置',
     startupError: '启动错误',
