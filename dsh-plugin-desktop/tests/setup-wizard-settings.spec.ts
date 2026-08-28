@@ -253,10 +253,10 @@ describe('Desktop Setup Wizard settings document', () => {
     })
   })
 
-  it('atomically withdraws legacy browser handoff and LAN from custom modes', async () => {
+  it('preserves a deferred LAN preference while still migrating loopback custom modes', async () => {
     const root = temporaryDirectory()
     const yamlPath = join(root, 'legacy.yaml')
-    writeFileSync(yamlPath, [
+    const yaml = [
       '# preserve browser migration comments',
       'dsh-desktop:',
       '  mode: advanced',
@@ -264,20 +264,11 @@ describe('Desktop Setup Wizard settings document', () => {
       '  networkExposure: lan',
       '  future: keep',
       '',
-    ].join('\n'))
+    ].join('\n')
+    writeFileSync(yamlPath, yaml)
 
-    await expect(migrateDesktopBrowserAccessSettings(yamlPath)).resolves.toBe(true)
     await expect(migrateDesktopBrowserAccessSettings(yamlPath)).resolves.toBe(false)
-    const migrated = readFileSync(yamlPath, 'utf8')
-    expect(migrated).toContain('# preserve browser migration comments')
-    expect(parseDocument(migrated).toJS()).toMatchObject({
-      'dsh-desktop': {
-        mode: 'advanced',
-        openBrowser: false,
-        networkExposure: 'loopback',
-        future: 'keep',
-      },
-    })
+    expect(readFileSync(yamlPath, 'utf8')).toBe(yaml)
 
     const jsonPath = join(root, 'legacy.json')
     writeFileSync(jsonPath, `${JSON.stringify({
@@ -299,23 +290,22 @@ describe('Desktop Setup Wizard settings document', () => {
     })
   })
 
-  it('migrates legacy LAN to explicit browser access only in compatibility mode', async () => {
+  it('projects legacy LAN as browser access without rewriting the deferred preference', async () => {
     const path = join(temporaryDirectory(), 'legacy.yaml')
-    writeFileSync(path, [
+    const contents = [
       'dsh-desktop:',
       '  mode: compatibility',
       '  openBrowser: false',
       '  networkExposure: lan',
       '',
-    ].join('\n'))
+    ].join('\n')
+    writeFileSync(path, contents)
 
-    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(true)
-    expect(parseDocument(readFileSync(path, 'utf8')).toJS()).toMatchObject({
-      'dsh-desktop': {
-        mode: 'compatibility',
-        openBrowser: true,
-        networkExposure: 'lan',
-      },
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+    expect(readDesktopSetupWizardSettings(path)).toMatchObject({
+      openBrowser: true,
+      networkExposure: 'lan',
     })
   })
 

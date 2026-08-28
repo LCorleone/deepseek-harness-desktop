@@ -359,6 +359,7 @@ describe('published package surface', () => {
     expect(boot).toBeGreaterThan(installDsh)
     expect(main).toContain("'dsh-plugin-desktop: packaged pnpm runtime PATH'")
     expect(main).toContain("'dsh-plugin-desktop: packaged dsh runtime PATH'")
+    expect(main).toContain('hostCtx.loader.internal = undefined')
     expect(main).toContain('pnpmBinDir: pnpmRuntime.pathDir')
     expect(main).not.toContain("'--host'")
     expect(readFileSync(new URL('src/profile.ts', packageRoot), 'utf8'))
@@ -768,8 +769,8 @@ describe('published package surface', () => {
 
   it('keeps Electron out of production dependencies consumed by electron-builder', () => {
     expect(manifest.dependencies).not.toHaveProperty('electron')
-    expect(manifest.peerDependencies?.electron).toBe('43.4.0')
-    expect(manifest.devDependencies?.electron).toBe('43.4.0')
+    expect(manifest.peerDependencies?.electron).toBe('43.3.0')
+    expect(manifest.devDependencies?.electron).toBe('43.3.0')
     expect(manifest.dependencies?.pnpm).toBe('11.8.0')
   })
 

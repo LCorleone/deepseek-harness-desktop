@@ -27,6 +27,7 @@ const BROWSER_ACCESS = Object.freeze({
     value: Buffer.alloc(32, 1).toString('base64url'),
   }),
 })
+const AUTHENTICATION_TOKEN = Buffer.alloc(32, 3).toString('base64url')
 const RUNNER_ENVIRONMENT_NAMES = new Set([
   'ELECTRON_RUN_AS_NODE',
   'NPM_CONFIG_RUNTIME',
@@ -144,6 +145,16 @@ try {
         port: 43120,
         register() { return () => {} },
       })
+      host.provide('connection', {
+        authenticatedUrl(baseUrl) {
+          const url = new URL(baseUrl)
+          url.pathname = '/'
+          url.search = ''
+          url.searchParams.set('token', AUTHENTICATION_TOKEN)
+          return url.href
+        },
+        requestRejection() { return undefined },
+      })
       host.provide('webRuntime', {})
       host.provide('appExit', () => {})
       host.provide('settings', {
@@ -179,6 +190,12 @@ try {
   const expectedUrl = `http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-version=${PRODUCT_VERSION}&dsh-desktop-material=transparent&dsh-desktop-titlebar-inset=36`
   if (mountedSpec?.url !== expectedUrl) {
     throw new Error(`desktop plugin produced an unexpected renderer URL: ${String(mountedSpec?.url)}`)
+  }
+  const expectedAuthenticationUrl = `http://127.0.0.1:43120/?token=${AUTHENTICATION_TOKEN}`
+  if (mountedSpec?.authenticationUrl !== expectedAuthenticationUrl) {
+    throw new Error(
+      `desktop plugin produced an unexpected authentication URL: ${String(mountedSpec?.authenticationUrl)}`,
+    )
   }
   if (mountedSpec?.rendererAccessHeader !== BROWSER_ACCESS.rendererHeader) {
     throw new Error('desktop plugin did not preserve the launcher browser capability')

@@ -7,6 +7,13 @@ import type { DesktopShellMode } from './runtime.ts'
 export type DesktopNetworkExposure = 'loopback' | 'lan'
 
 /**
+ * LAN ingress stays unavailable until Desktop owns a trusted HTTPS/WSS edge.
+ * Keep the persisted `lan` value readable so an existing preference can be
+ * activated by a future release without rewriting the user's settings today.
+ */
+export const DESKTOP_LAN_HTTPS_AVAILABLE = false
+
+/**
  * Parse the browser-access preference.
  *
  * `openBrowser` is retained as the persisted key for compatibility. Desktop
@@ -50,9 +57,16 @@ export function parseDesktopNetworkExposure(value: unknown): DesktopNetworkExpos
   throw new Error('dsh-plugin-desktop: dsh-desktop.networkExposure must be "loopback" or "lan"')
 }
 
+/** Apply the temporary HTTPS safety boundary without changing stored intent. */
+export function desktopEffectiveNetworkExposure(
+  exposure: DesktopNetworkExposure,
+): DesktopNetworkExposure {
+  return DESKTOP_LAN_HTTPS_AVAILABLE ? exposure : 'loopback'
+}
+
 /** Project a persisted exposure preference into the supported WebServer host literal. */
 export function desktopWebServerHost(exposure: DesktopNetworkExposure): WebServerConfig['host'] {
-  return exposure === 'lan' ? '0.0.0.0' : '127.0.0.1'
+  return desktopEffectiveNetworkExposure(exposure) === 'loopback' ? '127.0.0.1' : '0.0.0.0'
 }
 
 /** Marker-free URL suitable for an ordinary local browser. */
@@ -61,6 +75,6 @@ export function desktopLoopbackBrowserUrl(port: number): string {
 }
 
 /** Marker-free URLs advertised for the Web runtime's startup-sampled LAN addresses. */
-export function desktopLanBrowserUrls(port: number, addresses: readonly string[]): readonly string[] {
-  return Object.freeze(addresses.map(address => `http://${address}:${String(port)}/`))
+export function desktopLanBrowserUrls(_port: number, _addresses: readonly string[]): readonly string[] {
+  return Object.freeze([])
 }

@@ -125,6 +125,8 @@ try {
     prepared.rootConfig,
     patches,
     async (host) => {
+      // Match the public resolver path used by packaged Electron.
+      host.loader.internal = undefined
       host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([]))
       host.provide('desktopBrowserAccess', BROWSER_ACCESS)
       host.provide('desktopRuntime', runtime)
@@ -234,9 +236,52 @@ try {
   if (profileMenu?.submenu?.()[0]?.label() !== 'desktop') {
     throw new Error('assembled desktop profile is missing the active profile tray submenu')
   }
+  const unauthenticated = await fetch(expectedUrl, {
+    headers: {
+      [BROWSER_ACCESS.rendererHeader.name]: BROWSER_ACCESS.rendererHeader.value,
+    },
+  })
+  await unauthenticated.body?.cancel()
+  if (unauthenticated.status !== 401) {
+    throw new Error(
+      `assembled Web root accepted a renderer without browser authentication: HTTP ${String(unauthenticated.status)}`,
+    )
+  }
+  if (typeof mountedSpec?.authenticationUrl !== 'string') {
+    throw new Error('desktop plugin did not provide an authentication URL')
+  }
+  const authenticationUrl = new URL(mountedSpec.authenticationUrl)
+  const rendererUrl = new URL(expectedUrl)
+  const authenticationTokens = authenticationUrl.searchParams.getAll('token')
+  if (authenticationUrl.origin !== rendererUrl.origin
+    || authenticationUrl.pathname !== '/'
+    || authenticationUrl.hash !== ''
+    || [...authenticationUrl.searchParams.keys()].some(key => key !== 'token')
+    || authenticationTokens.length !== 1
+    || !/^[A-Za-z0-9_-]{43}$/u.test(authenticationTokens[0])) {
+    throw new Error(`desktop plugin produced an invalid authentication URL: ${authenticationUrl.href}`)
+  }
+  const exchange = await fetch(authenticationUrl, {
+    headers: {
+      [BROWSER_ACCESS.rendererHeader.name]: BROWSER_ACCESS.rendererHeader.value,
+    },
+    redirect: 'manual',
+  })
+  await exchange.body?.cancel()
+  if (exchange.status !== 303 || exchange.headers.get('location') !== '/') {
+    throw new Error(
+      `browser authentication exchange returned HTTP ${String(exchange.status)} instead of a root redirect`,
+    )
+  }
+  const setCookie = exchange.headers.get('set-cookie')
+  const cookie = setCookie?.split(';', 1)[0]
+  if (cookie === undefined || cookie.length === 0) {
+    throw new Error('browser authentication exchange did not mint a cookie')
+  }
   const response = await fetch(expectedUrl, {
     headers: {
       [BROWSER_ACCESS.rendererHeader.name]: BROWSER_ACCESS.rendererHeader.value,
+      Cookie: cookie,
     },
   })
   const html = await response.text()
@@ -255,7 +300,11 @@ try {
     '@deepseek-ai/dsh-client-ui-sidebar',
     '@deepseek-ai/dsh-client-ui-directory-picker-browse',
   ]) {
-    if (!ids.has(id)) throw new Error(`assembled advanced Web graph is missing ${id}`)
+    if (!ids.has(id)) {
+      throw new Error(
+        `assembled advanced Web graph is missing ${id}; received ${[...ids].sort().join(', ')}`,
+      )
+    }
   }
   for (const id of [
     '@deepseek-ai/dsh-client-ui-layout',

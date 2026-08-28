@@ -359,10 +359,10 @@ export async function updateDesktopSetupWizardSettings(
 
 /**
  * Atomically migrate settings written with the former browser-handoff
- * semantics before the Host reads them. Existing LAN exposure becomes an
- * explicit browser-access grant only for an already-selected compatibility
- * mode. Incompatible modes retain their selection and withdraw browser/LAN
- * access. Returns whether the durable document changed.
+ * semantics before the Host reads them. A stored LAN preference is deliberately
+ * left untouched while runtime exposure is clamped to loopback; it is deferred
+ * intent for the future trusted-HTTPS ingress, not a migration target. Returns
+ * whether the durable document changed.
  */
 export async function migrateDesktopBrowserAccessSettings(
   documentPath: string,
@@ -376,6 +376,13 @@ export async function migrateDesktopBrowserAccessSettings(
     const storedMode = parseMode(desktop.mode)
     const storedOpenBrowser = optionalBoolean(desktop, 'openBrowser', false)
     const storedExposure = parseExposure(desktop.networkExposure)
+    if (storedExposure === 'lan') {
+      return {
+        browserAccess: storedOpenBrowser,
+        needed: false,
+        networkExposure: storedExposure,
+      }
+    }
     const browserAccess = desktopBrowserAccessEnabled(storedMode, storedOpenBrowser, storedExposure)
     const networkExposure = desktopNetworkExposureForBrowserAccess(browserAccess, storedExposure)
     return {

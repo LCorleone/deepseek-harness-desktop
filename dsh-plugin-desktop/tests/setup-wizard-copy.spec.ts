@@ -54,6 +54,10 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(english.lanWarningBody).toContain('HTTP')
     expect(english.lanWarningBody).toContain('security modules')
     expect(english.lanWarningBody).toContain('not to work correctly')
+    expect(chinese.networkExposureBody).toContain('可信 HTTPS')
+    expect(chinese.lanBody).toContain('暂不可用')
+    expect(english.networkExposureBody).toContain('trusted HTTPS')
+    expect(english.lanBody).toContain('Temporarily unavailable')
   })
 
   it('describes the sequential navigation, skip confirmation, and final success action', () => {
@@ -137,6 +141,10 @@ describe('Desktop Setup Wizard copy and contract', () => {
     )).toBe(false)
     expect(desktopSetupWizardSelectionIsAvailable(
       { ...input, openBrowser: false, networkExposure: 'lan' },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, openBrowser: true, networkExposure: 'lan' },
       { platform: 'win32', micaSupported: true },
     )).toBe(false)
   })

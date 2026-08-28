@@ -1,7 +1,6 @@
 import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
 import type { DirectoryPickerBrowseCapability } from '@deepseek-ai/dsh-host-directory-picker'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -31,14 +30,17 @@ vi.mock('node:fs/promises', async () => {
   }
 })
 
-import BrowseDirectoryPicker from '@deepseek-ai/dsh-host-directory-picker-browse'
-
 interface BrowseFixture {
   capability: DirectoryPickerBrowseCapability
   dispose(): Promise<void>
 }
 
 async function browseFixture(): Promise<BrowseFixture> {
+  vi.resetModules()
+  const [{ Context }, { default: BrowseDirectoryPicker }] = await Promise.all([
+    import('@deepseek-ai/cordis'),
+    import('@deepseek-ai/dsh-host-directory-picker-browse'),
+  ])
   const ctx = new Context()
   const fiber = ctx.plugin(BrowseDirectoryPicker)
   await fiber.await()

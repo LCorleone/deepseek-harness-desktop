@@ -13,6 +13,7 @@ import type { DesktopClientPlatform } from './environment.ts'
 import {
   desktopBrowserAccessAvailable,
   desktopBrowserAccessEnabled,
+  desktopEffectiveNetworkExposure,
 } from '../desktop-network.ts'
 
 /** Browser view of the Host `dsh-desktop` settings namespace. */
@@ -287,7 +288,9 @@ export function DesktopSettingsSection({
     configuredNetworkExposure,
   )
   const mode = storedMode
-  const networkExposure = browserAccess ? configuredNetworkExposure : 'loopback'
+  const networkExposure = desktopEffectiveNetworkExposure(
+    browserAccess ? configuredNetworkExposure : 'loopback',
+  )
   const notificationValue = notifications.value ?? {
     enabled: true,
     notifyOnTurnCompletion: true,
@@ -597,13 +600,11 @@ export function DesktopSettingsSection({
         <ToggleRow
           label={t('lanAccess')}
           badge={t('beta')}
-          checked={networkExposure === 'lan'}
-          disabled={!browserAccess || !settingsWritable || busy !== undefined || restart !== 'none'}
-          onChange={(checked) => {
-            if (checked) setConfirmLan(true)
-            else setNetworkExposure('loopback')
-          }}
+          checked={false}
+          disabled
+          onChange={() => {}}
         />
+        <p className="dshDesktopSettingsNotice">{t('lanHttpsUnavailable')}</p>
         {desktopBrowserUrlsShouldRender(browserAccess, networkExposure) && view !== undefined && (
           <div className="dshDesktopSettingsUrls">
             <span className="dshDesktopSettingsChoiceTitle">{t('browserUrls')}</span>

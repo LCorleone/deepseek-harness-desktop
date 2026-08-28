@@ -231,6 +231,8 @@ describe('Setup Wizard setting pages', () => {
     expect(marketBadge).toBeGreaterThan(communityOption)
     expect(marketBadge).toBeLessThan(nextMarketOption)
     expect(lanBadge).toBeGreaterThan(lanOption)
+    expect(browser.slice(lanOption)).toContain('disabled=""')
+    expect(browser).toContain('可信 HTTPS')
   })
 
   it('describes browser access as an opt-in capability limited to compatibility mode', () => {

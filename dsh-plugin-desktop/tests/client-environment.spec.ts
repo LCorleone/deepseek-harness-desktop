@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
+import { createElement, type ReactNode } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { apply } from '../src/client/index.ts'
-import { AdvancedFrame } from '../src/client/AdvancedFrame.tsx'
+import { AdvancedFrame, type AdvancedFrameProps } from '../src/client/AdvancedFrame.tsx'
 import { applyAdvancedShell } from '../src/client/advanced-shell.ts'
 import { provideDesktopLayout } from '../src/client/layout-service.ts'
 import { parseDesktopClientEnvironment } from '../src/client/environment.ts'
@@ -64,6 +66,31 @@ describe('desktop client environment', () => {
 })
 
 describe('advanced desktop layout', () => {
+  it.each([
+    ['advanced', AdvancedFrame],
+    ['extended', ExtendedFrame],
+  ] as const)('binds the strict details slot through SessionProvider in %s mode', (_mode, Frame) => {
+    vi.stubGlobal('window', { innerWidth: 1440 })
+    const props = {
+      layout: new DesktopLayoutState(),
+      platform: 'darwin',
+      useSessions: (select: (state: { current?: string; byId: Record<string, { blank: boolean }> }) => unknown) =>
+        select({ byId: {} }),
+      renderSlot: (name: string) => createElement('span', { 'data-slot': name }),
+      SessionProvider: ({ children }: { children: ReactNode }) =>
+        createElement('section', { 'data-session-provider': '' }, children),
+    } as unknown as AdvancedFrameProps
+
+    try {
+      const markup = renderToStaticMarkup(createElement(Frame, props))
+      expect(markup).toContain(
+        '<section data-session-provider=""><span data-slot="details"></span></section>',
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('orders the Windows drag region after scrollable content and before overlays', () => {
     const frame = readFileSync(new URL('../src/client/AdvancedFrame.tsx', import.meta.url), 'utf8')
     const conversation = frame.indexOf('className="dshDesktopConversationSurface"')

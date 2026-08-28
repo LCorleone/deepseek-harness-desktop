@@ -831,6 +831,9 @@ async function start(): Promise<void> {
       prepared.rootConfig,
       prepared.patches,
       async (hostCtx) => {
+        // Keep Host imports and browser bundle discovery on the same public
+        // profile-overlay resolver used by packaged Electron.
+        hostCtx.loader.internal = undefined
         generation.bindHost(hostCtx)
         hostCtx.effect(
           () => releasePnpmRuntime,

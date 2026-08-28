@@ -15,6 +15,7 @@ const DIAGNOSTICS_EXPORT_PATH = '/api/desktop/diagnostics/export'
 const MAX_PROFILES = 256
 const MAX_PROFILE_NAME_LENGTH = 255
 const MAX_LAN_URLS = 32
+const BROWSER_AUTH_TOKEN_QUERY = /^\?token=[A-Za-z0-9_-]{43}$/u
 
 /** Launcher-supported plugin market implementations. */
 export type DesktopMarketProvider = 'disabled' | 'community-market' | 'dsh-market'
@@ -35,7 +36,7 @@ export interface DesktopMarketView {
   readonly legacyDefaulted: boolean
 }
 
-/** Marker-free ordinary-browser URLs for the running Desktop generation. */
+/** Authenticated ordinary-browser URLs for the running Desktop generation. */
 export interface DesktopWebView {
   readonly localUrl: string
   readonly lanUrls: readonly string[]
@@ -111,8 +112,11 @@ function parseBrowserUrl(value: unknown, loopback: boolean): string {
   } catch {
     throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
   }
-  if (url.protocol !== 'http:' || url.username !== '' || url.password !== ''
-    || url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.port === '') {
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:')
+    || (!loopback && url.protocol !== 'https:')
+    || url.username !== '' || url.password !== ''
+    || url.pathname !== '/' || !BROWSER_AUTH_TOKEN_QUERY.test(url.search)
+    || url.hash !== '' || url.port === '') {
     throw new Error('dsh-plugin-desktop: invalid browser URL in settings response')
   }
   if (loopback ? url.hostname !== '127.0.0.1' : !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(url.hostname)) {

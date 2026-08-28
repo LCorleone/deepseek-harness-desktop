@@ -27,12 +27,19 @@ export function AdvancedFrame(props: AdvancedFrameProps) {
 }
 
 /** Shared panel mechanics below the two mode-specific root boundaries. */
-export function DesktopOwnedFrame({ layout, mode, platform, renderSlot, useSessions }: AdvancedFrameProps & {
+export function DesktopOwnedFrame({
+  layout,
+  mode,
+  platform,
+  renderSlot,
+  SessionProvider,
+  useSessions,
+}: AdvancedFrameProps & {
   readonly mode: 'extended' | 'advanced'
 }) {
   const subscribeLayout = useCallback((listener: () => void) => layout.subscribe(listener), [layout])
   const readLayout = useCallback(() => layout.getSnapshot(), [layout])
-  const panels = useSyncExternalStore(subscribeLayout, readLayout)
+  const panels = useSyncExternalStore(subscribeLayout, readLayout, readLayout)
   const frameRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState(() => window.innerWidth)
   const detailsSession = useSessions((state) => {
@@ -121,7 +128,9 @@ export function DesktopOwnedFrame({ layout, mode, platform, renderSlot, useSessi
         </div>
       </aside>
       <main className="dshDesktopConversationSurface">{renderSlot('conversation', {})}</main>
-      <aside className="dshDesktopDetailsSurface">{renderSlot('details', {})}</aside>
+      <aside className="dshDesktopDetailsSurface">
+        <SessionProvider>{renderSlot('details', {})}</SessionProvider>
+      </aside>
       {/* Electron resolves app regions in DOM order; Desktop overlays must remain later. */}
       {mode === 'advanced' && platform === 'win32' && <div className="dshDesktopWindowsCaptionRow" aria-hidden="true" />}
       <div className="dshDesktopOverlay" data-shell-overlay>

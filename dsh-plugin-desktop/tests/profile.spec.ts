@@ -79,15 +79,20 @@ describe('desktop profile composition', {
   it('reads packaged Cordis skills from the physical unpacked preset root', () => {
     const home = temporaryHome()
     const resources = join(home, 'resources')
-    const archivedDsh = join(resources, 'app.asar', 'node_modules', '@deepseek-ai', 'dsh')
+    const archivedPresets = join(
+      resources,
+      'app.asar',
+      'node_modules',
+      '@deepseek-ai',
+      'dsh-agent-presets',
+    )
     const physicalPresetRoot = join(
       resources,
       'app.asar.unpacked',
       'node_modules',
       '@deepseek-ai',
-      'dsh',
-      'config',
-      'agent-presets',
+      'dsh-agent-presets',
+      'presets',
     )
     const skillPath = join(
       physicalPresetRoot,
@@ -97,10 +102,10 @@ describe('desktop profile composition', {
       'SKILL.md',
     )
     mkdirSync(join(resources, 'app.asar', 'lib'), { recursive: true })
-    mkdirSync(archivedDsh, { recursive: true })
+    mkdirSync(archivedPresets, { recursive: true })
     mkdirSync(dirname(skillPath), { recursive: true })
-    writeFileSync(join(archivedDsh, 'package.json'), JSON.stringify({
-      name: '@deepseek-ai/dsh',
+    writeFileSync(join(archivedPresets, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-agent-presets',
       exports: { './package.json': './package.json' },
     }) + '\n')
     writeFileSync(skillPath, '# Cordis plugin development\n')
@@ -656,7 +661,7 @@ virtualStoreDirMaxLength: 60
     expect(rows.find(row => row.id === 'ui-conversation')?.disabled).toBe(false)
   })
 
-  it('allows browser and LAN access when compatibility mode is already selected', () => {
+  it('keeps legacy browser intent but clamps LAN exposure when compatibility mode is selected', () => {
     const home = temporaryHome()
     writeFileSync(join(home, 'settings.yaml'), [
       'dsh-desktop:',
@@ -676,7 +681,7 @@ virtualStoreDirMaxLength: 60
       networkExposure: 'lan',
     })
     expect(rows.find(row => row.id === 'desktop-webserver')).toEqual(expect.objectContaining({
-      config: { host: '0.0.0.0', port: 43_189 },
+      config: { host: '127.0.0.1', port: 43_189 },
     }))
     expect(rows.find(row => row.id === 'web-runtime')).toEqual(expect.objectContaining({
       config: expect.objectContaining({ openBrowser: false }),

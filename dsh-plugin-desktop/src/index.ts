@@ -1,5 +1,6 @@
 /** DSH Desktop Host plugin: owns the selected native shell generation. */
 
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -90,6 +91,19 @@ export const DESKTOP_SETTINGS_NAMESPACE = settingsNamespace('dsh-desktop')
 
 const UI_THEME_SETTINGS_NAMESPACE = settingsNamespace(THEME_SETTINGS_NAMESPACE)
 const UI_LOCALE_SETTINGS_NAMESPACE = settingsNamespace(LOCALE_SETTINGS_NAMESPACE)
+
+/** Apply the official Connection trust and browser-auth fence before a private Desktop route. */
+function rejectDesktopRequest(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+): boolean {
+  const rejection = ctx.connection.requestRejection(req)
+  if (rejection === undefined) return false
+  res.writeHead(rejection)
+  res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+  return true
+}
 
 /** Narrow the upstream locale preference to the translations bundled by Desktop chrome. */
 function desktopLocalePreference(preference: string | undefined): DesktopLocale | undefined {
@@ -231,9 +245,8 @@ export function apply(ctx: Context, config: Config): void {
     {
       applies: 'restart',
       validate: (value) => {
-        if (!desktopBrowserAccessAvailable(value.mode)
-          && (value.openBrowser || value.networkExposure === 'lan')) {
-          throw new Error('dsh-plugin-desktop: browser and LAN access require compatibility mode')
+        if (!desktopBrowserAccessAvailable(value.mode) && value.openBrowser) {
+          throw new Error('dsh-plugin-desktop: browser access requires compatibility mode')
         }
         if (value.mode !== 'compatibility' && runtime.platform === 'linux') {
           throw new Error('dsh-plugin-desktop: custom desktop shell modes are supported on macOS and Windows')
@@ -271,13 +284,16 @@ export function apply(ctx: Context, config: Config): void {
         () => ctx.webServer.register({
           kind: 'exact',
           path,
-          handler: (req, res) => handler(
-            req,
-            res,
-            rendererOrigin,
-            desktopSettings,
-            reportSettingsError,
-          ),
+          handler: (req, res) => {
+            if (rejectDesktopRequest(ctx, req, res)) return
+            return handler(
+              req,
+              res,
+              rendererOrigin,
+              desktopSettings,
+              reportSettingsError,
+            )
+          },
         }),
         `dsh-plugin-desktop: private settings route ${path}`,
       )
@@ -287,12 +303,15 @@ export function apply(ctx: Context, config: Config): void {
     () => ctx.webServer.register({
       kind: 'exact',
       path: RENDERER_BOOT_REPORT_PATH,
-      handler: (req, res) => handleRendererBootRequest(
-        req,
-        res,
-        rendererOrigin,
-        report => { runtime.reportRendererBoot(report) },
-      ),
+      handler: (req, res) => {
+        if (rejectDesktopRequest(ctx, req, res)) return
+        return handleRendererBootRequest(
+          req,
+          res,
+          rendererOrigin,
+          report => { runtime.reportRendererBoot(report) },
+        )
+      },
     }),
     'dsh-plugin-desktop: renderer boot report route',
   )
@@ -301,15 +320,18 @@ export function apply(ctx: Context, config: Config): void {
       () => ctx.webServer.register({
         kind: 'exact',
         path: DESKTOP_DIRECTORY_PICKER_PATH,
-        handler: (req, res) => handleDesktopDirectoryPickerRequest(
-          req,
-          res,
-          rendererOrigin,
-          () => runtime.pickDirectory(),
-          cause => {
-            ctx.logger.error(`dsh-plugin-desktop: native directory picker failed: ${cause instanceof Error ? cause.message : String(cause)}`)
-          },
-        ),
+        handler: (req, res) => {
+          if (rejectDesktopRequest(ctx, req, res)) return
+          return handleDesktopDirectoryPickerRequest(
+            req,
+            res,
+            rendererOrigin,
+            () => runtime.pickDirectory(),
+            cause => {
+              ctx.logger.error(`dsh-plugin-desktop: native directory picker failed: ${cause instanceof Error ? cause.message : String(cause)}`)
+            },
+          )
+        },
       }),
       'dsh-plugin-desktop: native directory picker route',
     )
@@ -317,15 +339,18 @@ export function apply(ctx: Context, config: Config): void {
       () => ctx.webServer.register({
         kind: 'exact',
         path: DESKTOP_DIRECTORY_VALIDATOR_PATH,
-        handler: (req, res) => handleDesktopDirectoryValidationRequest(
-          req,
-          res,
-          rendererOrigin,
-          path => runtime.validateDirectory(path),
-          cause => {
-            ctx.logger.error(`dsh-plugin-desktop: workspace directory validation failed: ${cause instanceof Error ? cause.message : String(cause)}`)
-          },
-        ),
+        handler: (req, res) => {
+          if (rejectDesktopRequest(ctx, req, res)) return
+          return handleDesktopDirectoryValidationRequest(
+            req,
+            res,
+            rendererOrigin,
+            path => runtime.validateDirectory(path),
+            cause => {
+              ctx.logger.error(`dsh-plugin-desktop: workspace directory validation failed: ${cause instanceof Error ? cause.message : String(cause)}`)
+            },
+          )
+        },
       }),
       'dsh-plugin-desktop: workspace directory validation route',
     )

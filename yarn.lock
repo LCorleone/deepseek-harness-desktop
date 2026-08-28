@@ -1847,6 +1847,22 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@deepseek-ai/dsh-client-ui-directory-picker-browse@patch:@deepseek-ai/dsh-client-ui-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz#./patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-alpha.1
+  resolution: "@deepseek-ai/dsh-client-ui-directory-picker-browse@patch:@deepseek-ai/dsh-client-ui-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%23vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%3A%3Ahash=54e775&locator=deepseek-harness-desktop%2540workspace%253A.#./patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch::version=0.1.2-alpha.1&hash=74253a&locator=deepseek-harness-desktop%40workspace%3A."
+  dependencies:
+    clsx: "npm:^2.0.0"
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-api-remotes": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-client-locale": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-client-ui-renderer": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-client-ui-workspace": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
+  checksum: 10c0/159f14426cead322f5bbb2c27abf0ce8970a591604e626932b4cd459b3dcd50b66366f79efb9a896dd822db4a66fb3d16f5a28c009a33e48544c9f611eb918e8
+  languageName: node
+  linkType: hard
+
 "@deepseek-ai/dsh-client-ui-directory-picker-native@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-native-0.1.2-alpha.1.tgz::locator=deepseek-harness-desktop%40workspace%3A.":
   version: 0.1.2-alpha.1
   resolution: "@deepseek-ai/dsh-client-ui-directory-picker-native@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-native-0.1.2-alpha.1.tgz#vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-native-0.1.2-alpha.1.tgz::hash=81ef7d&locator=deepseek-harness-desktop%40workspace%3A."
@@ -2722,6 +2738,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@deepseek-ai/dsh-hook-protocol@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hook-protocol-0.1.2-alpha.1.tgz::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-alpha.1
+  resolution: "@deepseek-ai/dsh-hook-protocol@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hook-protocol-0.1.2-alpha.1.tgz#vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hook-protocol-0.1.2-alpha.1.tgz::hash=4ef1e0&locator=deepseek-harness-desktop%40workspace%3A."
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-session": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-shell": ^0.1.2-alpha.1
+  checksum: 10c0/dd9a9f895151ed0601086568fae138579634edfbdf9030abcfcc67bd6f888a7c03f8374d1bf1b414d22fb1df2823ba781e4264a286f1e30e7de9c0eb06ff9696
+  languageName: node
+  linkType: hard
+
 "@deepseek-ai/dsh-hooks-claude-code@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hooks-claude-code-0.1.2-alpha.1.tgz::locator=deepseek-harness-desktop%40workspace%3A.":
   version: 0.1.2-alpha.1
   resolution: "@deepseek-ai/dsh-hooks-claude-code@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hooks-claude-code-0.1.2-alpha.1.tgz#vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-hooks-claude-code-0.1.2-alpha.1.tgz::hash=2cc027&locator=deepseek-harness-desktop%40workspace%3A."
@@ -2785,6 +2813,19 @@ __metadata:
     "@deepseek-ai/cordis": ^4.0.1
     "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
   checksum: 10c0/42b2179efa21e0eba03b5c3881a52b09a2a295e6d100f42f95f885396f03d9c0de5e8e059d3e8e1cf91ba80eefe422ae459ff7b5e1db7e96274ca526270564c9
+  languageName: node
+  linkType: hard
+
+"@deepseek-ai/dsh-host-directory-picker-browse@patch:@deepseek-ai/dsh-host-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-host-directory-picker-browse-0.1.2-alpha.1.tgz#./patches/dsh-host-directory-picker-browse@0.1.2-alpha.1.patch::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-alpha.1
+  resolution: "@deepseek-ai/dsh-host-directory-picker-browse@patch:@deepseek-ai/dsh-host-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-host-directory-picker-browse-0.1.2-alpha.1.tgz%23vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-host-directory-picker-browse-0.1.2-alpha.1.tgz%3A%3Ahash=60fa77&locator=deepseek-harness-desktop%2540workspace%253A.#./patches/dsh-host-directory-picker-browse@0.1.2-alpha.1.patch::version=0.1.2-alpha.1&hash=50d617&locator=deepseek-harness-desktop%40workspace%3A."
+  dependencies:
+    "@deepseek-ai/dsh-host-directory-picker": "npm:^0.1.2-alpha.1"
+    "@deepseek-ai/schemastery": "npm:^3.18.1"
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
+  checksum: 10c0/cdbb2dfe13da2dda2a27c034efc8321db249cb078e0aa635eb9efb2fab4839d9aa9b125cf494f7fc4cf422e2fa82e8773f57f1f62476ed4a03b40c170f23795e
   languageName: node
   linkType: hard
 
@@ -3310,6 +3351,19 @@ __metadata:
     "@deepseek-ai/cordis": ^4.0.1
     "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
   checksum: 10c0/d7dbc907d3c09810d1128b5ddcb688e125a159f3d3368408918dfc04c48679456eb5edcc17284abd0cd406bf5fd82a325f71f5cf89c09e31c04ef1d99375e95d
+  languageName: node
+  linkType: hard
+
+"@deepseek-ai/dsh-sdk-protocol@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-sdk-protocol-0.1.2-alpha.1.tgz::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-alpha.1
+  resolution: "@deepseek-ai/dsh-sdk-protocol@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-sdk-protocol-0.1.2-alpha.1.tgz#vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-sdk-protocol-0.1.2-alpha.1.tgz::hash=a3b0ff&locator=deepseek-harness-desktop%40workspace%3A."
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-llm": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-session": ^0.1.2-alpha.1
+    "@deepseek-ai/dsh-subagent": ^0.1.2-alpha.1
+  checksum: 10c0/aeb339a0a45e63dbe0816c9fab2551af289939ef8ae5e0e63d803c4a29a414208515144798b1d8bec5f9cee3af8148517d67f4df3e75d3ba0abea63ddb538917
   languageName: node
   linkType: hard
 
@@ -4470,6 +4524,16 @@ __metadata:
     "@deepseek-ai/cordis": ^4.0.1
     "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
   checksum: 10c0/207154398e177aafb7bf2eecde3d55db5e80e23d91b45dc043c63546f1d20c00a8a1a53749a2e8bf05d0f2a969d6dda518a35c3bce65c09b6c23ddce8bc63f25
+  languageName: node
+  linkType: hard
+
+"@deepseek-ai/dsh-util-workspace-path@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-util-workspace-path-0.1.2-alpha.1.tgz::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-alpha.1
+  resolution: "@deepseek-ai/dsh-util-workspace-path@file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-util-workspace-path-0.1.2-alpha.1.tgz#vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-util-workspace-path-0.1.2-alpha.1.tgz::hash=443f7d&locator=deepseek-harness-desktop%40workspace%3A."
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
+  checksum: 10c0/a1a91186aac9632c0e009e116542eb8134eab669e9b07745d93cabab512aef10697a3bf40caf8b17802439d4324f08fca9dc7058d94cbce05a4d878119aca050
   languageName: node
   linkType: hard
 
@@ -9049,11 +9113,14 @@ __metadata:
     "@deepseek-ai/dsh": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-agent": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-agent-default-model": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-agent-instructions": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-agent-loop": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-agent-presets": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-anonymous-user-id": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-api-gateway": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-api-remotes": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-api-session-controller": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-api-settings-controller": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-api-workspace-controller": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-app-boot": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-atomic-write": "npm:0.1.2-alpha.1"
@@ -9066,7 +9133,9 @@ __metadata:
     "@deepseek-ai/dsh-client-locale": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-modules": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-store": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-client-ui-approval": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-attachment": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-client-ui-chat": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-commands": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-conversation": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-directory-picker-browse": "npm:0.1.2-alpha.1"
@@ -9081,6 +9150,7 @@ __metadata:
     "@deepseek-ai/dsh-client-ui-slots": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-theme": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-tool": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-client-ui-trajectory": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-client-ui-workspace": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-cmdline": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-code-runtime": "npm:0.1.2-alpha.1"
@@ -9090,21 +9160,29 @@ __metadata:
     "@deepseek-ai/dsh-cordis-client-runner": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-cordis-host-runner": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-credentials": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-deepseek-llm-api-extensions": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-file-reference": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-fs": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-fs-local": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-goal": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-goal-round-driver": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-home-paths": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-hook-protocol": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-host-directory-picker": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-host-directory-picker-browse": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-host-directory-picker-native": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-host-plugin-inventory": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-host-webserver": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-invariants": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-jobs": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-jobs-local": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-launch-environment": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-llm": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-llm-deepseek": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-llm-retry": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-mcp-client": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-message-feedback": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-native-command": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-output-retention": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-permission-presets": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-plan-mode": "npm:0.1.2-alpha.1"
@@ -9115,6 +9193,7 @@ __metadata:
     "@deepseek-ai/dsh-sandbox-policy": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-sandbox-windows-acl": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-scope": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-sdk-protocol": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-session": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-session-persistence": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-session-projection": "npm:0.1.2-alpha.1"
@@ -9129,6 +9208,7 @@ __metadata:
     "@deepseek-ai/dsh-shell": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-shell-env": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-skill": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-skill-filesystem": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-spill": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-storage": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-storage-domain": "npm:0.1.2-alpha.1"
@@ -9141,7 +9221,11 @@ __metadata:
     "@deepseek-ai/dsh-terminal-bash": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-timeout": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-token-meter": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-tool-bash": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-tool-goal": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-tool-jobs": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-tool-pwsh-persistent": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-tool-skill": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-tool-todo": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-tool-workflow": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-tools": "npm:0.1.2-alpha.1"
@@ -9149,9 +9233,13 @@ __metadata:
     "@deepseek-ai/dsh-typert-registry": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-user-approval": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-user-questions": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-util-crypto": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-util-workspace-path": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-web": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-web-app": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-webhook": "npm:0.1.2-alpha.1"
     "@deepseek-ai/dsh-workflow": "npm:0.1.2-alpha.1"
+    "@deepseek-ai/dsh-workspace": "npm:0.1.2-alpha.1"
     "@deepseek-ai/schemastery": "npm:^3.18.1"
     "@electron/asar": "npm:3.4.1"
     "@fontsource-variable/inter": "npm:^5.3.0"

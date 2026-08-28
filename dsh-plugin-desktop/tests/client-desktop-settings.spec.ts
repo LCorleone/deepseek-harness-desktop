@@ -37,6 +37,8 @@ import {
 import { en, zh, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from '../src/client/desktop-settings-styles.ts'
 
+const BROWSER_AUTH_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+
 const VIEW: DesktopSettingsView = {
   current: 'desktop',
   profiles: [
@@ -45,7 +47,7 @@ const VIEW: DesktopSettingsView = {
     { name: 'work', exists: true, webCapable: true, selectable: true, deletable: true },
   ],
   market: { requested: 'disabled', effective: 'disabled', legacyDefaulted: true },
-  web: { localUrl: 'http://127.0.0.1:43120/', lanUrls: [] },
+  web: { localUrl: `http://127.0.0.1:43120/?token=${BROWSER_AUTH_TOKEN}`, lanUrls: [] },
 }
 
 function json(value: unknown, status = 200): Response {
@@ -74,6 +76,47 @@ describe('Desktop settings API', () => {
       .toThrow('invalid Desktop action response')
   })
 
+  it('accepts only authenticated root browser URLs with a canonical token query', () => {
+    const authenticatedView = {
+      ...VIEW,
+      web: {
+        localUrl: `https://127.0.0.1:43120/?token=${BROWSER_AUTH_TOKEN}`,
+        lanUrls: [`https://192.168.1.20:43120/?token=${BROWSER_AUTH_TOKEN}`],
+      },
+    }
+    expect(parseDesktopSettingsView(authenticatedView).web).toEqual(authenticatedView.web)
+
+    const invalidLocalUrls = [
+      'http://127.0.0.1:43120/',
+      'ftp://127.0.0.1:43120/?token=' + BROWSER_AUTH_TOKEN,
+      'http://user@127.0.0.1:43120/?token=' + BROWSER_AUTH_TOKEN,
+      'http://127.0.0.1:43120/client?token=' + BROWSER_AUTH_TOKEN,
+      'http://127.0.0.1:43120/?token=' + BROWSER_AUTH_TOKEN + '#fragment',
+      'http://127.0.0.1:43120/?token=' + BROWSER_AUTH_TOKEN + '&token=' + BROWSER_AUTH_TOKEN,
+      'http://127.0.0.1:43120/?token=' + BROWSER_AUTH_TOKEN + '&extra=true',
+      'http://127.0.0.1:43120/?token=short',
+      'http://127.0.0.1:43120/?token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+',
+      'http://localhost:43120/?token=' + BROWSER_AUTH_TOKEN,
+      'http://127.0.0.1/?token=' + BROWSER_AUTH_TOKEN,
+    ]
+    for (const localUrl of invalidLocalUrls) {
+      expect(() => parseDesktopSettingsView({ ...VIEW, web: { localUrl, lanUrls: [] } }))
+        .toThrow('invalid browser URL')
+    }
+
+    const invalidLanUrls = [
+      `http://192.168.1.20:43120/?token=${BROWSER_AUTH_TOKEN}`,
+      `https://desktop.local:43120/?token=${BROWSER_AUTH_TOKEN}`,
+      `https://192.168.1.20/?token=${BROWSER_AUTH_TOKEN}`,
+    ]
+    for (const lanUrl of invalidLanUrls) {
+      expect(() => parseDesktopSettingsView({
+        ...VIEW,
+        web: { localUrl: VIEW.web.localUrl, lanUrls: [lanUrl] },
+      })).toThrow('invalid browser URL')
+    }
+  })
+
   it('names the section Desktop settings and describes browser opening as permission', () => {
     expect(zh.nav).toBe('桌面设置')
     expect(en.nav).toBe('Desktop settings')
@@ -92,6 +135,10 @@ describe('Desktop settings API', () => {
     expect(en.browserCompatibilityNotice).toMatch(/only.+compatibility mode/iu)
     expect(en.browserCompatibilityNotice).toMatch(/select compatibility mode first/iu)
     expect(en.browserCompatibilityNotice).not.toMatch(/switch(?:es|ing)?.+profile/iu)
+    expect(zh.lanHttpsUnavailable).toContain('可信 HTTPS')
+    expect(zh.lanHttpsUnavailable).toContain('只监听本机')
+    expect(en.lanHttpsUnavailable).toContain('trusted HTTPS')
+    expect(en.lanHttpsUnavailable).toContain('only on this computer')
     expect(zh.beta).toBe('Beta')
     expect(en.beta).toBe('Beta')
     expect(zh.lanWarningBody).toContain('所有在你局域网内的人都能直接操作你的电脑')

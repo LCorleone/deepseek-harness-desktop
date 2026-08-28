@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type {
+  ConnectionRequestRejection,
+  ConnectionTrustRequest,
+} from '@deepseek-ai/dsh-client-connection'
 import type { LocaleId } from '@deepseek-ai/dsh-client-locale'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ThemePreference } from '@deepseek-ai/dsh-client-ui-theme'
@@ -20,6 +24,20 @@ import {
   DESKTOP_DIRECTORY_PICKER_PATH,
   DESKTOP_DIRECTORY_VALIDATOR_PATH,
 } from '../src/directory-picker-contract.ts'
+import {
+  DESKTOP_DEVELOPER_TOOLS_TOGGLE_PATH,
+  DESKTOP_DIAGNOSTICS_EXPORT_PATH,
+  DESKTOP_MARKET_SELECT_PATH,
+  DESKTOP_PROFILE_CREATE_PATH,
+  DESKTOP_PROFILE_CREATE_WINDOW_PATH,
+  DESKTOP_PROFILE_DELETE_PATH,
+  DESKTOP_PROFILE_SELECT_PATH,
+  DESKTOP_RECOVERY_RESTART_PATH,
+  DESKTOP_RENDERER_RELOAD_PATH,
+  DESKTOP_RESTART_PATH,
+  DESKTOP_SETTINGS_PATH,
+  DESKTOP_TERMINAL_OPEN_PATH,
+} from '../src/desktop-settings-contract.ts'
 import type { DesktopRuntime, DesktopShellSpec } from '../src/runtime.ts'
 import { createDesktopBrowserAccess } from '../src/desktop-browser-access.ts'
 import { RENDERER_BOOT_REPORT_PATH, type RendererBootReport } from '../src/renderer-boot-contract.ts'
@@ -49,7 +67,9 @@ interface PluginHarness {
   rendererBoot: ReturnType<typeof vi.fn<(report: RendererBootReport) => void>>
   pickDirectory: ReturnType<typeof vi.fn<() => Promise<string | null>>>
   validateDirectory: ReturnType<typeof vi.fn<(path: string) => Promise<boolean>>>
+  requestRejection: ReturnType<typeof vi.fn<(request: ConnectionTrustRequest) => ConnectionRequestRejection>>
   route(path: string): WebRoute | undefined
+  routes(): readonly WebRoute[]
   notify(next: DesktopSettings, prev: DesktopSettings): Promise<void>
   notifyLocale(preference: LocaleId | undefined): void
   notifyTheme(preference: ThemePreference): void
@@ -68,6 +88,9 @@ function createHarness(
   const rendererBoot = vi.fn<(report: RendererBootReport) => void>()
   const pickDirectory = vi.fn(async () => null)
   const validateDirectory = vi.fn(async () => true)
+  const requestRejection = vi.fn<(
+    request: ConnectionTrustRequest,
+  ) => ConnectionRequestRejection>(() => undefined)
   const routes = new Map<string, WebRoute>()
   const settingsUpdated = new Set<(namespace: unknown, next: unknown) => void>()
   let localePreference: LocaleId | undefined
@@ -154,7 +177,7 @@ function createHarness(
       }),
     },
     settings,
-    connection: { authenticatedUrl },
+    connection: { authenticatedUrl, requestRejection },
     logger: { warn: vi.fn(), error: vi.fn() },
     get: vi.fn((key: unknown) => {
       if (String(key) === 'desktopRuntime') return runtime
@@ -178,7 +201,9 @@ function createHarness(
     rendererBoot,
     pickDirectory,
     validateDirectory,
+    requestRejection,
     route: path => routes.get(path),
+    routes: () => [...routes.values()],
     notify: async (next, prev) => { await watcher?.(next, prev) },
     notifyLocale: (preference) => {
       localePreference = preference
@@ -340,8 +365,56 @@ describe('desktop Host plugin', () => {
 
     await route?.handler(req, res)
 
+    expect(harness.requestRejection).toHaveBeenCalledWith(req)
     expect(harness.rendererBoot).toHaveBeenCalledWith(report)
     expect(res.statusCode).toBe(204)
+  })
+
+  it.each([
+    [401, 'unauthorized'],
+    [403, 'forbidden'],
+  ] as const)('applies the Connection %i rejection before every private exact route', async (
+    status,
+    body,
+  ) => {
+    const harness = createHarness('win32')
+    harness.requestRejection.mockReturnValue(status)
+    apply(harness.ctx, config)
+    const expectedPaths = [
+      DESKTOP_SETTINGS_PATH,
+      DESKTOP_PROFILE_CREATE_PATH,
+      DESKTOP_PROFILE_CREATE_WINDOW_PATH,
+      DESKTOP_PROFILE_DELETE_PATH,
+      DESKTOP_PROFILE_SELECT_PATH,
+      DESKTOP_MARKET_SELECT_PATH,
+      DESKTOP_TERMINAL_OPEN_PATH,
+      DESKTOP_RESTART_PATH,
+      DESKTOP_RECOVERY_RESTART_PATH,
+      DESKTOP_RENDERER_RELOAD_PATH,
+      DESKTOP_DEVELOPER_TOOLS_TOGGLE_PATH,
+      DESKTOP_DIAGNOSTICS_EXPORT_PATH,
+      RENDERER_BOOT_REPORT_PATH,
+      DESKTOP_DIRECTORY_PICKER_PATH,
+      DESKTOP_DIRECTORY_VALIDATOR_PATH,
+    ].sort()
+    const routes = harness.routes()
+    expect(routes.map(route => route.path).sort()).toEqual(expectedPaths)
+
+    for (const route of routes) {
+      const req = { headers: {} } as IncomingMessage
+      const writeHead = vi.fn()
+      const end = vi.fn()
+      const res = { writeHead, end } as unknown as ServerResponse
+
+      await route.handler(req, res)
+
+      expect(writeHead).toHaveBeenCalledWith(status)
+      expect(end).toHaveBeenCalledWith(body)
+    }
+    expect(harness.requestRejection).toHaveBeenCalledTimes(routes.length)
+    expect(harness.rendererBoot).not.toHaveBeenCalled()
+    expect(harness.pickDirectory).not.toHaveBeenCalled()
+    expect(harness.validateDirectory).not.toHaveBeenCalled()
   })
 
   it('serves the Windows native picker through a same-origin desktop route', async () => {
@@ -516,7 +589,10 @@ describe('desktop Host plugin', () => {
     Object.assign(harness.ctx.webServer, { host: '0.0.0.0' })
 
     expect(() => apply(harness.ctx, config)).toThrow('does not match networkExposure')
+    expect(() => apply(harness.ctx, { ...config, networkExposure: 'lan' }))
+      .toThrow('does not match networkExposure')
 
+    Object.assign(harness.ctx.webServer, { host: '127.0.0.1' })
     expect(() => apply(harness.ctx, { ...config, networkExposure: 'lan' })).not.toThrow()
   })
 
@@ -546,11 +622,27 @@ describe('desktop Host plugin', () => {
       ...settings,
       mode: 'advanced',
       openBrowser: true,
-    })).toThrow('browser and LAN access require compatibility mode')
+    })).toThrow('browser access requires compatibility mode')
     expect(() => options?.validate?.({
       ...settings,
       mode: 'advanced',
       networkExposure: 'lan',
-    })).toThrow('browser and LAN access require compatibility mode')
+    })).toThrow('supported on macOS and Windows')
+  })
+
+  it('accepts a deferred LAN preference independently of browser mode on supported platforms', () => {
+    const harness = createHarness('darwin')
+    apply(harness.ctx, config)
+    const options = vi.mocked(harness.ctx.settings.register).mock.calls[0]?.[2]
+
+    expect(() => options?.validate?.({
+      mode: 'advanced',
+      macosMaterial: 'transparent',
+      windowsMaterial: 'off',
+      port: 43_120,
+      openBrowser: false,
+      networkExposure: 'lan',
+      logLevel: 'info',
+    })).not.toThrow()
   })
 })
