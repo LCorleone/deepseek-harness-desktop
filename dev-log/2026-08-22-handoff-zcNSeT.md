@@ -17,6 +17,8 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 | 评审修复 ×4 | 详见各 Phase 段 | 894e82223f, c9e8c773e4, e9c2785877, b5ef752291 |
 
 ## Current State
+- **流程规则（2026-08-28 用户拍板）**：不主动 push、不主动触发构建——commit 本地可以，push/构建必须等用户确认后再执行
+- **里程碑（2026-08-28 晚）：市场三日悬案告破**——settings update() 深合并残留 content 时代 digest（#24 origin 保存不带 digest 字段，旧 {seq2,e59f9c00} 残留到 seq6 记录）→ 每次 scan 正确 digest 66e404≠残留值 → 同序列重放防线死锁目录；观测性补丁（错误码透出+扫描日志+digest 双值）逐层定位。修复 `78c4f3f59e`：mutate set-op 原子替换 + 验签完整通过时 digest 不符 warn+自愈刷新（低 seq 硬拒不松）；market 388 全绿；构建 #28 已触发（含 Deloitte 显示文案 + 本修复）待用户验收
 - **里程碑（2026-08-26）**：试点安装链全程闭合——**dsh-better-sidebar@0.15.2 市场安装成功、重启加载** ✅；tag `v0.1.0-desktop-pilot`（包版本 2.0.3，构建 #21）；E2E 冒烟 12 步自动化已入库（`4d9dfde3af`）
 - **里程碑（2026-08-27）**：上游安全批（pnpm 11.8.0 CVE + 安装器运行中升级 #618 + 三稳定性修复 + P1 补丁，构建 #23）**用户实测通过：开着应用直接升级成功、市场 sidebar 照常** ✅；E2E 冒烟抓到自身 Windows asar 分隔符 bug 已修（`9fe06c3f8e`，下包验证全绿）
 - **Working on（暂停，用户切更高优先级需求）origin 模式切换收尾**：GitLab 托管已验证可用；**下次接续步骤**：① 先验证 raw URL 路径形状过 safeCompanyManifestUrl 校验（GitLab raw 路径含 `/-/raw/` 多段，需确认不触发路径限制；若拒则评估放宽或换 GitLab Pages 纯静态路径）② 改 release 策略：companyCatalogOrigin=https://gitlab.s.dai.deloitte.cn、companyManifestUrl=https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json（同步 dev 策略与 desktop-policy.spec 期望）③ 根 check → push → 打包 ④ 用户装包验证：市场显示目录 → 用「GitLab 上改 revoked:true → push → 重启 → 目录消失 → 改回 → 恢复」两步验证 origin 链路活（不需要新插件）⑤ 之后的上新流程=改 allowlist→build→git push 该仓库（网页编辑器会把单行格式化破坏验签，**永远用 git push**）
