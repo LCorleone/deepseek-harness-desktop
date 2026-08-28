@@ -8,17 +8,22 @@ import {
 } from '../src/desktop-network.ts'
 
 describe('Desktop LAN HTTPS boundary', () => {
-  it('preserves the stored LAN schema while clamping effective exposure to loopback', () => {
+  it('keeps the HTTP origin loopback while preserving HTTPS edge intent', () => {
     expect(parseDesktopNetworkExposure('lan')).toBe('lan')
-    expect(DESKTOP_LAN_HTTPS_AVAILABLE).toBe(false)
-    expect(desktopEffectiveNetworkExposure('lan')).toBe('loopback')
+    expect(DESKTOP_LAN_HTTPS_AVAILABLE).toBe(true)
+    expect(desktopEffectiveNetworkExposure('lan')).toBe('lan')
     expect(desktopWebServerHost('lan')).toBe('127.0.0.1')
     expect(desktopWebServerHost('loopback')).toBe('127.0.0.1')
   })
 
-  it('does not advertise HTTP LAN URLs while trusted HTTPS is unavailable', () => {
-    const urls = desktopLanBrowserUrls(43_120, ['192.168.1.20', '2001:db8::1'])
-    expect(urls).toEqual([])
+  it('advertises only HTTPS URLs on the edge actual port', () => {
+    const urls = desktopLanBrowserUrls(43_121, ['192.168.1.20', '10.0.0.8'])
+    expect(urls).toEqual([
+      'https://192.168.1.20:43121/',
+      'https://10.0.0.8:43121/',
+    ])
     expect(Object.isFrozen(urls)).toBe(true)
+    expect(() => desktopLanBrowserUrls(43_121, ['2001:db8::1']))
+      .toThrow('invalid LAN IPv4 address')
   })
 })

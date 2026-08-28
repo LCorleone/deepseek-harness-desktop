@@ -128,7 +128,7 @@ function normalizedSelection(input: DesktopSetupWizardInput): DesktopSetupWizard
       ? 'off'
       : input.windowsMaterial,
     openBrowser: browserAccess,
-    networkExposure: 'loopback',
+    networkExposure: browserAccess ? input.networkExposure : 'loopback',
     market: input.market,
     notifications: { ...input.notifications },
   }
@@ -415,12 +415,13 @@ function BrowserOptions({
         className="mt-3"
         name="setup-network-exposure"
         onValueChange={value => {
-          if (value === 'loopback') requestExposure(value)
+          if (value === 'loopback'
+            || (value === 'lan' && selection.mode === 'compatibility' && selection.openBrowser)) requestExposure(value)
         }}
         value={selection.networkExposure}
       >
         <Choice body={copy.loopbackBody} id="setup-network-exposure-loopback" selected={selection.networkExposure === 'loopback'} title={copy.loopback} value="loopback" />
-        <Choice badge={copy.beta} body={copy.lanBody} disabled id="setup-network-exposure-lan" selected={false} title={copy.lan} value="lan" />
+        <Choice badge={copy.beta} body={copy.lanBody} disabled={selection.mode !== 'compatibility' || !selection.openBrowser} id="setup-network-exposure-lan" selected={selection.networkExposure === 'lan'} title={copy.lan} value="lan" />
       </RadioGroup>
     </section>
   </div>
@@ -648,7 +649,7 @@ export function SetupWizardApp(): JSX.Element {
   }
 
   const requestExposure = (requested: DesktopSetupWizardNetworkExposure): void => {
-    if (requested === 'lan') return
+    if (requested === 'lan' && (selection.mode !== 'compatibility' || !selection.openBrowser)) return
     if (desktopSetupWizardRequiresLanAcknowledgement(
       selection.networkExposure,
       requested,

@@ -57,6 +57,7 @@ import {
   handleDesktopTerminalOpenRequest,
 } from './desktop-settings-route.ts'
 import type {} from './desktop-settings-controller.ts'
+import { DESKTOP_LAN_HTTPS_CA_PATH } from './lan-https-runtime.ts'
 import { desktopBootRecoveryInjections } from './desktop-boot-recovery.ts'
 import type { DesktopLocale, DesktopShellMode } from './runtime.ts'
 import type {} from './runtime.ts'
@@ -228,9 +229,14 @@ export function apply(ctx: Context, config: Config): void {
   if (browserAccess === undefined) {
     throw new Error('dsh-plugin-desktop: the launcher did not provide ctx.desktopBrowserAccess')
   }
+  const lanHttps = ctx.get('desktopLanHttps')
+  if (lanHttps === undefined) {
+    throw new Error('dsh-plugin-desktop: the launcher did not provide ctx.desktopLanHttps')
+  }
   if (ctx.webServer.host !== desktopWebServerHost(config.networkExposure)) {
     throw new Error('dsh-plugin-desktop: desktop shell WebServer host does not match networkExposure')
   }
+  lanHttps.attach(ctx.webServer.port)
   const iconFilename = runtime.platform === 'darwin'
     ? 'app-icon-mac.png'
     : 'app-icon.png'
@@ -255,6 +261,32 @@ export function apply(ctx: Context, config: Config): void {
     },
   )
   const rendererOrigin = `http://127.0.0.1:${String(ctx.webServer.port)}`
+  if (lanHttps.caCertificate !== null) {
+    const caCertificate = lanHttps.caCertificate
+    ctx.effect(
+      () => ctx.webServer.register({
+        kind: 'exact',
+        path: DESKTOP_LAN_HTTPS_CA_PATH,
+        handler: (req, res) => {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            res.statusCode = 405
+            res.setHeader('allow', 'GET, HEAD')
+            res.setHeader('cache-control', 'no-store')
+            res.end('method not allowed')
+            return
+          }
+          res.statusCode = 200
+          res.setHeader('cache-control', 'no-store')
+          res.setHeader('content-type', 'application/x-x509-ca-cert')
+          res.setHeader('content-disposition', 'attachment; filename="dsh-desktop-local-ca.crt"')
+          res.setHeader('content-length', String(Buffer.byteLength(caCertificate)))
+          res.setHeader('x-content-type-options', 'nosniff')
+          res.end(req.method === 'HEAD' ? undefined : caCertificate)
+        },
+      }),
+      'dsh-plugin-desktop: public LAN HTTPS CA route',
+    )
+  }
   ctx.on('webserver/index-inject', table => {
     table.push(...desktopBootRecoveryInjections())
   })
@@ -357,6 +389,24 @@ export function apply(ctx: Context, config: Config): void {
   }
   ctx.effect(() => {
     let pending: ReturnType<typeof setImmediate> | undefined
+    const updateLiveWebAccess = (
+      browserEnabled: boolean,
+      exposure: DesktopNetworkExposure,
+    ): void => {
+      browserAccess.setOrdinaryBrowserEnabled(browserEnabled)
+      void lanHttps.setEnabled(browserEnabled && exposure === 'lan').then((snapshot) => {
+        if (snapshot.state === 'failed') {
+          ctx.logger.error(
+            `dsh-plugin-desktop: LAN HTTPS edge failed to start (${snapshot.errorCode ?? 'unknown'})`,
+          )
+        }
+      }).catch((cause: unknown) => {
+        ctx.logger.error(
+          `dsh-plugin-desktop: LAN HTTPS edge transition failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      })
+    }
+    updateLiveWebAccess(browserAccess.ordinaryBrowserEnabled, config.networkExposure)
     const stopWatching = settings.watch((next) => {
       const nextBrowserAccess = desktopBrowserAccessEnabled(
         next.mode,
@@ -367,10 +417,9 @@ export function apply(ctx: Context, config: Config): void {
         nextBrowserAccess,
         next.networkExposure,
       )
+      updateLiveWebAccess(nextBrowserAccess, nextNetworkExposure)
       if (next.mode === config.mode
         && next.port === config.port
-        && nextNetworkExposure === config.networkExposure
-        && nextBrowserAccess === browserAccess.ordinaryBrowserEnabled
         && next.macosMaterial === config.macosMaterial
         && next.windowsMaterial === config.windowsMaterial) {
         if (pending !== undefined) clearImmediate(pending)
@@ -388,8 +437,9 @@ export function apply(ctx: Context, config: Config): void {
     return () => {
       stopWatching()
       if (pending !== undefined) clearImmediate(pending)
+      void lanHttps.stop()
     }
-  }, 'dsh-plugin-desktop: restart after startup setting change')
+  }, 'dsh-plugin-desktop: live browser access and restart-applied native settings')
   if (runtime.platform !== 'linux') {
     ctx.on('settings/updated', (namespace, next) => {
       if (namespace !== UI_THEME_SETTINGS_NAMESPACE) return

@@ -326,6 +326,8 @@ virtualStoreDirMaxLength: 60
     expect(prepared.mode).toBe('compatibility')
     expect(prepared.openBrowser).toBe(false)
     expect(prepared.networkExposure).toBe('loopback')
+    expect(prepared.lanAddresses).toEqual([])
+    expect(Object.isFrozen(prepared.lanAddresses)).toBe(true)
 
     const rows = composeEntries([prepared.patches])
     for (const [id, name] of [
@@ -377,6 +379,67 @@ virtualStoreDirMaxLength: 60
     expect(rows.find(row => row.id === 'desktop-profiles')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/profiles',
     }))
+  })
+
+  it('merges a frozen LAN IPv4 snapshot into existing Web runtime trust', () => {
+    const home = temporaryHome()
+    writeFileSync(join(home, 'cordis.patch.yml'), [
+      '- id: web-runtime',
+      '  config:',
+      '    trustedHosts:',
+      '      - lab.internal',
+      '      - 192.168.1.5',
+      '      - lab.internal',
+      '',
+    ].join('\n'))
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      { lanAddresses: ['192.168.1.5', '10.0.0.7', '10.0.0.7'] },
+    )
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.lanAddresses).toEqual(['192.168.1.5', '10.0.0.7'])
+    expect(Object.isFrozen(prepared.lanAddresses)).toBe(true)
+    expect(rows.find(row => row.id === 'web-runtime')).toEqual(expect.objectContaining({
+      config: expect.objectContaining({
+        openBrowser: false,
+        trustedHosts: ['lab.internal', '192.168.1.5', '10.0.0.7'],
+      }),
+    }))
+    expect(rows.find(row => row.id === 'desktop-webserver')).toEqual(expect.objectContaining({
+      config: { host: '127.0.0.1', port: 43_120 },
+    }))
+  })
+
+  it('rejects malformed Web trust config and non-IPv4 launcher addresses', () => {
+    const malformedHome = temporaryHome()
+    writeFileSync(join(malformedHome, 'cordis.patch.yml'), [
+      '- id: web-runtime',
+      '  config:',
+      '    trustedHosts: lab.internal',
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(undefined, malformedHome, 'darwin')).toThrow(
+      'web-runtime trustedHosts must be an array of strings',
+    )
+
+    const invalidAddressHome = temporaryHome()
+    expect(() => prepareDesktopProfile(
+      undefined,
+      invalidAddressHome,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      { lanAddresses: ['desktop.internal'] },
+    )).toThrow('LAN address "desktop.internal" is not an IPv4 literal')
   })
 
   it('keeps both Market providers absent until the user explicitly enables one', () => {

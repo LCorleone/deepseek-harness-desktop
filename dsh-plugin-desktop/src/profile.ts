@@ -2,6 +2,7 @@
 
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { evaluate, isJsExpr, type EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -266,6 +267,8 @@ export interface PreparedDesktopProfile {
   openBrowser: boolean
   /** Listener scope applied to the Desktop-owned WebServer. */
   networkExposure: DesktopNetworkExposure
+  /** Frozen LAN IPv4 snapshot trusted by this profile generation and its HTTPS edge. */
+  lanAddresses: readonly string[]
   /** Resolved file-backed settings document used by this generation. */
   settingsDocument: string
   /** Requested provider and the fail-closed provider effective for this generation. */
@@ -280,6 +283,8 @@ export interface PreparedDesktopProfile {
 export interface DesktopProfilePreparationHooks {
   /** Receive the trusted settings path before its contents are parsed. */
   onSettingsDocumentResolved?: (path: string) => void
+  /** LAN IPv4 literals sampled once before this profile generation is composed. */
+  lanAddresses?: readonly string[]
 }
 
 /** User patch entry skipped to keep a profile bootable. */
@@ -557,6 +562,30 @@ function rowConfig(row: EntryOptions | undefined): Record<string, unknown> {
     : {}
 }
 
+/** Snapshot, validate, and deduplicate the LAN allowlist supplied by the launcher. */
+function preparedLanAddresses(addresses: readonly string[] | undefined): readonly string[] {
+  const unique = new Set<string>()
+  for (const address of addresses ?? []) {
+    if (isIP(address) !== 4) {
+      throw new Error(`${BIN_NAME}: LAN address ${JSON.stringify(address)} is not an IPv4 literal`)
+    }
+    unique.add(address)
+  }
+  return Object.freeze([...unique])
+}
+
+/** Merge launcher-derived LAN literals with a profile's explicit Web trust entries. */
+function webRuntimeTrustedHosts(
+  configured: unknown,
+  lanAddresses: readonly string[],
+): string[] {
+  if (configured === undefined) return [...lanAddresses]
+  if (!Array.isArray(configured) || configured.some(entry => typeof entry !== 'string')) {
+    throw new Error(`${BIN_NAME}: web-runtime trustedHosts must be an array of strings`)
+  }
+  return [...new Set([...configured, ...lanAddresses])]
+}
+
 /** Resolve a Loader row's platform gate without mutating the host process. */
 function rowDisabledOnPlatform(row: EntryOptions, platform: NodeJS.Platform): boolean {
   if (!isJsExpr(row.disabled)) return row.disabled === true
@@ -787,6 +816,7 @@ export function prepareDesktopProfile(
   marketSelection: DesktopMarketSnapshot = DEFAULT_DESKTOP_MARKET_SNAPSHOT,
   hooks: DesktopProfilePreparationHooks = {},
 ): PreparedDesktopProfile {
+  const lanAddresses = preparedLanAddresses(hooks.lanAddresses)
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
     : resolveProfileDir(profileName, home)
@@ -918,13 +948,15 @@ export function prepareDesktopProfile(
   if (webRuntime === undefined) {
     throw new Error(`${BIN_NAME}: desktop profile has no web-runtime row`)
   }
+  const webRuntimeConfig = rowConfig(webRuntime)
   patches.push({
     id: 'web-runtime',
     config: {
-      ...rowConfig(webRuntime),
+      ...webRuntimeConfig,
       // Browser access is an advertised Desktop capability, never an
       // instruction to launch the operating system's default browser.
       openBrowser: false,
+      trustedHosts: webRuntimeTrustedHosts(webRuntimeConfig.trustedHosts, lanAddresses),
     },
   })
   if (mode === 'advanced' || mode === 'extended') {
@@ -1093,6 +1125,7 @@ export function prepareDesktopProfile(
     windowsMaterial,
     openBrowser,
     networkExposure,
+    lanAddresses,
     settingsDocument,
     market: desktopMarketSnapshotWithEffective(marketSelection, effectiveMarket),
     requiresDependencyMigration,

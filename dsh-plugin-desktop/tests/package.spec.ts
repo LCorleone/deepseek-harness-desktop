@@ -199,6 +199,25 @@ describe('published package surface', () => {
     }
   })
 
+  it('gives the Desktop settings section a dedicated display icon', () => {
+    const patchPath = './patches/dsh-client-ui-settings-general@0.1.2-alpha.1.patch'
+    expect(workspaceManifest.resolutions?.['@deepseek-ai/dsh-client-ui-settings-general'])
+      .toContain(patchPath)
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedClient = readFileSync(new URL(
+      'node_modules/@deepseek-ai/dsh-client-ui-settings-general/lib/client.js',
+      packageRoot,
+    ), 'utf8')
+    for (const marker of [
+      'function IconDesktopSettings',
+      'if (id === "desktop")',
+      'M5 14h6M8 11.5V14',
+    ]) {
+      expect(patch).toContain(marker)
+      expect(installedClient).toContain(marker)
+    }
+  })
+
   it('contains no stale rc.2 DSH runtime resolution', () => {
     const dshResolutions = Object.entries(workspaceManifest.resolutions ?? {})
       .filter(([selector]) => selector === '@deepseek-ai/dsh' || selector.startsWith('@deepseek-ai/dsh-'))

@@ -6,12 +6,8 @@ import type { DesktopShellMode } from './runtime.ts'
 /** Listener scope selected for the next Desktop generation. */
 export type DesktopNetworkExposure = 'loopback' | 'lan'
 
-/**
- * LAN ingress stays unavailable until Desktop owns a trusted HTTPS/WSS edge.
- * Keep the persisted `lan` value readable so an existing preference can be
- * activated by a future release without rewriting the user's settings today.
- */
-export const DESKTOP_LAN_HTTPS_AVAILABLE = false
+/** Desktop owns an HTTPS/WSS edge while the upstream WebServer stays loopback-only. */
+export const DESKTOP_LAN_HTTPS_AVAILABLE = true
 
 /**
  * Parse the browser-access preference.
@@ -57,16 +53,16 @@ export function parseDesktopNetworkExposure(value: unknown): DesktopNetworkExpos
   throw new Error('dsh-plugin-desktop: dsh-desktop.networkExposure must be "loopback" or "lan"')
 }
 
-/** Apply the temporary HTTPS safety boundary without changing stored intent. */
+/** Project stored intent; runtime edge status is reported separately by the Host. */
 export function desktopEffectiveNetworkExposure(
   exposure: DesktopNetworkExposure,
 ): DesktopNetworkExposure {
-  return DESKTOP_LAN_HTTPS_AVAILABLE ? exposure : 'loopback'
+  return exposure
 }
 
-/** Project a persisted exposure preference into the supported WebServer host literal. */
-export function desktopWebServerHost(exposure: DesktopNetworkExposure): WebServerConfig['host'] {
-  return desktopEffectiveNetworkExposure(exposure) === 'loopback' ? '127.0.0.1' : '0.0.0.0'
+/** The upstream HTTP origin is never exposed; LAN intent controls only the HTTPS edge. */
+export function desktopWebServerHost(_exposure: DesktopNetworkExposure): WebServerConfig['host'] {
+  return '127.0.0.1'
 }
 
 /** Marker-free URL suitable for an ordinary local browser. */
@@ -74,7 +70,17 @@ export function desktopLoopbackBrowserUrl(port: number): string {
   return `http://127.0.0.1:${String(port)}/`
 }
 
-/** Marker-free URLs advertised for the Web runtime's startup-sampled LAN addresses. */
-export function desktopLanBrowserUrls(_port: number, _addresses: readonly string[]): readonly string[] {
-  return Object.freeze([])
+/** HTTPS URLs advertised for the edge's startup-sampled LAN IPv4 addresses. */
+export function desktopLanBrowserUrls(port: number, addresses: readonly string[]): readonly string[] {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new TypeError('dsh-plugin-desktop: LAN HTTPS port must be an integer from 1 through 65535')
+  }
+  const urls = addresses.map((address) => {
+    if (!/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(address)
+      || address.split('.').some(part => Number(part) > 255)) {
+      throw new TypeError(`dsh-plugin-desktop: invalid LAN IPv4 address ${JSON.stringify(address)}`)
+    }
+    return `https://${address}:${String(port)}/`
+  })
+  return Object.freeze(urls)
 }

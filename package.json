@@ -211,7 +211,7 @@
     "@deepseek-ai/dsh-client-ui-permission-presets": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-permission-presets-0.1.2-alpha.1.tgz",
     "@deepseek-ai/dsh-client-ui-plan": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-plan-0.1.2-alpha.1.tgz",
     "@deepseek-ai/dsh-client-ui-reference": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-reference-0.1.2-alpha.1.tgz",
-    "@deepseek-ai/dsh-client-ui-settings-general": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-settings-general-0.1.2-alpha.1.tgz",
+    "@deepseek-ai/dsh-client-ui-settings-general": "patch:@deepseek-ai/dsh-client-ui-settings-general@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-settings-general-0.1.2-alpha.1.tgz#./patches/dsh-client-ui-settings-general@0.1.2-alpha.1.patch",
     "@deepseek-ai/dsh-client-ui-settings-models": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-settings-models-0.1.2-alpha.1.tgz",
     "@deepseek-ai/dsh-client-ui-settings-plugin-inventory": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-settings-plugin-inventory-0.1.2-alpha.1.tgz",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "file:vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-settings-plugins-0.1.2-alpha.1.tgz",

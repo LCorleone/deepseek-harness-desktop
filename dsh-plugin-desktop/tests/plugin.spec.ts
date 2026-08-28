@@ -40,6 +40,7 @@ import {
 } from '../src/desktop-settings-contract.ts'
 import type { DesktopRuntime, DesktopShellSpec } from '../src/runtime.ts'
 import { createDesktopBrowserAccess } from '../src/desktop-browser-access.ts'
+import { DesktopLanHttpsRuntime } from '../src/lan-https-runtime.ts'
 import { RENDERER_BOOT_REPORT_PATH, type RendererBootReport } from '../src/renderer-boot-contract.ts'
 
 const config: DesktopConfig = {
@@ -67,6 +68,9 @@ interface PluginHarness {
   rendererBoot: ReturnType<typeof vi.fn<(report: RendererBootReport) => void>>
   pickDirectory: ReturnType<typeof vi.fn<() => Promise<string | null>>>
   validateDirectory: ReturnType<typeof vi.fn<(path: string) => Promise<boolean>>>
+  browserAccess: ReturnType<typeof createDesktopBrowserAccess>
+  lanHttps: DesktopLanHttpsRuntime
+  setLanHttpsEnabled: ReturnType<typeof vi.fn<DesktopLanHttpsRuntime['setEnabled']>>
   requestRejection: ReturnType<typeof vi.fn<(request: ConnectionTrustRequest) => ConnectionRequestRejection>>
   route(path: string): WebRoute | undefined
   routes(): readonly WebRoute[]
@@ -99,6 +103,8 @@ function createHarness(
     ordinaryBrowserEnabled,
     Buffer.alloc(32, 6).toString('base64url'),
   )
+  const lanHttps = new DesktopLanHttpsRuntime({ addresses: [] })
+  const setLanHttpsEnabled = vi.spyOn(lanHttps, 'setEnabled')
   const authenticatedUrl = vi.fn((baseUrl: string) => {
     const url = new URL(baseUrl)
     url.pathname = '/'
@@ -182,6 +188,7 @@ function createHarness(
     get: vi.fn((key: unknown) => {
       if (String(key) === 'desktopRuntime') return runtime
       if (String(key) === 'desktopBrowserAccess') return browserAccess
+      if (String(key) === 'desktopLanHttps') return lanHttps
       return () => {}
     }),
     effect: vi.fn((register: () => unknown) => register()),
@@ -201,6 +208,9 @@ function createHarness(
     rendererBoot,
     pickDirectory,
     validateDirectory,
+    browserAccess,
+    lanHttps,
+    setLanHttpsEnabled,
     requestRejection,
     route: path => routes.get(path),
     routes: () => [...routes.values()],
@@ -502,18 +512,20 @@ describe('desktop Host plugin', () => {
     expect(harness.restart).toHaveBeenCalledOnce()
   })
 
-  it('restarts when browser access changes and when a custom mode withdraws stale access', async () => {
+  it('hot-applies browser and LAN access but restarts when a custom mode withdraws them', async () => {
     vi.useFakeTimers()
     const harness = createHarness()
     apply(harness.ctx, config)
     harness.restart.mockImplementation(() => new Promise<void>(() => {}))
 
     await harness.notify(
-      { mode: 'compatibility', macosMaterial: 'transparent', windowsMaterial: 'acrylic', port: 43_120, openBrowser: true, networkExposure: 'loopback', logLevel: 'info' },
-      { mode: 'compatibility', macosMaterial: 'transparent', windowsMaterial: 'acrylic', port: 43_120, openBrowser: false, networkExposure: 'loopback', logLevel: 'info' },
+      { mode: 'compatibility', macosMaterial: 'transparent', windowsMaterial: 'off', port: 43_120, openBrowser: true, networkExposure: 'lan', logLevel: 'info' },
+      { mode: 'compatibility', macosMaterial: 'transparent', windowsMaterial: 'off', port: 43_120, openBrowser: false, networkExposure: 'loopback', logLevel: 'info' },
     )
     await vi.runAllTimersAsync()
-    expect(harness.restart).toHaveBeenCalledOnce()
+    expect(harness.restart).not.toHaveBeenCalled()
+    expect(harness.browserAccess.ordinaryBrowserEnabled).toBe(true)
+    expect(harness.setLanHttpsEnabled).toHaveBeenLastCalledWith(true)
 
     const enabledHarness = createHarness('darwin', true)
     apply(enabledHarness.ctx, config)
@@ -523,6 +535,8 @@ describe('desktop Host plugin', () => {
     )
     await vi.runAllTimersAsync()
     expect(enabledHarness.restart).toHaveBeenCalledOnce()
+    expect(enabledHarness.browserAccess.ordinaryBrowserEnabled).toBe(false)
+    expect(enabledHarness.setLanHttpsEnabled).toHaveBeenLastCalledWith(false)
   })
 
   it('requests one orderly restart after the configured Web port changes', async () => {

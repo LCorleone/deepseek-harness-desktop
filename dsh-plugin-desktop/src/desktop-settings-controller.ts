@@ -113,6 +113,10 @@ export class DesktopSettingsController {
       web: Object.freeze({
         localUrl: web.localUrl,
         lanUrls: Object.freeze([...web.lanUrls]),
+        lanState: web.lanState,
+        lanError: web.lanError,
+        lanCaFingerprint: web.lanCaFingerprint,
+        lanCaUrls: Object.freeze([...web.lanCaUrls]),
       }),
     })
   }
