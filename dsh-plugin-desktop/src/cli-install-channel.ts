@@ -19,15 +19,18 @@
  *
  * Anti-rollback: the sequence floor comes from the local receipts ratchet —
  * the caller derives `lastSeenSequence` from the highest manifest sequence
- * recorded in the market settings install receipts, so an allowed add
- * requires a strictly newer manifest than any that already allowed an
- * install on this machine. The manifest asset ships inside the application
- * bundle, but under a per-user Windows install that bundle directory is
- * user-writable, so the asset alone is not a rollback boundary; closing that
- * writable-asset window is deferred to P3. Freshness is still enforced
- * through the signed `expiresAt`. (The Market channel keeps its own
- * settings-backed sequence store; this terminal gate rides the receipts
- * ratchet instead.)
+ * recorded in the market settings install receipts, and that floor is a
+ * lower bound: an allowed add requires a manifest at least as new as any
+ * that already allowed an install on this machine, so a rolled-back
+ * manifest (sequence below the floor) is denied, while the same sequence —
+ * re-installing from, or installing a second plugin out of, the catalog that
+ * is already deployed — is the normal steady state and is allowed. The
+ * manifest asset ships inside the application bundle, but under a per-user
+ * Windows install that bundle directory is user-writable, so the asset
+ * alone is not a rollback boundary; closing that writable-asset window is
+ * deferred to P3. Freshness is still enforced through the signed
+ * `expiresAt`. (The Market channel keeps its own settings-backed sequence
+ * store; this terminal gate rides the receipts ratchet instead.)
  *
  * Layered integrity: the gate authenticates catalog membership — package,
  * exact version, revocation state, and the manifest signature. The pinned
@@ -94,8 +97,9 @@ export interface LockedPluginAddOptions {
   readonly fetch?: CompanyManifestFetchOptions
   /**
    * Highest manifest sequence this machine has already verified through an
-   * install (the receipts ratchet); the manifest must strictly exceed it. A
-   * safe non-negative integer or omitted — anything else fails the upstream
+   * install (the receipts ratchet); the manifest must not regress below it —
+   * the same sequence is a legitimate replay of the deployed catalog. A safe
+   * non-negative integer or omitted — anything else fails the upstream
    * argument validation.
    */
   readonly lastSeenSequence?: number

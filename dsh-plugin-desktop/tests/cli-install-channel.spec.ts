@@ -220,18 +220,31 @@ describe('locked plugin-add authorization', () => {
     if (!doubled.allowed) expect(doubled.reason).toContain('exactly one package argument')
   })
 
-  it('requires the manifest sequence to exceed the receipts sequence floor', async () => {
+  it('treats the receipts sequence floor as a lower bound: equal passes, older is stale', async () => {
     const assetPath = writeCatalog(unsignedCatalog())
 
-    const stale = await authorizeLockedPluginAdd(
+    // The same sequence is the normal steady state: re-installing from, or
+    // installing a second plugin out of, the catalog that already allowed an
+    // install must not demand an operator sequence bump.
+    const replayed = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       lockedCatalogPolicy(),
       { assetPath, lastSeenSequence: 42 },
     )
+    expect(replayed).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+
+    const stale = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      lockedCatalogPolicy(),
+      { assetPath, lastSeenSequence: 43 },
+    )
     expect(stale.allowed).toBe(false)
     if (!stale.allowed) {
       expect(stale.reason).toContain('stale-sequence')
-      expect(stale.reason).toContain('does not exceed the last seen sequence 42')
+      expect(stale.reason).toContain('regressed below the last seen sequence 43')
     }
 
     const newer = await authorizeLockedPluginAdd(

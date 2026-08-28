@@ -162,8 +162,17 @@ describe('company manifest verification', () => {
       .toMatchObject({ ok: false, code: 'key-mismatch' })
   })
 
-  it('rejects sequence rollback including an equal sequence', () => {
-    expect(verify(signedText(), { lastSeenSequence: 42 })).toMatchObject({ ok: false, code: 'stale-sequence' })
+  it('treats the sequence floor as a lower bound: regressed is stale, equal replays, newer advances', () => {
+    const atSequence = (sequence: number) => signedText(unsignedManifest({ sequence }))
+    expect(verify(atSequence(4), { lastSeenSequence: 5 })).toMatchObject({ ok: false, code: 'stale-sequence' })
+    expect(verify(atSequence(4), { lastSeenSequence: 5 })).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('regressed below the last seen sequence 5'),
+    })
+    // The equal case is the normal steady state: a statically hosted catalog
+    // serves the same manifest on every scan after publishing one sequence.
+    expect(verify(atSequence(5), { lastSeenSequence: 5 })).toMatchObject({ ok: true })
+    expect(verify(atSequence(6), { lastSeenSequence: 5 })).toMatchObject({ ok: true })
     expect(verify(signedText(), { lastSeenSequence: 100 })).toMatchObject({ ok: false, code: 'stale-sequence' })
     expect(verify(signedText(), { lastSeenSequence: 41 }).ok).toBe(true)
   })

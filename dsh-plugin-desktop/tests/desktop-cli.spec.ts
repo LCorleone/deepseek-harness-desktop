@@ -470,15 +470,15 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
-  it('denies a locked terminal add whose manifest is not newer than the receipts ratchet', async () => {
+  it('denies a locked terminal add whose manifest regressed below the receipts ratchet', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-ratchet-'))
     const homeDir = join(root, 'home')
     mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
-    // The catalog fixture carries sequence 42; a receipt recorded at 42 means
-    // a manifest of that sequence already allowed an install here, so the
-    // terminal gate must refuse to re-authorize adds under it.
+    // The catalog fixture carries sequence 42; a receipt recorded at 43 means
+    // a newer manifest already allowed an install here, so the rolled-back
+    // catalog must not re-authorize a terminal add.
     writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
-      'dsh-community-market': { installReceipts: [marketReceipt({ manifestSequence: 42 })] },
+      'dsh-community-market': { installReceipts: [marketReceipt({ manifestSequence: 43 })] },
     }))
     const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
     const originalExitCode = process.exitCode
@@ -495,6 +495,37 @@ describe('packaged dsh bootstrap', () => {
       expect(load).not.toHaveBeenCalled()
       expect(process.exitCode).toBe(1)
       expect(stderrWrite.mock.calls.flat().join('')).toContain('stale-sequence')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a locked terminal add replaying the receipts ratchet sequence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-replay-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // A receipt recorded at the catalog's own sequence is the steady state:
+    // the same manifest already allowed an install, and installing a second
+    // plugin from it must not demand an operator sequence bump.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': { installReceipts: [marketReceipt({ manifestSequence: 42 })] },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(stderrWrite.mock.calls.flat().join('')).not.toContain('stale-sequence')
     } finally {
       stderrWrite.mockRestore()
       process.exitCode = originalExitCode

@@ -56,7 +56,13 @@ export type CompanyManifestVerification =
 export interface VerifyCompanyManifestOptions {
   /** Policy-pinned signing keys; a manifest signed by any listed key verifies. */
   readonly trustRoots: readonly CompanyManifestTrustRoot[]
-  /** Highest sequence the caller has previously verified; the manifest must strictly exceed it. */
+  /**
+   * Highest sequence the caller has previously verified. This is a
+   * rollback floor, not a strict-increase ratchet: a manifest whose sequence
+   * regresses below it is rejected, while an equal sequence — replaying the
+   * very manifest that set the floor — is the normal steady state of a
+   * statically hosted catalog and verifies.
+   */
   readonly lastSeenSequence?: number
   /** Clock injection, defaults to `Date.now`; the manifest must not be expired at this instant. */
   readonly now?: () => number
@@ -71,9 +77,10 @@ function failure(code: CompanyManifestVerificationCode, reason: string): Company
 /**
  * Verify raw company manifest bytes end to end: JSON parsing, canonical byte
  * equality, schema and semantic validation, trust-root key binding, detached
- * ed25519 signature, monotonic sequence, and expiry. Business failures are
- * returned as `{ok: false, code, reason}` values; only invalid call arguments
- * throw `TypeError`.
+ * ed25519 signature, anti-rollback sequence (a manifest may replay the last
+ * seen sequence but must not regress below it), and expiry. Business failures
+ * are returned as `{ok: false, code, reason}` values; only invalid call
+ * arguments throw `TypeError`.
  */
 export function verifyCompanyManifest(
   raw: string | Uint8Array,
@@ -143,10 +150,10 @@ export function verifyCompanyManifest(
     return failure('bad-signature', 'ed25519 signature verification failed')
   }
 
-  if (manifest.sequence <= lastSeenSequence) {
+  if (manifest.sequence < lastSeenSequence) {
     return failure(
       'stale-sequence',
-      `manifest sequence ${manifest.sequence} does not exceed the last seen sequence ${lastSeenSequence}`,
+      `manifest sequence ${manifest.sequence} regressed below the last seen sequence ${lastSeenSequence}`,
     )
   }
   const expiresAtMs = Date.parse(manifest.expiresAt)

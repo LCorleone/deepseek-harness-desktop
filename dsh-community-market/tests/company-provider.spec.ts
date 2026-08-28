@@ -1,4 +1,4 @@
-import { generateKeyPairSync, type KeyObject } from 'node:crypto'
+import { createHash, generateKeyPairSync, type KeyObject } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -138,6 +138,8 @@ const untrusted = async (promise: Promise<unknown>) => {
   expect(error).toBeInstanceOf(CompanyCatalogUntrustedError)
   return error as CompanyCatalogUntrustedError
 }
+
+const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
 
 describe('company catalog provider construction', () => {
   it('requires exactly one acquisition mode and at least one trust root', () => {
@@ -384,6 +386,90 @@ describe('company catalog provider (origin mode)', () => {
     const error = await untrusted(provider.scanCatalog!({}, context))
     expect(error.code).toBe('non-canonical')
     expect(sequenceStore.records).toHaveLength(0)
+  })
+
+  it('re-verifies the same fetched manifest on every scan (static-hosting steady state)', async () => {
+    // The production regression this suite guards: an origin that publishes
+    // sequence 6 once and then serves the same bytes forever. The first scan
+    // persists the sequence; every later scan — same provider or a fresh
+    // process sharing only the store — must keep verifying instead of
+    // failing as a stale replay.
+    const text = signedText(unsignedManifest({ sequence: 6 }))
+    const sequenceStore = memorySequenceStore()
+    const first = originScan(text, MANIFEST_URL, sequenceStore)
+
+    await first.provider.scanCatalog!({}, first.context)
+    await first.provider.scanCatalog!({}, first.context)
+    expect(sequenceStore.records).toEqual([{
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(text),
+    }, {
+      sequence: 6,
+      keyId,
+      verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: sha256Hex(text),
+    }])
+
+    const restart = originScan(text, MANIFEST_URL, sequenceStore)
+    await expect(restart.provider.scanCatalog!({}, restart.context)).resolves.toBeTruthy()
+    expect(restart.provider.verification()).toMatchObject({ mode: 'origin', sequence: 6 })
+    expect(sequenceStore.records).toHaveLength(3)
+  })
+
+  it('rejects a same-sequence fetch whose bytes changed', async () => {
+    const sequenceStore = memorySequenceStore()
+    const first = originScan(signedText(unsignedManifest({ sequence: 6 })), MANIFEST_URL, sequenceStore)
+    await first.provider.scanCatalog!({}, first.context)
+
+    // Tampering the bytes breaks the signature, so the honest construction
+    // is a different legitimately signed manifest at the same sequence (an
+    // operator re-issuing content without bumping); it must not replay over
+    // the verified one.
+    const reissued = signedText(unsignedManifest({ sequence: 6, expiresAt: '2031-01-01T00:00:00Z' }))
+    const second = originScan(reissued, MANIFEST_URL, sequenceStore)
+    const error = await untrusted(second.provider.scanCatalog!({}, second.context))
+    expect(error.code).toBe('stale-sequence')
+    expect(error.message).toContain('re-observed at sequence 6 with different bytes')
+    expect(sequenceStore.records).toHaveLength(1)
+  })
+
+  it('backfills the persisted bytes digest when a legacy record carries none', async () => {
+    // Records written before origin-mode digest persistence carry only the
+    // sequence — the state every already-deployed machine is in. The first
+    // same-sequence scan after upgrading must pass and persist the digest.
+    const text = signedText(unsignedManifest({ sequence: 42 }))
+    const saved: MarketCompanyManifestRecord[] = [{ sequence: 42, keyId, verifiedAt: '2026-08-01T00:00:00.000Z' }]
+    const sequenceStore: CompanyManifestSequenceStore = {
+      async load() { return saved[saved.length - 1] },
+      async save(record) { saved.push(record) },
+    }
+    const { provider, context } = originScan(text, MANIFEST_URL, sequenceStore)
+
+    await expect(provider.scanCatalog!({}, context)).resolves.toBeTruthy()
+
+    expect(saved).toEqual([
+      { sequence: 42, keyId, verifiedAt: '2026-08-01T00:00:00.000Z' },
+      {
+        sequence: 42,
+        keyId,
+        verifiedAt: '2026-09-01T00:00:00.000Z',
+        bytesSha256: sha256Hex(text),
+      },
+    ])
+  })
+
+  it('rejects a fetched sequence that regressed below the persisted ratchet', async () => {
+    const sequenceStore = memorySequenceStore()
+    const first = originScan(signedText(unsignedManifest({ sequence: 7 })), MANIFEST_URL, sequenceStore)
+    await first.provider.scanCatalog!({}, first.context)
+
+    const rolled = originScan(signedText(unsignedManifest({ sequence: 6 })), MANIFEST_URL, sequenceStore)
+    const error = await untrusted(rolled.provider.scanCatalog!({}, rolled.context))
+    expect(error.code).toBe('stale-sequence')
+    expect(error.message).toContain('regressed below the last seen sequence 7')
+    expect(sequenceStore.records).toHaveLength(1)
   })
 })
 

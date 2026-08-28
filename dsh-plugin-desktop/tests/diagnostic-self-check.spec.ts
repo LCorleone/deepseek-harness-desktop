@@ -109,7 +109,7 @@ function untrustedManifestBootVerification(): DesktopBootVerification {
     manifestTrusted: false,
     manifestSequence: undefined,
     keyId: undefined,
-    manifestFailure: { code: 'stale-sequence', reason: 'sequence 4 does not exceed the last seen sequence 9' },
+    manifestFailure: { code: 'stale-sequence', reason: 'sequence 4 regressed below the last seen sequence 9' },
     allowed: [],
     rejected: [{ packageName: 'dsh-plugin-safe', reason: 'the company manifest is not trusted (stale-sequence)' }],
   }
@@ -328,7 +328,7 @@ describe('unsigned reports (direction B: always unsigned)', () => {
       manifestTrusted: false,
       manifestSequence: null,
       keyId: null,
-      manifestFailure: { code: 'stale-sequence', reason: 'sequence 4 does not exceed the last seen sequence 9' },
+      manifestFailure: { code: 'stale-sequence', reason: 'sequence 4 regressed below the last seen sequence 9' },
       allowed: [],
       refused: [{
         packageName: 'dsh-plugin-safe',

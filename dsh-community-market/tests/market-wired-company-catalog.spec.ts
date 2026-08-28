@@ -375,12 +375,14 @@ describe('origin-mode host HTTP client injection', () => {
     ])
     expect(injected.getJson).toHaveBeenCalledTimes(1)
     expect(unusedHttp.getJson).not.toHaveBeenCalled()
-    // Origin mode keeps the strict-increase ratchet and records no bytes
-    // digest (that replay allowance is content-mode only).
+    // Origin mode records the verified sequence and bytes digest too: the
+    // same-sequence replay of a static origin is the normal steady state and
+    // is guarded by byte identity instead of a strict-increase ratchet.
     expect(scope.document().companyManifest).toEqual({
       sequence: 3,
       keyId,
       verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     expect(wiring.provider.verification()).toMatchObject({ mode: 'origin', sequence: 3 })
   })

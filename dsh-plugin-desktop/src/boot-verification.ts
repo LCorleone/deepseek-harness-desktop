@@ -135,9 +135,9 @@ export interface DesktopBootVerificationInputs {
   readonly receipts?: readonly DesktopBootReceipt[]
   /**
    * Anti-rollback sequence floor passed straight to manifest verification
-   * (strictly greater wins). Defaults to one below the highest receipt
-   * sequence, so the same embedded manifest that allowed an install
-   * re-verifies at boot while anything older is stale.
+   * (a lower sequence is stale; an equal one replays). Defaults to the
+   * highest receipt sequence, so the same embedded manifest that allowed an
+   * install re-verifies at boot while anything older is stale.
    */
   readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
@@ -715,10 +715,11 @@ function usableReceipt(
 
 /**
  * Anti-rollback floor derived from receipts: the manifest must be at least
- * as new as every recorded install, so the strict-increase floor sits one
- * below the highest receipt sequence. The same embedded manifest that
- * allowed an install therefore re-verifies at boot, while an older manifest
- * than one that already allowed an install is rejected as stale.
+ * as new as every recorded install. Verification treats the floor as a
+ * lower bound (an equal sequence replays the same manifest, a lower one is
+ * stale), so the floor is exactly the highest receipt sequence: the same
+ * manifest that allowed an install re-verifies at boot, while anything
+ * older than a manifest that already allowed an install is rejected.
  */
 function receiptSequenceFloor(receipts: readonly DesktopBootReceipt[]): number {
   let highest = 0
@@ -727,7 +728,7 @@ function receiptSequenceFloor(receipts: readonly DesktopBootReceipt[]): number {
       highest = receipt.manifestSequence
     }
   }
-  return Math.max(0, highest - 1)
+  return highest
 }
 
 /**

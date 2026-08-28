@@ -32,7 +32,7 @@ const originPolicy = parseDesktopPolicy({
 })
 
 /** Signed manifest fixture the fake Chromium boundary serves. */
-function signedManifestText(sequence = 42): string {
+function signedManifestText(sequence = 42, overrides: Record<string, unknown> = {}): string {
   const manifest = {
     manifestVersion: '1.0.0',
     sequence,
@@ -46,6 +46,7 @@ function signedManifestText(sequence = 42): string {
       revoked: false,
       runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
     }],
+    ...overrides,
   }
   const signature = createCompanyManifestSignature(
     manifest as unknown as Parameters<typeof createCompanyManifestSignature>[0],
@@ -167,7 +168,8 @@ describe('electron main-process manifest boundary', () => {
  * path is taken; every restricted-client guarantee for this one policy-pinned
  * URL (origin pin, refused redirects, bounded body and time) must carry over
  * unchanged, and the market's signature gate over the returned bytes —
- * including the origin-mode strict-increase sequence ratchet — stays intact.
+ * including the sequence replay rules (a regressed sequence, or the same
+ * sequence with different bytes, stays rejected) — stays intact.
  */
 describe('origin-mode market catalog scan over the injected Chromium boundary', () => {
   const gitlabOrigin = 'https://gitlab.company.example'
@@ -223,12 +225,14 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
       .toEqual(['npm:example-plugin@1.0.0'])
     expect(provider.verification()).toMatchObject({ mode: 'origin', sequence: 3, keyId })
-    // The strict-increase ratchet persisted the verified sequence and no
-    // bytes digest (same-sequence replay allowance is content-mode only).
+    // The settings-backed ratchet recorded the verified sequence and, like
+    // content mode, the verified bytes digest that guards same-sequence
+    // replays of a statically hosted origin.
     expect(store.record()).toEqual({
       sequence: 3,
       keyId,
       verifiedAt: '2026-09-01T00:00:00.000Z',
+      bytesSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     // The whole fetch rode the Chromium boundary under `redirect: 'error'`;
     // the unresolvable internal hostname proves the node:https path stayed
@@ -240,16 +244,20 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     )
   })
 
-  it('keeps the origin-mode strict-increase ratchet across injected-client scans', async () => {
-    // A same-sequence re-fetch must stay a stale-sequence rejection in origin
-    // mode: injecting the transport client never weakens the ratchet to the
-    // content-mode same-bytes replay allowance.
+  it('re-verifies a same-sequence re-fetch and rejects changed bytes at that sequence', async () => {
+    // The steady state of a statically hosted origin: the same manifest
+    // bytes come back on every scan, and a re-scan — same provider, or a
+    // fresh process sharing only the persisted ratchet — must keep
+    // verifying instead of failing as a stale replay. Only a regressed
+    // sequence, or the same sequence re-signed over different content,
+    // stays rejected; injecting the transport client never weakens that.
+    const store = memorySequenceStore()
     const chromium = vi.fn(async () => new Response(signedManifestText(3)))
     const client = companyCatalogHttpOverElectronNet(gitlabPolicy, { request: chromium })
     const provider = createCompanyCatalogProvider({
       companyManifestUrl: gitlabPolicy.companyManifestUrl,
       trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
-      sequenceStore: memorySequenceStore(),
+      sequenceStore: store,
       now: () => verifiedNow,
     })
     const context = {
@@ -260,9 +268,23 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     await provider.scanCatalog({}, context)
     chromium.mockClear()
 
-    await expect(provider.scanCatalog({}, context))
-      .rejects.toThrow('does not exceed the last seen sequence 3')
+    await expect(provider.scanCatalog({}, context)).resolves.toBeTruthy()
     expect(chromium).toHaveBeenCalledTimes(1)
+
+    const reissued = companyCatalogHttpOverElectronNet(gitlabPolicy, {
+      request: vi.fn(async () => new Response(signedManifestText(3, { expiresAt: '2031-01-01T00:00:00Z' }))),
+    })
+    const restart = createCompanyCatalogProvider({
+      companyManifestUrl: gitlabPolicy.companyManifestUrl,
+      trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
+      sequenceStore: store,
+      now: () => verifiedNow,
+    })
+    await expect(restart.scanCatalog({}, {
+      signal: new AbortController().signal,
+      http: reissued,
+      source: companySource,
+    })).rejects.toThrow('re-observed at sequence 3 with different bytes')
   })
 
   it('refuses any URL or caller-pinned origin outside the policy', async () => {

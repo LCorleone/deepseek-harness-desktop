@@ -420,7 +420,11 @@ describe('desktop boot bundle verification', () => {
 
   it('honors an injected sequence floor and clock', () => {
     const bundle = bundleInput()
-    const floored = verify(signedManifestText([packageEntry()]), [bundle], { lastSeenSequence: manifestSequence })
+    // The floor is a lower bound: replaying the same sequence re-verifies,
+    // only a strictly higher floor regresses the manifest into stale.
+    const replayed = verify(signedManifestText([packageEntry()]), [bundle], { lastSeenSequence: manifestSequence })
+    expect(replayed.manifestTrusted).toBe(true)
+    const floored = verify(signedManifestText([packageEntry()]), [bundle], { lastSeenSequence: manifestSequence + 1 })
     expect(floored.manifestFailure?.code).toBe('stale-sequence')
 
     const expiredAtFixedClock = verify(

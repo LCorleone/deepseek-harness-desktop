@@ -20,8 +20,12 @@
  * Anti-rollback is cross-process: after a successful verification the manifest
  * sequence is persisted through the injected {@link CompanyManifestSequenceStore}
  * (settings-backed in Desktop) *before* any catalog state is derived from the
- * manifest, so a later manifest whose sequence does not strictly exceed the
- * persisted value is rejected as `stale-sequence` in every future process.
+ * manifest, so a later manifest whose sequence regresses below the persisted
+ * value is rejected as `stale-sequence` in every future process. The persisted
+ * sequence is a floor, not a strict-increase ratchet: replaying the same
+ * sequence is the normal steady state of a catalog that has not been
+ * republished, and is admitted when the verified bytes match the persisted
+ * digest (see the replay rule in `scanCatalog`).
  */
 
 import { createHash } from 'node:crypto'
@@ -447,12 +451,16 @@ export class CompanyCatalogProvider implements CatalogAdapter {
       // the anti-rollback ratchet.
       throw new Error('company manifest anti-rollback state is invalid')
     }
-    // Origin mode keeps the strict-increase ratchet: fetched manifests
-    // must always advance past the persisted sequence. Content mode treats a
-    // same-sequence re-observation as a normal replay only when the verified
-    // bytes are identical (the embedded asset is unchanged); the same
-    // sequence with different bytes, or any lower sequence, is rejected as a
-    // rollback/replay attempt.
+    // Both modes share one replay rule. A strictly lower sequence is a
+    // rollback: origin mode rejects it inside verification through the
+    // persisted floor passed as `lastSeenSequence`, and content mode rejects
+    // it in the explicit check below. The same sequence is a replay, which is
+    // the normal steady state — a statically hosted origin serves the same
+    // manifest bytes on every scan, and the embedded asset is unchanged — so
+    // it is admitted only when the verified bytes are identical to the last
+    // verified ones (byte digests match, or the persisted record predates
+    // digest persistence and has none to compare). The same sequence with
+    // different bytes is a replay attack and is rejected.
     const verification = verifyCompanyManifest(loaded.raw, {
       trustRoots: this.trustRoots,
       ...(this.mode === 'origin' && previous !== undefined
@@ -460,15 +468,15 @@ export class CompanyCatalogProvider implements CatalogAdapter {
         : {}),
       now: this.now,
     })
-    // Content-mode verification always persists the verified bytes digest:
-    // a regressed or mutated same-sequence re-observation is rejected on the
+    // Verification in either mode persists the verified bytes digest: a
+    // regressed or mutated same-sequence re-observation is rejected on the
     // very first comparison (not only from the second scan onward).
-    if (this.mode === 'content' && verification.ok) {
+    if (verification.ok) {
       const bytesSha256 = createHash('sha256').update(
         typeof loaded.raw === 'string' ? Buffer.from(loaded.raw, 'utf8') : Buffer.from(loaded.raw),
       ).digest('hex')
       const sameSequence = previous?.sequence === verification.manifest.sequence
-      if (previous !== undefined && verification.manifest.sequence < previous.sequence) {
+      if (this.mode === 'content' && previous !== undefined && verification.manifest.sequence < previous.sequence) {
         throw new CompanyCatalogUntrustedError(
           'stale-sequence',
           `embedded manifest sequence ${verification.manifest.sequence} regressed below the persisted ratchet ${previous.sequence}`,
@@ -476,12 +484,12 @@ export class CompanyCatalogProvider implements CatalogAdapter {
       }
       if (
         sameSequence
-        && previous.bytesSha256 !== undefined
+        && previous?.bytesSha256 !== undefined
         && previous.bytesSha256 !== bytesSha256
       ) {
         throw new CompanyCatalogUntrustedError(
           'stale-sequence',
-          `embedded manifest re-observed at sequence ${previous.sequence} with different bytes`,
+          `${this.mode === 'origin' ? 'fetched' : 'embedded'} manifest re-observed at sequence ${verification.manifest.sequence} with different bytes`,
         )
       }
       verifiedBytesSha256 = bytesSha256
