@@ -9,6 +9,9 @@ import {
 /** Public endpoint returning the latest stable DSH Desktop version. */
 export const DESKTOP_VERSION_ENDPOINT = 'https://www.dshdesktop.cn/api/desktop/version'
 
+/** Header carrying the installed Desktop version to the fixed version endpoint. */
+export const DESKTOP_CURRENT_VERSION_HEADER = 'X-DSH-Desktop-Version'
+
 /** Maximum response body bytes accepted from the version service. */
 export const MAX_VERSION_RESPONSE_BYTES = 4 * 1024
 
@@ -105,7 +108,7 @@ export async function checkForStableUpdate(
 
   let headers: HeadersInit
   try {
-    headers = desktopVersionRequestHeaders(options.installationId)
+    headers = desktopVersionRequestHeaders(options.installationId, current.version)
   } catch {
     return null
   }
@@ -146,13 +149,18 @@ export async function checkForStableUpdate(
 /** Build the complete header set for the fixed version-check request only. */
 export function desktopVersionRequestHeaders(
   installationId?: string,
+  currentVersion?: string,
 ): Readonly<Record<string, string>> {
-  return installationId === undefined
-    ? { Accept: 'application/json' }
-    : {
-        Accept: 'application/json',
-        [DESKTOP_INSTALLATION_ID_HEADER]: assertDesktopInstallationId(installationId),
-      }
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (currentVersion !== undefined) {
+    const parsed = parseCanonicalStableVersion(currentVersion)
+    if (parsed === null) throw new Error('Desktop current version must be a canonical stable SemVer.')
+    headers[DESKTOP_CURRENT_VERSION_HEADER] = parsed.version
+  }
+  if (installationId !== undefined) {
+    headers[DESKTOP_INSTALLATION_ID_HEADER] = assertDesktopInstallationId(installationId)
+  }
+  return headers
 }
 
 async function defaultRequest(url: string, init: RequestInit): Promise<Response> {
