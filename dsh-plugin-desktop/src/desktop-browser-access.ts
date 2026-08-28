@@ -18,10 +18,12 @@ export interface DesktopRendererAccessHeader {
 
 /** Browser-access policy fixed for one Desktop Host generation. */
 export interface DesktopBrowserAccess {
-  /** Whether marker-free ordinary-browser traffic may reach the Web carrier. */
+  /** Whether marker-free ordinary-browser traffic may currently reach the Web carrier. */
   readonly ordinaryBrowserEnabled: boolean
   /** Ephemeral capability proving that a request came from the Electron renderer. */
   readonly rendererHeader: DesktopRendererAccessHeader
+  /** Change ordinary-browser access without rebuilding the Host generation. */
+  setOrdinaryBrowserEnabled(enabled: boolean): void
 }
 
 /** Request classes understood by the Desktop-owned WebServer gate. */
@@ -38,12 +40,19 @@ export function createDesktopBrowserAccess(
   if (!ACCESS_TOKEN_PATTERN.test(token)) {
     throw new TypeError('dsh-plugin-desktop: renderer access token must be 32 base64url bytes')
   }
+  let enabled = ordinaryBrowserEnabled
   return Object.freeze({
-    ordinaryBrowserEnabled,
+    get ordinaryBrowserEnabled() { return enabled },
     rendererHeader: Object.freeze({
       name: DESKTOP_RENDERER_ACCESS_HEADER,
       value: token,
     }),
+    setOrdinaryBrowserEnabled(next: boolean) {
+      if (typeof next !== 'boolean') {
+        throw new TypeError('dsh-plugin-desktop: ordinary browser access must be a boolean')
+      }
+      enabled = next
+    },
   })
 }
 

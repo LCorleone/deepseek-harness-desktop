@@ -187,7 +187,7 @@ describe('DesktopSetupWizardWindow', () => {
   })
 
   it('returns the full immutable selection after explicit completion', async () => {
-    const source = input({ networkExposure: 'lan' })
+    const source = input()
     const expected: DesktopSetupWizardSelection = {
       mode: source.mode,
       macosMaterial: source.macosMaterial,

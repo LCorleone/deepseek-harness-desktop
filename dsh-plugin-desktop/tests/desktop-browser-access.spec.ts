@@ -24,6 +24,19 @@ describe('Desktop browser access policy', () => {
     expect(() => createDesktopBrowserAccess(false, 'short')).toThrow('32 base64url bytes')
   })
 
+  it('changes ordinary-browser access without replacing the renderer capability', () => {
+    const access = createDesktopBrowserAccess(false, RENDERER_TOKEN)
+
+    expect(decideDesktopBrowserAccess(access, { headers: {}, url: '/' })).toBe('denied')
+    access.setOrdinaryBrowserEnabled(true)
+    expect(decideDesktopBrowserAccess(access, { headers: {}, url: '/' })).toBe('browser')
+    expect(access.rendererHeader.value).toBe(RENDERER_TOKEN)
+    access.setOrdinaryBrowserEnabled(false)
+    expect(decideDesktopBrowserAccess(access, { headers: {}, url: '/' })).toBe('denied')
+    expect(() => access.setOrdinaryBrowserEnabled('yes' as unknown as boolean))
+      .toThrow('ordinary browser access must be a boolean')
+  })
+
   it('always permits an Electron request carrying the exact capability', () => {
     const access = createDesktopBrowserAccess(false, RENDERER_TOKEN)
 

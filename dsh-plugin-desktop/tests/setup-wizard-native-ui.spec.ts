@@ -56,13 +56,16 @@ const selection: DesktopSetupWizardSelection = {
 
 const copy = desktopSetupWizardCopy('zh')
 
-function renderStep(step: Exclude<(typeof DESKTOP_SETUP_WIZARD_STEPS)[number], 'welcome' | 'success'>): string {
+function renderStep(
+  step: Exclude<(typeof DESKTOP_SETUP_WIZARD_STEPS)[number], 'welcome' | 'success'>,
+  current: DesktopSetupWizardSelection = selection,
+): string {
   return renderToStaticMarkup(createElement(SetupWizardStepPage, {
     copy,
     input,
     requestBrowserAccess: (_enabled: boolean) => {},
     requestExposure: (_exposure: DesktopSetupWizardNetworkExposure) => {},
-    selection,
+    selection: current,
     step,
     update: (_next: DesktopSetupWizardSelection) => {},
   }))
@@ -218,11 +221,22 @@ describe('Setup Wizard setting pages', () => {
   it('marks Community Market and LAN access as Beta features', () => {
     const market = renderStep('market')
     const browser = renderStep('browser')
+    const enabledBrowser = renderStep('browser', {
+      ...selection,
+      mode: 'compatibility',
+      openBrowser: true,
+      networkExposure: 'lan',
+    })
     const communityOption = market.indexOf('for="setup-plugin-market-community-market"')
     const nextMarketOption = market.indexOf('for="setup-plugin-market-dsh-market"')
     const marketBadge = market.indexOf('data-slot="badge"')
     const lanOption = browser.indexOf('for="setup-network-exposure-lan"')
     const lanBadge = browser.indexOf('data-slot="badge"')
+    const enabledLanOption = enabledBrowser.indexOf('for="setup-network-exposure-lan"')
+    const enabledLanChoice = enabledBrowser.slice(
+      enabledLanOption,
+      enabledBrowser.indexOf('</label>', enabledLanOption),
+    )
 
     expect(occurrences(market, 'data-slot="badge"')).toBe(1)
     expect(occurrences(browser, 'data-slot="badge"')).toBe(1)
@@ -231,6 +245,10 @@ describe('Setup Wizard setting pages', () => {
     expect(marketBadge).toBeGreaterThan(communityOption)
     expect(marketBadge).toBeLessThan(nextMarketOption)
     expect(lanBadge).toBeGreaterThan(lanOption)
+    expect(browser.slice(lanOption)).toContain('disabled=""')
+    expect(enabledLanChoice).not.toContain('disabled=""')
+    expect(enabledLanChoice).toContain('aria-checked="true"')
+    expect(browser).toContain('HTTPS')
   })
 
   it('describes browser access as an opt-in capability limited to compatibility mode', () => {
@@ -398,10 +416,11 @@ describe('Setup Wizard native UI boundaries', () => {
     })
     const text = elementText(content)
     expect(text).toContain('这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启')
-    expect(text).toContain('由于浏览器安全限制')
-    expect(text).toContain('HTTP')
-    expect(text).toContain('部分安全模块可能不可用')
-    expect(text).toContain('无法正常使用')
+    expect(text).toContain('本地 HTTPS 入口')
+    expect(text).toContain('不提供 HTTP 局域网回退')
+    expect(text).toContain('信任 Desktop 本地 CA')
+    expect(text).toContain('secure context')
+    expect(text).toContain('WebCrypto')
     expect(text).toContain('确认开启局域网访问')
     expect(text).toContain('保持仅本机访问')
     const descendants = elementTree(content)

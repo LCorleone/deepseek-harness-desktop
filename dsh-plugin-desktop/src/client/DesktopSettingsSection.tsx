@@ -1,9 +1,9 @@
 /** Desktop-owned settings section registered into the official Settings shell. */
 
 import {
-  useCallback, useEffect, useId, useState, useSyncExternalStore, type FormEvent, type ReactNode,
+  useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode,
 } from 'react'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   DesktopMarketProvider, DesktopProfileView, DesktopSettingsApi, DesktopSettingsView,
@@ -55,6 +55,82 @@ export type DesktopSettingsSectionProps =
 type Translate = DesktopSettingsSectionProps['t']
 type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'material' | 'web' | 'notification'
 type RestartState = 'none' | 'restarting' | 'required'
+type LanPollWait = (signal: AbortSignal) => Promise<void>
+
+const LAN_POLL_INTERVAL_MS = 250
+const LAN_POLL_MAX_READS = 21
+
+const LAN_STATE_LOCALE_KEYS = {
+  inactive: 'lanStatusInactive',
+  starting: 'lanStatusStarting',
+  ready: 'lanStatusReady',
+  failed: 'lanStatusFailed',
+} as const satisfies Record<DesktopSettingsView['web']['lanState'], DesktopSettingsLocaleKey>
+
+function waitForLanPoll(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', cancel)
+      resolve()
+    }, LAN_POLL_INTERVAL_MS)
+    const cancel = (): void => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', cancel, { once: true })
+  })
+}
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === 'AbortError'
+}
+
+/** Refresh Host state, briefly following an in-flight hot LAN transition. */
+export async function readDesktopSettingsUntilLanSettled(
+  api: Pick<DesktopSettingsApi, 'read'>,
+  publish: (view: DesktopSettingsView) => void,
+  signal: AbortSignal,
+  wait: LanPollWait = waitForLanPoll,
+): Promise<DesktopSettingsView> {
+  let latest: DesktopSettingsView | undefined
+  for (let read = 0; read < LAN_POLL_MAX_READS; read += 1) {
+    signal.throwIfAborted()
+    latest = await api.read()
+    signal.throwIfAborted()
+    publish(latest)
+    if (latest.web.lanState !== 'starting' || read === LAN_POLL_MAX_READS - 1) return latest
+    await wait(signal)
+  }
+  throw new Error('dsh-plugin-desktop: unreachable LAN settings polling state')
+}
+
+/** Persist ordinary-browser permission and refresh the already-running edge. */
+export async function persistDesktopBrowserAccessHot(
+  settings: Pick<SettingsScope<DesktopShellSettings>, 'set'>,
+  checked: boolean,
+  currentExposure: DesktopShellSettings['networkExposure'],
+  refresh: () => Promise<DesktopSettingsView>,
+): Promise<DesktopSettingsView> {
+  if (!checked && currentExposure === 'lan') {
+    await settings.set('networkExposure', 'loopback')
+  }
+  await settings.set('openBrowser', checked)
+  return refresh()
+}
+
+/** Persist LAN intent and refresh its hot HTTPS ingress state. */
+export async function persistDesktopNetworkExposureHot(
+  settings: Pick<SettingsScope<DesktopShellSettings>, 'set'>,
+  exposure: DesktopShellSettings['networkExposure'],
+  refresh: () => Promise<DesktopSettingsView>,
+): Promise<DesktopSettingsView> {
+  await settings.set('networkExposure', exposure)
+  return refresh()
+}
 
 /** URLs are advertised only after the user explicitly enables browser access. */
 export function desktopBrowserUrlsShouldRender(
@@ -243,21 +319,34 @@ export function DesktopSettingsSection({
   const [restart, setRestart] = useState<RestartState>('none')
   const [pendingProfileDelete, setPendingProfileDelete] = useState<string>()
   const [confirmLan, setConfirmLan] = useState(false)
+  const lanPoll = useRef<AbortController>()
+
+  const refreshView = useCallback(async () => {
+    lanPoll.current?.abort()
+    const controller = new AbortController()
+    lanPoll.current = controller
+    try {
+      return await readDesktopSettingsUntilLanSettled(api, setView, controller.signal)
+    } finally {
+      if (lanPoll.current === controller) lanPoll.current = undefined
+    }
+  }, [api])
 
   const load = useCallback(async () => {
     setBusy('load')
     setLoadFailed(false)
     setOperationFailed(false)
     try {
-      setView(await api.read())
-    } catch {
-      setLoadFailed(true)
+      await refreshView()
+    } catch (cause) {
+      if (!isAbortError(cause)) setLoadFailed(true)
     } finally {
       setBusy(current => current === 'load' ? undefined : current)
     }
-  }, [api])
+  }, [refreshView])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => () => { lanPoll.current?.abort() }, [])
   useEffect(() => {
     if (restart !== 'restarting') return
     const timer = setTimeout(() => { setRestart('required') }, 8_000)
@@ -363,24 +452,17 @@ export function DesktopSettingsSection({
     void run('web', async () => {
       if (checked) {
         if (!desktopBrowserAccessAvailable(mode)) return
-        await desktopSettings.set('openBrowser', true)
-        requestRestart()
+        await persistDesktopBrowserAccessHot(desktopSettings, true, configuredNetworkExposure, refreshView)
         return
       }
-      // LAN keeps legacy browser access effective until the listener is safely
-      // returned to loopback, so the queued writes cannot expose a hidden gate.
-      await desktopSettings.set('openBrowser', false)
-      if (configuredNetworkExposure === 'lan') {
-        await desktopSettings.set('networkExposure', 'loopback')
-      }
-      if (browserAccess) requestRestart()
+      await persistDesktopBrowserAccessHot(desktopSettings, false, configuredNetworkExposure, refreshView)
     })
   }
 
   const setNetworkExposure = (exposure: DesktopShellSettings['networkExposure']): void => {
     void run('web', async () => {
-      await desktopSettings.set('networkExposure', exposure)
-      requestRestart()
+      if (exposure === 'lan' && (!desktopBrowserAccessAvailable(mode) || !browserAccess)) return
+      await persistDesktopNetworkExposureHot(desktopSettings, exposure, refreshView)
     })
   }
 
@@ -590,7 +672,7 @@ export function DesktopSettingsSection({
         <ToggleRow
           label={t('openBrowser')}
           checked={browserAccess}
-          disabled={!desktopBrowserAccessAvailable(mode) || !settingsWritable || busy !== undefined || restart !== 'none'}
+          disabled={!desktopBrowserAccessAvailable(mode) || !settingsWritable || busy !== undefined}
           onChange={setBrowserAccess}
         />
         <p className="dshDesktopSettingsNotice">{t('browserCompatibilityNotice')}</p>
@@ -598,21 +680,49 @@ export function DesktopSettingsSection({
           label={t('lanAccess')}
           badge={t('beta')}
           checked={networkExposure === 'lan'}
-          disabled={!browserAccess || !settingsWritable || busy !== undefined || restart !== 'none'}
+          disabled={!browserAccess || !settingsWritable || busy !== undefined}
           onChange={(checked) => {
             if (checked) setConfirmLan(true)
             else setNetworkExposure('loopback')
           }}
         />
+        {view !== undefined && (
+          <div className="dshDesktopSettingsLanStatus" data-state={view.web.lanState} role="status">
+            <span className="dshDesktopSettingsChoiceTitle">
+              {t('lanStatus')}
+              <span className="dshDesktopSettingsBadge">{t(LAN_STATE_LOCALE_KEYS[view.web.lanState])}</span>
+            </span>
+            {view.web.lanError !== null && (
+              <span className="dshDesktopSettingsChoiceBody">
+                {t('lanError')}: <code>{view.web.lanError}</code>
+              </span>
+            )}
+          </div>
+        )}
         {desktopBrowserUrlsShouldRender(browserAccess, networkExposure) && view !== undefined && (
           <div className="dshDesktopSettingsUrls">
             <span className="dshDesktopSettingsChoiceTitle">{t('browserUrls')}</span>
             <a href={view.web.localUrl} target="_blank" rel="noopener noreferrer">{view.web.localUrl}</a>
-            {networkExposure === 'lan' && view.web.lanUrls.map(url => <a href={url} key={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
-            {networkExposure === 'lan' && view.web.lanUrls.length === 0 && (
-              <span className="dshDesktopSettingsChoiceBody">{t('lanUrlsAfterRestart')}</span>
-            )}
+            {view.web.lanUrls.length > 0 && <span className="dshDesktopSettingsChoiceTitle">{t('lanHttpsUrls')}</span>}
+            {view.web.lanUrls.map(url => <a href={url} key={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
           </div>
+        )}
+        {networkExposure === 'lan' && view !== undefined && (
+          <>
+            <p className="dshDesktopSettingsNotice">{t('lanTrustNotice')}</p>
+            {(view.web.lanCaFingerprint !== null || view.web.lanCaUrls.length > 0) && (
+              <div className="dshDesktopSettingsUrls">
+                <span className="dshDesktopSettingsChoiceTitle">{t('lanCaTitle')}</span>
+                {view.web.lanCaFingerprint !== null && (
+                  <span className="dshDesktopSettingsLanFingerprint">
+                    {t('lanCaFingerprint')}: <code>{view.web.lanCaFingerprint}</code>
+                  </span>
+                )}
+                {view.web.lanCaUrls.length > 0 && <span className="dshDesktopSettingsChoiceBody">{t('lanCaDownloads')}</span>}
+                {view.web.lanCaUrls.map(url => <a href={url} key={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
+              </div>
+            )}
+          </>
         )}
       </section>
 

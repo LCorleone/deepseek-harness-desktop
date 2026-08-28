@@ -69,8 +69,16 @@ export interface DesktopSettingsMarketView {
 export interface DesktopSettingsWebView {
   /** Always-available loopback URL using the actual listening port. */
   readonly localUrl: string
-  /** Startup-sampled LAN URLs; empty while the generation is loopback-only. */
+  /** Authenticated HTTPS URLs; non-empty only while the LAN edge is ready. */
   readonly lanUrls: readonly string[]
+  /** Actual hot edge state, distinct from the persisted LAN preference. */
+  readonly lanState: 'inactive' | 'starting' | 'ready' | 'failed'
+  /** Stable certificate/bind failure category, present only for a failed edge. */
+  readonly lanError: string | null
+  /** SHA-256 identity for the installation-local CA, when available. */
+  readonly lanCaFingerprint: string | null
+  /** Public CA downloads on each ready HTTPS authority, without auth tokens. */
+  readonly lanCaUrls: readonly string[]
 }
 
 /** Complete renderer-safe Desktop settings state. */

@@ -1,6 +1,6 @@
 /** DSH Desktop executable: minimal Electron bootstrap around the Host Cordis root. */
 
-import { app, crashReporter, shell } from 'electron'
+import { app, crashReporter, safeStorage, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +16,7 @@ import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import type {} from '@deepseek-ai/dsh-web-app'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import { isDesktopInstallerQuitRequest } from './desktop-installer-quit.ts'
 import { createDesktopBrowserAccess } from './desktop-browser-access.ts'
 import {
@@ -47,6 +48,16 @@ import {
   desktopLanBrowserUrls,
   desktopLoopbackBrowserUrl,
 } from './desktop-network.ts'
+import { desktopLanAddresses } from './lan-addresses.ts'
+import {
+  createLanHttpsCertificate,
+  DesktopLanHttpsCertificateError,
+  type DesktopLanHttpsPrivateKeyProtector,
+} from './lan-https-certificate.ts'
+import {
+  DESKTOP_LAN_HTTPS_CA_PATH,
+  DesktopLanHttpsRuntime,
+} from './lan-https-runtime.ts'
 import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { resolveDesktopShellEnvironment } from './shell-environment.ts'
@@ -85,6 +96,7 @@ import { routeDesktopStartupFailure } from './startup-failure-routing.ts'
 import { DesktopStartupGeneration } from './startup-generation.ts'
 import {
   desktopInstallAnchor,
+  healDesktopProfileModuleFallback,
   prepareDesktopProfile,
   type SkippedOptionalEntry,
 } from './profile.ts'
@@ -139,6 +151,20 @@ import { windowsSupportsMica } from './window-material.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const PRODUCT_NAME = 'DSH Desktop'
+
+/** Require OS-backed secret storage; Linux's plaintext fallback is not sufficient for a CA key. */
+function desktopLanHttpsPrivateKeyProtector(): DesktopLanHttpsPrivateKeyProtector {
+  return {
+    available: () => {
+      if (!safeStorage.isEncryptionAvailable()) return false
+      if (process.platform !== 'linux') return true
+      const backend = safeStorage.getSelectedStorageBackend()
+      return backend !== 'basic_text' && backend !== 'unknown'
+    },
+    seal: plaintext => safeStorage.encryptString(Buffer.from(plaintext).toString('utf8')),
+    open: sealed => Buffer.from(safeStorage.decryptString(Buffer.from(sealed)), 'utf8'),
+  }
+}
 
 class RendererStartupFailure extends Error {
   constructor(
@@ -637,8 +663,10 @@ async function start(): Promise<void> {
     startupStage = 'profile-composition'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
+    const lanAddresses = desktopLanAddresses()
     let marketSelection = readDesktopMarketStateForUserData(marketUserDataDir)
     const preparationHooks = {
+      lanAddresses,
       onSettingsDocumentResolved: (settingsDocument: string) => {
         if (startupRecoveryConfigurationPaths === undefined) return
         startupRecoveryConfigurationPaths = {
@@ -647,6 +675,7 @@ async function start(): Promise<void> {
         }
       },
     }
+    await healDesktopProfileModuleFallback(homeDir)
     let prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -804,6 +833,32 @@ async function start(): Promise<void> {
         `${BIN_NAME}: requested Market provider ${prepared.market.requested} was disabled for this generation: ${prepared.marketFailure}`,
       )
     }
+    let lanHttpsCertificate: Awaited<ReturnType<typeof createLanHttpsCertificate>> | undefined
+    let lanHttpsFailureCode: string | undefined
+    if (prepared.lanAddresses.length === 0) {
+      lanHttpsFailureCode = 'no-address'
+    } else {
+      try {
+        lanHttpsCertificate = await createLanHttpsCertificate(
+          marketUserDataDir,
+          prepared.lanAddresses,
+          desktopLanHttpsPrivateKeyProtector(),
+        )
+      } catch (cause) {
+        lanHttpsFailureCode = cause instanceof DesktopLanHttpsCertificateError
+          ? cause.code
+          : 'certificate-state'
+        electronLogger.error(
+          `${BIN_NAME}: LAN HTTPS certificate setup is unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+    }
+    const lanHttps = new DesktopLanHttpsRuntime({
+      addresses: prepared.lanAddresses,
+      ...(lanHttpsCertificate === undefined ? {} : { certificate: lanHttpsCertificate }),
+      ...(lanHttpsFailureCode === undefined ? {} : { failureCode: lanHttpsFailureCode }),
+      requestedPort: 0,
+    })
     const browserAccess = createDesktopBrowserAccess(
       prepared.mode === 'compatibility' && prepared.openBrowser,
     )
@@ -819,6 +874,7 @@ async function start(): Promise<void> {
       clearEnvironmentPath: pnpmRuntime.clearEnvironmentPath,
       dshBootstrapPath,
     }
+    await healDesktopProfileModuleFallback(homeDir, prepared.profile)
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)
     const releasePackageResolver = installProfilePackageResolver(prepared.bareModuleBaseUrl)
@@ -827,6 +883,9 @@ async function start(): Promise<void> {
       prepared.rootConfig,
       prepared.patches,
       async (hostCtx) => {
+        // Keep Host imports and browser bundle discovery on the same public
+        // profile-overlay resolver used by packaged Electron.
+        hostCtx.loader.internal = undefined
         generation.bindHost(hostCtx)
         hostCtx.effect(
           () => releasePnpmRuntime,
@@ -844,6 +903,7 @@ async function start(): Promise<void> {
         )
         hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
         hostCtx.provide('desktopBrowserAccess', browserAccess)
+        hostCtx.provide('desktopLanHttps', lanHttps)
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
         await hostCtx.plugin(DesktopActionsService, {
@@ -914,11 +974,21 @@ async function start(): Promise<void> {
           },
           readMarket,
           readWeb: () => {
-            const webRuntime = hostCtx.get('webRuntime')
-            if (webRuntime === undefined) throw new Error(`${BIN_NAME}: Web runtime is unavailable`)
+            const lan = lanHttps.snapshot()
+            const lanOrigins = lan.state === 'ready' && lan.actualPort !== null
+              ? desktopLanBrowserUrls(lan.actualPort, lan.addresses)
+              : []
             return {
-              localUrl: desktopLoopbackBrowserUrl(hostCtx.webServer.port),
-              lanUrls: desktopLanBrowserUrls(hostCtx.webServer.port, webRuntime.lanAddresses),
+              localUrl: hostCtx.connection.authenticatedUrl(
+                desktopLoopbackBrowserUrl(hostCtx.webServer.port),
+              ),
+              lanUrls: lanOrigins.map(url => hostCtx.connection.authenticatedUrl(url)),
+              lanState: lan.state,
+              lanError: lan.errorCode,
+              lanCaFingerprint: lan.caFingerprint,
+              lanCaUrls: lanOrigins.map((origin) => {
+                return new URL(DESKTOP_LAN_HTTPS_CA_PATH, origin).href
+              }),
             }
           },
           selectMarket: async provider => desktopMarketSnapshotWithEffective(

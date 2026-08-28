@@ -36,7 +36,7 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(Object.values(chinese).every(value => value.length > 0)).toBe(true)
   })
 
-  it('contains the required direct-control and HTTP security warnings in both locales', () => {
+  it('explains the LAN HTTPS edge, local CA trust, and lack of an HTTP fallback in both locales', () => {
     const chinese = desktopSetupWizardCopy('zh')
     const english = desktopSetupWizardCopy('en')
     expect(chinese.beta).toBe('Beta')
@@ -44,16 +44,22 @@ describe('Desktop Setup Wizard copy and contract', () => {
     expect(chinese.lanWarningBody).toContain(
       '这样很危险，所有在你局域网内的人都能直接操作你的电脑，请谨慎开启',
     )
-    expect(chinese.lanWarningBody).toContain('浏览器安全限制')
-    expect(chinese.lanWarningBody).toContain('HTTP')
-    expect(chinese.lanWarningBody).toContain('安全模块可能不可用')
-    expect(chinese.lanWarningBody).toContain('无法正常使用')
+    expect(chinese.lanWarningBody).toContain('本地 HTTPS 入口')
+    expect(chinese.lanWarningBody).toContain('不提供 HTTP 局域网回退')
+    expect(chinese.lanWarningBody).toContain('信任 Desktop 本地 CA')
+    expect(chinese.lanWarningBody).toContain('secure context')
+    expect(chinese.lanWarningBody).toContain('WebCrypto')
     expect(english.lanWarningBody).toContain('everyone on your local network')
     expect(english.lanWarningBody).toContain('operate your computer directly')
-    expect(english.lanWarningBody).toContain('Browser security restrictions')
-    expect(english.lanWarningBody).toContain('HTTP')
-    expect(english.lanWarningBody).toContain('security modules')
-    expect(english.lanWarningBody).toContain('not to work correctly')
+    expect(english.lanWarningBody).toContain('local HTTPS edge')
+    expect(english.lanWarningBody).toContain('no HTTP LAN fallback')
+    expect(english.lanWarningBody).toContain('trust the Desktop local CA')
+    expect(english.lanWarningBody).toContain('secure context')
+    expect(english.lanWarningBody).toContain('WebCrypto')
+    expect(chinese.networkExposureBody).toContain('HTTPS')
+    expect(chinese.lanBody).toContain('客户机')
+    expect(english.networkExposureBody).toContain('HTTPS')
+    expect(english.lanBody).toContain('client device')
   })
 
   it('describes the sequential navigation, skip confirmation, and final success action', () => {
@@ -137,6 +143,14 @@ describe('Desktop Setup Wizard copy and contract', () => {
     )).toBe(false)
     expect(desktopSetupWizardSelectionIsAvailable(
       { ...input, openBrowser: false, networkExposure: 'lan' },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(false)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, openBrowser: true, networkExposure: 'lan' },
+      { platform: 'win32', micaSupported: true },
+    )).toBe(true)
+    expect(desktopSetupWizardSelectionIsAvailable(
+      { ...input, mode: 'advanced', openBrowser: true, networkExposure: 'lan' },
       { platform: 'win32', micaSupported: true },
     )).toBe(false)
   })

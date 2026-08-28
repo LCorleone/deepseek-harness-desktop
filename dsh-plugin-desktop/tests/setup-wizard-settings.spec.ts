@@ -299,7 +299,7 @@ describe('Desktop Setup Wizard settings document', () => {
     })
   })
 
-  it('migrates legacy LAN to explicit browser access only in compatibility mode', async () => {
+  it('preserves legacy LAN intent by materializing compatibility browser access', async () => {
     const path = join(temporaryDirectory(), 'legacy.yaml')
     writeFileSync(path, [
       'dsh-desktop:',
@@ -310,6 +310,7 @@ describe('Desktop Setup Wizard settings document', () => {
     ].join('\n'))
 
     await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(true)
+    await expect(migrateDesktopBrowserAccessSettings(path)).resolves.toBe(false)
     expect(parseDocument(readFileSync(path, 'utf8')).toJS()).toMatchObject({
       'dsh-desktop': {
         mode: 'compatibility',
