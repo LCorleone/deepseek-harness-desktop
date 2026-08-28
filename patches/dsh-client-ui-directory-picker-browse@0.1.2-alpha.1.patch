@@ -134,13 +134,6 @@ index 3bc9db718b..9406075df3 100644
  				t: ctx.locale.bind(LOCALE_NS)
  			});
  			ctx.slots.inject("conversation.hero.workspace.directoryFlow", () => ctx.slots.inject("sidebar.workspaces.directoryFlow", function* () {
-@@ -1042,4 +1095,4 @@ window.__ModuleLoader__.load({
- 	}
- });
- 
--//# sourceMappingURL=client.js.map
-\ No newline at end of file
-+//# sourceMappingURL=client.js.map
 diff --git a/lib/types/client/DirectoryBrowser.d.ts b/lib/types/client/DirectoryBrowser.d.ts
 index 2992216e3c..8ff178a712 100644
 --- a/lib/types/client/DirectoryBrowser.d.ts

@@ -1849,7 +1849,7 @@ __metadata:
 
 "@deepseek-ai/dsh-client-ui-directory-picker-browse@patch:@deepseek-ai/dsh-client-ui-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz#./patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch::locator=deepseek-harness-desktop%40workspace%3A.":
   version: 0.1.2-alpha.1
-  resolution: "@deepseek-ai/dsh-client-ui-directory-picker-browse@patch:@deepseek-ai/dsh-client-ui-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%23vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%3A%3Ahash=54e775&locator=deepseek-harness-desktop%2540workspace%253A.#./patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch::version=0.1.2-alpha.1&hash=74253a&locator=deepseek-harness-desktop%40workspace%3A."
+  resolution: "@deepseek-ai/dsh-client-ui-directory-picker-browse@patch:@deepseek-ai/dsh-client-ui-directory-picker-browse@file%3Avendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%23vendor/dsh-runtime/0.1.2-alpha.1/deepseek-ai-dsh-client-ui-directory-picker-browse-0.1.2-alpha.1.tgz%3A%3Ahash=54e775&locator=deepseek-harness-desktop%2540workspace%253A.#./patches/dsh-client-ui-directory-picker-browse@0.1.2-alpha.1.patch::version=0.1.2-alpha.1&hash=8871a7&locator=deepseek-harness-desktop%40workspace%3A."
   dependencies:
     clsx: "npm:^2.0.0"
   peerDependencies:
@@ -1859,7 +1859,7 @@ __metadata:
     "@deepseek-ai/dsh-client-ui-renderer": ^0.1.2-alpha.1
     "@deepseek-ai/dsh-client-ui-workspace": ^0.1.2-alpha.1
     "@deepseek-ai/dsh-invariants": ^0.1.2-alpha.1
-  checksum: 10c0/159f14426cead322f5bbb2c27abf0ce8970a591604e626932b4cd459b3dcd50b66366f79efb9a896dd822db4a66fb3d16f5a28c009a33e48544c9f611eb918e8
+  checksum: 10c0/84ad7586bb0f948b39ff5f5cc79b52b68be80de3bf75508d6e45a6e76255e2db66d351ed4b1dbdf3fbf5d575dced9c62eab0e5d3d6071fb68c01bcfe90bb3221
   languageName: node
   linkType: hard
 
