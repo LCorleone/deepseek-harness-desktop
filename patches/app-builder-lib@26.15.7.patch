@@ -108,3 +108,31 @@ diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/inclu
 +  SetOutPath "$INSTDIR"
 +  Nsis7z::Extract "${FILE}"
  !macroend
+diff --git a/templates/nsis/include/installUtil.nsh b/templates/nsis/include/installUtil.nsh
+--- a/templates/nsis/include/installUtil.nsh
++++ b/templates/nsis/include/installUtil.nsh
+@@ -128,6 +128,11 @@ Function handleUninstallResult
+   ${if} $R0 != 0
+-    MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
+-    DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+-    SetErrorLevel 2
+-    Quit
++    ${if} $R0 == 2
++      DetailPrint `Old uninstaller returned code 2; continuing with non-atomic in-place replacement.`
++      StrCpy $R0 0
++    ${else}
++      MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
++      DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
++      SetErrorLevel 2
++      Quit
++    ${endif}
+   ${endif}
+@@ -233,4 +238,8 @@ Function uninstallOldVersion
+     CheckResult:
+       ${if} $R0 == 0
+         Return
+       ${endIf}
++      ${if} $R0 == 2
++        # Code 2 is handled by the non-atomic in-place replacement path.
++        Return
++      ${endIf}
