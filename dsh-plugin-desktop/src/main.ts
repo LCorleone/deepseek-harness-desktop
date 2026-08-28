@@ -36,6 +36,7 @@ import {
   startDesktopCrashReporting,
   type DesktopRun,
 } from './crash-evidence.ts'
+import { dshProductVersion } from './dsh-product-version.ts'
 import { exportDesktopDiagnostics } from './diagnostic-export.ts'
 import { createDesktopLifecycleRecorder } from './lifecycle-events.ts'
 import type {
@@ -104,6 +105,8 @@ import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profi
 import {
   clearDesktopSetupWizardState,
   completeOrSkipDesktopSetupWizard,
+  desktopSetupWizardRequired,
+  desktopSetupWizardStateConstants,
   readDesktopSetupWizardState,
 } from './setup-wizard-state.ts'
 import {
@@ -287,6 +290,11 @@ async function start(): Promise<void> {
   let recoveryTerminalAvailable = false
   let startupStage: DesktopStartupFailureStage = 'electron-ready'
   const appVersion = desktopProductVersion()
+  const setupWizardVersions = Object.freeze({
+    desktopVersion: appVersion,
+    dshVersion: dshProductVersion(),
+    setupRevision: desktopSetupWizardStateConstants.setupRevision,
+  })
   const recoveryModeRequested = desktopRecoveryModeRequested()
   try {
     logSink = new LogFileSink(join(app.getPath('userData'), 'logs'), {
@@ -708,7 +716,8 @@ async function start(): Promise<void> {
         preparationHooks,
       )
     }
-    if (readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir) === undefined) {
+    const setupWizardState = readDesktopSetupWizardState(marketUserDataDir, prepared.profile.dir)
+    if (desktopSetupWizardRequired(setupWizardState, setupWizardVersions)) {
       const setupSettings = readDesktopSetupWizardSettings(prepared.settingsDocument)
       setupWizardWindow = new DesktopSetupWizardWindow({
         locale: desktopLocaleFromLanguageTag(app.getLocale()),
@@ -737,6 +746,7 @@ async function start(): Promise<void> {
           marketUserDataDir,
           prepared.profile.dir,
           'skipped',
+          setupWizardVersions,
         )
       } else {
         await updateDesktopSetupWizardSettings(prepared.settingsDocument, {
@@ -762,6 +772,7 @@ async function start(): Promise<void> {
           marketUserDataDir,
           prepared.profile.dir,
           'completed',
+          setupWizardVersions,
         )
       }
     }
