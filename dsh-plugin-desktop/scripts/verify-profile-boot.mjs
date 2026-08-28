@@ -19,12 +19,28 @@ import { DesktopProfileService } from '../lib/profile-service.js'
 const BIN_NAME = 'dsh-plugin-desktop-profile-smoke'
 const HOST_SERVICE_PLUGIN_NAME = 'dsh-desktop-host-services-smoke-plugin'
 const HOST_SERVICE_PROBE_KEY = 'desktopHostServiceProbe'
+let ordinaryBrowserEnabled = false
 const BROWSER_ACCESS = Object.freeze({
-  ordinaryBrowserEnabled: false,
+  get ordinaryBrowserEnabled() { return ordinaryBrowserEnabled },
   rendererHeader: Object.freeze({
     name: 'x-dsh-desktop-renderer',
     value: Buffer.alloc(32, 2).toString('base64url'),
   }),
+  setOrdinaryBrowserEnabled(enabled) { ordinaryBrowserEnabled = enabled },
+})
+const LAN_HTTPS_SNAPSHOT = Object.freeze({
+  state: 'inactive',
+  actualPort: null,
+  addresses: Object.freeze([]),
+  caFingerprint: null,
+  errorCode: null,
+})
+const LAN_HTTPS = Object.freeze({
+  caCertificate: null,
+  attach() {},
+  snapshot() { return LAN_HTTPS_SNAPSHOT },
+  async setEnabled() { return LAN_HTTPS_SNAPSHOT },
+  async stop() { return LAN_HTTPS_SNAPSHOT },
 })
 const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-profile-'))
 let ctx
@@ -129,6 +145,7 @@ try {
       host.loader.internal = undefined
       host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([]))
       host.provide('desktopBrowserAccess', BROWSER_ACCESS)
+      host.provide('desktopLanHttps', LAN_HTTPS)
       host.provide('desktopRuntime', runtime)
       host.provide('desktopPnpmBootstrap', {
         activeProfileName: 'desktop',

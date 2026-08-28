@@ -20,12 +20,28 @@ const THIRD_PARTY_DEPENDENCY_NAME = 'dsh-desktop-loader-smoke-dependency'
 const PRODUCT_VERSION = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ).version
+let ordinaryBrowserEnabled = false
 const BROWSER_ACCESS = Object.freeze({
-  ordinaryBrowserEnabled: false,
+  get ordinaryBrowserEnabled() { return ordinaryBrowserEnabled },
   rendererHeader: Object.freeze({
     name: 'x-dsh-desktop-renderer',
     value: Buffer.alloc(32, 1).toString('base64url'),
   }),
+  setOrdinaryBrowserEnabled(enabled) { ordinaryBrowserEnabled = enabled },
+})
+const LAN_HTTPS_SNAPSHOT = Object.freeze({
+  state: 'inactive',
+  actualPort: null,
+  addresses: Object.freeze([]),
+  caFingerprint: null,
+  errorCode: null,
+})
+const LAN_HTTPS = Object.freeze({
+  caCertificate: null,
+  attach() {},
+  snapshot() { return LAN_HTTPS_SNAPSHOT },
+  async setEnabled() { return LAN_HTTPS_SNAPSHOT },
+  async stop() { return LAN_HTTPS_SNAPSHOT },
 })
 const AUTHENTICATION_TOKEN = Buffer.alloc(32, 3).toString('base64url')
 const RUNNER_ENVIRONMENT_NAMES = new Set([
@@ -139,6 +155,7 @@ try {
       host.loader.internal = undefined
       host.provide(DSH_LAUNCH_ENVIRONMENT_KEY, launchEnvironment)
       host.provide('desktopBrowserAccess', BROWSER_ACCESS)
+      host.provide('desktopLanHttps', LAN_HTTPS)
       host.provide('desktopRuntime', runtime)
       host.provide('webServer', {
         host: '127.0.0.1',
