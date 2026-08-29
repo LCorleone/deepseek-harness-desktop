@@ -106,7 +106,7 @@ jobs:
           $records = @(Get-Content run/tree-digests.json -Raw | ConvertFrom-Json)
           $lines = @('## Measured tree digests', '')
           if ($records.Count -eq 0) {
-            $lines += [ '_no allowlist entry lacked a treeDigest — nothing measured', '' ]
+            $lines += @( '_no allowlist entry lacked a treeDigest — nothing measured', '' )
           } else {
             $lines += @('| package | version | treeDigest |', '| --- | --- | --- |')
             foreach ($record in $records) { $lines += "| $($record.packageName) | $($record.version) | ``$($record.treeDigest)`` |" }
