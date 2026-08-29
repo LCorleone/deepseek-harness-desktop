@@ -23,11 +23,18 @@
  * Usage:
  *   node tools/company-catalog/measure.mjs [--allowlist <path>] [--out <json>]
  *                                          [--desktop-lib <dir>] [--all]
- *                                          [--electron-target <version>] [--keep]
+ *                                          [--electron-target <version>]
+ *                                          [--no-electron-env] [--keep]
  *
- * `--electron-target` mirrors the desktop's pnpm runtime (npm_config_runtime=
- * electron + headers disturl) for plugins whose dependencies ship prebuilt
- * native binaries; pure-JS plugins measure identically without it.
+ * The desktop installs every plugin with the electron runtime env
+ * (npm_config_runtime=electron + npm_config_target=<the desktop's Electron
+ * version> + npm_config_disturl=https://electronjs.org/headers —
+ * profile-materializer.ts and src/pnpm.ts set all three on every pnpm child).
+ * The reference environment must match, so measure.mjs injects the same trio
+ * by default, taking npm_config_target from the `electron` devDependency the
+ * desktop package pins (the version process.versions.electron reports in a
+ * packaged build). `--no-electron-env` drops the trio for a pure-JS control
+ * measurement; `--electron-target` overrides the version instead.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -65,7 +72,12 @@ Options:
                             artifact's resources/app.asar.unpacked/lib works too)
   --all                     Re-measure every entry, including ones that already pin a
                             treeDigest; a mismatch against the reviewed value fails
-  --electron-target <ver>   Mirror the desktop pnpm runtime for native prebuilds
+  --electron-target <ver>   Override the Electron runtime version (default: the
+                            desktop package's pinned 'electron' devDependency)
+  --no-electron-env         Drop the electron runtime env (npm_config_runtime/target/
+                            disturl) the desktop always installs with — pure-JS
+                            control measurements only; the digest may then diverge
+                            from what a real desktop install would pin
   --keep                    Keep the temporary profiles for inspection
   help                      Show this help`
 
@@ -109,6 +121,21 @@ function scaffoldProfile(profileDir, name) {
   writeFileSync(join(profileDir, 'cordis.patch.yml'), '[]\n')
 }
 
+/**
+ * The Electron version a packaged desktop runs (process.versions.electron):
+ * the `electron` devDependency pinned in dsh-plugin-desktop/package.json — the
+ * same pin electron-builder packages. The desktop's pnpm children always get
+ * npm_config_target=<this>, so the reference install must too.
+ */
+function resolveDesktopElectronVersion() {
+  const desktopPackage = JSON.parse(readFileSync(join(REPO_ROOT, 'dsh-plugin-desktop', 'package.json'), 'utf8'))
+  const version = desktopPackage?.devDependencies?.electron
+  if (typeof version !== 'string' || version.length === 0 || !/^\d+\.\d+\.\d+.*$/u.test(version)) {
+    throw new Error(`dsh-plugin-desktop does not pin an exact 'electron' devDependency (got '${String(version)}') — the desktop pnpm runtime target cannot be derived; pass --electron-target <version> explicitly`)
+  }
+  return version
+}
+
 /** Sanitized child environment (no ambient DSH/registry/runtime overrides). */
 function childEnvironment(electronTarget) {
   const env = {}
@@ -117,6 +144,10 @@ function childEnvironment(electronTarget) {
     env[key] = value
   }
   if (electronTarget !== undefined) {
+    // Exactly the trio the desktop injects into every pnpm child
+    // (profile-materializer.ts / src/pnpm.ts): runtime + target + headers
+    // disturl. Ambient values were stripped above, so these are the only
+    // npm_config_* runtime keys the child sees.
     env.npm_config_runtime = 'electron'
     env.npm_config_target = electronTarget
     env.npm_config_disturl = ELECTRON_HEADERS_URL
@@ -255,8 +286,18 @@ async function main() {
     computeDesktopBootTreeRootDigest: exportedFunctionFromNamespace(bootVerification, 'computeDesktopBootTreeRootDigest'),
     ensureProfilePnpmBuildApproval: exportedFunctionFromNamespace(profilePolicy, 'ensureProfilePnpmBuildApproval'),
   }
-  const electronTarget = flags['electron-target']
-  console.log(`measure: ${String(targets.length)} target(s) with pnpm ${pnpm.version} (repository pin) · registry ${NPM_REGISTRY} · digest from ${libDir}`)
+  // Desktop parity by default: the electron runtime env every real desktop
+  // install carries (--no-electron-env opts out for pure-JS controls).
+  if (flags['no-electron-env'] === true) {
+    if (flags['electron-target'] !== undefined) throw new Error('--no-electron-env and --electron-target are mutually exclusive — the former drops the desktop runtime env, the latter pins its version')
+  }
+  const electronTarget = flags['no-electron-env'] === true
+    ? undefined
+    : flags['electron-target'] ?? resolveDesktopElectronVersion()
+  const runtimeNote = electronTarget === undefined
+    ? 'NO electron runtime env (--no-electron-env — pure-JS control; a real desktop install pins npm_config_runtime=electron, so the digest may diverge)'
+    : `electron runtime env (npm_config_runtime=electron · target ${electronTarget} · disturl ${ELECTRON_HEADERS_URL}) = desktop install parity`
+  console.log(`measure: ${String(targets.length)} target(s) with pnpm ${pnpm.version} (repository pin) · registry ${NPM_REGISTRY} · ${runtimeNote} · digest from ${libDir}`)
   const root = mkdtempSync(join(tmpdir(), 'company-catalog-measure-'))
   const records = []
   const failures = []

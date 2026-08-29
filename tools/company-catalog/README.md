@@ -194,6 +194,11 @@ just the one plugin). The publication order is therefore fixed: upgrade the
 fleet → measure `treeDigest` in the reference environment → re-sign with a
 strictly higher `sequence` (the counter never rolls back, so a bad publish
 can only be superseded, never un-published) → push the manifest.
+`publish-local.mjs` enforces this mechanically: when the artifact carries a
+`treeDigest`/`approvedBuilds` the deployed manifest's same entry does not
+(the first authoritative publish), it refuses with the upgrade guidance
+below unless `--confirm-fleet-upgraded` is passed — the operator's
+assertion that the whole fleet already runs a field-aware build.
 
 **fleet 升级顺序（发布门禁）**。这两个字段对签名者是可选的，对 fleet 不是：
 任何携带 `treeDigest`/`approvedBuilds` 的清单上架前，**全部**客户端必须已运行
@@ -201,7 +206,10 @@ can only be superseded, never un-published) → push the manifest.
 键就会让它拒收**整份**清单，受影响机器上整个目录瘫痪（而不只是这一个插件）。
 因此发布顺序固定：先升级 fleet → 在标准参考环境实测 `treeDigest` → 以严格更
 高的 `sequence` 重签（计数器不可回退，坏发布只能被更高 sequence 覆盖，无法
-撤销）→ 再 push 清单。
+撤销）→ 再 push 清单。`publish-local.mjs` 已把该门禁机制化：当 artifact 携带
+`treeDigest`/`approvedBuilds` 而 GitLab 已部署清单的同条目尚未携带（首个权威发
+布）时，不带 `--confirm-fleet-upgraded` 直接拒发并打印升级指引——该参数即操作
+者对「fleet 已全部运行认识字段的构建」的显式确认。
 
 Both fields fail closed at every gate: the allowlist validator refuses
 malformed values (non-hex or truncated digests, empty/duplicate/invalid
@@ -334,12 +342,20 @@ installs `name@version --save-exact` with the repository-pinned pnpm (the
 ships) against the pinned `https://registry.npmjs.org/`, then hashes the
 installed tree with the compiled `computeDesktopBootTreeRootDigest`
 boot-verification chunk — the exact function the desktop measures the
-user's tree with. Output: `[{packageName, version, treeDigest}, …]` for
-`measure-and-publish --digest-file`, plus a console table. `--all`
+user's tree with. Because a real desktop install **always** runs pnpm with
+the electron runtime env (`npm_config_runtime=electron`,
+`npm_config_target=<the desktop's Electron version>`,
+`npm_config_disturl=https://electronjs.org/headers` — the trio
+`profile-materializer.ts` and `src/pnpm.ts` set on every pnpm child), the
+reference install injects the same trio by default, with the target taken
+from the `electron` devDependency `dsh-plugin-desktop/package.json` pins;
+`--electron-target` overrides the version and `--no-electron-env` drops the
+trio for a pure-JS control measurement (its digest may then diverge from
+what a desktop would pin). Output: `[{packageName, version, treeDigest}, …]`
+for `measure-and-publish --digest-file`, plus a console table. `--all`
 re-measures every entry (a mismatch against a reviewed digest fails);
-`--electron-target` mirrors the desktop pnpm runtime for plugins with
-native prebuilt dependencies; `--desktop-lib` points at a packaged
-artifact's lib tree instead of the repository build.
+`--desktop-lib` points at a packaged artifact's lib tree instead of the
+repository build.
 
 `measure-and-publish` then fills the digests into a **runtime copy** of the
 allowlist (idempotent when equal, abort on a reviewed-value conflict or an
@@ -368,7 +384,7 @@ workflow at all.
 The intranet side publishes:
 
 ```sh
-node tools/company-catalog/publish-local.mjs --run <run-id>   # omit --run to take the latest successful run
+node tools/company-catalog/publish-local.mjs --run <run-id>   # omit --run to take the run owning the newest downloadable company-catalog-signed artifact
 ```
 
 `publish-local.mjs` (plain Node + `gh`/`git` on PATH, run on a machine that
@@ -378,13 +394,22 @@ root pinned in the desktop release policy (plus the optional
 `COMPANY_CATALOG_KEY_FINGERPRINT` env pin), **ratchet-checks**
 `artifact.sequence == deployed + 1` against the manifest served by GitLab
 (both values printed on mismatch — no skipping, replaying, or double push),
-clones the config repo (PAT from `--token`/`GITLAB_TOKEN`, injected through
-`GIT_CONFIG_*` so it never appears in argv, config, or error output),
+clones the config repo (PAT from `--token`/`GITLAB_TOKEN`, injected into the
+git subprocesses through `GIT_CONFIG_*` — the PAT never appears in a git
+child's argv, in the clone's config, or in error output; honest caveat:
+`--token` does put the PAT in publish-local's **own** argv for the script's
+lifetime, visible to a local `ps` — prefer the `GITLAB_TOKEN` environment
+variable, which keeps it out of argv entirely),
 overwrites `catalog-manifest.json` **byte-for-byte** (canonical single line —
 the GitLab web editor would break verification, so the manifest only ever
 moves through git push), commits (message carries sequence/fingerprint/run
 id), pushes, and re-reads the raw URL until it serves HTTP 200 with the
-pushed sequence (≤ 5 min). `--dry-run` stops after verification with the push
+pushed sequence **and the exact pushed bytes** (sha256(body) must equal the
+sidecar's `manifestSha256`; ≤ 5 min). When the artifact carries a
+`treeDigest`/`approvedBuilds` the deployed manifest's same entry does not
+(the first authoritative publish), the fleet-upgrade gate above applies:
+without `--confirm-fleet-upgraded` the push is refused with the upgrade
+guidance. `--dry-run` stops after verification with the push
 plan printed; `--artifact-dir` replays a local artifact directory laid out
 like the download (tests/drills); `--branch` targets a non-master branch for
 drills; `--insecure-tls` mirrors the desktop's accepted intranet TLS posture
@@ -398,8 +423,14 @@ profile 同款模板搭临时 profile（上游 package.json + hoisted
 的 `pnpm` 依赖，与桌面随包发布的同一版本）+ 钉死 registry `--save-exact` 安装，
 再用编译产物里的 `computeDesktopBootTreeRootDigest`（与桌面实测用户树的同一
 函数）算摘要，产出 `measure-and-publish --digest-file` 输入与控制台表格。
-`--all` 重测全部条目（与评审值不符即失败）；`--electron-target` 为带原生预编译
-依赖的插件镜像桌面 pnpm 运行时；`--desktop-lib` 可指向打包产物的 lib 树。
+桌面真实安装**恒定**以 electron 运行时环境跑 pnpm
+（`npm_config_runtime=electron`、`npm_config_target=<桌面 Electron 版本>`、
+`npm_config_disturl=https://electronjs.org/headers`——`profile-materializer.ts`
+与 `src/pnpm.ts` 对每个 pnpm 子进程都注入这三件套），因此参考安装默认注入同
+一三件套，target 取 `dsh-plugin-desktop/package.json` 钉住的 `electron`
+devDependency；`--electron-target` 覆盖版本，`--no-electron-env` 整体关闭用于
+纯 JS 对照（其摘要可能与桌面钉定值不同）。`--all` 重测全部条目（与评审值不
+符即失败）；`--desktop-lib` 可指向打包产物的 lib 树。
 
 `measure-and-publish` 把摘要填进 allowlist **运行时副本**（相等幂等、冲突或
 不匹配即中止，绝不静默），以本地 state 文件为 sequence 下限（或
@@ -420,7 +451,7 @@ runner 消亡；取消勾选才上传产物并在 summary 打印内网发布命�
 内网侧发布：
 
 ```sh
-node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则取最近成功 run
+node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则按产物名取最新可下载 artifact 对应的 run
 ```
 
 `publish-local.mjs`（纯 Node ＋ PATH 上的 `gh`/`git`，在同时可达 GitHub 与内网
@@ -428,10 +459,17 @@ node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则
 根验签（外加可选的 `COMPANY_CATALOG_KEY_FINGERPRINT` 环境钉）→ **序列对拍**
 `artifact.sequence == GitLab 已部署 + 1`（不等即打印两侧值中止——不跳号、
 不重放、不重推）→ 克隆配置仓（PAT 来自 `--token`/`GITLAB_TOKEN`，经
-`GIT_CONFIG_*` 注入，绝不出现在 argv/配置/报错里）→ **逐字节**覆盖
+`GIT_CONFIG_*` 注入 git 子进程——PAT 绝不出现在 git 子进程的 argv/克隆配置/报
+错里；如实声明：`--token` 会把 PAT 放进 publish-local **自身**的 argv，脚本存
+活期内本地 `ps` 可见——推荐用 `GITLAB_TOKEN` 环境变量，完全避开 argv）→
+**逐字节**覆盖
 `catalog-manifest.json`（规范单行——GitLab 网页编辑器会破坏验签，manifest
 只走 git push）→ commit（消息含 sequence/fingerprint/run id）→ push → 回读
-raw URL 直到 HTTP 200 且 sequence 一致（≤5 分钟）。`--dry-run` 验证后打印推送
+raw URL 直到 HTTP 200 且 sequence 一致**且字节即所推字节**（sha256(body) 必须
+等于边车 `manifestSha256`；≤5 分钟）。当 artifact 携带 `treeDigest`/
+`approvedBuilds` 而 GitLab 已部署清单同条目尚未携带（首个权威发布）时，上方
+fleet 升级门禁生效：不带 `--confirm-fleet-upgraded` 拒发并打印升级指引。
+`--dry-run` 验证后打印推送
 计划即停；`--artifact-dir` 回放同布局的本地产物目录（测试/演练）；`--branch`
 指向非 master 分支演练；`--insecure-tls` 与桌面已接受的内网 TLS 姿势对齐
 （优先用 `NODE_EXTRA_CA_CERTS` 挂企业根）。所有失败均 fail-closed。master

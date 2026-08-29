@@ -16,13 +16,22 @@
  *      COMPANY_CATALOG_KEY_FINGERPRINT env pin,
  *   4. ratchet: artifact.sequence must equal the deployed manifest's
  *      sequence + 1 (both values printed on mismatch — no skipping, no
- *      replaying, no double push),
+ *      replaying, no double push), plus the fleet-upgrade gate: when an
+ *      artifact entry carries an optional authority field (treeDigest /
+ *      approvedBuilds) the deployed manifest's same entry does not, this is
+ *      the first authoritative publish — clients built before the field
+ *      existed verify with additionalProperties:false and would reject the
+ *      ENTIRE manifest (the whole catalog goes dark on them), so publishing
+ *      requires the explicit --confirm-fleet-upgraded acknowledgement that
+ *      every client already runs a field-aware build (README "Fleet upgrade
+ *      ordering (publication gate)"),
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
  *   6. commit (message carries sequence/fingerprint/run id) and push,
- *   7. re-read the raw URL until it serves HTTP 200 with the pushed
- *      sequence (≤ 5 minutes), then print the completion summary.
+ *   7. re-read the raw URL until it serves HTTP 200 with both the pushed
+ *      sequence and the exact pushed bytes (sha256(body) === the sidecar's
+ *      manifestSha256; ≤ 5 minutes), then print the completion summary.
  *
  * Every failure is fail-closed: nothing is pushed unless the artifact is
  * present, byte-intact, signature-valid under the fleet's trust root, and
@@ -30,7 +39,10 @@
  * prints the push plan, stopping before the clone. The GitLab PAT comes from
  * --token or the GITLAB_TOKEN environment variable and is passed to git
  * through GIT_CONFIG_* environment injection (an http.* extraheader) — it
- * never appears in argv, in the clone's config, or in error output.
+ * never appears in a git subprocess's argv, in the clone's config, or in
+ * error output. Honest caveat: --token does put the PAT in this script's own
+ * argv (visible to a local `ps` for the script's lifetime); prefer the
+ * GITLAB_TOKEN environment variable, which keeps it out of argv entirely.
  *
  * Plain Node (built-ins only) + `gh` and `git` on PATH. After a successful
  * master publish, commit the GitHub-side state bump:
@@ -44,7 +56,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadMarketLibrary } from './lib/market.mjs'
-import { readDeployedSequence, verifyManifestText } from './lib/pipeline.mjs'
+import { fetchDeployedManifest, verifyManifestText } from './lib/pipeline.mjs'
 
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(TOOL_DIR, '..', '..')
@@ -70,17 +82,28 @@ GitHub, re-verify it, ratchet-check the sequence against the manifest
 deployed on GitLab, push the canonical bytes, and re-read the raw URL.
 
 Options:
-  --run <id>            GitHub Actions run id (default: the latest successful
-                        run of the ${DEFAULT_WORKFLOW} workflow in --repo)
+  --run <id>            GitHub Actions run id (default: the latest run whose
+                        ${ARTIFACT_NAME} artifact is downloadable in --repo,
+                        resolved through the GitHub API; fallback: the latest
+                        successful ${DEFAULT_WORKFLOW} run — which may be a
+                        dry-run with no artifact at all)
   --repo <owner/name>   GitHub repository (default: ${DEFAULT_GITHUB_REPO})
   --artifact-dir <dir>  skip gh: publish from a local directory already laid
                         out like the download (${MANIFEST_FILE} + ${META_FILE})
                         — offline replay/testing
   --branch <name>       GitLab branch to push (default: master — the
                         production line; use a temp branch only for drills)
-  --token <pat>         GitLab PAT (default: env GITLAB_TOKEN)
+  --token <pat>         GitLab PAT (default: env GITLAB_TOKEN — preferred:
+                        --token exposes the PAT in this script's argv)
   --gitlab <origin>     GitLab origin (default: ${DEFAULT_GITLAB_ORIGIN})
   --project <path>      GitLab project (default: ${DEFAULT_GITLAB_PROJECT})
+  --confirm-fleet-upgraded
+                        acknowledge the fleet-upgrade gate: every client
+                        already runs a build that knows the optional
+                        authority fields — required when the artifact carries
+                        a treeDigest/approvedBuilds the deployed manifest's
+                        same entry does not (older clients reject the entire
+                        manifest; see the README publication gate)
   --dry-run             verify + ratchet-check + print the push plan; stop
                         before the clone
   --insecure-tls        pilot parity: disable TLS verification for the raw
@@ -145,12 +168,20 @@ function run(command, args, options = {}) {
   return result.stdout
 }
 
+/**
+ * The PAT/header actually in use, kept at module scope so redact() can strip
+ * them: they are only ever injected into git subprocess environments (never
+ * into this process's own environment), so process.env would always miss
+ * them — redact() must reference the values that were really used.
+ */
+const injectedSecrets = { token: undefined, header: undefined }
+
 /** Strip anything shaped like the PAT or its base64 header from git output. */
 function redact(text) {
   let cleaned = text
-  const token = process.env.DSH_PUBLISH_LOCAL_TOKEN
+  const token = injectedSecrets.token
   if (token !== undefined && token.length > 0) cleaned = cleaned.split(token).join('«token»')
-  const header = process.env.DSH_PUBLISH_LOCAL_HEADER
+  const header = injectedSecrets.header
   if (header !== undefined && header.length > 0) cleaned = cleaned.split(header).join('«auth-header»')
   return cleaned
 }
@@ -159,6 +190,8 @@ function redact(text) {
 function gitEnvironment(token, insecureTls = false) {
   const basic = Buffer.from(`oauth2:${token}`, 'utf8').toString('base64')
   const header = `Authorization: Basic ${basic}`
+  injectedSecrets.token = token
+  injectedSecrets.header = header
   return {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
@@ -166,8 +199,6 @@ function gitEnvironment(token, insecureTls = false) {
     GIT_CONFIG_KEY_0: `http.https://${gitlabOrigin}/.extraheader`,
     GIT_CONFIG_VALUE_0: header,
     ...(insecureTls ? { GIT_CONFIG_KEY_1: 'http.sslVerify', GIT_CONFIG_VALUE_1: 'false' } : {}),
-    DSH_PUBLISH_LOCAL_TOKEN: token,
-    DSH_PUBLISH_LOCAL_HEADER: header,
   }
 }
 
@@ -240,6 +271,57 @@ function loadFleetTrustRoots() {
   return roots
 }
 
+/**
+ * Pick the run to publish when --run is omitted. The GitHub artifact-listing
+ * API names exactly the runs that produced a company-catalog-signed artifact —
+ * the only runs worth publishing from, because dry-run (the workflow's
+ * default input) uploads nothing. Only when the API cannot be reached does
+ * the fallback select the latest successful workflow run, which may be a
+ * dry-run (the download failure then spells that out). Returns
+ * { runId, source: 'artifact-api' | 'run-list' }.
+ */
+function resolveDefaultRunId(repo) {
+  let raw
+  try {
+    raw = run('gh', ['api', `repos/${repo}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=20`])
+  } catch (error) {
+    console.log(`run: the GitHub artifact-listing API is unavailable (${(error instanceof Error ? error.message : String(error)).split('\n')[0]}) — falling back to the latest successful ${DEFAULT_WORKFLOW} run (may be a dry-run)`)
+    return latestSuccessfulRun(repo)
+  }
+  let listing
+  try {
+    listing = JSON.parse(raw)
+  } catch (error) {
+    throw new Error(`the GitHub artifact-listing API returned a body that is not JSON (${error.message})`)
+  }
+  const artifacts = Array.isArray(listing?.artifacts) ? listing.artifacts : []
+  const usable = artifacts
+    .filter((artifact) => artifact?.expired !== true && Number.isSafeInteger(artifact?.workflow_run?.id))
+    .sort((a, b) => Number(b.id) - Number(a.id))
+  if (usable.length === 0) {
+    throw new Error(
+      `no downloadable ${ARTIFACT_NAME} artifact exists in ${repo} — the artifact-listing API answered but listed none; ` +
+      `every ${DEFAULT_WORKFLOW} run so far was probably a dry-run (dry-run is the workflow's default input and uploads no artifact). ` +
+      'Re-run the workflow with dry-run unchecked, or pass --run <id>',
+    )
+  }
+  const artifact = usable[0]
+  const runId = String(artifact.workflow_run.id)
+  console.log(`run: newest ${ARTIFACT_NAME} artifact (id ${String(artifact.id)}, created ${String(artifact.created_at)}) belongs to run ${runId} in ${repo}`)
+  return { runId, source: 'artifact-api' }
+}
+
+/** The pre-API fallback: the latest successful workflow run, whatever it uploaded. */
+function latestSuccessfulRun(repo) {
+  const listing = JSON.parse(run('gh', ['run', 'list', '--workflow', DEFAULT_WORKFLOW, '--repo', repo, '--status', 'success', '--limit', '1', '--json', 'databaseId,displayTitle']))
+  if (!Array.isArray(listing) || listing.length === 0) {
+    throw new Error(`no successful run of ${DEFAULT_WORKFLOW} found in ${repo} — run the workflow with dry-run unchecked first, or pass --run <id>`)
+  }
+  const runId = String(listing[0].databaseId)
+  console.log(`run: latest successful ${DEFAULT_WORKFLOW} run in ${repo}: ${runId} (${listing[0].displayTitle})`)
+  return { runId, source: 'run-list' }
+}
+
 async function main() {
   let flags
   try {
@@ -276,20 +358,24 @@ async function main() {
     console.log(`artifact: local directory ${artifactDir} (--artifact-dir — skipping gh)`)
   } else {
     run('gh', ['--version'])
+    let runSource
     if (typeof flags.run === 'string' && /^[0-9]+$/.test(flags.run)) {
       runId = flags.run
+      runSource = 'explicit'
     } else {
       if (flags.run !== undefined) throw new Error(`--run must be a numeric GitHub Actions run id (got '${flags.run}')`)
-      const listing = JSON.parse(run('gh', ['run', 'list', '--workflow', DEFAULT_WORKFLOW, '--repo', repo, '--status', 'success', '--limit', '1', '--json', 'databaseId,displayTitle']))
-      if (!Array.isArray(listing) || listing.length === 0) {
-        throw new Error(`no successful run of ${DEFAULT_WORKFLOW} found in ${repo} — run the workflow with dry-run unchecked first, or pass --run <id>`)
-      }
-      runId = String(listing[0].databaseId)
-      console.log(`run: latest successful ${DEFAULT_WORKFLOW} run in ${repo}: ${runId} (${listing[0].displayTitle})`)
+      ;({ runId, source: runSource } = resolveDefaultRunId(repo))
     }
     artifactDir = mkdtempSync(join(tmpdir(), 'company-catalog-artifact-'))
     tempDirs.push(artifactDir)
-    run('gh', ['run', 'download', runId, '--repo', repo, '--name', ARTIFACT_NAME, '--dir', artifactDir])
+    try {
+      run('gh', ['run', 'download', runId, '--repo', repo, '--name', ARTIFACT_NAME, '--dir', artifactDir])
+    } catch (error) {
+      if (runSource === 'run-list') {
+        throw new Error(`${error.message} — the latest successful ${DEFAULT_WORKFLOW} run may be a dry-run (dry-run is the workflow's default input and uploads no artifact): pick a run that produced the ${ARTIFACT_NAME} artifact and pass --run <id> (the artifact-listing API could not be reached to filter for one automatically)`)
+      }
+      throw error
+    }
     console.log(`artifact: downloaded ${ARTIFACT_NAME} from run ${runId} → ${artifactDir}`)
   }
 
@@ -351,7 +437,7 @@ async function main() {
   }
 
   // --- 4. ratchet: artifact must be exactly one step ahead of the deployment ----
-  const deployed = await readDeployedSequence(masterRawUrl)
+  const deployed = await fetchDeployedManifest(masterRawUrl)
   if (meta.sequence !== deployed.sequence + 1) {
     throw new Error(
       `sequence ratchet failure: the artifact carries sequence ${String(meta.sequence)} but GitLab has ${String(deployed.sequence)} deployed ` +
@@ -368,6 +454,39 @@ async function main() {
   }
   console.log(`signature: VERIFIED (keyId ${meta.keyId}, fingerprint ${meta.fingerprint} = fleet trust root; expiry ${String(verification.manifest?.expiresAt)})`)
   console.log(`ratchet: artifact sequence ${String(meta.sequence)} = deployed ${String(deployed.sequence)} + 1 ✓`)
+
+  // --- 4b. fleet-upgrade gate: the first authoritative publish of an optional
+  // authority field must be an acknowledged one. Clients built before the
+  // field existed verify with additionalProperties:false — one unknown key
+  // makes them reject the ENTIRE manifest, so pushing now would black out
+  // the whole catalog (and every installed plugin from it) on every machine
+  // not yet upgraded. The README pins the order: upgrade the fleet → measure
+  // → re-sign with a higher sequence → push; the flag is the operator's
+  // assertion that step one is done. "Fleet upgrade ordering (publication
+  // gate)" / 「fleet 升级顺序（发布门禁）」 in tools/company-catalog/README.md.
+  const deployedPackages = Array.isArray(deployed.manifest.packages) ? deployed.manifest.packages : []
+  const gatedEntries = packages.flatMap((signed) => {
+    const newly = ['treeDigest', 'approvedBuilds'].filter((field) => signed[field] !== undefined)
+    if (newly.length === 0) return []
+    const current = deployedPackages.find((candidate) => candidate?.packageName === signed.packageName && candidate?.version === signed.version)
+    const firsts = current === undefined ? newly : newly.filter((field) => current[field] === undefined)
+    return firsts.length === 0 ? [] : [`${signed.packageName}@${signed.version} (+${firsts.join(', ')})`]
+  })
+  if (gatedEntries.length > 0 && flags['confirm-fleet-upgraded'] !== true) {
+    fail(
+      `fleet-upgrade gate: this artifact would be the first authoritative publish of ${gatedEntries.join('; ')} — ` +
+      `the deployed manifest at ${masterRawUrl} does not carry those fields on the same entries. ` +
+      'Older clients verify with additionalProperties:false and reject the ENTIRE manifest on a single unknown key: pushing now ' +
+      'blacks out the whole catalog on every machine not yet upgraded to a field-aware build. ' +
+      'The publication order is fixed (tools/company-catalog/README.md, "Fleet upgrade ordering (publication gate)" / 「fleet 升级顺序（发布门禁）」): ' +
+      '(1) upgrade the whole fleet to builds that know treeDigest/approvedBuilds, (2) only then publish. ' +
+      'Re-run with --confirm-fleet-upgraded once every client is upgraded to acknowledge the gate.',
+    )
+    return
+  }
+  if (gatedEntries.length > 0) {
+    console.log(`fleet gate: --confirm-fleet-upgraded acknowledged for ${gatedEntries.join('; ')} — every client must already run a field-aware build (README publication gate)`)
+  }
 
   // --- 5. the push plan (dry-run stops here) ------------------------------------
   const commitMessage = `catalog: sequence ${String(meta.sequence)} via GitHub run ${runId} (keyId ${meta.keyId}, fingerprint ${meta.fingerprint}, publish-local)`
@@ -413,13 +532,17 @@ async function main() {
     run('git', ['-C', cloneDir, 'push', 'origin', `HEAD:refs/heads/${branch}`], { env: gitEnv, timeoutMs: 300_000 })
     console.log(`push: ${MANIFEST_FILE} at sequence ${String(meta.sequence)} → ${branch} (commit: ${commitMessage})`)
 
-    // --- 7. re-read the raw URL until it serves the pushed sequence ---------------
+    // --- 7. re-read the raw URL until it serves the pushed bytes exactly --------
+    // Sequence alone is not deployment confirmation: only sha256(body) ===
+    // the sidecar's manifestSha256 proves GitLab serves the exact canonical
+    // bytes this artifact was verified against (a reformatted or partial
+    // serve must keep failing, not pass on the matching sequence).
     const branchRawUrl = `https://${gitlabOrigin}/${project}/-/raw/${branch}/${MANIFEST_FILE}`
     const deadline = Date.now() + RECHECK_TIMEOUT_MS
     while (true) {
       let served
       try {
-        served = await readDeployedSequence(`${branchRawUrl}?t=${String(Date.now())}`)
+        served = await fetchDeployedManifest(`${branchRawUrl}?t=${String(Date.now())}`)
       } catch (error) {
         if (Date.now() >= deadline) {
           throw new Error(`post-push re-check failed: ${branchRawUrl} did not serve a readable manifest within 5 minutes (last error: ${error.message})`)
@@ -427,14 +550,15 @@ async function main() {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, RECHECK_INTERVAL_MS))
         continue
       }
-      if (served.sequence === meta.sequence) {
-        console.log(`re-check: ${branchRawUrl} serves HTTP 200 with sequence ${String(served.sequence)} — deployment confirmed`)
+      const servedSha256 = createHash('sha256').update(Buffer.from(served.text, 'utf8')).digest('hex')
+      if (served.sequence === meta.sequence && servedSha256 === manifestSha256) {
+        console.log(`re-check: ${branchRawUrl} serves HTTP 200 with sequence ${String(served.sequence)} and the exact pushed bytes (sha256 ${servedSha256} = ${META_FILE} manifestSha256) — deployment confirmed`)
         break
       }
       if (Date.now() >= deadline) {
-        throw new Error(`post-push re-check failed: ${branchRawUrl} serves sequence ${String(served.sequence)}, expected ${String(meta.sequence)} within 5 minutes`)
+        throw new Error(`post-push re-check failed: ${branchRawUrl} serves sequence ${String(served.sequence)} (expected ${String(meta.sequence)}) hashing to ${servedSha256} (expected ${manifestSha256}) — not the pushed bytes, within 5 minutes`)
       }
-      console.log(`re-check: deployed sequence is ${String(served.sequence)}, waiting for ${String(meta.sequence)}...`)
+      console.log(`re-check: served sequence ${String(served.sequence)}, sha256 ${servedSha256.slice(0, 12)}… — waiting for sequence ${String(meta.sequence)} with sha256 ${manifestSha256.slice(0, 12)}…`)
       await new Promise((resolvePromise) => setTimeout(resolvePromise, RECHECK_INTERVAL_MS))
     }
   } finally {

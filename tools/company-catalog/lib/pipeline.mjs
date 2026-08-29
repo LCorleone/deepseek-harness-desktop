@@ -114,14 +114,8 @@ async function readBodyWithLimit(response, maxBytes, label) {
   return bytes.toString('utf8')
 }
 
-/** Parse the deployed sequence out of manifest JSON text; anything else is a hard error. */
-function sequenceFromManifestText(text, label) {
-  let parsed
-  try {
-    parsed = JSON.parse(text)
-  } catch (error) {
-    throw new Error(`${label} is not valid JSON (${error.message}) — the sequence must never be guessed`)
-  }
+/** Validate the parsed deployed manifest and extract its sequence; anything else is a hard error. */
+function sequenceFromParsedManifest(parsed, label) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${label} is not a manifest object carrying a sequence`)
   }
@@ -133,14 +127,15 @@ function sequenceFromManifestText(text, label) {
 }
 
 /**
- * Read the currently deployed manifest's sequence from an https URL (the
- * GitLab raw file) or a local file (selftest/offline stand-in), under a hard
- * timeout and byte bound in the spirit of the desktop's fetchUpdateChannelBytes.
- * Returns `{ sequence, source }`; every failure is a thrown, descriptive error —
- * a sequence source that cannot be read must abort the build, not fall back
- * silently to a stale local guess.
+ * Read the currently deployed manifest — text, parsed object, sequence — from
+ * an https URL (the GitLab raw file) or a local file (selftest/offline
+ * stand-in), under a hard timeout and byte bound in the spirit of the
+ * desktop's fetchUpdateChannelBytes. Returns `{ sequence, text, manifest,
+ * source }`; every failure is a thrown, descriptive error — a sequence source
+ * that cannot be read must abort the build, not fall back silently to a
+ * stale local guess.
  */
-export async function readDeployedSequence(source, options = {}) {
+export async function fetchDeployedManifest(source, options = {}) {
   const maxBytes = options.maxBytes ?? DEPLOYED_MANIFEST_MAX_BYTES
   const timeoutMs = options.timeoutMs ?? DEPLOYED_MANIFEST_TIMEOUT_MS
   let text
@@ -179,7 +174,24 @@ export async function readDeployedSequence(source, options = {}) {
     }
     if (text.length === 0) throw new Error(`the sequence source ${source} is empty`)
   }
-  return { sequence: sequenceFromManifestText(text, `the deployed manifest at ${source}`), source }
+  let manifest
+  try {
+    manifest = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`the deployed manifest at ${source} is not valid JSON (${error.message}) — the sequence must never be guessed`)
+  }
+  const sequence = sequenceFromParsedManifest(manifest, `the deployed manifest at ${source}`)
+  return { sequence, text, manifest, source }
+}
+
+/**
+ * Read only the currently deployed manifest's sequence (sequence-source
+ * callers that need nothing else); see fetchDeployedManifest for the bounds
+ * and the fail-closed contract. Returns `{ sequence, source }`.
+ */
+export async function readDeployedSequence(source, options = {}) {
+  const { sequence, source: resolvedSource } = await fetchDeployedManifest(source, options)
+  return { sequence, source: resolvedSource }
 }
 
 /**

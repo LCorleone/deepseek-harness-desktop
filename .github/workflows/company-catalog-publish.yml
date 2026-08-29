@@ -186,6 +186,21 @@ jobs:
               "publish-local verifies the artifact signature, requires sequence $($meta.sequence) = GitLab deployed + 1, pushes the canonical bytes to master, and re-reads the raw URL. After it succeeds, commit the state bump in this repository: \`tools/company-catalog/state/last-sequence.json\` → \`{ `"lastSequence`": $($meta.sequence) }\`.",
               ''
             )
+            # Fleet-upgrade gate hint: when this artifact carries treeDigest
+            # entries that the deployed manifest may not have yet, the first
+            # authoritative publish needs the explicit acknowledgement
+            # (older clients reject the whole manifest on unknown fields).
+            $digestEntries = @($meta.entries | Where-Object { $_.PSObject.Properties['treeDigest'] })
+            if ($digestEntries.Count -gt 0) {
+              $summary += @(
+                '**Fleet-upgrade gate**: this manifest signs `treeDigest` entries. If the deployed manifest does not yet carry `treeDigest` on the same entries, publish-local refuses the push unless `--confirm-fleet-upgraded` is passed — the first authoritative publish requires every client to already run a field-aware build (older clients reject the **entire** manifest on one unknown key; see the publication gate in `tools/company-catalog/README.md`):',
+                '',
+                '```sh',
+                "node tools/company-catalog/publish-local.mjs --run $($meta.runId) --confirm-fleet-upgraded",
+                '```',
+                ''
+              )
+            }
           }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Join("`n", $summary))
       - uses: actions/upload-artifact@v4
