@@ -1,2 +1,7 @@
+# Everything here is local scratch except the sequence ratchet:
+# last-sequence.json is the GitHub-side sequence state the publish workflow
+# floors its signature against, so it is tracked and committed (bumped by a
+# human after each successful intranet-side publish).
 *
 !.gitignore
+!last-sequence.json

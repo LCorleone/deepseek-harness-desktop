@@ -13,7 +13,8 @@
  *   COMPANY_CATALOG_KEY_FINGERPRINT  optional pinned trust-root fingerprint
  */
 
-import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -50,11 +51,12 @@ Commands:
                                registry.npmjs.org, assemble, sign, verify, and publish
                                the manifest (sequence = persisted + 1).
   measure-and-publish          Fill measured tree digests (--digest-file) into a
-                               runtime copy of the allowlist, then build with the
-                               deployed sequence (--sequence-from) and verify;
-                               the signed manifest is written to --out for the
-                               workflow to push. The reviewed allowlist.json is
-                               never modified.
+                               runtime copy of the allowlist, then build (sequence
+                               floor: --sequence-from or the local state file)
+                               and verify; the signed manifest is written to --out
+                               and its metadata to --meta-out for the publishing
+                               workflow. The reviewed allowlist.json is never
+                               modified.
   revoke <pkg>[@<version>]     Mark allowlist entries revoked:true and reissue the
                                manifest with a higher sequence (entries are kept).
   verify [path]                Verify a manifest file end to end
@@ -75,6 +77,9 @@ Options:
                          stays the fallback when this is omitted)
   --digest-file <path>   measure-and-publish: measured tree digests
                          [{packageName, version, treeDigest}] (see measure.mjs)
+  --meta-out <path>      measure-and-publish: write publish metadata next to the
+                         manifest (sequence, keyId, fingerprint, manifestSha256,
+                         entries with measured flags; CI adds gitSha/runId)
   --expires-days <n>     expiresAt horizon in days (default: 90)
   --force-offline        selftest only: skip the npm registry segment
 
@@ -94,7 +99,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'expires-days'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) {
@@ -202,6 +207,32 @@ async function commandBuild(flags) {
  * committing digests into it stays a human review step; the only publish
  * artifact is the manifest at --out (the workflow pushes it to GitLab).
  */
+/**
+ * Write the publish-metadata sidecar for the workflow artifact: everything
+ * the intranet-side publisher (publish-local.mjs) needs to identify, trust,
+ * and audit the manifest — the sequence, the trust root used, a sha256 over
+ * the exact bytes on disk (handoff integrity; signatures never travel
+ * without one), and the per-entry digest state. CI later adds gitSha/runId.
+ */
+function writePublishMeta({ metaOutPath, manifest, fingerprint, outBytes }) {
+  const meta = {
+    sequence: manifest.sequence,
+    keyId: manifest.signature.keyId,
+    fingerprint,
+    manifestSha256: createHash('sha256').update(outBytes).digest('hex'),
+    entries: manifest.packages.map((entry) => ({
+      packageName: entry.packageName,
+      version: entry.version,
+      ...(entry.treeDigest === undefined ? {} : { treeDigest: entry.treeDigest }),
+      measured: entry.treeDigest !== undefined,
+    })),
+    generatedAt: new Date().toISOString(),
+  }
+  mkdirSync(dirname(metaOutPath), { recursive: true })
+  writeFileSync(metaOutPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8')
+  return metaOutPath
+}
+
 async function commandMeasureAndPublish(flags) {
   const digestFilePath = flags['digest-file']
   if (digestFilePath === undefined) throw new Error('measure-and-publish requires --digest-file <path> (the measure script output)')
@@ -231,6 +262,16 @@ async function commandMeasureAndPublish(flags) {
       throw new Error(`re-verification of the written manifest failed (${verification.code}): ${verification.reason}`)
     }
     console.log(`re-verified manifest ${result.outPath} from disk: sequence ${String(verification.manifest.sequence)}, ${String(verification.manifest.packages.length)} packages — ready to publish`)
+    const metaOutPath = flags['meta-out']
+    if (metaOutPath !== undefined) {
+      const written = writePublishMeta({
+        metaOutPath: resolve(process.cwd(), metaOutPath),
+        manifest: verification.manifest,
+        fingerprint,
+        outBytes: readFileSync(result.outPath),
+      })
+      console.log(`publish meta: ${written}`)
+    }
   } finally {
     rmSync(runtimeDir, { recursive: true, force: true })
   }

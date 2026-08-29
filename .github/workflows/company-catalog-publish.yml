@@ -1,25 +1,42 @@
 name: Company catalog publish
 
-# Full-auto catalog listing (manual dispatch): measure the installed-tree
-# root digests for allowlist entries that still lack one, fill them into a
-# runtime copy of the allowlist, sign against the sequence of the manifest
-# currently deployed on GitLab, verify end to end, and — when dry-run is
-# turned off — push the canonical manifest bytes to the GitLab config repo.
+# Full-auto catalog listing (manual dispatch), split across the network
+# boundary: the GitHub runner measures, fills, signs, and verifies the
+# manifest, then uploads it as a build artifact — it NEVER touches GitLab
+# (the runner cannot reach the intranet origin, verified empirically).
+# Publishing is done on the intranet side by tools/company-catalog/
+# publish-local.mjs, which downloads the artifact, re-verifies it,
+# ratchet-checks the sequence against the deployed manifest, pushes the
+# canonical bytes to the GitLab config repo, and re-reads the raw URL.
+#
+# Sequence source on the runner: the in-repo state file
+# tools/company-catalog/state/last-sequence.json (the GitHub-side ratchet).
+# The workflow floors the new sequence at state+1; publish-local separately
+# requires artifact.sequence == deployed+1 against GitLab, so a stale or
+# ahead state file fails closed on the intranet side and can never publish
+# a sequence clients may have seen. After a successful publish, a human
+# commits the state bump (state → the published sequence) to this repo.
 #
 # Boundary (red line): this workflow NEVER modifies tools/company-catalog/
 # allowlist.json in this repository. The treeDigest fill happens on a runtime
 # copy inside the job; landing a measured digest in the reviewed allowlist
-# stays a human review commit. The only publishing artifact is
-# catalog-manifest.json on GitLab, copied byte-for-byte from the pipeline
-# output (canonical single line — never reformatted, the desktop verifies the
-# exact bytes). Signing key material lives only in repository secrets and is
-# referenced, never echoed. Every step before the push is fail-closed: no
-# green build + verify, no push.
+# stays a human review commit. The only publishing artifact is the signed
+# catalog-manifest.json inside the company-catalog-signed artifact, produced
+# by the pipeline (canonical single line — never reformatted, the desktop
+# verifies the exact bytes). Signing key material lives only in repository
+# secrets and is referenced, never echoed. No GitLab credentials exist in
+# this workflow at all.
+#
+# dry-run semantics: dry-run=true runs the exact same measure → fill → sign
+# → verify chain on the runner but uploads NO artifact — the signed bytes die
+# with the runner and nothing can be published from them. dry-run=false adds
+# the company-catalog-signed artifact upload (still nothing is pushed
+# anywhere by this workflow).
 on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 'Dry run — measure, build, and verify only (no GitLab push)'
+        description: 'Dry run — measure, build, sign, and verify only (no artifact upload; publishing is always intranet-side)'
         type: boolean
         default: true
 
@@ -28,9 +45,6 @@ permissions:
 
 env:
   DSH_TELEMETRY_DISABLED: '1'
-  GITLAB_RAW_MANIFEST: 'https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json'
-  GITLAB_ORIGIN: 'gitlab.s.dai.deloitte.cn'
-  GITLAB_PROJECT: 'julu/dsh-desktop-config'
 
 jobs:
   measure-and-publish:
@@ -59,6 +73,23 @@ jobs:
         run: yarn workspace dsh-community-market build
       - name: Build desktop lib (boot-verification chunk)
         run: yarn workspace dsh-plugin-desktop build
+      - name: Sequence state preflight (in-repo ratchet)
+        # The state file is the GitHub-side sequence floor the next step signs
+        # against; it must be a tracked file in this repository. A missing
+        # state file would floor the sequence at 0 and produce an artifact the
+        # intranet publisher would (correctly) refuse — fail here instead,
+        # with the fix spelled out.
+        shell: pwsh
+        run: |
+          $statePath = 'tools/company-catalog/state/last-sequence.json'
+          if (-not (Test-Path $statePath)) {
+            throw "$statePath is missing from the checkout — the sequence state file must be committed to the repository (it is the GitHub-side ratchet). Commit it, then re-run."
+          }
+          $state = Get-Content $statePath -Raw | ConvertFrom-Json
+          if (-not ($state.lastSequence -ge 0)) {
+            throw "$statePath carries no non-negative lastSequence — refusing to guess the sequence floor"
+          }
+          "sequence floor: state lastSequence = $($state.lastSequence) → this run signs sequence $($state.lastSequence + 1)"
       - name: Measure installed-tree root digests
         # Real installs through the repository-pinned pnpm 11.8.0 against
         # registry.npmjs.org, digested with the compiled
@@ -82,101 +113,86 @@ jobs:
       - name: Pin the deployment trust-root fingerprint
         if: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT != '' }}
         run: 'echo "COMPANY_CATALOG_KEY_FINGERPRINT=${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}" >> $env:GITHUB_ENV'
-      - name: measure-and-publish (fill → build with deployed sequence → verify)
+      - name: measure-and-publish (fill → build against the in-repo state → sign → verify)
         # Fail-closed by construction: this step must exit 0 (registry dist
-        # fetch, remote sequence read, sign, full round-trip verify, disk
-        # re-verify) before any push step below can run.
+        # fetch, sequence floor from the in-repo state file, sign, full
+        # round-trip verify, disk re-verify) before any artifact is uploaded.
+        # No --sequence-from: the runner cannot read the intranet GitLab raw
+        # URL, so the in-repo state file is the sequence source here; the
+        # deployed-manifest cross-check happens intranet-side in
+        # publish-local.mjs (artifact.sequence must equal deployed + 1).
         env:
           COMPANY_CATALOG_SIGNING_KEY: ${{ secrets.COMPANY_CATALOG_SIGNING_KEY }}
           COMPANY_CATALOG_KEY_ID: ${{ secrets.COMPANY_CATALOG_KEY_ID }}
         run: >-
           node tools/company-catalog/cli.mjs measure-and-publish
           --digest-file run/tree-digests.json
-          --sequence-from $env:GITLAB_RAW_MANIFEST
-          --state-dir run/catalog-state
+          --state-dir tools/company-catalog/state
           --out run/catalog-manifest.json
-      - name: Publish summary (sequence, fingerprint, entries)
+          --meta-out run/publish-meta.json
+      - name: Record the build identity in publish-meta.json
+        # The CLI writes sequence/keyId/fingerprint/entries/manifestSha256;
+        # the runner adds the git/build identity publish-local echoes in its
+        # commit message and completion summary.
         shell: pwsh
         run: |
+          $meta = Get-Content run/publish-meta.json -Raw | ConvertFrom-Json
+          $meta | Add-Member -NotePropertyName gitSha -NotePropertyValue $env:GITHUB_SHA -Force
+          $meta | Add-Member -NotePropertyName runId -NotePropertyValue $env:GITHUB_RUN_ID -Force
+          $meta | Add-Member -NotePropertyName runUrl -NotePropertyValue $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID -Force
+          $meta | ConvertTo-Json -Depth 8 | Set-Content run/publish-meta.json -NoNewline
+          "sequence=$($meta.sequence)" >> $env:GITHUB_ENV
+          "fingerprint=$($meta.fingerprint)" >> $env:GITHUB_ENV
+          "keyId=$($meta.keyId)" >> $env:GITHUB_ENV
+      - name: Publish summary (sequence, fingerprint, entries, intranet command)
+        shell: pwsh
+        run: |
+          $meta = Get-Content run/publish-meta.json -Raw | ConvertFrom-Json
           $manifest = Get-Content run/catalog-manifest.json -Raw | ConvertFrom-Json
-          $entryLines = foreach ($entry in $manifest.packages) {
+          $entryLines = foreach ($entry in $meta.entries) {
             $digest = if ($entry.PSObject.Properties['treeDigest']) { "``$($entry.treeDigest)``" } else { '_none (gradual enablement)_' }
-            $revoked = if ($entry.revoked) { ' REVOKED' } else { '' }
-            "- $($entry.packageName)@$($entry.version) treeDigest $($digest)$($revoked)"
+            $measured = if ($entry.measured) { 'measured' } else { 'unmeasured' }
+            "- $($entry.packageName)@$($entry.version) treeDigest $($digest) ($measured)"
           }
           $summary = @(
             '## Company catalog manifest',
             '',
-            "- sequence: **$($manifest.sequence)** (floor: the deployed manifest at the GitLab raw URL)",
-            "- expiresAt: $($manifest.expiresAt)",
-            "- keyId: $($manifest.signature.keyId)",
+            "- sequence: **$($meta.sequence)** (floor: the in-repo state file; the intranet publisher additionally requires deployed + 1)",
+            "- keyId: $($meta.keyId)",
+            "- fingerprint: ``$($meta.fingerprint)``",
+            "- manifest sha256: ``$($meta.manifestSha256)``",
+            "- built from commit $($meta.gitSha)",
             '- entries:',
-            $entryLines
+            $entryLines,
+            ''
           )
           if ('${{ inputs.dry-run }}' -eq 'true') {
-            $summary = @('## DRY RUN - nothing was pushed', '', "The manifest at sequence $($manifest.sequence) was built and verified only. Re-run this workflow with dry-run unchecked to push it to GitLab.", '') + $summary
+            $summary += @(
+              '## DRY RUN — no artifact was uploaded',
+              '',
+              "The manifest at sequence $($meta.sequence) was measured, built, signed, and verified on this runner only. No artifact exists, nothing can be published from this run, and the signed bytes are gone with the runner. Re-run this workflow with dry-run unchecked to produce the publishable artifact.",
+              ''
+            )
+          } else {
+            $summary += @(
+              '## 产物待内网侧发布 · artifact ready for the intranet side',
+              '',
+              'On a machine that can reach both GitHub and the intranet GitLab (gh authenticated, GITLAB_TOKEN exported):',
+              '',
+              '```sh',
+              "node tools/company-catalog/publish-local.mjs --run $($meta.runId)",
+              '```',
+              '',
+              "publish-local verifies the artifact signature, requires sequence $($meta.sequence) = GitLab deployed + 1, pushes the canonical bytes to master, and re-reads the raw URL. After it succeeds, commit the state bump in this repository: \`tools/company-catalog/state/last-sequence.json\` → \`{ `"lastSequence`": $($meta.sequence) }\`.",
+              ''
+            )
           }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Join("`n", $summary))
-          "sequence=$($manifest.sequence)" >> $env:GITHUB_ENV
       - uses: actions/upload-artifact@v4
+        if: ${{ inputs.dry-run == false }}
         with:
-          name: company-catalog-run
+          name: company-catalog-signed
           path: |
-            run/tree-digests.json
             run/catalog-manifest.json
+            run/publish-meta.json
           if-no-files-found: error
-      - name: Clone the GitLab config repository
-        if: ${{ inputs.dry-run == false }}
-        shell: pwsh
-        env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-        run: |
-          if ([string]::IsNullOrEmpty($env:GITLAB_TOKEN)) {
-            throw 'GITLAB_TOKEN is not configured as a repository secret — refusing to publish (fail closed; nothing was pushed)'
-          }
-          git clone --depth 1 "https://oauth2:$($env:GITLAB_TOKEN)@$($env:GITLAB_ORIGIN)/$($env:GITLAB_PROJECT).git" gitlab-config
-      - name: Overwrite catalog-manifest.json and push
-        if: ${{ inputs.dry-run == false }}
-        shell: pwsh
-        env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-        run: |
-          if ([string]::IsNullOrEmpty($env:GITLAB_TOKEN)) {
-            throw 'GITLAB_TOKEN is not configured as a repository secret — refusing to publish (fail closed; nothing was pushed)'
-          }
-          # Byte-for-byte copy of the pipeline output: the desktop verifies the
-          # canonical single-line bytes, and GitLab's web editor would reformat
-          # them — the manifest is only ever replaced through git push.
-          Copy-Item run/catalog-manifest.json gitlab-config/catalog-manifest.json -Force
-          git -C gitlab-config add catalog-manifest.json
-          $sequence = $env:sequence
-          if (git -C gitlab-config diff --cached --quiet) {
-            "catalog-manifest.json is unchanged on GitLab at sequence $sequence — nothing to push (idempotent re-run)"
-          } else {
-            git -C gitlab-config -c user.name='DSH catalog pipeline' -c user.email='catalog-pipeline@dsh-desktop.local' commit -m "catalog: sequence $sequence via company-catalog workflow (measure, fill, sign, verify)"
-            git -C gitlab-config push origin master
-            "pushed catalog-manifest.json at sequence $sequence"
-          }
-      - name: Re-check the deployed raw manifest
-        if: ${{ inputs.dry-run == false }}
-        shell: pwsh
-        run: |
-          $expected = [int]$env:sequence
-          $deadline = (Get-Date).AddMinutes(5)
-          do {
-            $response = $null
-            try {
-              # Cache-buster: the raw endpoint must serve the bytes just pushed.
-              $response = Invoke-WebRequest -Uri "$($env:GITLAB_RAW_MANIFEST)?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -UseBasicParsing -TimeoutSec 30
-            } catch { Start-Sleep -Seconds 15; continue }
-            if ($response.StatusCode -eq 200) {
-              $deployed = ($response.Content | ConvertFrom-Json).sequence
-              if ($deployed -eq $expected) {
-                "post-push re-check ok: HTTP 200, sequence $deployed matches the pushed manifest"
-                return
-              }
-              "deployed sequence is $deployed, waiting for $expected..."
-            }
-            Start-Sleep -Seconds 15
-          } while ((Get-Date) -lt $deadline)
-          throw "post-push re-check failed: the GitLab raw manifest did not serve HTTP 200 with sequence $expected within 5 minutes"

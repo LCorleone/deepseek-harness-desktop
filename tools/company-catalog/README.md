@@ -26,14 +26,15 @@ node tools/company-catalog/cli.mjs <command> [options]
 | `build` | Fetch each allowlist entry's `dist.integrity` from `registry.npmjs.org`, assemble, sign, verify, and publish `out/catalog-manifest.json` (sequence = persisted + 1). 从官方 registry 抓取 integrity，组装→签名→round-trip 验证→发布清单。 |
 | `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence. 标记吊销并递增 sequence 重发；条目保留（吊销是状态不是删除）。 |
 | `verify [path]` | Verify a manifest file end to end (default `out/catalog-manifest.json`). 全链验证一个清单文件。 |
-| `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build with the deployed sequence (`--sequence-from`), verify, and write the manifest for the publishing workflow. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，按已部署 sequence 构建、验证并产出清单供发布 workflow 推送；绝不修改评审入库的 `allowlist.json`。 |
+| `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build (sequence floor: `--sequence-from` or the local state file), verify, and write the manifest + `--meta-out` metadata for the workflow artifact. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，构建、验证并产出清单与元数据供 workflow 产物化；绝不修改评审入库的 `allowlist.json`。 |
 | `selftest` | CI smoke with an ephemeral key: build → sign → round-trip verify → sequence monotonicity → revocation reissue → expiry. 临时密钥全流程冒烟，绝不发布、绝不改 `state/`、`out/`、`allowlist.json`。 |
 
 Options: `--allowlist`, `--out`, `--state-dir`, `--sequence` (must strictly
 exceed the effective floor), `--sequence-from <url-or-path>` (the deployed
 manifest whose sequence is the floor — wins over the local state file, which
-stays the fallback when omitted), `--digest-file` (measure-and-publish),
-`--expires-days` (default 90), and `--force-offline` (selftest only).
+stays the fallback when omitted), `--digest-file` and `--meta-out`
+(measure-and-publish), `--expires-days` (default 90), and `--force-offline`
+(selftest only).
 
 ## Allowlist and review · allowlist 与评审
 
@@ -250,9 +251,20 @@ integrity 与 tarball URL 一律取自官方 `registry.npmjs.org`，且 tarball 
 ## Sequence state · sequence 状态
 
 `state/last-sequence.json` persists the highest published sequence across
-runs (both `state/` and `out/` are gitignored). Every publish must strictly
-exceed it; a corrupt state file aborts rather than silently restarting the
-counter. `expiresAt` defaults to now + 90 days (`--expires-days`).
+runs (`out/` is gitignored; the state file itself is tracked — see below).
+Every publish must strictly exceed it; a corrupt state file aborts rather
+than silently restarting the counter. `expiresAt` defaults to now + 90 days
+(`--expires-days`).
+
+**The state file is the GitHub-side ratchet and must be committed.** The
+publish workflow runs on a GitHub runner that cannot read the intranet
+GitLab, so it floors its signature at the in-repo `last-sequence.json`
+(state + 1). The intranet-side publisher (`publish-local.mjs`) independently
+requires `artifact.sequence == deployed + 1` against the manifest actually
+served by GitLab, so a stale or jumped-ahead state file can only fail closed
+on the intranet side — never a replayed or skipped sequence. After every
+successful publish, commit the bump (`last-sequence.json` → the published
+sequence) so the next build floors correctly.
 
 With `--sequence-from <manifest-url-or-path>` the deployed manifest becomes
 the sequence source of truth: the next sequence is the deployed one + 1, and
@@ -269,9 +281,16 @@ reissued. The CLI prints which source won.
 猜测；本地超前时取更高者为下限，绝不重发客户端可能见过的 sequence。CLI 会
 打印实际采用的来源。
 
-`state/last-sequence.json` 跨发布持久化最高 sequence（`state/`、`out/` 均已
-gitignore）。每次发布必须严格递增；状态文件损坏即中止，绝不静默清零。
-`expiresAt` 默认 now + 90 天。
+`state/last-sequence.json` 跨发布持久化最高 sequence（`out/` 已 gitignore；
+state 文件本身入库——见上）。每次发布必须严格递增；状态文件损坏即中止，
+绝不静默清零。`expiresAt` 默认 now + 90 天。
+
+**state 文件是 GitHub 侧棘轮，必须入库。** 发布 workflow 跑在读不到内网
+GitLab 的 GitHub runner 上，因此以仓库内 `last-sequence.json` 为签名下限
+（state + 1）；内网侧发布器（`publish-local.mjs`）再独立对拍「artifact.sequence
+== GitLab 已部署 + 1」，陈旧或跳前的 state 只会在内网侧 fail-closed——绝不
+会重放或跳号。每次成功发布后把 bump（`last-sequence.json` → 已发布
+sequence）commit 入库，下一次构建的下限才是对的。
 
 ## Publishing runbook · 发布运行手册
 
@@ -304,7 +323,7 @@ gitignore）。每次发布必须严格递增；状态文件损坏即中止，�
    manifest exactly as above.
    应急吊销：跑 `revoke`，按上面同样方式分发重发清单。
 
-## Automatic listing (measure → fill → sign → push) · 全自动上架
+## Automatic listing (measure → fill → sign → artifact → intranet push) · 全自动上架（产物化＋内网发布）
 
 `tools/company-catalog/measure.mjs` measures the reference-environment
 `treeDigest` for allowlist entries that still lack one: it scaffolds a
@@ -324,24 +343,54 @@ artifact's lib tree instead of the repository build.
 
 `measure-and-publish` then fills the digests into a **runtime copy** of the
 allowlist (idempotent when equal, abort on a reviewed-value conflict or an
-unmatched digest record — never silent), builds against the deployed
-sequence (`--sequence-from`), and re-verifies the written manifest from
-disk. Landing a measured digest in the reviewed `allowlist.json` stays a
-human review commit: the pipeline signs the runtime copy only.
+unmatched digest record — never silent), builds with the sequence floored at
+the local state file (or `--sequence-from`), re-verifies the written manifest
+from disk, and — with `--meta-out` — writes the `publish-meta.json` sidecar
+(sequence, keyId, fingerprint, a sha256 over the exact manifest bytes, and
+the per-entry digest state). Landing a measured digest in the reviewed
+`allowlist.json` stays a human review commit: the pipeline signs the runtime
+copy only.
 
-`.github/workflows/company-catalog-publish.yml` (manual dispatch,
-Windows runner) chains the two: build the market + desktop libs →
-measure → `measure-and-publish` with `--sequence-from` pointing at the
-GitLab raw manifest → step summary with the measured digests, sequence,
-fingerprint, and entries. `dry-run` (default) stops after build + verify
-with an explicit "nothing was pushed" banner; with `dry-run` unchecked the
-job clones `julu/dsh-desktop-config` with the `GITLAB_TOKEN` secret,
-overwrites `catalog-manifest.json` byte-for-byte with the pipeline output
-(canonical single line — the GitLab web editor would break verification,
-so the manifest only ever moves through `git push`), commits (message
-carries the sequence), pushes, and re-fetches the raw URL to confirm
-HTTP 200 + matching sequence. Every pre-push step is fail-closed; secrets
-are referenced, never echoed.
+Publishing is split across the network boundary: **the GitHub runner cannot
+reach the intranet GitLab** (verified empirically), so it never pushes.
+`.github/workflows/company-catalog-publish.yml` (manual dispatch, Windows
+runner) chains: build the market + desktop libs → measure → `measure-and-publish`
+floored at the in-repo state file (a preflight step hard-fails when the state
+file is missing from the checkout) → step summary with the measured digests,
+sequence, fingerprint, and entries → upload of the `company-catalog-signed`
+artifact (`catalog-manifest.json` + `publish-meta.json`, the latter enriched
+with gitSha/runId). `dry-run` (default) runs the identical measure → sign →
+verify chain but uploads **no artifact** — the signed bytes die with the
+runner; with `dry-run` unchecked the artifact is uploaded and the summary
+prints the intranet publish command. No GitLab credentials exist in the
+workflow at all.
+
+The intranet side publishes:
+
+```sh
+node tools/company-catalog/publish-local.mjs --run <run-id>   # omit --run to take the latest successful run
+```
+
+`publish-local.mjs` (plain Node + `gh`/`git` on PATH, run on a machine that
+reaches both GitHub and the intranet) downloads the artifact, checks the
+sidecar's sha256 against the bytes, verifies the signature against the trust
+root pinned in the desktop release policy (plus the optional
+`COMPANY_CATALOG_KEY_FINGERPRINT` env pin), **ratchet-checks**
+`artifact.sequence == deployed + 1` against the manifest served by GitLab
+(both values printed on mismatch — no skipping, replaying, or double push),
+clones the config repo (PAT from `--token`/`GITLAB_TOKEN`, injected through
+`GIT_CONFIG_*` so it never appears in argv, config, or error output),
+overwrites `catalog-manifest.json` **byte-for-byte** (canonical single line —
+the GitLab web editor would break verification, so the manifest only ever
+moves through git push), commits (message carries sequence/fingerprint/run
+id), pushes, and re-reads the raw URL until it serves HTTP 200 with the
+pushed sequence (≤ 5 min). `--dry-run` stops after verification with the push
+plan printed; `--artifact-dir` replays a local artifact directory laid out
+like the download (tests/drills); `--branch` targets a non-master branch for
+drills; `--insecure-tls` mirrors the desktop's accepted intranet TLS posture
+(prefer `NODE_EXTRA_CA_CERTS` with the corporate root). Every failure is
+fail-closed. After a successful master publish, commit the GitHub-side
+state bump (`state/last-sequence.json` → the published sequence).
 
 `measure.mjs` 为缺 `treeDigest` 的 allowlist 条目实测参考环境摘要：按全新桌面
 profile 同款模板搭临时 profile（上游 package.json + hoisted
@@ -353,17 +402,41 @@ profile 同款模板搭临时 profile（上游 package.json + hoisted
 依赖的插件镜像桌面 pnpm 运行时；`--desktop-lib` 可指向打包产物的 lib 树。
 
 `measure-and-publish` 把摘要填进 allowlist **运行时副本**（相等幂等、冲突或
-不匹配即中止，绝不静默），按部署 sequence（`--sequence-from`）构建并从磁盘
-复验。实测摘要评审入 `allowlist.json` 仍是人工 commit：管线只签运行时副本。
+不匹配即中止，绝不静默），以本地 state 文件为 sequence 下限（或
+`--sequence-from`）构建、从磁盘复验，并用 `--meta-out` 写出 `publish-meta.json`
+边车（sequence、keyId、fingerprint、清单字节的 sha256、逐条目摘要状态）。
+实测摘要评审入 `allowlist.json` 仍是人工 commit：管线只签运行时副本。
 
-`.github/workflows/company-catalog-publish.yml`（手动触发，Windows runner）
-串起两步：构建 market + desktop lib → 测量 → 以 GitLab raw manifest 为
-`--sequence-from` 跑 `measure-and-publish` → step summary 输出摘要、sequence、
-指纹与条目。`dry-run`（默认）只构建 + 验证并明示「未推送」；取消勾选则用
-`GITLAB_TOKEN` secret 克隆 `julu/dsh-desktop-config`，把管线产物**逐字节**覆盖
-`catalog-manifest.json`（规范单行——GitLab 网页编辑器会破坏验签，manifest 只走
-`git push`），commit（消息含 sequence）→ push → 回读 raw URL 复核 HTTP 200 +
-sequence 一致。推送前每步 fail-closed；secret 只引用不回显。
+发布按网络边界拆分：**GitHub runner 读不到内网 GitLab**（已实证），因此它
+绝不推送。`.github/workflows/company-catalog-publish.yml`（手动触发，Windows
+runner）串起：构建 market + desktop lib → 测量 → 以仓库内 state 文件为下限跑
+`measure-and-publish`（state 文件不在 checkout 里时预检步骤直接硬失败）→
+step summary 输出摘要、sequence、指纹与条目 → 上传 `company-catalog-signed`
+产物（`catalog-manifest.json` + `publish-meta.json`，后者补记 gitSha/runId）。
+`dry-run`（默认）跑同一条 测量→签名→验证 链但**不上传产物**——签名字节随
+runner 消亡；取消勾选才上传产物并在 summary 打印内网发布命令。workflow 里
+不存在任何 GitLab 凭据。
+
+内网侧发布：
+
+```sh
+node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则取最近成功 run
+```
+
+`publish-local.mjs`（纯 Node ＋ PATH 上的 `gh`/`git`，在同时可达 GitHub 与内网
+的机器上跑）下载产物 → 边车 sha256 对拍字节 → 以桌面 release 策略钉死的信任
+根验签（外加可选的 `COMPANY_CATALOG_KEY_FINGERPRINT` 环境钉）→ **序列对拍**
+`artifact.sequence == GitLab 已部署 + 1`（不等即打印两侧值中止——不跳号、
+不重放、不重推）→ 克隆配置仓（PAT 来自 `--token`/`GITLAB_TOKEN`，经
+`GIT_CONFIG_*` 注入，绝不出现在 argv/配置/报错里）→ **逐字节**覆盖
+`catalog-manifest.json`（规范单行——GitLab 网页编辑器会破坏验签，manifest
+只走 git push）→ commit（消息含 sequence/fingerprint/run id）→ push → 回读
+raw URL 直到 HTTP 200 且 sequence 一致（≤5 分钟）。`--dry-run` 验证后打印推送
+计划即停；`--artifact-dir` 回放同布局的本地产物目录（测试/演练）；`--branch`
+指向非 master 分支演练；`--insecure-tls` 与桌面已接受的内网 TLS 姿势对齐
+（优先用 `NODE_EXTRA_CA_CERTS` 挂企业根）。所有失败均 fail-closed。master
+发布成功后，把 GitHub 侧 state bump（`state/last-sequence.json` → 已发布
+sequence）commit 入库。
 
 ## Selftest and CI · 自测与 CI
 
