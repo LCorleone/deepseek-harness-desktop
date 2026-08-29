@@ -46,6 +46,27 @@ describe('Deloitte sidebar brand name', () => {
     expect(markup).toContain('deloitte-brand-badge-clip')
   })
 
+  it('pins the live-text advance and shrinks with the host cell', () => {
+    const markup = renderToStaticMarkup(createElement(DeloitteBrandName))
+    // Width anchor: textLength 124 pins the text advance on the 24-unit grid
+    // — right edge x=150, a fixed 6-unit gap before the badge plate at
+    // x=156 — so every platform font stops short of the opaque badge
+    // regardless of its metrics (DejaVu Sans Bold would otherwise advance
+    // ~136 units and slide the tail under the badge). lengthAdjust lets the
+    // correction compress or stretch glyphs, and fontFamily mirrors
+    // ui-theme's --dsw-font-family so the pin lands on the same font the
+    // host would resolve, keeping the correction minimal.
+    expect(markup).toContain('textLength="124"')
+    expect(markup).toContain('lengthAdjust="spacingAndGlyphs"')
+    expect(markup).toMatch(/font-family="-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;/)
+    expect(markup).toContain(', Helvetica, Arial, sans-serif"')
+    // Anti-clip: the svg caps at its host cell and scales proportionally
+    // (the sidebar minimum 264px leaves a 168px budget, under the 184-unit
+    // canvas) instead of letting the cell's overflow:hidden truncate the
+    // badge tail.
+    expect(markup).toContain('style="max-width:100%;height:auto"')
+  })
+
   it('registers the co-brand into the sidebar name slot for every desktop mode', () => {
     const { register, inject } = applyDesktopClient('?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin')
     expect(inject).toHaveBeenCalledWith('sidebar.brand.name', expect.any(Function))

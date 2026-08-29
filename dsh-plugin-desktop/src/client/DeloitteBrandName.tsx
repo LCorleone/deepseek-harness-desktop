@@ -4,6 +4,9 @@
 // official BrandWordmark artwork (figma 356:14644; see
 // ui-primitives/src/BrandWordmark.tsx) so the plate, letter geometry, and
 // both-theme inverted knockout match the shipped wordmark pixel for pixel.
+// The live text is width-anchored (textLength) so no platform font stack can
+// advance past the badge, and the svg shrinks with its host cell instead of
+// being clipped (see the layout notes below).
 
 /** Deloitte brand green for the leading word. */
 const DELOITTE_GREEN = '#86BC25'
@@ -11,12 +14,24 @@ const DELOITTE_GREEN = '#86BC25'
 // Canvas layout on the official wordmark's native 24-high grid: text starts
 // where BrandWordmark's includeMark={false} view starts (x=26), and the badge
 // keeps its upstream geometry (rect x=129.348 y=5.5 width=52 height=14)
-// shifted right past the wider two-word text budget (~121 units at 14px).
+// shifted right past the wider two-word text budget (124 units at 14px).
+// The text advance is pinned to exactly 124 units via textLength +
+// lengthAdjust="spacingAndGlyphs": wider platform fallbacks (e.g. DejaVu
+// Sans Bold renders "Deloitte DeepSeek" ~136 units at 14px/600, sliding the
+// tail under the opaque badge) compress and narrower ones stretch slightly,
+// so every font stops at x=150 — a fixed 6-unit gap before the badge at 156.
 const CANVAS_HEIGHT = 24
 const TEXT_X = 26
 const TEXT_Y = 12
 const FONT_SIZE = 14
 const WORD_GAP = 4
+// Mirrors the ui-theme base.css --dsw-font-family stack the host sidebar
+// uses, so the pinned advance lands on the same font it would inherit and
+// the lengthAdjust correction stays minimal on supported platforms.
+const FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', "
+  + "'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+// Right edge TEXT_X + TEXT_LENGTH = 150, leaving the 6-unit gap to BADGE_X.
+const TEXT_LENGTH = 124
 const BADGE_X = 156
 const BADGE_NATIVE_X = 129.348
 const BADGE_WIDTH = 52
@@ -36,13 +51,21 @@ export function DeloitteBrandName() {
       viewBox={`${TEXT_X} 0 ${VIEW_WIDTH} ${CANVAS_HEIGHT}`}
       fill="none"
       aria-hidden="true"
+      // The host brand cell clips with overflow:hidden and can be narrower
+      // than this 184-unit canvas (sidebar min 264px leaves a 168px budget);
+      // cap at the cell and scale proportionally instead of truncating the
+      // badge tail.
+      style={{ maxWidth: '100%', height: 'auto' }}
     >
       <text
         x={TEXT_X}
         y={TEXT_Y}
         fontSize={FONT_SIZE}
         fontWeight={600}
+        fontFamily={FONT_STACK}
         letterSpacing="0.02em"
+        textLength={TEXT_LENGTH}
+        lengthAdjust="spacingAndGlyphs"
         dominantBaseline="central"
       >
         <tspan fill={DELOITTE_GREEN}>Deloitte</tspan>

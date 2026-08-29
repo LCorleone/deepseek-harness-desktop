@@ -95,12 +95,17 @@ export function apply(ctx: ClientContext): void {
   // default 0) throws, while a different priority coexists with the LOWEST
   // live entry rendering (SlotCore.entriesOfSlot). The official brand bundle
   // — active in this build, DSH_CLIENT_BUILD_PROFILE === 'official' — fills
-  // the cell at the default 0 from its ui-brand-official roster row, which
-  // the desktop bundle layer composes AFTER every web-app row, so this plugin
-  // always applies later; registration order cannot win the cell, only a
-  // lower shadowing rank can. priority -1 keeps the official wordmark
-  // registered (it stays as the fallback if the desktop bundle is disabled)
-  // while the Deloitte co-brand renders. The inject wrapper keys the
+  // the cell at the default 0 from its ui-brand-official roster row. The
+  // desktop bundle layer composes immediately after the web-app layer in the
+  // profile patch order (src/profile.ts), so later user layers may register
+  // after this plugin — which changes nothing: only an exact-priority
+  // collision throws, and among distinct priorities the registry renders the
+  // cell's lowest entry regardless of registration order, so the -1 rank
+  // wins on rank alone. priority -1 keeps the official wordmark registered
+  // purely as a hypothetical fallback — it could only render without this
+  // plugin, and dsh-plugin-desktop is immutable (IMMUTABLE_BUNDLES in
+  // src/desktop-plugins.ts), so that fallback can never trigger — while the
+  // Deloitte co-brand renders. The inject wrapper keys the
   // contribution to the slot's declaration lifetime (ui-sidebar owns it), the
   // same declaration-gating the official brand plugin uses, so the
   // registration survives ui-sidebar re-declarations and unloads with this
