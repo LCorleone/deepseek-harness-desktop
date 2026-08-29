@@ -4,7 +4,7 @@
     "version": "0.15.2",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://github.com/omdsh-dev/DSH-better-sidebar",
-    "revoked": true,
+    "revoked": false,
     "runtime": {
       "dshRuntimeVersion": "^0.1.1-rc.2"
     }
