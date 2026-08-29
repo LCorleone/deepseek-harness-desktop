@@ -1,0 +1,182 @@
+name: Company catalog publish
+
+# Full-auto catalog listing (manual dispatch): measure the installed-tree
+# root digests for allowlist entries that still lack one, fill them into a
+# runtime copy of the allowlist, sign against the sequence of the manifest
+# currently deployed on GitLab, verify end to end, and — when dry-run is
+# turned off — push the canonical manifest bytes to the GitLab config repo.
+#
+# Boundary (red line): this workflow NEVER modifies tools/company-catalog/
+# allowlist.json in this repository. The treeDigest fill happens on a runtime
+# copy inside the job; landing a measured digest in the reviewed allowlist
+# stays a human review commit. The only publishing artifact is
+# catalog-manifest.json on GitLab, copied byte-for-byte from the pipeline
+# output (canonical single line — never reformatted, the desktop verifies the
+# exact bytes). Signing key material lives only in repository secrets and is
+# referenced, never echoed. Every step before the push is fail-closed: no
+# green build + verify, no push.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Dry run — measure, build, and verify only (no GitLab push)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+  GITLAB_RAW_MANIFEST: 'https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json'
+  GITLAB_ORIGIN: 'gitlab.s.dai.deloitte.cn'
+  GITLAB_PROJECT: 'julu/dsh-desktop-config'
+
+jobs:
+  measure-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.2
+      - run: corepack enable
+      - name: Resolve Yarn cache folder
+        id: yarn-cache
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$env:GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+      - run: yarn install --immutable
+      # The CLI verifies/signs through the market library; the measure script
+      # hashes through the compiled desktop boot-verification chunk.
+      - name: Build market signing library
+        run: yarn workspace dsh-community-market build
+      - name: Build desktop lib (boot-verification chunk)
+        run: yarn workspace dsh-plugin-desktop build
+      - name: Measure installed-tree root digests
+        # Real installs through the repository-pinned pnpm 11.8.0 against
+        # registry.npmjs.org, digested with the compiled
+        # computeDesktopBootTreeRootDigest — the exact function the desktop's
+        # boot verification applies to the user's installed tree.
+        run: node tools/company-catalog/measure.mjs --out run/tree-digests.json --desktop-lib dsh-plugin-desktop/lib
+      - name: Digest table → step summary
+        shell: pwsh
+        run: |
+          $records = @(Get-Content run/tree-digests.json -Raw | ConvertFrom-Json)
+          $lines = @('## Measured tree digests', '')
+          if ($records.Count -eq 0) {
+            $lines += [ '_no allowlist entry lacked a treeDigest — nothing measured', '' ]
+          } else {
+            $lines += @('| package | version | treeDigest |', '| --- | --- | --- |')
+            foreach ($record in $records) { $lines += "| $($record.packageName) | $($record.version) | ``$($record.treeDigest)`` |" }
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
+      # Optional trust-root pin: only exported when the secret exists, so an
+      # unset optional secret can never arrive as a poisoned empty string.
+      - name: Pin the deployment trust-root fingerprint
+        if: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT != '' }}
+        run: 'echo "COMPANY_CATALOG_KEY_FINGERPRINT=${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}" >> $env:GITHUB_ENV'
+      - name: measure-and-publish (fill → build with deployed sequence → verify)
+        # Fail-closed by construction: this step must exit 0 (registry dist
+        # fetch, remote sequence read, sign, full round-trip verify, disk
+        # re-verify) before any push step below can run.
+        env:
+          COMPANY_CATALOG_SIGNING_KEY: ${{ secrets.COMPANY_CATALOG_SIGNING_KEY }}
+          COMPANY_CATALOG_KEY_ID: ${{ secrets.COMPANY_CATALOG_KEY_ID }}
+        run: >-
+          node tools/company-catalog/cli.mjs measure-and-publish
+          --digest-file run/tree-digests.json
+          --sequence-from $env:GITLAB_RAW_MANIFEST
+          --state-dir run/catalog-state
+          --out run/catalog-manifest.json
+      - name: Publish summary (sequence, fingerprint, entries)
+        shell: pwsh
+        run: |
+          $manifest = Get-Content run/catalog-manifest.json -Raw | ConvertFrom-Json
+          $entryLines = foreach ($entry in $manifest.packages) {
+            $digest = if ($entry.PSObject.Properties['treeDigest']) { "``$($entry.treeDigest)``" } else { '_none (gradual enablement)_' }
+            $revoked = if ($entry.revoked) { ' REVOKED' } else { '' }
+            "- $($entry.packageName)@$($entry.version) treeDigest $($digest)$($revoked)"
+          }
+          $summary = @(
+            '## Company catalog manifest',
+            '',
+            "- sequence: **$($manifest.sequence)** (floor: the deployed manifest at the GitLab raw URL)",
+            "- expiresAt: $($manifest.expiresAt)",
+            "- keyId: $($manifest.signature.keyId)",
+            '- entries:',
+            $entryLines
+          )
+          if ('${{ inputs.dry-run }}' -eq 'true') {
+            $summary = @('## DRY RUN - nothing was pushed', '', "The manifest at sequence $($manifest.sequence) was built and verified only. Re-run this workflow with dry-run unchecked to push it to GitLab.", '') + $summary
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Join("`n", $summary))
+          "sequence=$($manifest.sequence)" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: company-catalog-run
+          path: |
+            run/tree-digests.json
+            run/catalog-manifest.json
+          if-no-files-found: error
+      - name: Clone the GitLab config repository
+        if: ${{ inputs.dry-run == false }}
+        shell: pwsh
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:GITLAB_TOKEN)) {
+            throw 'GITLAB_TOKEN is not configured as a repository secret — refusing to publish (fail closed; nothing was pushed)'
+          }
+          git clone --depth 1 "https://oauth2:$($env:GITLAB_TOKEN)@$($env:GITLAB_ORIGIN)/$($env:GITLAB_PROJECT).git" gitlab-config
+      - name: Overwrite catalog-manifest.json and push
+        if: ${{ inputs.dry-run == false }}
+        shell: pwsh
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:GITLAB_TOKEN)) {
+            throw 'GITLAB_TOKEN is not configured as a repository secret — refusing to publish (fail closed; nothing was pushed)'
+          }
+          # Byte-for-byte copy of the pipeline output: the desktop verifies the
+          # canonical single-line bytes, and GitLab's web editor would reformat
+          # them — the manifest is only ever replaced through git push.
+          Copy-Item run/catalog-manifest.json gitlab-config/catalog-manifest.json -Force
+          git -C gitlab-config add catalog-manifest.json
+          $sequence = $env:sequence
+          if (git -C gitlab-config diff --cached --quiet) {
+            "catalog-manifest.json is unchanged on GitLab at sequence $sequence — nothing to push (idempotent re-run)"
+          } else {
+            git -C gitlab-config -c user.name='DSH catalog pipeline' -c user.email='catalog-pipeline@dsh-desktop.local' commit -m "catalog: sequence $sequence via company-catalog workflow (measure, fill, sign, verify)"
+            git -C gitlab-config push origin master
+            "pushed catalog-manifest.json at sequence $sequence"
+          }
+      - name: Re-check the deployed raw manifest
+        if: ${{ inputs.dry-run == false }}
+        shell: pwsh
+        run: |
+          $expected = [int]$env:sequence
+          $deadline = (Get-Date).AddMinutes(5)
+          do {
+            $response = $null
+            try {
+              # Cache-buster: the raw endpoint must serve the bytes just pushed.
+              $response = Invoke-WebRequest -Uri "$($env:GITLAB_RAW_MANIFEST)?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -UseBasicParsing -TimeoutSec 30
+            } catch { Start-Sleep -Seconds 15; continue }
+            if ($response.StatusCode -eq 200) {
+              $deployed = ($response.Content | ConvertFrom-Json).sequence
+              if ($deployed -eq $expected) {
+                "post-push re-check ok: HTTP 200, sequence $deployed matches the pushed manifest"
+                return
+              }
+              "deployed sequence is $deployed, waiting for $expected..."
+            }
+            Start-Sleep -Seconds 15
+          } while ((Get-Date) -lt $deadline)
+          throw "post-push re-check failed: the GitLab raw manifest did not serve HTTP 200 with sequence $expected within 5 minutes"

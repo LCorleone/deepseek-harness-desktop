@@ -6,7 +6,7 @@
  * Nothing is written until the signed manifest verifies end to end.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { entryKey } from './allowlist.mjs'
 import { fingerprintOfRawPublicKey } from './keys.mjs'
@@ -14,6 +14,10 @@ import { fingerprintOfRawPublicKey } from './keys.mjs'
 export const MANIFEST_VERSION = '1.0.0'
 export const STATE_FILE_NAME = 'last-sequence.json'
 const DAY_MS = 86_400_000
+
+/** Size and time bounds for reading a deployed manifest as the sequence source. */
+export const DEPLOYED_MANIFEST_MAX_BYTES = 1_048_576
+export const DEPLOYED_MANIFEST_TIMEOUT_MS = 15_000
 
 /** Read the persisted highest published sequence; a missing state starts at 0. */
 export function readLastSequence(stateDir) {
@@ -69,6 +73,140 @@ export function expiryFromDays(days = 90) {
     throw new Error(`expires days must be an integer between 1 and 3650 (got ${String(days)})`)
   }
   return new Date(Date.now() + days * DAY_MS)
+}
+
+const isHttpUrl = (value) => {
+  try {
+    return new URL(value).protocol === 'http:' || new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** Read a manifest body to a string under a hard byte cap; cancels the stream on overrun. */
+async function readBodyWithLimit(response, maxBytes, label) {
+  const declared = response.headers.get('content-length')
+  if (declared !== null && /^\d+$/u.test(declared) && Number.parseInt(declared, 10) > maxBytes) {
+    throw new Error(`${label} declares ${declared} bytes, over the ${String(maxBytes)}-byte bound — refusing to read it as a sequence source`)
+  }
+  const reader = response.body?.getReader()
+  if (reader === undefined) {
+    throw new Error(`${label} returned no body`)
+  }
+  const chunks = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      totalBytes += chunk.value.byteLength
+      if (totalBytes > maxBytes) {
+        throw new Error(`${label} exceeds the ${String(maxBytes)}-byte bound for a sequence source`)
+      }
+      chunks.push(Buffer.from(chunk.value))
+    }
+  } finally {
+    reader.releaseLock()
+    await reader.cancel().catch(() => undefined)
+  }
+  const bytes = Buffer.concat(chunks)
+  if (bytes.byteLength === 0) throw new Error(`${label} returned an empty body`)
+  return bytes.toString('utf8')
+}
+
+/** Parse the deployed sequence out of manifest JSON text; anything else is a hard error. */
+function sequenceFromManifestText(text, label) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON (${error.message}) — the sequence must never be guessed`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label} is not a manifest object carrying a sequence`)
+  }
+  const sequence = parsed.sequence
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new Error(`${label} carries no safe non-negative integer sequence — the sequence must never be guessed`)
+  }
+  return sequence
+}
+
+/**
+ * Read the currently deployed manifest's sequence from an https URL (the
+ * GitLab raw file) or a local file (selftest/offline stand-in), under a hard
+ * timeout and byte bound in the spirit of the desktop's fetchUpdateChannelBytes.
+ * Returns `{ sequence, source }`; every failure is a thrown, descriptive error —
+ * a sequence source that cannot be read must abort the build, not fall back
+ * silently to a stale local guess.
+ */
+export async function readDeployedSequence(source, options = {}) {
+  const maxBytes = options.maxBytes ?? DEPLOYED_MANIFEST_MAX_BYTES
+  const timeoutMs = options.timeoutMs ?? DEPLOYED_MANIFEST_TIMEOUT_MS
+  let text
+  if (isHttpUrl(source)) {
+    let response
+    try {
+      response = await fetch(source, {
+        method: 'GET',
+        cache: 'no-store',
+        redirect: 'follow',
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+    } catch (error) {
+      throw new Error(`the deployed manifest at ${source} could not be fetched within ${String(timeoutMs)} ms (${error.message})`)
+    }
+    if (response.status !== 200) {
+      throw new Error(`the deployed manifest at ${source} answered HTTP ${String(response.status)}`)
+    }
+    text = await readBodyWithLimit(response, maxBytes, `the deployed manifest at ${source}`)
+  } else {
+    let stat
+    try {
+      stat = statSync(source)
+    } catch (error) {
+      throw new Error(`the sequence source ${source} is not readable (${error.code ?? error.message})`)
+    }
+    if (!stat.isFile()) throw new Error(`the sequence source ${source} is not a file`)
+    if (stat.size > maxBytes) {
+      throw new Error(`the sequence source ${source} is ${String(stat.size)} bytes, over the ${String(maxBytes)}-byte bound`)
+    }
+    try {
+      text = readFileSync(source, 'utf8')
+    } catch (error) {
+      throw new Error(`the sequence source ${source} could not be read (${error.code ?? error.message})`)
+    }
+    if (text.length === 0) throw new Error(`the sequence source ${source} is empty`)
+  }
+  return { sequence: sequenceFromManifestText(text, `the deployed manifest at ${source}`), source }
+}
+
+/**
+ * Compose the next sequence from every known floor: the deployed manifest
+ * (`--sequence-from`) takes precedence as the source of truth, the local state
+ * file remains the fallback when no remote is given, and the effective floor is
+ * the maximum of the two so a locally-ahead state can never publish a sequence
+ * clients may already have seen. An explicit `--sequence` must still strictly
+ * exceed that floor. Returns `{ sequence, floor, source }` with a human-readable
+ * `source` the CLI prints so operators always see which sequence source won.
+ */
+export function nextSequenceFromSources({ explicit, deployedSequence, deployedSource, persistedSequence }) {
+  const known = []
+  if (deployedSequence !== undefined) {
+    known.push({ value: deployedSequence, label: `the deployed manifest at ${deployedSource} (sequence ${String(deployedSequence)})` })
+  }
+  if (persistedSequence !== undefined) {
+    known.push({ value: persistedSequence, label: `the local state file (sequence ${String(persistedSequence)})` })
+  }
+  const floor = known.length === 0 ? 0 : Math.max(...known.map((entry) => entry.value))
+  const source = known.length === 0
+    ? 'no deployed manifest and no local state (fresh start)'
+    : known.length === 1
+      ? known[0].label
+      : known.map((entry) => entry.label).join(' + ') + ` — using the higher floor ${String(floor)}`
+  const sequence = resolveSequence(explicit, floor)
+  return { sequence, floor, source }
 }
 
 /**

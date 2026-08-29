@@ -14,17 +14,29 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadAllowlist, applyRevocation, entryKey, saveAllowlist } from './lib/allowlist.mjs'
+import {
+  applyTreeDigests,
+  applyRevocation,
+  entryKey,
+  loadAllowlist,
+  loadTreeDigestFile,
+  repositoryFromPackument,
+  saveAllowlist,
+  validateAllowlistEntry,
+} from './lib/allowlist.mjs'
 import { generateSigningMaterial, loadSigningKeyFromEnv } from './lib/keys.mjs'
 import { loadMarketLibrary } from './lib/market.mjs'
 import { fetchPackageDist } from './lib/registry.mjs'
 import {
   expiryFromDays,
+  nextSequenceFromSources,
   publishManifest,
+  readDeployedSequence,
   readLastSequence,
-  resolveSequence,
   verifyManifestText,
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
@@ -37,6 +49,12 @@ Commands:
   build                        Fetch dist integrity for every allowlist entry from
                                registry.npmjs.org, assemble, sign, verify, and publish
                                the manifest (sequence = persisted + 1).
+  measure-and-publish          Fill measured tree digests (--digest-file) into a
+                               runtime copy of the allowlist, then build with the
+                               deployed sequence (--sequence-from) and verify;
+                               the signed manifest is written to --out for the
+                               workflow to push. The reviewed allowlist.json is
+                               never modified.
   revoke <pkg>[@<version>]     Mark allowlist entries revoked:true and reissue the
                                manifest with a higher sequence (entries are kept).
   verify [path]                Verify a manifest file end to end
@@ -52,6 +70,11 @@ Options:
   --out <path>           Manifest output  (default: tools/company-catalog/out/catalog-manifest.json)
   --state-dir <path>     Sequence state   (default: tools/company-catalog/state)
   --sequence <n>         Explicit sequence; must strictly exceed the persisted one
+  --sequence-from <src>  Deployed manifest URL or file: its sequence is the floor
+                         for the next one (wins over the local state file, which
+                         stays the fallback when this is omitted)
+  --digest-file <path>   measure-and-publish: measured tree digests
+                         [{packageName, version, treeDigest}] (see measure.mjs)
   --expires-days <n>     expiresAt horizon in days (default: 90)
   --force-offline        selftest only: skip the npm registry segment
 
@@ -71,7 +94,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'expires-days'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'expires-days'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) {
@@ -124,14 +147,25 @@ async function resolveDists(entries) {
 }
 
 /** Shared tail of `build` and `revoke`: publish the current allowlist. */
-async function publishFromAllowlist(flags) {
+async function publishFromAllowlist(flags, allowlistPathOverride) {
   const market = await loadMarketLibrary()
   const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
   const { allowlistPath, outPath, stateDir } = defaultPaths(flags)
-  const entries = loadAllowlist(allowlistPath)
+  const effectiveAllowlistPath = allowlistPathOverride ?? allowlistPath
+  const entries = loadAllowlist(effectiveAllowlistPath)
   const dists = await resolveDists(entries)
-  const lastSequence = readLastSequence(stateDir)
-  const sequence = resolveSequence(integerFlag(flags, 'sequence'), lastSequence)
+  const sequenceFrom = flags['sequence-from']
+  const persistedSequence = readLastSequence(stateDir)
+  let deployedSequence
+  let deployedSource
+  if (sequenceFrom !== undefined) {
+    ;({ sequence: deployedSequence, source: deployedSource } = await readDeployedSequence(sequenceFrom))
+  }
+  const { sequence, floor, source: sequenceSource } = nextSequenceFromSources({
+    explicit: integerFlag(flags, 'sequence'),
+    ...(deployedSequence === undefined ? {} : { deployedSequence, deployedSource }),
+    persistedSequence,
+  })
   const { manifest, fingerprint } = publishManifest({
     market,
     entries,
@@ -141,23 +175,66 @@ async function publishFromAllowlist(flags) {
     privateKey,
     keyId,
     expectedFingerprint,
-    lastSeenSequence: lastSequence,
+    lastSeenSequence: floor,
     outPath,
     stateDir,
   })
   const revoked = manifest.packages.filter((entry) => entry.revoked).length
   console.log('published company manifest:')
-  console.log(`  sequence:    ${String(manifest.sequence)} (persisted; was ${String(lastSequence)})`)
+  console.log(`  sequence:    ${String(manifest.sequence)} (sequence source: ${sequenceSource})`)
   console.log(`  expiresAt:   ${manifest.expiresAt}`)
   console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked)`)
   console.log(`  keyId:       ${keyId}`)
   console.log(`  fingerprint: ${fingerprint}`)
   console.log(`  manifest:    ${outPath}`)
   console.log(`  state:       ${resolve(stateDir, 'last-sequence.json')}`)
+  return { manifest, fingerprint, outPath, sequenceSource }
 }
 
 async function commandBuild(flags) {
   await publishFromAllowlist(flags)
+}
+
+/**
+ * `measure-and-publish`: fill measured tree digests into a runtime copy of
+ * the allowlist, build against the deployed sequence, and verify the written
+ * manifest once more from disk. The reviewed allowlist.json is never touched —
+ * committing digests into it stays a human review step; the only publish
+ * artifact is the manifest at --out (the workflow pushes it to GitLab).
+ */
+async function commandMeasureAndPublish(flags) {
+  const digestFilePath = flags['digest-file']
+  if (digestFilePath === undefined) throw new Error('measure-and-publish requires --digest-file <path> (the measure script output)')
+  const { allowlistPath } = defaultPaths(flags)
+  const digests = loadTreeDigestFile(resolve(process.cwd(), digestFilePath))
+  const entries = loadAllowlist(allowlistPath)
+  const { entries: filledEntries, filled, unchanged, missing } = applyTreeDigests(entries, digests)
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'company-catalog-measure-publish-'))
+  let result
+  try {
+    const runtimeAllowlistPath = join(runtimeDir, 'allowlist.json')
+    saveAllowlist(runtimeAllowlistPath, filledEntries)
+    console.log(`allowlist: runtime copy — ${filled.length > 0 ? `${filled.join(', ')} gained measured treeDigest; ` : ''}${unchanged.length > 0 ? `${unchanged.join(', ')} already pinned (measured equal); ` : ''}${missing.length > 0 ? `${missing.join(', ')} still without treeDigest (gradual enablement)` : 'every entry carries a treeDigest'} — reviewed ${allowlistPath} untouched`)
+    result = await publishFromAllowlist(flags, runtimeAllowlistPath)
+    // Belt and braces: re-read the written bytes and verify them exactly the
+    // way an operator audit would, before anything may push this manifest.
+    const market = await loadMarketLibrary()
+    const text = readFileSync(result.outPath, 'utf8')
+    const reparsed = JSON.parse(text)
+    const signature = reparsed?.signature
+    if (reparsed === null || typeof reparsed !== 'object' || typeof signature?.keyId !== 'string') {
+      throw new Error(`manifest ${result.outPath} carries no readable signature.keyId after publish`)
+    }
+    const fingerprint = market.ed25519PublicKeyFingerprint(Buffer.from(signature.publicKey ?? '', 'base64'))
+    const verification = verifyManifestText(market, text, { fingerprint, keyId: signature.keyId })
+    if (!verification.ok) {
+      throw new Error(`re-verification of the written manifest failed (${verification.code}): ${verification.reason}`)
+    }
+    console.log(`re-verified manifest ${result.outPath} from disk: sequence ${String(verification.manifest.sequence)}, ${String(verification.manifest.packages.length)} packages — ready to publish`)
+  } finally {
+    rmSync(runtimeDir, { recursive: true, force: true })
+  }
+  return result
 }
 
 async function commandRevoke(positionals, flags) {
@@ -273,6 +350,7 @@ async function main() {
   }
   try {
     if (command === 'build') await commandBuild(flags)
+    else if (command === 'measure-and-publish') await commandMeasureAndPublish(flags)
     else if (command === 'revoke') await commandRevoke(positionals, flags)
     else if (command === 'verify') await commandVerify(positionals, flags)
     else if (command === 'keygen') await commandKeygen()

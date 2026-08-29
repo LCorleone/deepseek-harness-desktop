@@ -26,11 +26,14 @@ node tools/company-catalog/cli.mjs <command> [options]
 | `build` | Fetch each allowlist entry's `dist.integrity` from `registry.npmjs.org`, assemble, sign, verify, and publish `out/catalog-manifest.json` (sequence = persisted + 1). 从官方 registry 抓取 integrity，组装→签名→round-trip 验证→发布清单。 |
 | `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence. 标记吊销并递增 sequence 重发；条目保留（吊销是状态不是删除）。 |
 | `verify [path]` | Verify a manifest file end to end (default `out/catalog-manifest.json`). 全链验证一个清单文件。 |
+| `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build with the deployed sequence (`--sequence-from`), verify, and write the manifest for the publishing workflow. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，按已部署 sequence 构建、验证并产出清单供发布 workflow 推送；绝不修改评审入库的 `allowlist.json`。 |
 | `selftest` | CI smoke with an ephemeral key: build → sign → round-trip verify → sequence monotonicity → revocation reissue → expiry. 临时密钥全流程冒烟，绝不发布、绝不改 `state/`、`out/`、`allowlist.json`。 |
 
 Options: `--allowlist`, `--out`, `--state-dir`, `--sequence` (must strictly
-exceed the persisted one), `--expires-days` (default 90), and
-`--force-offline` (selftest only).
+exceed the effective floor), `--sequence-from <url-or-path>` (the deployed
+manifest whose sequence is the floor — wins over the local state file, which
+stays the fallback when omitted), `--digest-file` (measure-and-publish),
+`--expires-days` (default 90), and `--force-offline` (selftest only).
 
 ## Allowlist and review · allowlist 与评审
 
@@ -251,6 +254,21 @@ runs (both `state/` and `out/` are gitignored). Every publish must strictly
 exceed it; a corrupt state file aborts rather than silently restarting the
 counter. `expiresAt` defaults to now + 90 days (`--expires-days`).
 
+With `--sequence-from <manifest-url-or-path>` the deployed manifest becomes
+the sequence source of truth: the next sequence is the deployed one + 1, and
+the local state file stays only as the no-remote fallback. The URL is read
+under a hard timeout and byte cap (the desktop update-channel discipline);
+an unreadable or malformed remote aborts the build instead of silently
+falling back to a stale local guess, and a locally-ahead state raises the
+floor to the higher value so a sequence clients may have seen is never
+reissued. The CLI prints which source won.
+
+`--sequence-from` 后，已部署 manifest 成为 sequence 的事实源：下一个 sequence =
+部署值 + 1，本地 state 退居无远程时的回退。URL 读取带超时与字节上限（桌面
+更新通道同款纪律）；不可读或畸形的远端直接中止构建，绝不静默退回陈旧的本地
+猜测；本地超前时取更高者为下限，绝不重发客户端可能见过的 sequence。CLI 会
+打印实际采用的来源。
+
 `state/last-sequence.json` 跨发布持久化最高 sequence（`state/`、`out/` 均已
 gitignore）。每次发布必须严格递增；状态文件损坏即中止，绝不静默清零。
 `expiresAt` 默认 now + 90 天。
@@ -286,13 +304,78 @@ gitignore）。每次发布必须严格递增；状态文件损坏即中止，�
    manifest exactly as above.
    应急吊销：跑 `revoke`，按上面同样方式分发重发清单。
 
+## Automatic listing (measure → fill → sign → push) · 全自动上架
+
+`tools/company-catalog/measure.mjs` measures the reference-environment
+`treeDigest` for allowlist entries that still lack one: it scaffolds a
+temporary profile exactly like a fresh desktop profile (upstream
+package.json + hoisted `pnpm-workspace.yaml` + the build-approval merge),
+installs `name@version --save-exact` with the repository-pinned pnpm (the
+`dsh-plugin-desktop` `pnpm` dependency — the same release the desktop
+ships) against the pinned `https://registry.npmjs.org/`, then hashes the
+installed tree with the compiled `computeDesktopBootTreeRootDigest`
+boot-verification chunk — the exact function the desktop measures the
+user's tree with. Output: `[{packageName, version, treeDigest}, …]` for
+`measure-and-publish --digest-file`, plus a console table. `--all`
+re-measures every entry (a mismatch against a reviewed digest fails);
+`--electron-target` mirrors the desktop pnpm runtime for plugins with
+native prebuilt dependencies; `--desktop-lib` points at a packaged
+artifact's lib tree instead of the repository build.
+
+`measure-and-publish` then fills the digests into a **runtime copy** of the
+allowlist (idempotent when equal, abort on a reviewed-value conflict or an
+unmatched digest record — never silent), builds against the deployed
+sequence (`--sequence-from`), and re-verifies the written manifest from
+disk. Landing a measured digest in the reviewed `allowlist.json` stays a
+human review commit: the pipeline signs the runtime copy only.
+
+`.github/workflows/company-catalog-publish.yml` (manual dispatch,
+Windows runner) chains the two: build the market + desktop libs →
+measure → `measure-and-publish` with `--sequence-from` pointing at the
+GitLab raw manifest → step summary with the measured digests, sequence,
+fingerprint, and entries. `dry-run` (default) stops after build + verify
+with an explicit "nothing was pushed" banner; with `dry-run` unchecked the
+job clones `julu/dsh-desktop-config` with the `GITLAB_TOKEN` secret,
+overwrites `catalog-manifest.json` byte-for-byte with the pipeline output
+(canonical single line — the GitLab web editor would break verification,
+so the manifest only ever moves through `git push`), commits (message
+carries the sequence), pushes, and re-fetches the raw URL to confirm
+HTTP 200 + matching sequence. Every pre-push step is fail-closed; secrets
+are referenced, never echoed.
+
+`measure.mjs` 为缺 `treeDigest` 的 allowlist 条目实测参考环境摘要：按全新桌面
+profile 同款模板搭临时 profile（上游 package.json + hoisted
+`pnpm-workspace.yaml` + 构建批准合入），用仓库钉死的 pnpm（`dsh-plugin-desktop`
+的 `pnpm` 依赖，与桌面随包发布的同一版本）+ 钉死 registry `--save-exact` 安装，
+再用编译产物里的 `computeDesktopBootTreeRootDigest`（与桌面实测用户树的同一
+函数）算摘要，产出 `measure-and-publish --digest-file` 输入与控制台表格。
+`--all` 重测全部条目（与评审值不符即失败）；`--electron-target` 为带原生预编译
+依赖的插件镜像桌面 pnpm 运行时；`--desktop-lib` 可指向打包产物的 lib 树。
+
+`measure-and-publish` 把摘要填进 allowlist **运行时副本**（相等幂等、冲突或
+不匹配即中止，绝不静默），按部署 sequence（`--sequence-from`）构建并从磁盘
+复验。实测摘要评审入 `allowlist.json` 仍是人工 commit：管线只签运行时副本。
+
+`.github/workflows/company-catalog-publish.yml`（手动触发，Windows runner）
+串起两步：构建 market + desktop lib → 测量 → 以 GitLab raw manifest 为
+`--sequence-from` 跑 `measure-and-publish` → step summary 输出摘要、sequence、
+指纹与条目。`dry-run`（默认）只构建 + 验证并明示「未推送」；取消勾选则用
+`GITLAB_TOKEN` secret 克隆 `julu/dsh-desktop-config`，把管线产物**逐字节**覆盖
+`catalog-manifest.json`（规范单行——GitLab 网页编辑器会破坏验签，manifest 只走
+`git push`），commit（消息含 sequence）→ push → 回读 raw URL 复核 HTTP 200 +
+sequence 一致。推送前每步 fail-closed；secret 只引用不回显。
+
 ## Selftest and CI · 自测与 CI
 
 `node tools/company-catalog/cli.mjs selftest` runs the full chain with an
 ephemeral key in a temp directory: market library resolution, keypair
 fingerprint cross-check, allowlist validation, live registry fetch,
 build→sign→verify with byte-exact canonical output, strict sequence
-monotonicity (both directions), revocation reissue, and expiry. The
+monotonicity (both directions), revocation reissue, and expiry — plus the
+automatic-listing segments: the digest fill (idempotent, conflict and
+unmatched-record refusals, digest-file shape) and the deployed-sequence
+source (local-file stand-in for `--sequence-from`, malformed-source
+refusals, and the deployed/local/explicit composition). The
 repository-identity segment covers both npm packument forms (object form with
 `directory` → `subdirectory` on a fixed offline fixture) and the
 market-contract refusals (a github tree URL or a query-bearing override

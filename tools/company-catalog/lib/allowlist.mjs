@@ -193,6 +193,100 @@ export function validateAllowlistEntry(entry, at) {
 /** Stable identity key of an entry across allowlist, dist, and manifest maps. */
 export const entryKey = (entry) => `${entry.packageName}@${entry.version}`
 
+/**
+ * Read and validate a measured-tree-digest file
+ * (`[{"packageName","version","treeDigest"}, …]`, the measure script's output).
+ * Shape errors are hard errors: a digest the pipeline cannot trust must never
+ * reach the signed manifest.
+ */
+export function loadTreeDigestFile(path) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`digest file ${path} is not readable JSON: ${error.message}`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`digest file ${path} must be a JSON array of {packageName, version, treeDigest} records`)
+  }
+  const digests = []
+  const seen = new Set()
+  for (const [index, record] of parsed.entries()) {
+    if (!isPlainObject(record)) {
+      throw new Error(`digest file ${path}: record ${String(index)} must be an object`)
+    }
+    const unknown = Object.keys(record).filter((key) => key !== 'packageName' && key !== 'version' && key !== 'treeDigest')
+    if (unknown.length > 0) {
+      throw new Error(`digest file ${path}: record ${String(index)} has unknown field(s) ${unknown.join(', ')}`)
+    }
+    const { packageName, version, treeDigest } = record
+    if (typeof packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(packageName)) {
+      throw new Error(`digest file ${path}: record ${String(index)}.packageName must be an npm package name`)
+    }
+    if (typeof version !== 'string' || !STABLE_VERSION_PATTERN.test(version)) {
+      throw new Error(`digest file ${path}: record ${String(index)}.version must be an exact stable semver (X.Y.Z)`)
+    }
+    if (typeof treeDigest !== 'string' || !TREE_DIGEST_PATTERN.test(treeDigest)) {
+      throw new Error(`digest file ${path}: record ${String(index)}.treeDigest must be 64 lowercase hex characters`)
+    }
+    const identity = entryKey(record)
+    if (seen.has(identity)) throw new Error(`digest file ${path}: duplicate record ${identity}`)
+    seen.add(identity)
+    digests.push({ packageName, version, treeDigest })
+  }
+  return digests
+}
+
+/**
+ * Apply measured tree digests to a copy of the allowlist entries — the runtime
+ * copy `measure-and-publish` signs. Matching is by (packageName, version):
+ *
+ *   - an entry without a treeDigest gains the measured value (`filled`);
+ *   - an entry whose reviewed treeDigest already equals the measured value is
+ *     kept verbatim (`unchanged`) — remeasuring is idempotent;
+ *   - an entry whose reviewed treeDigest differs aborts: review pinned a
+ *     different expectation than the reference environment measured, and that
+ *     disagreement must be resolved by humans, never silently overwritten;
+ *   - a digest record matching no allowlist entry aborts, listing every
+ *     unmatched record — the pipeline never signs authority for entries review
+ *     did not approve.
+ *
+ * Entries the digest file does not cover stay without a treeDigest (gradual
+ * enablement remains an explicit reviewed state); the caller reports them.
+ */
+export function applyTreeDigests(entries, digests) {
+  const byIdentity = new Map(digests.map((digest) => [entryKey(digest), digest]))
+  const matched = new Set()
+  const filled = []
+  const unchanged = []
+  const updated = entries.map((entry) => {
+    const digest = byIdentity.get(entryKey(entry))
+    if (digest === undefined) return entry
+    matched.add(entryKey(entry))
+    if (entry.treeDigest === digest.treeDigest) {
+      unchanged.push(entryKey(entry))
+      return entry
+    }
+    if (entry.treeDigest !== undefined) {
+      throw new Error(
+        `${entryKey(entry)} already pins treeDigest ${entry.treeDigest} but the digest file measured ${digest.treeDigest} — ` +
+        'resolve the disagreement in review; the pipeline never overwrites a reviewed digest',
+      )
+    }
+    filled.push(entryKey(entry))
+    return { ...entry, treeDigest: digest.treeDigest }
+  })
+  const unmatched = [...byIdentity.keys()].filter((identity) => !matched.has(identity))
+  if (unmatched.length > 0) {
+    throw new Error(
+      `digest file records with no allowlist entry: ${unmatched.join(', ')} — ` +
+      'the pipeline signs authority only for entries review approved',
+    )
+  }
+  const missing = updated.filter((entry) => entry.treeDigest === undefined).map(entryKey)
+  return { entries: updated, filled, unchanged, missing }
+}
+
 /** Read and validate an allowlist file into normalized entries (unique by package and version). */
 export function loadAllowlist(path) {
   let parsed

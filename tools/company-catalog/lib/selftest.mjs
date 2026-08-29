@@ -8,15 +8,17 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyRevocation, entryKey, loadAllowlist, repositoryFromPackument, validateAllowlistEntry } from './allowlist.mjs'
+import { applyRevocation, applyTreeDigests, entryKey, loadAllowlist, loadTreeDigestFile, repositoryFromPackument, validateAllowlistEntry } from './allowlist.mjs'
 import { createEphemeralKeyPair, fingerprintOfRawPublicKey, rawPublicKeyBytes } from './keys.mjs'
 import { fetchPackageDist, probeRegistry } from './registry.mjs'
 import {
-  publishManifest,
   assembleUnsignedManifest,
+  nextSequenceFromSources,
+  publishManifest,
+  readDeployedSequence,
   readLastSequence,
   signUnsignedManifest,
   verifyManifestText,
@@ -248,6 +250,93 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       'treeDigest + approvedBuilds pass through allowlist → assembly → signature verbatim; entries without them stay unchanged; malformed values (shape, duplicates, and the 214-character name bound) are refused at load time',
     )
 
+    // Segment: measured tree digests fill a runtime copy of the allowlist —
+    // the measure-and-publish step between the measure script and the signed
+    // manifest. Everything here is offline: fixed digest values exercised
+    // through the exact functions the CLI command calls.
+    const measuredDigest = 'c'.repeat(64)
+    const filled = applyTreeDigests(entries, entries.map((entry) => ({
+      packageName: entry.packageName,
+      version: entry.version,
+      treeDigest: measuredDigest,
+    })))
+    assert(
+      filled.filled.length === entries.length && filled.missing.length === 0,
+      `every real allowlist entry must gain the measured digest (filled ${String(filled.filled.length)}/${String(entries.length)})`,
+    )
+    assert(
+      filled.entries.every((entry) => entry.treeDigest === measuredDigest),
+      'a filled entry must carry the measured digest verbatim',
+    )
+    assert(
+      JSON.stringify(entries) === JSON.stringify(loadAllowlist(allowlistPath)),
+      'applyTreeDigests must not mutate the loaded allowlist entries in place',
+    )
+    const alreadyPinned = {
+      packageName: 'company-pinned-plugin',
+      version: '1.4.0',
+      bundlePatch: './cordis.patch.yml',
+      repository: 'https://github.com/example/company-pinned-plugin',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      treeDigest: measuredDigest,
+    }
+    const pinnedResult = applyTreeDigests([alreadyPinned], [{
+      packageName: alreadyPinned.packageName,
+      version: alreadyPinned.version,
+      treeDigest: measuredDigest,
+    }])
+    assert(
+      pinnedResult.unchanged.length === 1 && pinnedResult.entries[0].treeDigest === measuredDigest,
+      're-measuring an entry whose reviewed digest equals the measured value must be idempotent',
+    )
+    let conflicted = false
+    try {
+      applyTreeDigests([alreadyPinned], [{
+        packageName: alreadyPinned.packageName,
+        version: alreadyPinned.version,
+        treeDigest: 'd'.repeat(64),
+      }])
+    } catch (error) {
+      conflicted = error instanceof Error
+        && error.message.includes('never overwrites a reviewed digest')
+        && error.message.includes('company-pinned-plugin@1.4.0')
+    }
+    assert(conflicted, 'a digest file disagreeing with a reviewed treeDigest must abort, naming the entry')
+    let unmatched = false
+    try {
+      applyTreeDigests([], [{ packageName: 'ghost-plugin', version: '0.0.1', treeDigest: measuredDigest }])
+    } catch (error) {
+      unmatched = error instanceof Error && error.message.includes('ghost-plugin@0.0.1')
+    }
+    assert(unmatched, 'a digest record matching no allowlist entry must abort, listing it (never silent)')
+    const digestFilePath = join(tempDir, 'tree-digests.json')
+    writeFileSync(digestFilePath, `${JSON.stringify([{ packageName: 'x', version: '1.0.0', treeDigest: 'e'.repeat(64) }])}\n`, 'utf8')
+    assert(
+      loadTreeDigestFile(digestFilePath).length === 1,
+      'a well-formed digest file must load',
+    )
+    for (const [body, hint] of [
+      ['{}', 'array'],
+      ['[{"packageName":"x","version":"1.0.0","treeDigest":"XYZ"}]', '64 lowercase hex'],
+      ['[{"packageName":"x","version":"^1","treeDigest":"' + 'e'.repeat(64) + '"}]', 'exact stable semver'],
+      ['[{"packageName":"x","version":"1.0.0","treeDigest":"' + 'e'.repeat(64) + '","extra":1}]', 'unknown field'],
+      ['[{"packageName":"x","version":"1.0.0","treeDigest":"' + 'e'.repeat(64) + '"},{"packageName":"x","version":"1.0.0","treeDigest":"' + 'e'.repeat(64) + '"}]', 'duplicate'],
+    ]) {
+      writeFileSync(digestFilePath, body, 'utf8')
+      let refused = false
+      try {
+        loadTreeDigestFile(digestFilePath)
+      } catch (error) {
+        refused = error instanceof Error && error.message.includes(hint)
+      }
+      assert(refused, `the digest file accepted a malformed body (${hint})`)
+    }
+    ok(
+      'digest-fill',
+      'measured digests fill a runtime allowlist copy (idempotent when equal, abort on reviewed-value conflicts, unmatched records listed); digest-file shape is validated (hex, semver, unknown fields, duplicates)',
+    )
+
     // Segment: assembly must refuse an entry with no repository identity from
     // either source — such packages can never pass the install back-link.
     const anonymous = { ...structuredClone(entries[0]), repository: undefined }
@@ -312,6 +401,76 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     const stale = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 2 })
     assert(!stale.ok && stale.code === 'stale-sequence', `a lower sequence must be rejected as stale-sequence (${why(stale)})`)
     ok('sequence', 'reissue 1→2 verifies; the sequence-1 manifest replays against floor 1 and is rejected as stale-sequence against floor 2')
+
+    // Segment: the deployed manifest as the sequence source (--sequence-from).
+    // The GitLab raw URL is exercised by the publishing workflow; offline this
+    // segment uses local files through the exact reader the CLI uses,
+    // including the just-signed sequence-1 manifest bytes.
+    const deployedPath = join(tempDir, 'deployed-manifest.json')
+    writeFileSync(deployedPath, first.text, 'utf8')
+    assert(
+      (await readDeployedSequence(deployedPath)).sequence === 1,
+      'the sequence-1 manifest just signed must read back as sequence 1',
+    )
+    writeFileSync(deployedPath, `${JSON.stringify({ sequence: 41, manifestVersion: '1.0.0' })}\n`, 'utf8')
+    assert(
+      (await readDeployedSequence(deployedPath)).sequence === 41,
+      'a plain deployed-sequence document must parse',
+    )
+    for (const [body, hint] of [
+      ['{oops', 'not valid JSON'],
+      ['[]', 'manifest object'],
+      ['{"sequence":"41"}', 'non-negative integer sequence'],
+      ['{"sequence":-1}', 'non-negative integer sequence'],
+    ]) {
+      writeFileSync(deployedPath, body, 'utf8')
+      let refused = false
+      try {
+        await readDeployedSequence(deployedPath)
+      } catch (error) {
+        refused = error instanceof Error && error.message.includes(hint)
+      }
+      assert(refused, `the deployed sequence source accepted a malformed body (${hint})`)
+    }
+    let missingSource = false
+    try {
+      await readDeployedSequence(join(tempDir, 'definitely-not-here.json'))
+    } catch (error) {
+      missingSource = error instanceof Error && error.message.includes('not readable')
+    }
+    assert(missingSource, 'an unreadable sequence source must abort, not silently fall back')
+    const composed = nextSequenceFromSources({
+      deployedSequence: 6,
+      deployedSource: 'https://example.invalid/raw/catalog-manifest.json',
+      persistedSequence: 3,
+    })
+    assert(
+      composed.sequence === 7 && composed.source.includes('deployed manifest'),
+      `the deployed sequence must win over a behind local state (got ${String(composed.sequence)}, source '${composed.source}')`,
+    )
+    const aheadState = nextSequenceFromSources({ deployedSequence: 3, deployedSource: 'file', persistedSequence: 6 })
+    assert(
+      aheadState.sequence === 7 && aheadState.source.includes('higher floor'),
+      `a locally-ahead state must raise the floor above the deployed sequence (got ${String(aheadState.sequence)})`,
+    )
+    const localOnly = nextSequenceFromSources({ persistedSequence: 4 })
+    assert(
+      localOnly.sequence === 5 && localOnly.source.includes('local state'),
+      'without a remote the local state stays the fallback sequence source',
+    )
+    const explicit = nextSequenceFromSources({ explicit: 9, deployedSequence: 6, deployedSource: 'file', persistedSequence: 3 })
+    assert(explicit.sequence === 9, 'an explicit sequence must still win when it exceeds every floor')
+    let staleExplicit = false
+    try {
+      nextSequenceFromSources({ explicit: 6, deployedSequence: 6, deployedSource: 'file' })
+    } catch (error) {
+      staleExplicit = error instanceof Error && error.message.includes('does not exceed')
+    }
+    assert(staleExplicit, 'an explicit sequence at or below the deployed floor must be refused')
+    ok(
+      'deployed-sequence',
+      '--sequence-from reads the deployed manifest under size/time bounds (local file here); malformed or unreadable sources abort; composition: deployed wins, locally-ahead state raises the floor, explicit must strictly exceed it',
+    )
 
     // Segment: revocation reissue — flag flips, entry stays signed and readable.
     const { entries: revokedEntries, matches } = applyRevocation(entries, entries[0].packageName)
