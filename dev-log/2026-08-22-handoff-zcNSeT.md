@@ -93,6 +93,21 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 - **origin 模式实施（2026-08-27 晚，`2d1ab3a3cd` + 评审修复 `006fcff96c`）**：release 策略切 GitLab 托管；dev 保持 content。TLS 适配：主进程 net.fetch（Chromium 读系统证书库，redirect:'error' 单层真实生效，防御层保留但 Electron 43 Response 无 redirected 标志已如实注明）；CLI 子进程经 DSH_COMPANY_MANIFEST_FILE staged 字节（generation 作用域 0600 原子写，读前 fstat ≤4MiB，验签链不变）；市场 provider 经 desktopCompanyCatalogHttp capability 注入（评审 High：restricted node:https 私网黑名单拒 10/8+Node CA 不认内网根会确定性击断市场目录——注入复用 boot net.fetch 边界，origin 严格棘轮不变）。desktop 1165/market 374 全绿；E2E 12/12。后续上新流程：改 allowlist→build→git push 该仓库（网页编辑器会格式化破坏验签，永远用 git push）
 - **origin 模式验收通过（2026-08-28 上午，构建 #24 实测）+ 棘轮相等语义修复（`470f374765`，待随 #25 发布）**：装包→市场目录从 GitLab 拉取正常；sequence 3→5→6 全部被客户端实时感知（git push 即生效，零发版）；坏签名 drill（sequence 5 转抄多 1 字符）意外验证了 fail-closed 全链：schema 违规→market 双栏 unavailable+已装插件拒载，自检报告给出精确诊断（signature/value pattern）——三个症状一根因。**随后暴露实机 bug：origin 稳态重放被拒**（verify.ts `<=` 语义：同 sequence 第二次 scan 即 stale → tabs「刚正常又坏」，静态托管+严格递增=每次 bump 只能用一次）；修复：下界语义（严格更小才拒、相等放行+字节指纹硬校验/回填，origin 持久化 bytesSha256），CLI receipts 棘轮同修（同目录第二次安装不再要求 bump）。market 378/desktop 1166 全绿，E2E 12/12。**待补：真 revoked 语义实机验证**（可选）；**流程教训：签名值禁止人手转抄**，manifest 交接必须带 sha256 校验步骤（已实践）；**残留风险已签收**：legacy 无 digest 记录允许一次相等序列未知字节放行后钉死（制造需签名钥，等价于本就可发更高序列）；评审 Low 已记录
 
+## 下一阶段计划（2026-08-29 制定，试点三大目标已全部达成后）
+**已完成基线**：① 插件只能来自公司签名目录（origin 实机稳定）② 装了不能被本地篡改（signed-tree 权威模式生效）③ 上下架全自动（3 分钟+重启）
+
+| # | 事项 | 内容 | 触发条件/依赖 | 规模 |
+|---|---|---|---|---|
+| P1 | **真 revoked 语义演练** | 用新自动链路走一遍：allowlist revoked→publish→用户重启验证市场消失+已装拒载→恢复 publish。既验证吊销路径又是自动链路第二次实操 | 无，随时（10 分钟） | S |
+| P2 | **扩面物料** | ① v1 receipt 升级引导文案（待办⑦：存量用户升级后插件拒载需重装的说明）② 同事安装 RUNBOOK（装包→市场→常见问题→诊断导出）| 扩面前必做 | S |
+| P3 | **测试组扩面** | 3-5 台同事机器（待办⑤ GUI 三面冒烟顺带做）；收集安装/市场/升级反馈；旧包机器注意 M2 门禁（≤#23 机器必须先升 #29+）| P1 P2 完成 | 用户主导 |
+| P4 | **双钥轮换演练**（待办②） | 正式钥 keygen→策略双指纹→新钥 publish→下版策略收旧钥；PAT 一并轮换。演示钥已签收风险，非紧急 | 扩面稳定后、更大范围推广前 | M |
+| P5 | **上游 0.1.2 正式版评估** | 子模块现钉 0.1.1-rc.2；0.1.2-alpha(+1079 ptc 重命名)——等正式版后评估升级窗口（allowlist runtime 范围、补丁面、回归）| 上游发正式版 | M |
+| P6 | **自有更新源**（待办⑩选项 A） | GitLab 托管签名 update-manifest + ARTIFACT_TRUST_ROOTS 替换 + locked 构建翻转更新开关→fleet 升级走自有源（git push 即发版）| 与 P4 正式钥同批或其后 | M |
+| P7 | **技术尾巴** | E2E 冒烟补 origin 稳态双 scan 步骤（评审 Low）；manifestUrl 交接体验优化（blob 域不通时的自动化备选：用户机直跑 publish-local？）；M1 post-install 版本校验 | 空闲时 | S |
+
+**扩面前检查单**：P1 ✓ → P2 ✓ → 测试机全部 ≥#29（M2 门禁）→ GitHub secrets/PAT 在效期 → GitLab 匿名 raw 正常。
+
 ## 部署侧待办（运营项，代码已备）
 - **终审（2026-08-23）**：整体评价工程质量高，但发现 P0 交付完整性缺口：① L2 主链路未接线②发布门禁盲区 → **已全部修复于 `d63c85e88d`（已 push）**：market 锁定+有根时构造签名目录全链（provider content/origin 双模式 + sequence store + 签名 authority + 不可信闭锁，替换 dshfind 占位与 rejectAll；锁定无根 = 占位 + 显式警告 + 门禁拦截，启动永不因市场失败）；desktop CLI/boot 补 origin 模式；boot 树摘要持久化指纹缓存（命中跳过全量哈希，6 用例验证）；门禁补盲（trustRoots 非空 + content 模式打包树 manifest 构建期验签）；策略分发 ADR（main.ts 解析一次=唯一权威，其余通道皆投影，EN+zh+i18n 入册）。worker 被 API 限流打断一次，由第二个 worker 盘点半成品后续完；根 check 全绿 desktop 1100 / market 358
 - ③ 签收单「已执行」表述待同步勘正（接线后基本成立，待我复核措辞）；P1 余项（⑥signing subpath 根治门面/⑦E2E 链路/⑧清单对账）与 P2 四条已记入优化清单待后续迭代
