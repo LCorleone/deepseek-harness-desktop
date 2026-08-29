@@ -639,7 +639,7 @@ function lockedProfileBootVerification(
  * @param pluginStatePath - optional Desktop-private disabled-bundle state.
  * @param marketSelection - machine-level provider request fixed for this generation.
  * @param hooks - optional observations emitted before profile preparation can fail.
- * @param policy - injected desktop policy; locked policies reject a home-level patch file.
+ * @param policy - injected desktop policy; locked policies reject a home-level patch file and pin the compatibility shell.
  * @param bootVerificationInputs - optional manifest bytes, receipts, sequence floor, and clock for locked boot verification.
  * @returns root config, profile metadata, and ordered patches.
  */
@@ -794,7 +794,11 @@ export function prepareDesktopProfile(
   } as SettingsFileConfig)
   const settingsDocument = resolveSettingsFileSpec(settingsConfig).filename
   hooks.onSettingsDocumentResolved?.(settingsDocument)
-  const { mode, port } = readDesktopStartupSettings(settingsConfig)
+  const { mode: requestedMode, port } = readDesktopStartupSettings(settingsConfig)
+  // Locked builds always run the compatibility shell: the company build ships
+  // one presentation, so a previously persisted advanced request is ignored
+  // for this generation without rewriting the user's settings document.
+  const mode: DesktopShellMode = policy?.locked === true ? 'compatibility' : requestedMode
   patches.push({
     id: 'settings',
     config: settingsConfig,

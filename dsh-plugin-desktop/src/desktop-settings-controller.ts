@@ -22,6 +22,8 @@ import type {
 
 /** Launcher capabilities used without exposing their filesystem roots. */
 export interface DesktopSettingsControllerBootstrap {
+  /** Whether the embedded company policy locks this build (DesktopPolicy.locked). */
+  readonly locked: boolean
   /** Generation-scoped profile service. */
   readonly profiles: Pick<DesktopProfiles, 'current' | 'list' | 'create'>
     & Partial<Pick<DesktopProfiles, 'canDelete' | 'delete'>>
@@ -92,6 +94,7 @@ export class DesktopSettingsController {
   read(): DesktopSettingsResponse {
     return Object.freeze({
       current: this.bootstrap.profiles.current.name,
+      locked: this.bootstrap.locked,
       profiles: Object.freeze(
         this.bootstrap.profiles.list().map(profile => projectDesktopSettingsProfile(
           profile,

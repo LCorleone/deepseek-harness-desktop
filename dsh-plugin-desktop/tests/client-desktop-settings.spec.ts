@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
-import { DesktopSettingsSection } from '../src/client/DesktopSettingsSection.tsx'
+import { DesktopSettingsSection, desktopSettingsSectionVisibility } from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
 import {
   createDesktopSettingsApi,
@@ -19,6 +19,7 @@ import {
 
 const VIEW: DesktopSettingsView = {
   current: 'desktop',
+  locked: false,
   profiles: [
     { name: 'desktop', exists: true, webCapable: true, selectable: true, deletable: false },
     { name: 'headless', exists: true, webCapable: false, selectable: false, deletable: false },
@@ -37,6 +38,9 @@ function json(value: unknown, status = 200): Response {
 describe('Desktop settings API', () => {
   it('validates the bounded launcher projection', () => {
     expect(parseDesktopSettingsView(VIEW)).toEqual(VIEW)
+    expect(parseDesktopSettingsView({ ...VIEW, locked: true })).toEqual({ ...VIEW, locked: true })
+    expect(() => parseDesktopSettingsView({ ...VIEW, locked: 'yes' }))
+      .toThrow('invalid Desktop settings response')
     expect(() => parseDesktopSettingsView({ ...VIEW, profiles: [...VIEW.profiles, VIEW.profiles[0]] }))
       .toThrow('duplicate profile')
     expect(() => parseDesktopSettingsView({ ...VIEW, market: { ...VIEW.market, requested: 'unknown' } }))
@@ -98,6 +102,29 @@ describe('Desktop settings API', () => {
     const api = createDesktopSettingsApi(async () => json({ error: '/Users/private/profile failed' }, 400))
     await expect(api.read()).rejects.toThrow('Desktop settings request failed (400)')
     await expect(api.read()).rejects.not.toThrow('/Users/private')
+  })
+})
+
+describe('Desktop settings section visibility', () => {
+  it('keeps every preference group available while unlocked or before the view loads', () => {
+    expect(desktopSettingsSectionVisibility(VIEW)).toEqual({
+      profile: true,
+      market: true,
+      presentation: true,
+    })
+    expect(desktopSettingsSectionVisibility(undefined)).toEqual({
+      profile: true,
+      market: true,
+      presentation: true,
+    })
+  })
+
+  it('hides the Profile, Market, and Presentation groups on a company-locked view', () => {
+    expect(desktopSettingsSectionVisibility({ ...VIEW, locked: true })).toEqual({
+      profile: false,
+      market: false,
+      presentation: false,
+    })
   })
 })
 

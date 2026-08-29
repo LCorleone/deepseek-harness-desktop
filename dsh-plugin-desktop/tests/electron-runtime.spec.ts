@@ -1014,6 +1014,26 @@ describe('Electron desktop runtime', () => {
     await release()
   })
 
+  it('omits the tray mode command on a locked build while keeping quit reachable', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const requestModeChange = vi.fn(async () => {})
+    const runtime = new ElectronDesktopRuntime(async () => {}, undefined, undefined, undefined, true)
+    const release = runtime.schedule({ ...spec, requestModeChange })
+
+    await runtime.mountScheduled()
+
+    const template = electron.menuTemplates.at(-1) as Array<{ label?: string, click?: () => void }>
+    expect(template.map(item => item.label)).toEqual(['Open Deloitte DSH Desktop', undefined, 'Quit'])
+    expect(template.find(candidate => candidate.label === 'Switch to Advanced Mode')).toBeUndefined()
+    runtime.setLocalePreference('zh')
+    expect((electron.menuTemplates.at(-1) as Array<{ label?: string }>).map(item => item.label))
+      .toEqual(['打开 Deloitte DSH Desktop', undefined, '退出'])
+    expect(requestModeChange).not.toHaveBeenCalled()
+
+    await release()
+  })
+
   it('rebuilds ordered effect-scoped tray contributions without replacing native commands', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
     const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')

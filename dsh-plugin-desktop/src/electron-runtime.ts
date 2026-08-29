@@ -103,6 +103,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   readonly updates: DesktopUpdateAdapter
 
   private generation: ElectronShellGeneration | undefined
+  private readonly policyLocked: boolean
   private currentLocale: DesktopLocale = 'en'
   private scheduled: DesktopShellSpec | undefined
   private mountTask: Promise<void> | undefined
@@ -120,11 +121,12 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     private readonly onRendererBoot: (report: RendererBootReport) => boolean | void = () => {},
     private readonly logger: DesktopLogger | undefined = undefined,
     workspaceVolumeQuery: WindowsVolumeQuery | undefined = undefined,
-    /** Whether company policy locks updates to IT distribution (DesktopPolicy.locked). */
-    updatesLocked: boolean = false,
+    /** Whether company policy locks this build (DesktopPolicy.locked). */
+    policyLocked: boolean = false,
   ) {
     this.platformStrategy = electronPlatformStrategy()
     this.platform = this.platformStrategy.platform
+    this.policyLocked = policyLocked
     const platformStrategy = this.platformStrategy
     this.workspaceAdmission = new ElectronWorkspaceAdmission({
       platform: this.platform,
@@ -143,7 +145,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       get currentVersion() { return PRODUCT_VERSION },
       // Locked comes from the embedded desktop policy the launcher parsed;
       // the runtime never re-reads the policy asset itself.
-      locked: updatesLocked,
+      locked: policyLocked,
       get statePath() { return join(app.getPath('userData'), 'updates', 'state.json') },
       get sequenceStatePath() { return desktopUpdateSequenceStatePath(app.getPath('userData')) },
       request: (url, init) => net.fetch(url, init),
@@ -776,20 +778,25 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     if (tools.length > 0) template.push({ type: 'separator' }, ...tools)
     if (profiles.length > 0) template.push({ type: 'separator' }, ...profiles)
     if (status.length > 0) template.push({ type: 'separator' }, ...status)
-    template.push(
-      { type: 'separator' },
-      {
-        label: modeToggleLabel(spec.mode, this.locale),
-        enabled: this.platformStrategy.canToggleShellMode,
-        click: () => {
-          void spec.requestModeChange(nextDesktopShellMode(spec.mode)).catch((cause: unknown) => {
-            this.logError(`dsh-plugin-desktop: failed to change shell mode: ${cause instanceof Error ? cause.message : String(cause)}`)
-          })
+    template.push({ type: 'separator' })
+    // A locked build hides the presentation switch here exactly like the
+    // settings view does: the company build ships the compatibility shell
+    // only, and a tray shortcut would keep the removed choice reachable.
+    if (!this.policyLocked) {
+      template.push(
+        {
+          label: modeToggleLabel(spec.mode, this.locale),
+          enabled: this.platformStrategy.canToggleShellMode,
+          click: () => {
+            void spec.requestModeChange(nextDesktopShellMode(spec.mode)).catch((cause: unknown) => {
+              this.logError(`dsh-plugin-desktop: failed to change shell mode: ${cause instanceof Error ? cause.message : String(cause)}`)
+            })
+          },
         },
-      },
-      { type: 'separator' },
-      { label: desktopTrayLabel(this.locale, 'quit'), click: () => { spec.requestQuit(0) } },
-    )
+        { type: 'separator' },
+      )
+    }
+    template.push({ label: desktopTrayLabel(this.locale, 'quit'), click: () => { spec.requestQuit(0) } })
     return template
   }
 

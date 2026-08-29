@@ -1098,6 +1098,9 @@ async function start(): Promise<void> {
           })
         }
         hostCtx.provide('desktopSettingsController', new DesktopSettingsController({
+          // Same single signal as the update gate: the renderer settings view
+          // hides its Profile, Market, and presentation rows on locked builds.
+          locked: policy.locked,
           profiles: hostCtx.desktopProfiles,
           persistProfileSelection: name => {
             selectDesktopProfile(selectionStatePath, homeDir, name)

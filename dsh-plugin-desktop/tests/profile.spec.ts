@@ -604,6 +604,33 @@ describe('desktop profile composition', {
     expect(rows.find(row => row.id === 'ui-conversation')?.disabled).toBe(false)
   })
 
+  it('pins the compatibility shell over a persisted advanced request in a locked build', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, 'dsh-desktop:\n  mode: advanced\n  port: 43189\n')
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.mode).toBe('compatibility')
+    expect(rows.find(row => row.id === 'desktop-shell')).toEqual(expect.objectContaining({
+      config: expect.objectContaining({ mode: 'compatibility', port: 43_189 }),
+    }))
+    expect(rows.find(row => row.id === 'ui-layout')?.disabled).toBeUndefined()
+    // The user's persisted choice stays on disk for an unlocked build to read.
+    expect(readFileSync(settingsPath, 'utf8')).toContain('mode: advanced')
+  })
+
   it('reads JSON settings and defaults an absent desktop namespace to compatibility', () => {
     const home = temporaryHome()
     const path = join(home, 'desktop-settings.json')

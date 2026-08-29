@@ -162,6 +162,29 @@ const MARKET_OPTIONS: readonly {
   { id: 'dsh-market', title: 'dshMarket', body: 'dshMarketBody' },
 ]
 
+/** Preference groups the settings page can render. */
+export interface DesktopSettingsSectionVisibility {
+  readonly profile: boolean
+  readonly market: boolean
+  readonly presentation: boolean
+}
+
+/**
+ * Decide which preference groups one launcher view renders.
+ *
+ * A company-locked build offers one desktop profile, the policy-forced
+ * Market, and the compatibility shell, so those choice groups disappear and
+ * only notifications stay; the launcher keeps serving the unchanged data for
+ * unlocked (development) builds, and an unread view keeps every group until
+ * the policy flag arrives.
+ */
+export function desktopSettingsSectionVisibility(
+  view: DesktopSettingsView | undefined,
+): DesktopSettingsSectionVisibility {
+  const locked = view?.locked === true
+  return { profile: !locked, market: !locked, presentation: !locked }
+}
+
 const COMMUNITY_MARKET_URL = 'https://github.com/anywhere-labs/deepseek-harness-desktop/tree/master/dsh-community-market'
 const DSH_MARKET_URL = 'https://github.com/dsh-market/dsh-market'
 const AWESOME_DSH_PLUGIN_URL = 'https://github.com/awesome-dsh-plugin/awesome-dsh-plugin'
@@ -238,6 +261,7 @@ export function DesktopSettingsSection({
   }, [])
 
   const requestRestart = (): void => { setRestart('restarting') }
+  const sections = desktopSettingsSectionVisibility(view)
   const settingsWritable = desktop.status === 'ready' && desktop.writable
   const notificationsWritable = notifications.status === 'ready' && notifications.writable
   const mode = desktop.value?.mode ?? initialMode
@@ -309,6 +333,7 @@ export function DesktopSettingsSection({
         </p>
       )}
 
+      {sections.profile && (
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-profile-title">
         <div>
           <h3 id="dsh-desktop-profile-title">{t('profileTitle')}</h3>
@@ -400,7 +425,9 @@ export function DesktopSettingsSection({
           </>
         )}
       </section>
+      )}
 
+      {sections.market && (
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-market-title">
         <div>
           <h3 id="dsh-desktop-market-title">{t('marketTitle')}</h3>
@@ -429,7 +456,9 @@ export function DesktopSettingsSection({
           </div>
         )}
       </section>
+      )}
 
+      {sections.presentation && (
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-presentation-title">
         <div>
           <h3 id="dsh-desktop-presentation-title">{t('presentationTitle')}</h3>
@@ -455,6 +484,7 @@ export function DesktopSettingsSection({
           />
         </div>
       </section>
+      )}
 
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-notifications-title">
         <div>

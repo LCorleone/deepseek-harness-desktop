@@ -31,6 +31,8 @@ export interface DesktopMarketView {
 /** Complete launcher-owned settings projection. */
 export interface DesktopSettingsView {
   readonly current: string
+  /** Whether the embedded company policy locks this build's choice surfaces. */
+  readonly locked: boolean
   readonly profiles: readonly DesktopProfileView[]
   readonly market: DesktopMarketView
 }
@@ -87,6 +89,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
     || typeof value.current !== 'string'
     || value.current.length === 0
     || value.current.length > MAX_PROFILE_NAME_LENGTH
+    || typeof value.locked !== 'boolean'
     || !Array.isArray(value.profiles)
     || value.profiles.length > MAX_PROFILES
     || !isObject(value.market)
@@ -101,6 +104,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
   }
   return Object.freeze({
     current: value.current,
+    locked: value.locked,
     profiles: Object.freeze(profiles),
     market: Object.freeze({
       requested: value.market.requested,

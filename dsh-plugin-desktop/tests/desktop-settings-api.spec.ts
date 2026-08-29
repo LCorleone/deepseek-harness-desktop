@@ -58,6 +58,7 @@ function bootstrap(
   overrides: Partial<DesktopSettingsControllerBootstrap> = {},
 ): DesktopSettingsControllerBootstrap {
   return {
+    locked: false,
     profiles: {
       current: { name: DESKTOP.name, dir: DESKTOP.dir },
       list: () => [DESKTOP, WORK, BROKEN],
@@ -134,6 +135,7 @@ describe('desktop settings controller', () => {
 
     expect(controller.read()).toEqual({
       current: 'desktop',
+      locked: false,
       profiles: [
         { name: 'desktop', exists: true, webCapable: true, selectable: true, deletable: false },
         { name: 'work', exists: true, webCapable: true, selectable: true, deletable: false },
@@ -143,6 +145,15 @@ describe('desktop settings controller', () => {
     })
     expect(JSON.stringify(controller.read())).not.toContain('/private')
     expect(JSON.stringify(controller.read())).not.toContain('private-bundle')
+  })
+
+  it('reports the policy lock so the renderer can hide its choice surfaces', () => {
+    const controller = new DesktopSettingsController(bootstrap({ locked: true }))
+
+    expect(controller.read()).toMatchObject({ locked: true })
+    const read = controller.read()
+    expect(read.profiles).toHaveLength(3)
+    expect(read.market).toEqual({ requested: 'disabled', effective: 'disabled', legacyDefaulted: false })
   })
 
   it('creates without selecting or restarting and returns a fresh safe state', () => {
@@ -161,6 +172,7 @@ describe('desktop settings controller', () => {
 
     expect(controller.createProfile('work')).toEqual({
       current: 'desktop',
+      locked: false,
       profiles: [
         { name: 'desktop', exists: true, webCapable: true, selectable: true, deletable: false },
         { name: 'work', exists: true, webCapable: true, selectable: true, deletable: false },
@@ -186,6 +198,7 @@ describe('desktop settings controller', () => {
 
     await expect(controller.deleteProfile('work')).resolves.toEqual({
       current: 'desktop',
+      locked: false,
       profiles: [
         { name: 'desktop', exists: true, webCapable: true, selectable: true, deletable: false },
         { name: 'work', exists: true, webCapable: true, selectable: true, deletable: true },
@@ -351,6 +364,7 @@ describe('desktop settings HTTP boundary', () => {
     expect(res.statusCode).toBe(201)
     expect(JSON.parse(res.body)).toEqual({
       current: 'desktop',
+      locked: false,
       profiles: [
         { name: 'desktop', exists: true, webCapable: true, selectable: true, deletable: false },
         { name: 'work', exists: true, webCapable: true, selectable: true, deletable: false },

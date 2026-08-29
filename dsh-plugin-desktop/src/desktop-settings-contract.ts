@@ -57,6 +57,8 @@ export interface DesktopSettingsMarketView {
 export interface DesktopSettingsResponse {
   /** Profile backing the currently running generation. */
   readonly current: string
+  /** Whether the embedded company policy locks this build's choice surfaces. */
+  readonly locked: boolean
   /** Fresh profile discovery without filesystem paths or manifest details. */
   readonly profiles: readonly DesktopSettingsProfileView[]
   /** Market choice for the current and next generation. */
