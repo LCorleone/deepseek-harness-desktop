@@ -49,6 +49,10 @@ env:
 jobs:
   measure-and-publish:
     runs-on: windows-latest
+    env:
+      # Secret copy for the step-level `if` below (secrets cannot appear in a
+      # step `if` directly; GitHub rejects the workflow file at parse time).
+      PINNED_KEY_FINGERPRINT: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -110,9 +114,11 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
       # Optional trust-root pin: only exported when the secret exists, so an
       # unset optional secret can never arrive as a poisoned empty string.
+      # (secrets cannot be referenced from a step-level `if` — GitHub rejects
+      # the whole workflow file — so the check reads the job-level env copy.)
       - name: Pin the deployment trust-root fingerprint
-        if: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT != '' }}
-        run: 'echo "COMPANY_CATALOG_KEY_FINGERPRINT=${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}" >> $env:GITHUB_ENV'
+        if: env.PINNED_KEY_FINGERPRINT != ''
+        run: 'echo "COMPANY_CATALOG_KEY_FINGERPRINT=$env:PINNED_KEY_FINGERPRINT" >> $env:GITHUB_ENV'
       - name: measure-and-publish (fill → build against the in-repo state → sign → verify)
         # Fail-closed by construction: this step must exit 0 (registry dist
         # fetch, sequence floor from the in-repo state file, sign, full
