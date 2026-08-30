@@ -26,6 +26,7 @@ import FileSettingsProvider, {
   type Config as SettingsFileConfig,
 } from '@deepseek-ai/dsh-settings-file'
 import { parseDocument } from 'yaml'
+import { COMPANY_PRESET_ID } from './company-agent-presets.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
@@ -78,6 +79,9 @@ const AGENT_PRESETS_ROW_ID = 'agent-presets'
 const UPSTREAM_AGENT_PRESETS_PACKAGE = '@deepseek-ai/dsh-agent-presets'
 const DESKTOP_WINDOWS_AGENT_PRESETS_ROW_ID = 'desktop-windows-agent-presets'
 const DESKTOP_WINDOWS_AGENT_PRESETS_PACKAGE = 'dsh-plugin-desktop/windows-agent-presets'
+const DESKTOP_COMPANY_AGENT_PRESETS_ROW_ID = 'desktop-company-agent-presets'
+const DESKTOP_COMPANY_AGENT_PRESETS_PACKAGE = 'dsh-plugin-desktop/company-agent-presets'
+const REMOVED_PERMISSION_PRESET_ID = 'danger-full-access'
 const DEFAULT_DESKTOP_SHELL_MODE: DesktopShellMode = 'compatibility'
 const DEFAULT_DESKTOP_PORT = DESKTOP_DEFAULT_WEB_PORT
 const DESKTOP_WEB_SERVER_ROW_ID = 'desktop-webserver'
@@ -385,6 +389,38 @@ export function shippedPresetRoot(moduleUrl: string = import.meta.url): string {
   return unpackedAsarPath(
     join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'config', 'agent-presets'),
   )
+}
+
+/**
+ * Resolve the company-managed agent preset directory shipped inside this
+ * package (`agent-presets/`, unpacked beside the modules that name it).
+ * @param moduleUrl - URL of a module emitted one level below the package root.
+ * @returns the physical preset root of the locked company roster.
+ */
+export function companyPresetRoot(moduleUrl: string = import.meta.url): string {
+  return unpackedAsarPath(fileURLToPath(new URL('../agent-presets', moduleUrl)))
+}
+
+/**
+ * Drop the full-access entry from a locked permission preset table.
+ *
+ * The table is the service-level switch surface (UI choices and the write
+ * path behind them), so deleting the entry removes the preset from every consumer;
+ * every other config key passes through untouched. A locked build requires a
+ * literal table because the plugin's schema default still ships the entry.
+ * @param config - composed config of the `permission` row.
+ * @returns the config with `danger-full-access` removed from `presets`.
+ */
+export function lockedPermissionConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const presets = config.presets
+  if (typeof presets !== 'object' || presets === null || Array.isArray(presets)) {
+    throw new Error(
+      `${BIN_NAME}: locked build requires the permission presets table to be a map`,
+    )
+  }
+  const table: Record<string, unknown> = { ...(presets as Record<string, unknown>) }
+  delete table[REMOVED_PERMISSION_PRESET_ID]
+  return { ...config, presets: table }
 }
 
 /** Read a row's object config without trusting arbitrary YAML values. */
@@ -821,13 +857,24 @@ export function prepareDesktopProfile(
   }
   const presets = rows.get(AGENT_PRESETS_ROW_ID)
   if (presets !== undefined) {
+    // Locked builds pin the roster to the company preset directory: the
+    // shipped root supplies exactly `deloitte-standard` (a full copy of the
+    // upstream standard composition under a company persona), and the row
+    // swaps to the CompanyAgentPresets provider so ids recorded by older
+    // sessions resolve onto it instead of failing. Unlocked builds keep the
+    // upstream roots, default, and provider on every platform.
+    const companyRoster = policy?.locked === true
     const config = {
       ...rowConfig(presets),
-      roots: [{ path: shippedPresetRoot(), trust: 'system' }],
+      ...(companyRoster ? { default: COMPANY_PRESET_ID } : {}),
+      roots: [{ path: companyRoster ? companyPresetRoot() : shippedPresetRoot(), trust: 'system' }],
     }
-    if (platform === 'win32'
-      && presets.name === UPSTREAM_AGENT_PRESETS_PACKAGE
-      && !rowDisabledOnPlatform(presets, platform)) {
+    if (presets.name === UPSTREAM_AGENT_PRESETS_PACKAGE
+      && !rowDisabledOnPlatform(presets, platform)
+      && (companyRoster || platform === 'win32')) {
+      const [rowId, packageName] = companyRoster
+        ? [DESKTOP_COMPANY_AGENT_PRESETS_ROW_ID, DESKTOP_COMPANY_AGENT_PRESETS_PACKAGE] as const
+        : [DESKTOP_WINDOWS_AGENT_PRESETS_ROW_ID, DESKTOP_WINDOWS_AGENT_PRESETS_PACKAGE] as const
       patches.push(
         {
           id: AGENT_PRESETS_ROW_ID,
@@ -836,8 +883,8 @@ export function prepareDesktopProfile(
         },
         {
           insert: [{
-            id: DESKTOP_WINDOWS_AGENT_PRESETS_ROW_ID,
-            name: DESKTOP_WINDOWS_AGENT_PRESETS_PACKAGE,
+            id: rowId,
+            name: packageName,
             config,
           }],
         },
@@ -845,6 +892,16 @@ export function prepareDesktopProfile(
     } else {
       patches.push({ id: AGENT_PRESETS_ROW_ID, config })
     }
+  }
+  // Locked builds remove the full-access permission preset from the service's
+  // preset table (the UI and write path follow the table); the executor-side
+  // clamp stays a recorded follow-up, accepted by the company sign-off.
+  if (policy?.locked === true) {
+    const permission = rows.get('permission')
+    if (permission === undefined) {
+      throw new Error(`${BIN_NAME}: locked build requires a permission presets row to remove ${REMOVED_PERMISSION_PRESET_ID}`)
+    }
+    patches.push({ id: 'permission', config: lockedPermissionConfig(rowConfig(permission)) })
   }
   const webserver = rows.get('webserver')
   if (webserver === undefined) {

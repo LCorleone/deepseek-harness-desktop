@@ -28,6 +28,7 @@ export default defineConfig([
       'update-download': 'src/update-download.ts',
       updates: 'src/updates.ts',
       'windows-agent-presets': 'src/windows-agent-presets.ts',
+      'company-agent-presets': 'src/company-agent-presets.ts',
       'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts',
       'desktop-node-runtime': 'src/desktop-node-runtime.ts',
       main: 'src/main.ts',

@@ -92,6 +92,10 @@ describe('published package surface', () => {
       types: './lib/types/windows-agent-presets.d.ts',
       default: './lib/windows-agent-presets.js',
     })
+    expect(manifest.exports).toHaveProperty('./company-agent-presets', {
+      types: './lib/types/company-agent-presets.d.ts',
+      default: './lib/company-agent-presets.js',
+    })
     expect(manifest.exports).toHaveProperty('./terminal', {
       types: './lib/types/terminal.d.ts',
       default: './lib/terminal.js',
@@ -364,6 +368,7 @@ describe('published package surface', () => {
 
     expect(config).toContain("'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts'")
     expect(config).toContain("'windows-agent-presets': 'src/windows-agent-presets.ts'")
+    expect(config).toContain("'company-agent-presets': 'src/company-agent-presets.ts'")
     expect(config).toContain("'desktop-node-runtime': 'src/desktop-node-runtime.ts'")
     expect(config).not.toContain('windows-acl-runner')
     expect(config).toContain("'desktop-cli': 'src/desktop-cli.ts'")
@@ -593,6 +598,7 @@ describe('published package surface', () => {
     expect(manifest.build?.asarUnpack).toEqual([
       'package.json',
       'cordis.patch.yml',
+      'agent-presets/**',
       'lib/**',
       'node_modules/**',
     ])
@@ -612,6 +618,7 @@ describe('published package surface', () => {
     expect(manifest.build?.beforePack).toBe('./scripts/prepare-bundled-node.ts')
     expect(manifest.build?.toolsets).toEqual({ nsis: '1.2.1' })
     expect(manifest.files).toEqual(expect.arrayContaining([
+      'agent-presets/**',
       'build/app-icon.png',
       'build/app-icon-mac.png',
       'build/tray-icon.svg',
@@ -619,6 +626,7 @@ describe('published package surface', () => {
       'docs/**',
     ]))
     expect(manifest.build?.files).toEqual([
+      'agent-presets/**',
       'build/app-icon.png',
       'build/app-icon-mac.png',
       'build/tray-icon.svg',

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { generateKeyPairSync } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -11,6 +11,7 @@ import {
   ed25519PublicKeyFingerprint,
 } from 'dsh-community-market'
 import {
+  companyPresetRoot,
   DESKTOP_PACKAGE_NAME,
   desktopShellModeFromSettings,
   desktopStartupSettingsFromSettings,
@@ -769,6 +770,162 @@ describe('desktop profile composition', {
       id: 'home-marker',
       name: 'cordis:example',
     })
+  })
+
+  it('removes only the danger-full-access entry from a locked permission table', () => {
+    const home = temporaryHome()
+    // A profile-level patch restates the table with one extra passthrough key,
+    // proving the locked deletion composes over user config instead of
+    // replacing it. Unlocked builds never load this patch's key set.
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config:',
+      '    presets:',
+      '      read-only:',
+      '        sandbox: read-only',
+      '        approval: ask',
+      '      workspace-write:',
+      '        sandbox: workspace-write',
+      '        approval: ask',
+      '      danger-full-access:',
+      '        sandbox: danger-full-access',
+      '        approval: never',
+      '    defaultPreset: workspace-write',
+      '',
+    ].join('\n'))
+
+    const locked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const permission = composeEntries([locked.patches]).find(row => row.id === 'permission')
+
+    expect(permission).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-permission-presets',
+    }))
+    expect(permission?.config).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      },
+      defaultPreset: 'workspace-write',
+    })
+  })
+
+  it('keeps the composed permission table for unlocked and omitted policies', () => {
+    const home = temporaryHome()
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false),
+    )
+    const omitted = prepareDesktopProfile(undefined, home, 'darwin')
+
+    expect(unlocked.patches).toEqual(omitted.patches)
+    const permission = composeEntries([omitted.patches]).find(row => row.id === 'permission')
+    expect(permission?.config).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+        'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+      },
+    })
+  })
+
+  it('fails a locked build closed when the permission row loses its presets table', () => {
+    const home = temporaryHome()
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config: {}',
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )).toThrow('locked build requires the permission presets table to be a map')
+  })
+
+  it('pins a locked build to the company agent preset roster on every platform', () => {
+    const home = temporaryHome()
+    for (const platform of ['darwin', 'win32'] as const) {
+      const prepared = prepareDesktopProfile(
+        undefined,
+        home,
+        platform,
+        'desktop',
+        undefined,
+        undefined,
+        undefined,
+        {},
+        injectedDesktopPolicy(true),
+      )
+      const rows = composeEntries([prepared.patches])
+
+      expect(rows.find(row => row.id === 'agent-presets')).toEqual(expect.objectContaining({
+        name: '@deepseek-ai/dsh-agent-presets',
+        disabled: true,
+      }))
+      expect(rows.find(row => row.id === 'desktop-company-agent-presets')).toEqual({
+        id: 'desktop-company-agent-presets',
+        name: 'dsh-plugin-desktop/company-agent-presets',
+        config: {
+          default: 'deloitte-standard',
+          roots: [{ path: companyPresetRoot(), trust: 'system' }],
+        },
+      })
+      expect(rows.map(row => row.id), platform).not.toContain('desktop-windows-agent-presets')
+    }
+    expect(existsSync(join(companyPresetRoot(), 'deloitte-standard', 'agent.cordis.yml'))).toBe(true)
+  })
+
+  it('keeps the upstream agent preset roster for unlocked and omitted policies', () => {
+    const home = temporaryHome()
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false),
+    )
+    const omitted = prepareDesktopProfile(undefined, home, 'darwin')
+
+    expect(unlocked.patches).toEqual(omitted.patches)
+    const rows = composeEntries([omitted.patches])
+    expect(rows.find(row => row.id === 'agent-presets')).toEqual(expect.objectContaining({
+      name: '@deepseek-ai/dsh-agent-presets',
+      config: expect.objectContaining({
+        default: 'standard',
+        roots: [{ path: shippedPresetRoot(), trust: 'system' }],
+      }),
+    }))
+    expect(rows.map(row => row.id)).not.toContain('desktop-company-agent-presets')
   })
 
   it('keeps the Windows browse panel and desktop pwsh provider without replacing process boundaries', () => {

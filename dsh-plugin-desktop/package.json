@@ -43,6 +43,10 @@
       "types": "./lib/types/windows-agent-presets.d.ts",
       "default": "./lib/windows-agent-presets.js"
     },
+    "./company-agent-presets": {
+      "types": "./lib/types/company-agent-presets.d.ts",
+      "default": "./lib/company-agent-presets.js"
+    },
     "./terminal": {
       "types": "./lib/types/terminal.d.ts",
       "default": "./lib/terminal.js"
@@ -78,6 +82,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "agent-presets/**",
     "build/app-icon.png",
     "build/app-icon-mac.png",
     "build/tray-icon.svg",
@@ -290,6 +295,7 @@
     "asarUnpack": [
       "package.json",
       "cordis.patch.yml",
+      "agent-presets/**",
       "lib/**",
       "node_modules/**"
     ],
@@ -319,6 +325,7 @@
       "nsis": "1.2.1"
     },
     "files": [
+      "agent-presets/**",
       "build/app-icon.png",
       "build/app-icon-mac.png",
       "build/tray-icon.svg",
