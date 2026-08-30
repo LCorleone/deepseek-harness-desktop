@@ -32,6 +32,19 @@ name: Company catalog publish
 # with the runner and nothing can be published from them. dry-run=false adds
 # the company-catalog-signed artifact upload (still nothing is pushed
 # anywhere by this workflow).
+#
+# Artifact transport redundancy: a non-dry-run ALSO mirrors the same two
+# signed files to the catalog-artifacts branch (<run-id>/catalog-manifest.json
+# + <run-id>/publish-meta.json, newest 5 run directories kept). Reason: some
+# intranet environments cannot reach GitHub's artifact blob storage at all
+# (gh run download always times out) while GitHub's git transport works —
+# publish-local falls back to that branch automatically when the download
+# fails (or takes it directly via --from-git). The artifact stays the
+# authoritative channel: a mirror push failure never fails this workflow
+# (job-level continue-on-error; the failure is recorded in the run summary),
+# and integrity never depends on the transport — publish-local runs the
+# unchanged sha256 + signature + sequence-ratchet gauntlet on mirror bytes
+# too, so a tampered branch is rejected exactly like a tampered artifact.
 on:
   workflow_dispatch:
     inputs:
@@ -45,6 +58,11 @@ permissions:
 
 env:
   DSH_TELEMETRY_DISABLED: '1'
+
+# The measure-and-publish job runs with the workflow-level contents: read;
+# only the mirror job below widens to contents: write, and only there — that
+# job does nothing but copy the already-uploaded artifact bytes onto the
+# catalog-artifacts branch.
 
 jobs:
   measure-and-publish:
@@ -189,6 +207,8 @@ jobs:
               "node tools/company-catalog/publish-local.mjs --run $($meta.runId)",
               '```',
               '',
+              "The same two files are also mirrored to the ``catalog-artifacts`` branch under ``$($meta.runId)/`` — publish-local falls back to that branch automatically when the artifact download is unreachable, so the command above works unchanged either way.",
+              '',
               "publish-local verifies the artifact signature, requires sequence $($meta.sequence) = GitLab deployed + 1, pushes the canonical bytes to master, and re-reads the raw URL. After it succeeds, commit the state bump in this repository: \`tools/company-catalog/state/last-sequence.json\` → \`{ `"lastSequence`": $($meta.sequence) }\`.",
               ''
             )
@@ -217,3 +237,110 @@ jobs:
             run/catalog-manifest.json
             run/publish-meta.json
           if-no-files-found: error
+
+  # Auxiliary transport for environments that cannot reach GitHub's artifact
+  # blob storage (gh run download) but can reach GitHub over git: copy the
+  # just-uploaded signed pair onto the catalog-artifacts branch under
+  # <run-id>/. Job-scoped permissions — contents: write lives ONLY here, the
+  # measure-and-publish job above keeps contents: read. The artifact remains
+  # the authoritative channel: continue-on-error keeps a mirror failure from
+  # reddening the workflow, and the failure is recorded in the run summary.
+  mirror-signed-artifacts:
+    needs: measure-and-publish
+    if: ${{ inputs.dry-run == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: write
+    env:
+      ARTIFACTS_BRANCH: catalog-artifacts
+      KEEP_RUNS: '5'
+    steps:
+      # persist-credentials defaults to true here — the push below needs the
+      # job-scoped GITHUB_TOKEN (no extra secret is involved).
+      - uses: actions/checkout@v6
+        with:
+          path: mirror
+          submodules: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: company-catalog-signed
+          path: incoming
+      - name: Mirror the signed pair to <run-id>/ on the artifacts branch
+        id: mirror
+        working-directory: mirror
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          git config user.name 'DSH catalog pipeline'
+          git config user.email 'catalog-pipeline@dsh-desktop.local'
+          # The signed bytes must survive the round trip byte-exactly — no
+          # eol conversion anywhere in the mirror.
+          git config core.autocrlf false
+
+          # Sync the mirror branch tip; the very first mirror creates it as
+          # an orphan branch carrying only run directories.
+          if git fetch --quiet --no-recurse-submodules origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/remotes/origin/${ARTIFACTS_BRANCH}"; then
+            git checkout --quiet -B "${ARTIFACTS_BRANCH}" "refs/remotes/origin/${ARTIFACTS_BRANCH}"
+          else
+            echo "mirror: no ${ARTIFACTS_BRANCH} branch yet — creating it as an orphan branch"
+            git checkout --quiet --orphan "${ARTIFACTS_BRANCH}"
+            git rm --quiet -rf --ignore-unmatch .
+          fi
+
+          cat > README.md <<'EOF'
+          Machine branch written by the Company catalog publish workflow.
+
+          Each successful non-dry-run run mirrors its signed pair to
+          <run-id>/catalog-manifest.json + <run-id>/publish-meta.json (the
+          company-catalog-signed artifact stays the authoritative channel).
+          Only the newest run directories are kept; older ones are pruned.
+          Integrity never depends on this transport: publish-local re-runs the
+          sha256 + signature + sequence-ratchet checks on these bytes.
+          EOF
+
+          mkdir -p "${RUN_ID}"
+          cp ../incoming/catalog-manifest.json ../incoming/publish-meta.json "${RUN_ID}/"
+
+          # Prune: keep the newest KEEP_RUNS run directories by numeric run id
+          # (run ids are monotonic — the current run is the largest, just written).
+          mapfile -t old_dirs < <(find . -mindepth 1 -maxdepth 1 -type d -regex '\./[0-9]+' -printf '%f\n' | sort -rn | tail -n "+$((KEEP_RUNS + 1))")
+          if ((${#old_dirs[@]})); then
+            printf 'mirror: pruning old run directories: %s\n' "${old_dirs[*]}"
+            git rm --quiet -r "${old_dirs[@]}"
+          fi
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "mirror: nothing changed — run ${RUN_ID} is already mirrored"
+          else
+            git commit --quiet -m "mirror: run ${RUN_ID} signed catalog artifacts"
+          fi
+
+          # Concurrent runs can race on the branch tip: on a rejected push,
+          # resync with the remote tip, replay this commit on top, retry.
+          for attempt in 1 2 3; do
+            if git push --quiet origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/heads/${ARTIFACTS_BRANCH}"; then
+              echo "mirror: run ${RUN_ID} mirrored to ${ARTIFACTS_BRANCH} (newest ${KEEP_RUNS} run directories kept)"
+              exit 0
+            fi
+            echo "mirror: push attempt ${attempt} rejected — resyncing with the remote tip and retrying"
+            sleep "$((attempt * 5))"
+            git fetch --quiet --no-recurse-submodules origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/remotes/origin/${ARTIFACTS_BRANCH}"
+            git rebase "refs/remotes/origin/${ARTIFACTS_BRANCH}"
+          done
+          echo "mirror: giving up after 3 push attempts — the artifact upload in measure-and-publish remains the authoritative channel"
+          exit 1
+      - name: Record the mirror failure in the run summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## ⚠ catalog-artifacts mirror did not land'
+            echo
+            echo 'The signed company-catalog-signed artifact upload is unaffected and stays the authoritative channel. The git-branch mirror (for environments that reach GitHub over git but not its artifact blob storage) failed — inspect the mirror-signed-artifacts job log.'
+          } >> "$GITHUB_STEP_SUMMARY"

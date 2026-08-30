@@ -4,11 +4,19 @@
  * The GitHub runner that measures, signs, and verifies the catalog manifest
  * cannot reach the intranet GitLab (verified empirically), so publishing is
  * split: the workflow uploads the signed bytes as the `company-catalog-signed`
- * artifact, and this script — run on a machine that can reach both GitHub and
- * the intranet — performs the actual deployment:
+ * artifact and additionally mirrors them to the `catalog-artifacts` git
+ * branch (some intranet environments cannot reach GitHub's artifact blob
+ * storage — where `gh run download` fetches from — while GitHub's git
+ * transport works fine). This script — run on a machine that can reach both
+ * GitHub and the intranet — performs the actual deployment:
  *
- *   1. download the artifact (`gh run download`, or --artifact-dir to replay
- *      a local copy laid out the same way),
+ *   1. acquire the artifact pair: `gh run download` (default), the
+ *      catalog-artifacts git branch (--from-git forces it; --run falls back
+ *      to it automatically when the download fails), or --artifact-dir to
+ *      replay a local copy laid out the same way. Transport is only
+ *      transport — whichever channel delivered the bytes, they go through
+ *      the identical sha256/signature/ratchet gauntlet below, so a tampered
+ *      mirror branch fails closed at the same checks,
  *   2. integrity: the meta sidecar's manifestSha256 must match the bytes,
  *   3. trust: the signature must verify against the artifact's trust root,
  *      which must equal the deployment trust root pinned in the desktop
@@ -51,7 +59,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,6 +74,8 @@ const RELEASE_POLICY_PATH = resolve(REPO_ROOT, 'dsh-plugin-desktop', 'src', 'pol
 const DEFAULT_GITHUB_REPO = 'LCorleone/deepseek-harness-desktop'
 const DEFAULT_WORKFLOW = 'company-catalog-publish.yml'
 const ARTIFACT_NAME = 'company-catalog-signed'
+/** The branch the workflow mirrors each non-dry-run's signed pair to (`<run-id>/…`). */
+const ARTIFACTS_BRANCH = 'catalog-artifacts'
 const DEFAULT_GITLAB_ORIGIN = 'gitlab.s.dai.deloitte.cn'
 const DEFAULT_GITLAB_PROJECT = 'julu/dsh-desktop-config'
 const MANIFEST_FILE = 'catalog-manifest.json'
@@ -91,6 +101,11 @@ Options:
   --artifact-dir <dir>  skip gh: publish from a local directory already laid
                         out like the download (${MANIFEST_FILE} + ${META_FILE})
                         — offline replay/testing
+  --from-git <run-id>   skip gh: shallow-fetch the ${ARTIFACTS_BRANCH} git
+                        branch and read <run-id>/ from it (the workflow
+                        mirrors every non-dry-run's signed pair there for
+                        environments that cannot reach GitHub's artifact
+                        blob storage; --run falls back to this automatically)
   --branch <name>       GitLab branch to push (default: master — the
                         production line; use a temp branch only for drills)
   --token <pat>         GitLab PAT (default: env GITLAB_TOKEN — preferred:
@@ -126,7 +141,7 @@ const tempDirs = []
 /** Minimal hand-rolled parser: `--flag value`, `--flag=value`, no positionals. */
 function parseArgs(argv) {
   const flags = {}
-  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'branch', 'token', 'gitlab', 'project'])
+  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'from-git', 'branch', 'token', 'gitlab', 'project'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) throw new Error(`unexpected argument '${argument}'`)
@@ -153,7 +168,7 @@ function parseArgs(argv) {
 /** Run a command, capture output, fail closed with the captured stderr. */
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
-    encoding: 'utf8',
+    encoding: options.buffer === true ? 'buffer' : 'utf8',
     env: options.env ?? process.env,
     cwd: options.cwd,
     timeout: options.timeoutMs ?? 120_000,
@@ -162,7 +177,8 @@ function run(command, args, options = {}) {
     throw new Error(`${command} could not be executed (${result.error.message}) — is it on PATH?`)
   }
   if (result.status !== 0) {
-    const detail = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `exit ${String(result.status)}`
+    const raw = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `exit ${String(result.status)}`
+    const detail = typeof raw === 'string' ? raw : raw.toString('utf8')
     throw new Error(`${command} ${args.join(' ')} failed:\n${redact(detail)}`)
   }
   return result.stdout
@@ -322,6 +338,83 @@ function latestSuccessfulRun(repo) {
   return { runId, source: 'run-list' }
 }
 
+/** Byte caps the artifact path already enforces, applied before writing mirror blobs. */
+const MIRROR_FILE_CAPS = { [MANIFEST_FILE]: MANIFEST_MAX_BYTES, [META_FILE]: 65_536 }
+
+/**
+ * The most informative single line of a run() failure: the message starts
+ * with the command echo (`gh … failed:`) and carries the real reason on the
+ * next line — log lines and combined errors should quote that reason.
+ */
+function failureReason(error) {
+  const lines = (error instanceof Error ? error.message : String(error)).split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+  return lines[lines.length > 1 ? 1 : 0] ?? String(error)
+}
+
+/**
+ * Acquire the artifact pair from the catalog-artifacts git branch: the
+ * workflow mirrors every non-dry-run's signed catalog-manifest.json +
+ * publish-meta.json to `<run-id>/` on that branch, so environments that
+ * cannot reach GitHub's artifact blob storage (where `gh run download`
+ * fetches from) but can reach GitHub over git still publish hands-free.
+ * Transport is only transport —
+ * the bytes face the identical sha256 + signature + ratchet gauntlet, so a
+ * tampered branch fails closed exactly like a tampered artifact. Files are
+ * read as raw blobs (`git show`) so no local eol/smudge config can reformat
+ * them, each under its byte cap before touching disk. Returns the directory
+ * carrying the two files, laid out like the artifact download.
+ */
+function fetchArtifactsFromGitBranch(repo, runId) {
+  const repositoryUrl = `https://github.com/${repo}.git`
+  const branchDir = mkdtempSync(join(tmpdir(), 'company-catalog-git-'))
+  tempDirs.push(branchDir)
+  try {
+    run('git', ['clone', '--quiet', '--depth', '1', '--branch', ARTIFACTS_BRANCH, repositoryUrl, branchDir], { timeoutMs: 300_000 })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (detail.includes('not found')) {
+      throw new Error(
+        `the ${ARTIFACTS_BRANCH} branch does not exist in ${repositoryUrl} yet — the workflow creates it when a non-dry-run mirrors ` +
+        'its signed pair (the mirror step is auxiliary; runs before it existed never landed there)',
+      )
+    }
+    throw new Error(`${failureReason(error)} — the ${ARTIFACTS_BRANCH} git mirror of ${repositoryUrl} is unreachable`)
+  }
+  const outDir = join(branchDir, 'files')
+  mkdirSync(outDir, { recursive: true })
+  for (const file of [MANIFEST_FILE, META_FILE]) {
+    const blobRef = `HEAD:${runId}/${file}`
+    let sizeBytes
+    try {
+      sizeBytes = Number.parseInt(run('git', ['-C', branchDir, 'cat-file', '-s', blobRef]).toString('utf8').trim(), 10)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      if (detail.includes('does not exist')) {
+        throw new Error(
+          `run ${runId} has no ${file} on the ${ARTIFACTS_BRANCH} branch — the mirror carries only runs of non-dry-run workflows ` +
+          'since the mirror step existed; pass the run id of such a run, or use --artifact-dir',
+        )
+      }
+      throw error
+    }
+    const cap = MIRROR_FILE_CAPS[file]
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
+      throw new Error(`git cat-file -s ${blobRef} did not report a byte size — refusing to guess`)
+    }
+    if (sizeBytes > cap) {
+      throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch is ${String(sizeBytes)} bytes, over the ${String(cap)}-byte bound`)
+    }
+    // Raw blob read (buffer, never decoded): the sha256 integrity check must
+    // see the exact committed bytes.
+    const blob = run('git', ['-C', branchDir, 'show', blobRef], { buffer: true })
+    if (blob.byteLength !== sizeBytes) {
+      throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch: cat-file reported ${String(sizeBytes)} bytes but the blob read ${String(blob.byteLength)} — refusing mismatched reads`)
+    }
+    writeFileSync(join(outDir, file), blob)
+  }
+  return outDir
+}
+
 async function main() {
   let flags
   try {
@@ -352,10 +445,22 @@ async function main() {
   // --- 1. acquire the artifact -------------------------------------------------
   let artifactDir
   let runId
+  /** How the bytes arrived — printed in the completion summary's source line. */
+  let acquireChannel
   if (typeof flags['artifact-dir'] === 'string') {
+    if (flags['from-git'] !== undefined) throw new Error('--artifact-dir and --from-git are alternative acquisition modes — pass one')
     artifactDir = resolve(process.cwd(), flags['artifact-dir'])
     runId = 'local-artifact'
+    acquireChannel = `local directory (--artifact-dir)`
     console.log(`artifact: local directory ${artifactDir} (--artifact-dir — skipping gh)`)
+  } else if (typeof flags['from-git'] === 'string') {
+    if (flags.run !== undefined) throw new Error('--run and --from-git are alternative acquisition modes — pass one (--from-git already names the run)')
+    if (!/^[0-9]+$/.test(flags['from-git'])) throw new Error(`--from-git must be a numeric GitHub Actions run id (got '${flags['from-git']}')`)
+    runId = flags['from-git']
+    run('git', ['--version'])
+    artifactDir = fetchArtifactsFromGitBranch(repo, runId)
+    acquireChannel = `${ARTIFACTS_BRANCH} git branch (--from-git)`
+    console.log(`artifact: fetched run ${runId} from the ${ARTIFACTS_BRANCH} branch of ${repo} (--from-git — skipping gh)`)
   } else {
     run('gh', ['--version'])
     let runSource
@@ -370,13 +475,30 @@ async function main() {
     tempDirs.push(artifactDir)
     try {
       run('gh', ['run', 'download', runId, '--repo', repo, '--name', ARTIFACT_NAME, '--dir', artifactDir])
-    } catch (error) {
-      if (runSource === 'run-list') {
-        throw new Error(`${error.message} — the latest successful ${DEFAULT_WORKFLOW} run may be a dry-run (dry-run is the workflow's default input and uploads no artifact): pick a run that produced the ${ARTIFACT_NAME} artifact and pass --run <id> (the artifact-listing API could not be reached to filter for one automatically)`)
+      acquireChannel = `${ARTIFACT_NAME} artifact download`
+      console.log(`artifact: downloaded ${ARTIFACT_NAME} from run ${runId} → ${artifactDir}`)
+    } catch (downloadError) {
+      // gh run download fetches from GitHub's Azure blob storage, which some
+      // intranet environments cannot reach at all (TLS handshake timeout) —
+      // while GitHub's git transport works. The workflow mirrors every
+      // signed pair to the catalog-artifacts branch for exactly this case:
+      // fall back to it (same run id), then report both channels if it also
+      // fails. The artifact stays authoritative; the fallback changes only
+      // the transport, never any downstream check.
+      console.log(`artifact: gh run download failed (${failureReason(downloadError)}) — falling back to the ${ARTIFACTS_BRANCH} git branch (same run ${runId})`)
+      try {
+        artifactDir = fetchArtifactsFromGitBranch(repo, runId)
+      } catch (mirrorError) {
+        const dryRunHint = runSource === 'run-list'
+          ? ` — note: the latest successful ${DEFAULT_WORKFLOW} run may be a dry-run (dry-run is the workflow's default input and uploads no artifact): pick a run that produced the ${ARTIFACT_NAME} artifact and pass --run <id>`
+          : ''
+        throw new Error(
+          `artifact acquisition failed on both channels: gh run download (${failureReason(downloadError)}) and the ${ARTIFACTS_BRANCH} git branch (${failureReason(mirrorError)})${dryRunHint}`,
+        )
       }
-      throw error
+      acquireChannel = `${ARTIFACTS_BRANCH} git branch (automatic fallback after gh run download failed)`
+      console.log(`artifact: fallback accepted — fetched run ${runId} from the ${ARTIFACTS_BRANCH} branch of ${repo}`)
     }
-    console.log(`artifact: downloaded ${ARTIFACT_NAME} from run ${runId} → ${artifactDir}`)
   }
 
   // --- 2. integrity: bytes must hash to the sidecar's manifestSha256 -----------
@@ -571,7 +693,7 @@ async function main() {
   console.log(`  keyId:       ${meta.keyId}`)
   console.log(`  fingerprint: ${meta.fingerprint}`)
   console.log(`  manifest:    ${String(manifestBytes.byteLength)} bytes, sha256 ${manifestSha256}`)
-  console.log(`  source:      GitHub run ${runId}${meta.gitSha === undefined ? '' : ` (commit ${meta.gitSha})`}`)
+  console.log(`  source:      GitHub run ${runId} via ${acquireChannel}${meta.gitSha === undefined ? '' : ` (commit ${meta.gitSha})`}`)
   if (branch === 'master') {
     console.log(`  follow-up:   commit the GitHub-side state bump — tools/company-catalog/state/last-sequence.json → { "lastSequence": ${String(meta.sequence)} }`)
   } else {

@@ -381,6 +381,17 @@ runner; with `dry-run` unchecked the artifact is uploaded and the summary
 prints the intranet publish command. No GitLab credentials exist in the
 workflow at all.
 
+A non-dry-run also mirrors the same two signed files to the
+`catalog-artifacts` branch (`<run-id>/catalog-manifest.json` +
+`<run-id>/publish-meta.json`, newest 5 run directories kept): some intranet
+environments cannot reach GitHub's artifact blob storage — `gh run download`
+always dies in the TLS handshake there — while GitHub's git transport works
+fine. The mirror is an auxiliary channel (a mirror push failure never fails
+the workflow — it is recorded in the run summary — and the artifact stays
+authoritative) and it never weakens integrity: mirror bytes face the
+identical sha256 + signature + ratchet gauntlet, so a tampered branch is
+rejected exactly like a tampered artifact.
+
 The intranet side publishes:
 
 ```sh
@@ -388,7 +399,11 @@ node tools/company-catalog/publish-local.mjs --run <run-id>   # omit --run to ta
 ```
 
 `publish-local.mjs` (plain Node + `gh`/`git` on PATH, run on a machine that
-reaches both GitHub and the intranet) downloads the artifact, checks the
+reaches both GitHub and the intranet) acquires the artifact (`gh run download`
+by default; `--from-git <run-id>` reads `<run-id>/` from the
+`catalog-artifacts` git branch instead, and `--run <id>` falls back to that
+branch automatically when the download fails — e.g. when only the blob
+storage is unreachable), checks the
 sidecar's sha256 against the bytes, verifies the signature against the trust
 root pinned in the desktop release policy (plus the optional
 `COMPANY_CATALOG_KEY_FINGERPRINT` env pin), **ratchet-checks**
@@ -448,6 +463,14 @@ step summary 输出摘要、sequence、指纹与条目 → 上传 `company-catal
 runner 消亡；取消勾选才上传产物并在 summary 打印内网发布命令。workflow 里
 不存在任何 GitLab 凭据。
 
+非 dry-run 还会把同样两个签名文件镜像到 `catalog-artifacts` 分支
+（`<run-id>/catalog-manifest.json` + `<run-id>/publish-meta.json`，只保留
+最新 5 个 run 目录）：部分内网环境到 GitHub 的 artifact blob 存储完全不
+通——`gh run download` 在那里恒定死于 TLS 握手——而 git 协议畅通。镜像只是
+辅助通道（push 失败不会让 workflow 变红——失败记入 run summary——artifact
+仍是权威产物），也不放松完整性：镜像字节走同一套 sha256 + 验签 + 序列对拍，
+被篡改的分支会和被篡改的 artifact 一样被拒。
+
 内网侧发布：
 
 ```sh
@@ -455,7 +478,10 @@ node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则
 ```
 
 `publish-local.mjs`（纯 Node ＋ PATH 上的 `gh`/`git`，在同时可达 GitHub 与内网
-的机器上跑）下载产物 → 边车 sha256 对拍字节 → 以桌面 release 策略钉死的信任
+的机器上跑）获取产物（默认 `gh run download`；`--from-git <run-id>` 改从
+`catalog-artifacts` git 分支读 `<run-id>/`，`--run <id>` 在下载失败时自动回
+退该分支——例如只有 blob 存储不通的环境）→ 边车 sha256 对拍字节 → 以桌面
+release 策略钉死的信任
 根验签（外加可选的 `COMPANY_CATALOG_KEY_FINGERPRINT` 环境钉）→ **序列对拍**
 `artifact.sequence == GitLab 已部署 + 1`（不等即打印两侧值中止——不跳号、
 不重放、不重推）→ 克隆配置仓（PAT 来自 `--token`/`GITLAB_TOKEN`，经
