@@ -17,6 +17,8 @@ import {
   desktopStartupSettingsFromSettings,
   desktopBundleList,
   ensureDesktopProfile,
+  lockedPermissionConfig,
+  migrateLockedPermissionSettings,
   prepareDesktopProfile,
   readDesktopShellMode,
   shippedPresetRoot,
@@ -866,6 +868,181 @@ describe('desktop profile composition', {
       {},
       injectedDesktopPolicy(true),
     )).toThrow('locked build requires the permission presets table to be a map')
+  })
+
+  it('drops a stale full-access default from the locked permission row config', () => {
+    // The plugin resolves config.defaultPreset against the narrowed table
+    // while constructing, so a legacy full-access default (persisted by a
+    // profile-level patch from the unlocked era) must be deleted rather than
+    // clamped — the composition default re-derives from the sandbox/approval
+    // defaults. Other values pass through, and a missing key stays missing.
+    const table = {
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+        'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+      },
+    }
+
+    expect(lockedPermissionConfig({ ...table, defaultPreset: 'danger-full-access' })).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      },
+    })
+    expect(lockedPermissionConfig({ ...table, defaultPreset: 'read-only' })).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      },
+      defaultPreset: 'read-only',
+    })
+    expect(lockedPermissionConfig({ ...table })).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      },
+    })
+  })
+
+  it('composes a locked build without a profile-patched full-access default', () => {
+    const home = temporaryHome()
+    // The profile patch restates the whole row config (Loader patches replace
+    // config objects rather than deep-merging keys), carrying a default that
+    // was legal when it was written.
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- id: permission',
+      "  name: '@deepseek-ai/dsh-permission-presets'",
+      '  config:',
+      '    presets:',
+      '      read-only:',
+      '        sandbox: read-only',
+      '        approval: ask',
+      '      workspace-write:',
+      '        sandbox: workspace-write',
+      '        approval: ask',
+      '      danger-full-access:',
+      '        sandbox: danger-full-access',
+      '        approval: never',
+      '    defaultPreset: danger-full-access',
+      '',
+    ].join('\n'))
+
+    const locked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const permission = composeEntries([locked.patches]).find(row => row.id === 'permission')
+
+    expect(permission?.config).toEqual({
+      presets: {
+        'read-only': { sandbox: 'read-only', approval: 'ask' },
+        'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      },
+    })
+  })
+
+  it('migrates a persisted full-access permission default out of locked settings documents', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, [
+      '# user-owned defaults',
+      'permission:',
+      '  defaultPreset: danger-full-access',
+      'dsh-desktop:',
+      '  mode: advanced',
+      '',
+    ].join('\n'))
+
+    expect(migrateLockedPermissionSettings({ dshHome: home })).toBe(true)
+    expect(readFileSync(settingsPath, 'utf8')).toBe([
+      '# user-owned defaults',
+      'permission: {}',
+      'dsh-desktop:',
+      '  mode: advanced',
+      '',
+    ].join('\n'))
+
+    // Idempotent: the migrated document no longer matches the stale id.
+    expect(migrateLockedPermissionSettings({ dshHome: home })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toContain('mode: advanced')
+  })
+
+  it('keeps legal and absent persisted permission defaults in locked settings documents', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    const legal = 'permission:\n  defaultPreset: read-only\n'
+    writeFileSync(settingsPath, legal)
+
+    expect(migrateLockedPermissionSettings({ dshHome: home })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(legal)
+
+    // A missing document stays absent instead of being materialized.
+    expect(migrateLockedPermissionSettings({ dshHome: join(home, 'absent') })).toBe(false)
+    expect(existsSync(join(home, 'absent', 'settings.yaml'))).toBe(false)
+  })
+
+  it('migrates JSON settings documents and leaves unparseable ones alone', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.json')
+    writeFileSync(settingsPath, `${JSON.stringify({
+      permission: { defaultPreset: 'danger-full-access' },
+      'dsh-desktop': { mode: 'advanced' },
+    }, null, 2)}\n`)
+
+    expect(migrateLockedPermissionSettings({ path: settingsPath })).toBe(true)
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual({
+      permission: {},
+      'dsh-desktop': { mode: 'advanced' },
+    })
+
+    writeFileSync(settingsPath, '{ not json')
+    expect(migrateLockedPermissionSettings({ path: settingsPath })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toBe('{ not json')
+  })
+
+  it('prepares a locked build only after clearing a persisted full-access default', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, 'permission:\n  defaultPreset: danger-full-access\n')
+
+    prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    expect(readFileSync(settingsPath, 'utf8')).toBe('permission: {}\n')
+
+    // Unlocked builds keep full access a legal persisted default.
+    const unlockedHome = temporaryHome()
+    const unlockedSettings = join(unlockedHome, 'settings.yaml')
+    writeFileSync(unlockedSettings, 'permission:\n  defaultPreset: danger-full-access\n')
+    prepareDesktopProfile(
+      undefined,
+      unlockedHome,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false),
+    )
+    expect(readFileSync(unlockedSettings, 'utf8'))
+      .toBe('permission:\n  defaultPreset: danger-full-access\n')
   })
 
   it('pins a locked build to the company agent preset roster on every platform', () => {

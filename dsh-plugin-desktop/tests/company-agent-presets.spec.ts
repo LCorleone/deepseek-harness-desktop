@@ -193,7 +193,11 @@ describe('company preset root resolution', () => {
     const moduleUrl = pathToFileURL(join(resources, 'app.asar', 'lib', 'profile.js')).href
     const resolvedRoot = companyPresetRoot(moduleUrl)
 
-    expect(resolvedRoot).toBe(realpathSync(physicalRoot))
+    // Both sides go through realpathSync: on platforms whose tmpdir is a
+    // symlink (macOS /var -> /private/var), the scratch path stays on the
+    // symlinked spelling while realpathSync canonicalizes it, and comparing
+    // a raw path against a canonical one would false-fail.
+    expect(realpathSync(resolvedRoot)).toBe(realpathSync(physicalRoot))
     expect(readFileSync(join(resolvedRoot, COMPANY_PRESET_ID, 'agent.cordis.yml'), 'utf8'))
       .toBe('# packaged company preset\n')
   })

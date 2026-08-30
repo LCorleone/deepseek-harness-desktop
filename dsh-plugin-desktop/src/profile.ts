@@ -191,6 +191,71 @@ export function readDesktopShellMode(config: SettingsFileConfig): DesktopShellMo
   return readDesktopStartupSettings(config).mode
 }
 
+/**
+ * Drop a persisted permission default naming the removed preset from the
+ * settings document (locked builds, review P1-a).
+ *
+ * The upstream UI persists the selected default under the `permission`
+ * settings namespace, where `danger-full-access` was a legal value in the
+ * unlocked era. A locked build narrows the plugin's table-derived settings
+ * schema to the two surviving presets, and `settings.register` eagerly
+ * resolves the stored user layer against that schema, so the stale default
+ * fails the permission plugin at registration and with it the whole host
+ * boot. No row config can govern this layer — the stored section overrides
+ * the composition base at resolve time — so the migration rewrites the
+ * document itself: the stale key is deleted (the composition default
+ * re-derives, exactly like {@link lockedPermissionConfig} does on the row
+ * config), keeping every other value, comment, and formatting detail in
+ * place with the settings-file renderer's leaf-level diff discipline. The
+ * rewrite runs
+ * only while the host is not booted (profile preparation), is idempotent,
+ * and leaves the document untouched unless the removed id is actually
+ * stored. A missing or unparseable document is left alone: startup reads
+ * fail loud on those through their own path.
+ * @param config - validated settings-file row config.
+ * @returns whether the document contained the stale default and was rewritten.
+ */
+export function migrateLockedPermissionSettings(config: SettingsFileConfig): boolean {
+  const spec = resolveSettingsFileSpec(config)
+  let text: string
+  try {
+    text = readFileSync(spec.filename, 'utf8')
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw cause
+  }
+  if (text.trim().length === 0) return false
+  if (spec.format === 'yaml') {
+    const document = parseDocument(text, { prettyErrors: true })
+    if (document.errors.length > 0) return false
+    const section = (document.toJS() ?? {}) as Record<string, unknown>
+    const permission = section.permission
+    if (typeof permission !== 'object' || permission === null
+      || (permission as Record<string, unknown>).defaultPreset !== REMOVED_PERMISSION_PRESET_ID) {
+      return false
+    }
+    document.deleteIn(['permission', 'defaultPreset'])
+    writeFileSync(spec.filename, document.toString())
+    return true
+  }
+  let root: unknown
+  try {
+    root = JSON.parse(text)
+  } catch {
+    return false
+  }
+  const permission = typeof root === 'object' && root !== null
+    ? (root as Record<string, unknown>).permission
+    : undefined
+  if (typeof permission !== 'object' || permission === null
+    || (permission as Record<string, unknown>).defaultPreset !== REMOVED_PERMISSION_PRESET_ID) {
+    return false
+  }
+  delete (permission as Record<string, unknown>).defaultPreset
+  writeFileSync(spec.filename, `${JSON.stringify(root, null, 2)}\n`)
+  return true
+}
+
 /** Resolve the public Web template once and reject an incompatible DSH release. */
 function requiredWebBundles(): string[] {
   const bundles = PROFILE_TEMPLATES.web
@@ -408,8 +473,27 @@ export function companyPresetRoot(moduleUrl: string = import.meta.url): string {
  * path behind them), so deleting the entry removes the preset from every consumer;
  * every other config key passes through untouched. A locked build requires a
  * literal table because the plugin's schema default still ships the entry.
+ *
+ * A `defaultPreset` naming the removed entry is deleted rather than clamped:
+ * the plugin resolves `config.defaultPreset ?? <inferred>` against the
+ * narrowed table while constructing, so a stale full-access default would
+ * fail the constructor (`unknown preset`) before the composition default
+ * (the preset matching the composed sandbox/approval defaults) can
+ * re-derive. Other values and a missing key pass through unchanged.
+ *
+ * Root-cause note (review P1-a): this row-config deletion covers only the
+ * composition path of the legacy default. The plugin derives its settings
+ * schema (the `defaultPreset` union) from the surviving table keys, and
+ * `settings.register` eagerly resolves the persisted user layer against
+ * that schema, so a `danger-full-access` default persisted by the upstream
+ * UI in the unlocked era crashes the register straight from the settings
+ * document — a layer no row config can govern, because the stored section
+ * overrides the composition base at resolve time. Locked builds therefore
+ * also migrate that document; see {@link migrateLockedPermissionSettings}.
+ *
  * @param config - composed config of the `permission` row.
- * @returns the config with `danger-full-access` removed from `presets`.
+ * @returns the config with `danger-full-access` removed from `presets` and
+ * from a stale `defaultPreset`.
  */
 export function lockedPermissionConfig(config: Record<string, unknown>): Record<string, unknown> {
   const presets = config.presets
@@ -420,7 +504,11 @@ export function lockedPermissionConfig(config: Record<string, unknown>): Record<
   }
   const table: Record<string, unknown> = { ...(presets as Record<string, unknown>) }
   delete table[REMOVED_PERMISSION_PRESET_ID]
-  return { ...config, presets: table }
+  const locked: Record<string, unknown> = { ...config, presets: table }
+  if (locked.defaultPreset === REMOVED_PERMISSION_PRESET_ID) {
+    delete locked.defaultPreset
+  }
+  return locked
 }
 
 /** Read a row's object config without trusting arbitrary YAML values. */
@@ -831,6 +919,13 @@ export function prepareDesktopProfile(
   const settingsDocument = resolveSettingsFileSpec(settingsConfig).filename
   hooks.onSettingsDocumentResolved?.(settingsDocument)
   const { mode: requestedMode, port } = readDesktopStartupSettings(settingsConfig)
+  // Review P1-a: migrate a legacy full-access default out of the settings
+  // document before the permission plugin can register its table-derived
+  // (narrowed) schema against it. Unlocked and omitted policies never touch
+  // the document — full access stays a legal default there.
+  if (policy?.locked === true) {
+    migrateLockedPermissionSettings(settingsConfig)
+  }
   // Locked builds always run the compatibility shell: the company build ships
   // one presentation, so a previously persisted advanced request is ignored
   // for this generation without rewriting the user's settings document.
