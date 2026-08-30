@@ -1,0 +1,18 @@
+{
+  "sequence": 10,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "1d74345287ab7665485b496168555c4d5d449569f5ca4a98642354c9ea57185a",
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.15.2",
+      "treeDigest": "47e34732e474c20d045e74f19155d561f27950f04262bf7ac151ff3c05758d94",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-08-30T04:08:45.684Z",
+  "gitSha": "d50f066018834b6a86c2049ac5393e49cc0297f8",
+  "runId": "33291765023",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/33291765023"
+}
