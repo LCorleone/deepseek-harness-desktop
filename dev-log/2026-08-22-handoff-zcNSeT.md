@@ -17,6 +17,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 | 评审修复 ×4 | 详见各 Phase 段 | 894e82223f, c9e8c773e4, e9c2785877, b5ef752291 |
 
 ## Current State
+- **里程碑（2026-08-30）：公司定制 UI 三批落地 + tag `v0.2.0-desktop-curated`** ✅——①左上角联名字样：鲸鱼 + 绿色 "Deloitte DeepSeek" + HARNESS 徽章（`5c66876fc8`，slot priority -1 压官方注册；评审 P1 修复 `8d35dd4a43`：textLength=124 钉死活字宽度防 DejaVu 溢出 + maxWidth 等比缩放防窄侧栏裁剪）②锁定构建设置收敛（`af3ef21e07`）：policy.locked 信号链（同更新止血源）→ Profile/Market/Presentation 三区块隐藏 + 托盘模式切换移除 + mode 运行时钉 compatibility 不落盘 ③设置头部双按钮 CSS 隐藏（`04adb7af7b`）：URL 参数 dsh-desktop-locked → html 类 → 借上游文档化锚点 `[data-slot='settings.action']` 一条规则盖掉 Open Configuration File + Open DSH Terminal（!important 对抗内联 display:contents）。**安全结论（用户问证）**：settings.yaml 无任何安全字段，全部防护读构建内嵌 policy/签名链，改配置最坏 DoS 自己；真正残余面=改插件文件（权威模式拦）与改应用 JS（asar 熔丝/签名域）。构建 #31 用户验收通过（字样+界面均生效）。desktop 1184+5skip / market 388 基线更新。
 - **流程规则（2026-08-28 用户拍板）**：不主动 push、不主动触发构建——commit 本地可以，push/构建必须等用户确认后再执行（用户授权的修复-发布批次除外）
 - **里程碑（2026-08-29 下午）：全自动上架链路首跑成功 + sidebar 权威模式实机生效** ✅——① GitHub workflow「Company catalog publish」（windows runner 测量+签名+artifact，3 分钟）② 容器内 publish-local（拉产物→验签→fleet 门禁→序列对拍→push GitLab→回读 sha 复核）③ sequence 7 上线（sidebar treeDigest 47e34732… 签入）④ 用户 #29 重启实测：**evidence: signed-tree**（诊断确认）——本地篡改/删伪造 receipt 三路绕过全部关闭。发布成本从 20 分钟构建+装机 → 3 分钟+重启。**首次发布实操笔记**：容器到 GitHub Azure blob 域不通（artifact 需用户浏览器下载后 --artifact-dir）；Node fetch 不认内网 CA（需 NODE_TLS_REJECT_UNAUTHORIZED=0，信任由验签承担）；发布后必须 bump state（已入待办流程）；#30 为纯工具链版本（客户端零改动，#29≡#30）
 - **#28 用户验收通过（2026-08-29）**：市场三栏稳定（死锁修复生效）、Deloitte 文案生效 ✅
