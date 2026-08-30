@@ -403,7 +403,7 @@ reaches both GitHub and the intranet) acquires the artifact (`gh run download`
 by default; `--from-git <run-id>` reads `<run-id>/` from the
 `catalog-artifacts` git branch instead, and `--run <id>` falls back to that
 branch automatically when the download fails — e.g. when only the blob
-storage is unreachable), checks the
+storage is unreachable, or `gh` is missing/broken on PATH), checks the
 sidecar's sha256 against the bytes, verifies the signature against the trust
 root pinned in the desktop release policy (plus the optional
 `COMPANY_CATALOG_KEY_FINGERPRINT` env pin), **ratchet-checks**
@@ -480,8 +480,8 @@ node tools/company-catalog/publish-local.mjs --run <run-id>   # 省略 --run 则
 `publish-local.mjs`（纯 Node ＋ PATH 上的 `gh`/`git`，在同时可达 GitHub 与内网
 的机器上跑）获取产物（默认 `gh run download`；`--from-git <run-id>` 改从
 `catalog-artifacts` git 分支读 `<run-id>/`，`--run <id>` 在下载失败时自动回
-退该分支——例如只有 blob 存储不通的环境）→ 边车 sha256 对拍字节 → 以桌面
-release 策略钉死的信任
+退该分支——例如只有 blob 存储不通、或 PATH 上 `gh` 缺失/损坏的环境）→ 边车
+sha256 对拍字节 → 以桌面 release 策略钉死的信任
 根验签（外加可选的 `COMPANY_CATALOG_KEY_FINGERPRINT` 环境钉）→ **序列对拍**
 `artifact.sequence == GitLab 已部署 + 1`（不等即打印两侧值中止——不跳号、
 不重放、不重推）→ 克隆配置仓（PAT 来自 `--token`/`GITLAB_TOKEN`，经

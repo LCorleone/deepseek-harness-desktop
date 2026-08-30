@@ -172,6 +172,10 @@ function run(command, args, options = {}) {
     env: options.env ?? process.env,
     cwd: options.cwd,
     timeout: options.timeoutMs ?? 120_000,
+    // Explicit maxBuffer for callers whose output can legally exceed
+    // spawnSync's 1 MiB default (the mirror blob reads below) — undefined
+    // keeps that default for every other call.
+    maxBuffer: options.maxBufferBytes,
   })
   if (result.error !== undefined) {
     throw new Error(`${command} could not be executed (${result.error.message}) — is it on PATH?`)
@@ -340,6 +344,8 @@ function latestSuccessfulRun(repo) {
 
 /** Byte caps the artifact path already enforces, applied before writing mirror blobs. */
 const MIRROR_FILE_CAPS = { [MANIFEST_FILE]: MANIFEST_MAX_BYTES, [META_FILE]: 65_536 }
+/** Headroom over a cap when a subprocess must emit the whole capped file on stdout. */
+const SPAWN_BUFFER_HEADROOM_BYTES = 64 * 1024
 
 /**
  * The most informative single line of a run() failure: the message starts
@@ -372,13 +378,19 @@ function fetchArtifactsFromGitBranch(repo, runId) {
     run('git', ['clone', '--quiet', '--depth', '1', '--branch', ARTIFACTS_BRANCH, repositoryUrl, branchDir], { timeoutMs: 300_000 })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    if (detail.includes('not found')) {
+    // Only a branch-shaped failure ("Remote branch <name> not found" / a
+    // missing refs/heads/<name> ref) means the branch is missing. A bare
+    // "not found" — e.g. GitHub's "Repository not found." — is the
+    // repository itself (misspelled --repo, or private without
+    // credentials) and must not be diagnosed as "branch does not exist yet".
+    const branchMissing = /remote branch [^\n]* not found/i.test(detail) || detail.includes(`refs/heads/${ARTIFACTS_BRANCH}`)
+    if (branchMissing) {
       throw new Error(
         `the ${ARTIFACTS_BRANCH} branch does not exist in ${repositoryUrl} yet — the workflow creates it when a non-dry-run mirrors ` +
         'its signed pair (the mirror step is auxiliary; runs before it existed never landed there)',
       )
     }
-    throw new Error(`${failureReason(error)} — the ${ARTIFACTS_BRANCH} git mirror of ${repositoryUrl} is unreachable`)
+    throw new Error(`${failureReason(error)} — the ${ARTIFACTS_BRANCH} git mirror of ${repositoryUrl} is unreachable (wrong --repo spelling, a private repository without credentials, or a network block)`)
   }
   const outDir = join(branchDir, 'files')
   mkdirSync(outDir, { recursive: true })
@@ -405,8 +417,11 @@ function fetchArtifactsFromGitBranch(repo, runId) {
       throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch is ${String(sizeBytes)} bytes, over the ${String(cap)}-byte bound`)
     }
     // Raw blob read (buffer, never decoded): the sha256 integrity check must
-    // see the exact committed bytes.
-    const blob = run('git', ['-C', branchDir, 'show', blobRef], { buffer: true })
+    // see the exact committed bytes. maxBuffer must reach past the byte cap
+    // checked above — spawnSync's 1 MiB default would kill a 1–2 MiB mirror
+    // manifest with a misleading "git could not be executed" ENOBUFS right
+    // after the size check accepted it.
+    const blob = run('git', ['-C', branchDir, 'show', blobRef], { buffer: true, maxBufferBytes: cap + SPAWN_BUFFER_HEADROOM_BYTES })
     if (blob.byteLength !== sizeBytes) {
       throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch: cat-file reported ${String(sizeBytes)} bytes but the blob read ${String(blob.byteLength)} — refusing mismatched reads`)
     }
@@ -462,7 +477,6 @@ async function main() {
     acquireChannel = `${ARTIFACTS_BRANCH} git branch (--from-git)`
     console.log(`artifact: fetched run ${runId} from the ${ARTIFACTS_BRANCH} branch of ${repo} (--from-git — skipping gh)`)
   } else {
-    run('gh', ['--version'])
     let runSource
     if (typeof flags.run === 'string' && /^[0-9]+$/.test(flags.run)) {
       runId = flags.run
@@ -474,6 +488,10 @@ async function main() {
     artifactDir = mkdtempSync(join(tmpdir(), 'company-catalog-artifact-'))
     tempDirs.push(artifactDir)
     try {
+      // The gh probe lives inside the guarded download: a missing or broken
+      // gh is just another way the artifact channel can be unavailable, and
+      // the git-branch fallback below needs only git on PATH — not gh.
+      run('gh', ['--version'])
       run('gh', ['run', 'download', runId, '--repo', repo, '--name', ARTIFACT_NAME, '--dir', artifactDir])
       acquireChannel = `${ARTIFACT_NAME} artifact download`
       console.log(`artifact: downloaded ${ARTIFACT_NAME} from run ${runId} → ${artifactDir}`)

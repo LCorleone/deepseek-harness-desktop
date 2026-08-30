@@ -321,17 +321,26 @@ jobs:
             git commit --quiet -m "mirror: run ${RUN_ID} signed catalog artifacts"
           fi
 
-          # Concurrent runs can race on the branch tip: on a rejected push,
-          # resync with the remote tip, replay this commit on top, retry.
+          # Concurrent runs can race on the branch tip. The refspec carries
+          # no force marker: a push that is not a fast-forward is rejected
+          # instead of silently discarding the other run's directory. Both
+          # reachable states are fast-forwards by construction — orphan
+          # first-creation (creating a new remote ref) and the replay below
+          # (remote tip + this commit) — and if the replay finds this run's
+          # commit already applied, the retried push is a no-op. On a
+          # rejection: resync with the remote tip, replay this commit on
+          # top, retry (no resync after the final attempt).
           for attempt in 1 2 3; do
-            if git push --quiet origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/heads/${ARTIFACTS_BRANCH}"; then
+            if git push --quiet origin "refs/heads/${ARTIFACTS_BRANCH}:refs/heads/${ARTIFACTS_BRANCH}"; then
               echo "mirror: run ${RUN_ID} mirrored to ${ARTIFACTS_BRANCH} (newest ${KEEP_RUNS} run directories kept)"
               exit 0
             fi
-            echo "mirror: push attempt ${attempt} rejected — resyncing with the remote tip and retrying"
-            sleep "$((attempt * 5))"
-            git fetch --quiet --no-recurse-submodules origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/remotes/origin/${ARTIFACTS_BRANCH}"
-            git rebase "refs/remotes/origin/${ARTIFACTS_BRANCH}"
+            if (( attempt < 3 )); then
+              echo "mirror: push attempt ${attempt} rejected (non-fast-forward — a concurrent run moved the branch tip) — resyncing with the remote tip and retrying"
+              sleep "$((attempt * 5))"
+              git fetch --quiet --no-recurse-submodules origin "+refs/heads/${ARTIFACTS_BRANCH}:refs/remotes/origin/${ARTIFACTS_BRANCH}"
+              git rebase "refs/remotes/origin/${ARTIFACTS_BRANCH}"
+            fi
           done
           echo "mirror: giving up after 3 push attempts — the artifact upload in measure-and-publish remains the authoritative channel"
           exit 1

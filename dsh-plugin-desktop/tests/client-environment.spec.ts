@@ -43,6 +43,7 @@ describe('desktop client environment', () => {
 
     try {
       expect(parseDesktopClientEnvironment('')).toBeUndefined()
+      expect(parseDesktopClientEnvironment('?theme=dark')).toBeUndefined()
       apply({ effect } as unknown as ClientContext)
       expect(effect).not.toHaveBeenCalled()
     }
@@ -64,6 +65,11 @@ describe('desktop client environment', () => {
     ['?dsh-desktop-mode=glass&dsh-desktop-platform=darwin', 'dsh-desktop-mode'],
     ['?dsh-desktop-mode=advanced', 'dsh-desktop-platform'],
     ['?dsh-desktop-platform=darwin', 'dsh-desktop-mode'],
+    // A lone lock marker is not a browser URL either — it enters the strict
+    // path and fails on the missing mode/platform instead of silently
+    // resolving to "no desktop environment".
+    ['?dsh-desktop-locked=1', 'dsh-desktop-mode'],
+    ['?dsh-desktop-locked=1&dsh-desktop-mode=advanced', 'dsh-desktop-platform'],
     ['?dsh-desktop-mode=advanced&dsh-desktop-platform=android', 'dsh-desktop-platform'],
     ['?dsh-desktop-mode=advanced&dsh-desktop-platform=darwin&dsh-desktop-locked=0', 'dsh-desktop-locked'],
     ['?dsh-desktop-mode=advanced&dsh-desktop-platform=darwin&dsh-desktop-locked=true', 'dsh-desktop-locked'],

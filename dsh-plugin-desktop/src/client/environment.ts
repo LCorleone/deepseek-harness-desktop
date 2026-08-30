@@ -27,7 +27,11 @@ export function parseDesktopClientEnvironment(search: string): DesktopClientEnvi
   const mode = params.get('dsh-desktop-mode')
   const platform = params.get('dsh-desktop-platform')
   const locked = params.get('dsh-desktop-locked')
-  if (mode === null && platform === null) return undefined
+  // Outside the desktop shell: NO dsh-desktop-* marker at all. Any single
+  // marker — e.g. a lone dsh-desktop-locked=1 — still enters the strict
+  // validation below: a half-corrupted desktop URL must fail loud, not
+  // silently degrade to "no desktop environment".
+  if (mode === null && platform === null && locked === null) return undefined
   if (!MODES.has(mode as DesktopClientMode)) {
     throw new Error(`dsh-plugin-desktop: invalid or missing dsh-desktop-mode ${JSON.stringify(mode)}`)
   }
