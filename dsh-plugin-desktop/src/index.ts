@@ -126,16 +126,21 @@ export const Config: z<Config> = z.object({
  * @param port - active loopback Web server port.
  * @param mode - active native presentation mode.
  * @param platform - active Electron platform.
+ * @param locked - whether the embedded company policy locks this build.
  * @returns the URL loaded by the BrowserWindow.
  */
 export function desktopRendererUrl(
   port: number,
   mode: DesktopShellMode,
   platform: Context['desktopRuntime']['platform'],
+  locked: boolean,
 ): string {
   const url = new URL(`http://127.0.0.1:${String(port)}/`)
   url.searchParams.set('dsh-desktop-mode', mode)
   url.searchParams.set('dsh-desktop-platform', platform)
+  // The lock marker rides the URL only on company builds; an unlocked
+  // development shell omits it, and the client treats absence as unlocked.
+  if (locked) url.searchParams.set('dsh-desktop-locked', '1')
   return url.href
 }
 
@@ -305,7 +310,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(
     () => runtime.schedule({
       ...config,
-      url: desktopRendererUrl(ctx.webServer.port, config.mode, runtime.platform),
+      url: desktopRendererUrl(ctx.webServer.port, config.mode, runtime.platform, runtime.locked),
       productName: 'Deloitte DSH Desktop',
       windowTitle: 'Deloitte DSH Desktop',
       iconPath,

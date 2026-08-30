@@ -1497,9 +1497,11 @@ describe('Electron desktop runtime', () => {
     const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
     const unlocked = new ElectronDesktopRuntime(async () => {})
     expect(unlocked.updates.locked).toBe(false)
+    expect(unlocked.locked).toBe(false)
 
     const runtime = new ElectronDesktopRuntime(async () => {}, undefined, undefined, undefined, true)
     expect(runtime.updates).toMatchObject({ locked: true })
+    expect(runtime.locked).toBe(true)
 
     await runtime.updates.showManagedUpdatesNotice()
     expect(electron.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({

@@ -168,6 +168,11 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     return this.currentLocale
   }
 
+  /** @inheritdoc */
+  get locked(): boolean {
+    return this.policyLocked
+  }
+
   /** Terminal failure class for the first Renderer boot report, when it failed. */
   get rendererBootFailureReason(): RendererHealthFailureReason | undefined {
     return this.rendererHealthGate?.failureReason

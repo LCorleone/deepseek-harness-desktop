@@ -51,7 +51,10 @@ interface PluginHarness {
   notifyTheme(preference: ThemePreference): void
 }
 
-function createHarness(platform: DesktopRuntime['platform'] = 'darwin'): PluginHarness {
+function createHarness(
+  platform: DesktopRuntime['platform'] = 'darwin',
+  locked: boolean = false,
+): PluginHarness {
   let shell: DesktopShellSpec | undefined
   let watcher: ((next: DesktopSettings, prev: DesktopSettings) => void | Promise<void>) | undefined
   const update = vi.fn(async (_patch: object) => {})
@@ -67,6 +70,7 @@ function createHarness(platform: DesktopRuntime['platform'] = 'darwin'): PluginH
   let themePreference: ThemePreference = 'system'
   const runtime: DesktopRuntime = {
     platform,
+    locked,
     locale: 'en',
     updates: {
       isPackaged: false,
@@ -197,13 +201,19 @@ describe('desktop Host plugin', () => {
     stderr.mockRestore()
   })
 
-  it('builds the loopback root with validated renderer mode and platform markers', () => {
-    const url = new URL(desktopRendererUrl(43120, 'advanced', 'darwin'))
+  it('builds the loopback root with validated renderer mode, platform, and lock markers', () => {
+    const url = new URL(desktopRendererUrl(43120, 'advanced', 'darwin', false))
     expect(url.origin).toBe('http://127.0.0.1:43120')
     expect(url.pathname).toBe('/')
     expect(Object.fromEntries(url.searchParams)).toEqual({
       'dsh-desktop-mode': 'advanced',
       'dsh-desktop-platform': 'darwin',
+    })
+    const lockedUrl = new URL(desktopRendererUrl(43120, 'compatibility', 'win32', true))
+    expect(Object.fromEntries(lockedUrl.searchParams)).toEqual({
+      'dsh-desktop-mode': 'compatibility',
+      'dsh-desktop-platform': 'win32',
+      'dsh-desktop-locked': '1',
     })
   })
 
@@ -236,6 +246,16 @@ describe('desktop Host plugin', () => {
 
     await harness.shell()?.requestModeChange('advanced')
     expect(harness.update).toHaveBeenCalledWith({ mode: 'advanced' })
+  })
+
+  it('marks the scheduled renderer URL with the policy lock for company builds', () => {
+    const harness = createHarness('darwin', true)
+    expect(harness.runtime.locked).toBe(true)
+
+    apply(harness.ctx, config)
+
+    expect(harness.shell()?.url)
+      .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-locked=1')
   })
 
   it('forwards same-origin renderer boot reports through the Host route', async () => {

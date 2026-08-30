@@ -16,6 +16,7 @@ import {
   DESKTOP_SETTINGS_LOCALE_NAMESPACE,
   DESKTOP_SHELL_SETTINGS_NAMESPACE,
 } from '../src/client/desktop-settings.ts'
+import { installDesktopSettingsStyles } from '../src/client/desktop-settings-styles.ts'
 
 const VIEW: DesktopSettingsView = {
   current: 'desktop',
@@ -128,6 +129,36 @@ describe('Desktop settings section visibility', () => {
   })
 })
 
+describe('Desktop settings locked-header styles', () => {
+  it('hides every settings header action behind the lock class', () => {
+    let css = ''
+    const style = {
+      get textContent() { return css },
+      set textContent(value: string) { css = value },
+      remove: vi.fn(),
+    }
+    const appendChild = vi.fn()
+    vi.stubGlobal('document', {
+      getElementById: () => null,
+      createElement: () => style,
+      head: { appendChild },
+    })
+
+    try {
+      const dispose = installDesktopSettingsStyles()
+      // The upstream slot anchor carries an inline display:contents style, so
+      // the locked rule must win the cascade with !important.
+      expect(css).toMatch(/html\.dsh-desktop-locked \[data-slot='settings\.action'\] \{ display: none !important; \}/)
+      expect(appendChild).toHaveBeenCalledWith(style)
+      dispose()
+      expect(style.remove).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('Desktop settings Slot registration', () => {
   it('registers the official Desktop section, terminal action, and both settings scopes', () => {
     const scope = {
@@ -158,7 +189,7 @@ describe('Desktop settings Slot registration', () => {
       slots: { inject, register },
     } as unknown as ClientContext
 
-    applyDesktopSettings(ctx, { mode: 'compatibility', platform: 'darwin' })
+    applyDesktopSettings(ctx, { mode: 'compatibility', platform: 'darwin', locked: false })
 
     expect(bind).toHaveBeenNthCalledWith(1, { namespace: DESKTOP_SHELL_SETTINGS_NAMESPACE })
     expect(bind).toHaveBeenNthCalledWith(2, { namespace: DESKTOP_NOTIFICATIONS_SETTINGS_NAMESPACE })

@@ -15,6 +15,27 @@ import {
   WINDOWS_TITLEBAR_HEIGHT,
 } from '../src/window-chrome.ts'
 
+/** Apply the client plugin against a browser context mock, capturing the document root. */
+function applyWithDocumentRoot(search: string): { classList: { add: ReturnType<typeof vi.fn> } } {
+  const classList = { add: vi.fn() }
+  vi.stubGlobal('window', { location: { search } })
+  vi.stubGlobal('document', { documentElement: { classList } })
+  const register = vi.fn(() => () => {})
+  const ctx = {
+    settingsScope: { bind: vi.fn() },
+    locale: { bind: vi.fn(() => (key: string) => key), register: vi.fn(() => () => {}) },
+    effect: vi.fn(),
+    slots: { inject: vi.fn((_name: string, mount: () => unknown) => mount()), register },
+  } as unknown as ClientContext
+  try {
+    apply(ctx)
+    return { classList }
+  }
+  finally {
+    vi.unstubAllGlobals()
+  }
+}
+
 describe('desktop client environment', () => {
   it('does not activate desktop effects for an ordinary browser URL', () => {
     vi.stubGlobal('window', { location: { search: '' } })
@@ -32,9 +53,11 @@ describe('desktop client environment', () => {
 
   it('accepts the Electron-owned kebab query markers', () => {
     expect(parseDesktopClientEnvironment('?dsh-desktop-mode=advanced&dsh-desktop-platform=darwin'))
-      .toEqual({ mode: 'advanced', platform: 'darwin' })
+      .toEqual({ mode: 'advanced', platform: 'darwin', locked: false })
     expect(parseDesktopClientEnvironment('?dsh-desktop-platform=win32&dsh-desktop-mode=compatibility'))
-      .toEqual({ mode: 'compatibility', platform: 'win32' })
+      .toEqual({ mode: 'compatibility', platform: 'win32', locked: false })
+    expect(parseDesktopClientEnvironment('?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-locked=1'))
+      .toEqual({ mode: 'compatibility', platform: 'darwin', locked: true })
   })
 
   it.each([
@@ -42,8 +65,20 @@ describe('desktop client environment', () => {
     ['?dsh-desktop-mode=advanced', 'dsh-desktop-platform'],
     ['?dsh-desktop-platform=darwin', 'dsh-desktop-mode'],
     ['?dsh-desktop-mode=advanced&dsh-desktop-platform=android', 'dsh-desktop-platform'],
+    ['?dsh-desktop-mode=advanced&dsh-desktop-platform=darwin&dsh-desktop-locked=0', 'dsh-desktop-locked'],
+    ['?dsh-desktop-mode=advanced&dsh-desktop-platform=darwin&dsh-desktop-locked=true', 'dsh-desktop-locked'],
   ])('fails loud for malformed marker %s', (search, field) => {
     expect(() => parseDesktopClientEnvironment(search)).toThrow(field)
+  })
+
+  it('marks the document root on a locked shell before React mounts', () => {
+    const { classList } = applyWithDocumentRoot('?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-locked=1')
+    expect(classList.add).toHaveBeenCalledWith('dsh-desktop-locked')
+  })
+
+  it('leaves the document root untouched on an unlocked shell', () => {
+    const { classList } = applyWithDocumentRoot('?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin')
+    expect(classList.add).not.toHaveBeenCalled()
   })
 })
 

@@ -3,6 +3,16 @@
 const STYLE_ID = 'dsh-desktop-settings-styles'
 
 const CSS = `
+/* Locked company builds hide every settings header action — Open Configuration
+   File (upstream SettingsDocumentAction) and Open DSH Terminal alike. Upstream
+   ui-renderer wraps each settings.action render site in a stable
+   [data-slot="settings.action"] anchor (packages/client/ui-renderer/src/client/
+   scoped-slots.tsx, the documented seam dynamic styles target), so one rule
+   covers both occupants and any future upstream header action. !important is
+   required because the anchor carries an inline display:contents style. The
+   dsh-desktop-locked root class is set by the client plugin before React
+   mounts (src/client/index.ts apply). */
+html.dsh-desktop-locked [data-slot='settings.action'] { display: none !important; }
 .dshDesktopSettings {
   display: flex;
   flex-direction: column;

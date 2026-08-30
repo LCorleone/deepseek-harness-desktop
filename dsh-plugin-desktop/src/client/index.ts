@@ -69,6 +69,9 @@ export const inject = [
 export function apply(ctx: ClientContext): void {
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (!environment) return
+  // The lock class lands before React mounts, so the settings header actions
+  // hidden through it (desktop-settings-styles.ts) never paint.
+  if (environment.locked) document.documentElement.classList.add('dsh-desktop-locked')
   applyDesktopSettings(ctx, environment)
   ctx.effect(
     () => startRendererBootReporter(ctx.loader),

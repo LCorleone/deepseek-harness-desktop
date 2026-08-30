@@ -166,6 +166,9 @@ export interface DesktopRuntime {
   /** Current Electron platform. */
   readonly platform: DesktopPlatform
 
+  /** Whether the embedded company policy locks this build (DesktopPolicy.locked). */
+  readonly locked: boolean
+
   /** Locale currently used for native tray contributions. */
   readonly locale: DesktopLocale
 
