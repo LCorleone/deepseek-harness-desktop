@@ -9,7 +9,7 @@ import {
 } from '../src/desktop-boot-recovery.ts'
 
 describe('Desktop early-boot recovery injection', () => {
-  it('injects a bilingual terminal action through the exact empty-body endpoint', () => {
+  it('preserves the plugin-failure report and appends accessible recovery guidance', () => {
     expect(desktopBootRecoveryInjections()).toEqual([
       { kind: 'style', text: DESKTOP_BOOT_RECOVERY_STYLE },
       { kind: 'script', placement: 'body', text: DESKTOP_BOOT_RECOVERY_SCRIPT },
@@ -17,6 +17,10 @@ describe('Desktop early-boot recovery injection', () => {
     expect(DESKTOP_BOOT_TERMINAL_STYLE).toBe(DESKTOP_BOOT_RECOVERY_STYLE)
     expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toBe(DESKTOP_BOOT_RECOVERY_SCRIPT)
     expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('Failed to load plugins')
+    expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('部分插件加载失败，可能与当前 DSH 版本不兼容')
+    expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('Some plugins failed to load and may be incompatible with this DSH version')
+    expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('report.append(panel)')
+    expect(DESKTOP_BOOT_TERMINAL_SCRIPT).not.toContain('container.replaceChildren(panel)')
     expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('打开 DSH 终端 / Open DSH Terminal')
     expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain('/api/desktop/terminal/open')
     expect(DESKTOP_BOOT_TERMINAL_SCRIPT).toContain(JSON.stringify(DESKTOP_TERMINAL_OPEN_REQUEST))

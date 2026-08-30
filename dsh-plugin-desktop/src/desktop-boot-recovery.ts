@@ -47,11 +47,15 @@ export const DESKTOP_BOOT_RECOVERY_STYLE = `
   padding-top: 12px;
   border-top: 1px solid var(--dsh-recovery-border);
 }
+[data-dsh-desktop-recovery] [data-dsh-recovery-note],
 [data-dsh-desktop-recovery] [data-dsh-recovery-label] {
   margin: 0 0 8px;
   color: var(--dsh-recovery-muted);
   font-size: 12px;
   line-height: 18px;
+}
+[data-dsh-desktop-recovery] [data-dsh-recovery-note] {
+  margin-bottom: 12px;
 }
 [data-dsh-desktop-recovery] button,
 [data-dsh-desktop-recovery] select {
@@ -149,11 +153,12 @@ const ENDPOINTS = Object.freeze({
   createProfile: DESKTOP_PROFILE_CREATE_WINDOW_PATH,
 })
 
-/** Add launcher-owned recovery controls after the upstream plugin failure report. */
+/** Preserve the upstream plugin-failure report and append launcher-owned recovery controls. */
 export const DESKTOP_BOOT_RECOVERY_SCRIPT = `(() => {
   const endpoints = ${JSON.stringify(ENDPOINTS)};
   const request = ${JSON.stringify(DESKTOP_TERMINAL_OPEN_REQUEST)};
   const text = {
+    failureNote: '部分插件加载失败，可能与当前 DSH 版本不兼容。你可以运行回滚、切换或新建 Profile 恢复启动，或打开 DSH 终端处理有问题的插件。 / Some plugins failed to load and may be incompatible with this DSH version. Run Rollback, switch or create a Profile to recover startup, or open the DSH Terminal to address the affected plugins.',
     terminal: '打开 DSH 终端 / Open DSH Terminal',
     diagnostics: '导出诊断 / Export Diagnostics',
     rollback: '运行回滚 / Run Rollback',
@@ -281,7 +286,7 @@ export const DESKTOP_BOOT_RECOVERY_SCRIPT = `(() => {
     });
     profileRow.append(select, switchProfile, createProfile);
     profile.append(profileRow);
-    panel.append(actions, confirm, profile, status);
+    panel.append(element('p', { dataset: { dshRecoveryNote: '' } }, text.failureNote), actions, confirm, profile, status);
     report.append(panel);
     fetch(endpoints.settings, { credentials: 'same-origin', cache: 'no-store' })
       .then((response) => { if (!response.ok) throw new Error('settings unavailable'); return response.json(); })
