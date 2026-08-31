@@ -97,6 +97,7 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 ## 企业定制第二批（2026-08-30 立项，讨论定案）
 **① 权限级别**：锁定构建从 permission presets 配置表（host 组合 base/cordis.patch.yml 的 permission 行）删除 danger-full-access（服务级删除，UI+写路径同步）。**已知残余（用户签收暂不处理，评审扩大范围后 2026-08-30 复签）**：①预设表管 UI 与正常写路径，直接调 loopback API 裸注入 sandbox 事件理论可绕；②**内置终端 dsh CLI 子进程旁路（评审 P1-b 实证）**：CLI 子进程自行重新组合 profile——preset roots 指回上游（四模式全回、无公司条款）、权限表带 danger-full-access、DSH_PERMISSION_MODE 环境变量直起全访问，两个锁定在 CLI 路径同时失效（零成本正常路径）；③旧会话 resume 已记录的 full-access 事件在执行器侧继续生效（评审 P2 确认）。缓解：终端入口已隐藏、CLI 需故意手跑、无提权（等价用户本有 shell）。**统一挂「CLI/执行器硬钳制」待办卡**：desktop-cli 注入锁定 patch + 执行器（bash-sandbox）最高沙箱钳制调查，触发条件：出现真实绕过尝试或正式推广前复审。
 **② Deloitte Standard 模式**：desktop 自有 preset 目录 + 复制 standard 组合（~200 行 YAML，上游升级需 diff 重同步——维护账已记）改 persona 行注入公司安全条款；锁定构建 roots 指向我们目录（standard/code/cordis 全隐藏，minimal 已有 Windows 过滤）+ defaultId=deloitte-standard；旧会话温和迁移（继续可用直到关闭）。**定位诚实记**：persona 是指导层非硬栅栏，硬栅栏=沙箱权限+插件签名链。
+**③ 系统提示词前言移除（2026-08-31，`2c3d3d251b`）**：锁定构建 patch system-prompt 行（includeHarnessIdentity:false）+ web-runtime 行（surfaceContext:false）——三段前言全灭（identity/-100、checkout 路径/-99、GUI URL+HMR/-98，DSH_WEB_URL 变量同删）；fail-closed 防上游改组回流；未锁定 sha256 逐字节一致。**web_search 决策（用户拍板保留）**：源=DeepSeek 官方 API 服务端搜索（api.deepseek.com/anthropic/v1 + web_search_20250305，复用 DEEPSEEK_API_KEY）；与对话同端点同密钥，**不新增外发目的地**，删除无安全收益只损功能；fetch:false 无 SSRF 面。**工具说明书段落（read/write/glob/grep/goal/workflow 等）保留**：中性功能指令，非环境自曝。
 ## 下一阶段计划（2026-08-29 制定，试点三大目标已全部达成后）
 **已完成基线**：① 插件只能来自公司签名目录（origin 实机稳定）② 装了不能被本地篡改（signed-tree 权威模式生效）③ 上下架全自动（3 分钟+重启）
 
