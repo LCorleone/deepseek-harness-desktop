@@ -119,6 +119,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 | P6 | **自有更新源**（待办⑩选项 A）**挂起（2026-08-30）** | GitLab 托管签名 update-manifest + ARTIFACT_TRUST_ROOTS 替换 → fleet 自动升级（git push 即发版）。挂起理由：当前装机量手动升级可控；技术风险三项里最高（electron-updater 格式非自有 schema，信任根替换需仔细做）。**触发条件：装机量让手动升级变痛/正式推广；建议与 P4 同批发版** | 推广决策触发 | M |
 | P7 | **技术尾巴** | ①E2E origin 稳态步——**挂起**（单测已覆盖+实机数周稳定，下次动 E2E 顺手）②blob 下载备选——**✅ 完成（2026-08-30，`35830b899d`+评审修复 `d50f066018`）并全链路首验通过**：workflow mirror job 把签名产物镜像到 catalog-artifacts 分支（快进 push+rebase 重试，保留 5 个 run）；publish-local --run 在 gh 下载失败（blob 域 TLS）时自动回退 git 分支拉取。首验 run 33291765023：seq 10 全自动发布（验签→棘轮→GitLab push→回读复核），**发布流程零人工环节达成**。评审实证：伪造签名在 git 通道同样 fail-closed③M1 post-install 校验——**挂起**（低概率+后果非安全+下次升级自愈，等真实案例） | ②进行中 | S |
 
+| 新 | **SSO 启动门禁**（2026-08-31 设计定稿） | 详见上方第三批设计段：静默优先+浏览器兜底、requireSso 快速开关、认证徽章（侧边栏+托盘）。nova 参考码路径在案 | 用户说启动 |
+| 新 | **logo 更换**（2026-08-31 记） | 一个 SVG master 三处同源：托盘（tray-icon.svg 进生成管线）/应用图标（512 渲染→app-icon.png→mac 派生）/应用内左上角（替换鲸鱼 slot，同品牌字样机制）。设计要求：16px 剪影可辨、撑得起正方形、宜单双色。纯资产零签名影响 | 等用户给 SVG |
+
 **扩面前检查单**：P1 ✓ → P2 ✓ → 测试机全部 ≥#29（M2 门禁）→ GitHub secrets/PAT 在效期 → GitLab 匿名 raw 正常。
 
 ## 部署侧待办（运营项，代码已备）
