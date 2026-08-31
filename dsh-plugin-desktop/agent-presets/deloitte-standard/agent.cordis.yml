@@ -255,7 +255,7 @@
 # the model-facing tool is per-session.
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
-  disabled: !!js process.env.DSH_DESKTOP_POLICY_MANAGED_MODELS === '1'
+  disabled: !!js process.env.DSH_COMPANY_MANAGED_MODELS === '1'
   config:
     fetch: false
     searchTimeoutMs: 60000

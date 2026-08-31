@@ -526,9 +526,15 @@ async function start(): Promise<void> {
     // for every build; the value is '1' only for the effective managed
     // posture, so open, unlocked, and development launches both evaluate the
     // gate to false and scrub any stray inherited '1' — the tool stays enabled
-    // exactly as upstream ships it. Same name and encoding as the CLI policy
-    // hand-off (cliPolicyEnvironment below), which the terminal shims restate
-    // per child anyway.
+    // exactly as upstream ships it. The gate keeps its own `DSH_`-prefixed
+    // name (DSH_COMPANY_MANAGED_MODELS), separate from the CLI policy
+    // hand-off (cliPolicyEnvironment below): that hand-off decodes as an
+    // all-five group (desktopPolicyFromEnvironment), so a lone
+    // hand-off-shaped key in the shared host environment would poison any
+    // future consumer reading the hand-off from a host snapshot. The `DSH_`
+    // prefix also keeps the name inside the login-shell capture's `DSH_*`
+    // scrub (resolveDesktopShellEnvironment) and `loadLayeredEnv`'s `.env`
+    // rejection, so neither layer can smuggle a foreign value into the gate.
     const managedModelsGate = managedModelsPresetGateEntry(policy)
     process.env[managedModelsGate.name] = managedModelsGate.value
 

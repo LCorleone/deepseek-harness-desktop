@@ -9,7 +9,7 @@
  *
  * Everything here is inert unless the embedded policy is `locked` with
  * `managedModels: true`: an open or unlocked build never decodes the blob,
- * never injects an environment variable, and never registers the provider.
+ * never injects the gateway credential, and never registers the provider.
  *
  * @module dsh-plugin-desktop/model-gateway
  */
@@ -19,7 +19,7 @@ import {
   parseCredentialsDocument,
   resolveSpec,
 } from '@deepseek-ai/dsh-credentials-local'
-import { DESKTOP_POLICY_ENVIRONMENT, type DesktopPolicy } from './desktop-policy.ts'
+import { type DesktopPolicy } from './desktop-policy.ts'
 import { MODEL_GATEWAY_BLOB } from './model-gateway-blob.ts'
 
 /** Loader row id of the pi-ai multi-provider adapter the company route joins. */
@@ -150,18 +150,31 @@ export function managedModelGateway(
 }
 
 /**
+ * Environment name the company agent preset's managed-models gate evaluates:
+ * a dedicated preset-gate name, deliberately separate from every CLI policy
+ * hand-off key (`DESKTOP_POLICY_ENVIRONMENT`). The hand-off carries the RAW
+ * `managedModels` flag as one member of an all-five group that
+ * `desktopPolicyFromEnvironment` refuses to decode partially, while this
+ * gate encodes the EFFECTIVE posture below — one shared name would blur two
+ * facts and leave a lone hand-off-shaped key sitting in the shared host
+ * environment, poison for any future consumer reading the hand-off from a
+ * host snapshot. The `DSH_` prefix keeps this launcher-owned name under the
+ * same protections as the other `DSH_*` names: scrubbed out of login-shell
+ * captures and rejected by `.env` layers.
+ */
+export const PRESET_MANAGED_MODELS_GATE = 'DSH_COMPANY_MANAGED_MODELS'
+
+/**
  * The process-environment entry the company agent preset's managed-models
  * gate reads. The Deloitte preset's `tool-web` row carries a `!!js` disabled
- * expression over this exact name (web search rides api.deepseek.com with
- * `DEEPSEEK_API_KEY`, a credential managed users do not hold), and Loader
- * expressions evaluate in the Host process — so the launcher must write the
- * value into `process.env` before the Host composition loads the preset.
+ * expression over {@link PRESET_MANAGED_MODELS_GATE} exactly (web search
+ * rides api.deepseek.com with `DEEPSEEK_API_KEY`, a credential managed users
+ * do not hold), and Loader expressions evaluate in the Host process — so the
+ * launcher must write the value into `process.env` before the Host
+ * composition loads the preset.
  *
- * The name deliberately reuses the CLI policy hand-off's `managedModels` key
- * ({@link DESKTOP_POLICY_ENVIRONMENT}) with its established `1`/`0` encoding,
- * so one environment name carries the same fact everywhere it appears. The
- * value pins the EFFECTIVE managed posture — `locked` && `managedModels` —
- * and every other build resolves to `'0'`: the launcher writes the entry
+ * The value pins the EFFECTIVE managed posture — `locked` && `managedModels`
+ * — and every other build resolves to `'0'`: the launcher writes the entry
  * unconditionally, so an open, unlocked, or development build both evaluates
  * the gate to false and scrubs any stray inherited `'1'`, restoring the
  * native enabled tool exactly as upstream ships it.
@@ -172,7 +185,7 @@ export function managedModelsPresetGateEntry(
   policy: DesktopPolicy,
 ): Readonly<{ readonly name: string, readonly value: string }> {
   return {
-    name: DESKTOP_POLICY_ENVIRONMENT.managedModels,
+    name: PRESET_MANAGED_MODELS_GATE,
     value: policy.locked && policy.managedModels ? '1' : '0',
   }
 }

@@ -18,6 +18,7 @@ import {
   decodeModelGatewayBlob,
   managedModelGateway,
   managedModelsPresetGateEntry,
+  PRESET_MANAGED_MODELS_GATE,
   readStoredCredentialNames,
   resolveManagedModelGatewayEnvironment,
   storedCredentialsPath,
@@ -213,11 +214,17 @@ describe('managed gateway provider profile', () => {
 })
 
 describe('managed-models preset gate environment entry', () => {
-  it("reuses the CLI policy hand-off's managedModels environment name", () => {
-    // One name carries the same fact to the preset expression and to the CLI
-    // hand-off, so the two can never drift apart.
-    expect(managedModelsPresetGateEntry(policy(true, true)).name)
-      .toBe(DESKTOP_POLICY_ENVIRONMENT.managedModels)
+  it('uses the dedicated preset gate name', () => {
+    expect(managedModelsPresetGateEntry(policy(true, true)).name).toBe(PRESET_MANAGED_MODELS_GATE)
+  })
+
+  it('stays distinct from every CLI policy hand-off key', () => {
+    // The gate writes the EFFECTIVE posture (locked && managedModels) into
+    // the shared host environment, while the hand-off keys carry the RAW
+    // flags as an all-five group that desktopPolicyFromEnvironment refuses
+    // to decode partially — one shared name would both blur two facts and
+    // leave a lone hand-off-shaped key in the host environment.
+    expect(Object.values(DESKTOP_POLICY_ENVIRONMENT)).not.toContain(PRESET_MANAGED_MODELS_GATE)
   })
 
   it("writes '1' only for the effective managed posture and '0' otherwise", () => {

@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 /** The exact managed-models gate line whitelisted on the tool-web row. */
-const TOOL_WEB_MANAGED_MODELS_GATE = "  disabled: !!js process.env.DSH_DESKTOP_POLICY_MANAGED_MODELS === '1'"
+const TOOL_WEB_MANAGED_MODELS_GATE = "  disabled: !!js process.env.DSH_COMPANY_MANAGED_MODELS === '1'"
 
 /**
  * Split one composition file around its two whitelisted company diffs: the
@@ -137,7 +137,8 @@ describe('company agent preset guard', () => {
   })
 
   it('gates the tool-web row on the launcher-written managed-models environment name', () => {
-    const document = parseDocument(readFileSync(companyComposition, 'utf8'), { prettyErrors: true })
+    const composition = readFileSync(companyComposition, 'utf8')
+    const document = parseDocument(composition, { prettyErrors: true })
     expect(document.errors).toHaveLength(0)
     const rows = document.toJS() as Array<{ id?: string, disabled?: unknown }>
     const toolWeb = rows.find(row => row.id === 'tool-web')
@@ -146,14 +147,17 @@ describe('company agent preset guard', () => {
     // The row's disabled expression is exactly the gate the launcher writes
     // (src/model-gateway.ts managedModelsPresetGateEntry), so an upstream
     // sync cannot silently wash it away or reword it into a dead check.
-    expect(toolWeb.disabled).toBe("process.env.DSH_DESKTOP_POLICY_MANAGED_MODELS === '1'")
+    expect(toolWeb.disabled).toBe("process.env.DSH_COMPANY_MANAGED_MODELS === '1'")
     expect(rows.filter(row => typeof row.disabled === 'string'
-      && row.disabled.includes('DSH_DESKTOP_POLICY_MANAGED_MODELS'))).toHaveLength(1)
+      && row.disabled.includes('DSH_COMPANY_MANAGED_MODELS'))).toHaveLength(1)
+    // The gate name appears exactly once in the whole composition file:
+    // on the tool-web row's disabled expression and nowhere else.
+    expect(composition.split('DSH_COMPANY_MANAGED_MODELS').length - 1).toBe(1)
     // Loader semantics: the expression the Host evaluates disables the tool
     // only for the managed value and stays false for open and unset builds.
     const expression = toolWeb.disabled as string
-    expect(evaluate({ process: { env: { DSH_DESKTOP_POLICY_MANAGED_MODELS: '1' } } }, expression)).toBe(true)
-    expect(evaluate({ process: { env: { DSH_DESKTOP_POLICY_MANAGED_MODELS: '0' } } }, expression)).toBe(false)
+    expect(evaluate({ process: { env: { DSH_COMPANY_MANAGED_MODELS: '1' } } }, expression)).toBe(true)
+    expect(evaluate({ process: { env: { DSH_COMPANY_MANAGED_MODELS: '0' } } }, expression)).toBe(false)
     expect(evaluate({ process: { env: {} } }, expression)).toBe(false)
   })
 
