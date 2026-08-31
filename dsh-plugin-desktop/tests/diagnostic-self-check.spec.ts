@@ -224,6 +224,7 @@ describe('policy self-measurement', () => {
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked: true,
+      managedModels: false,
       trustRoots: [{ keyId: 'company-catalog-2026.01', fingerprint: fingerprint }],
     })
     writeFileSync(asset, body)

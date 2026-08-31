@@ -28,6 +28,7 @@ const originPolicy = parseDesktopPolicy({
   companyCatalogOrigin: 'https://market.company.example',
   companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
   locked: true,
+  managedModels: false,
   trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
 })
 
@@ -181,6 +182,7 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     companyCatalogOrigin: gitlabOrigin,
     companyManifestUrl: `${gitlabOrigin}/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json`,
     locked: true,
+    managedModels: false,
     trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
   })
   const verifiedNow = Date.parse('2026-09-01T00:00:00.000Z')

@@ -25,6 +25,7 @@ import {
   validateDshMarketBundlePatches,
 } from '../src/profile.ts'
 import { DESKTOP_MARKET_IDENTITIES } from '../src/desktop-market.ts'
+import { managedModelGateway } from '../src/model-gateway.ts'
 import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
 import {
   computeDesktopBootTreeRootDigest,
@@ -35,13 +36,14 @@ import {
 const homes: string[] = []
 
 /** Build a strict policy fixture through the real parser, locked or not. */
-function injectedDesktopPolicy(locked: boolean): DesktopPolicy {
+function injectedDesktopPolicy(locked: boolean, managedModels = false): DesktopPolicy {
   return parseDesktopPolicy({
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked,
+    managedModels,
     trustRoots: [],
   })
 }
@@ -926,6 +928,173 @@ describe('desktop profile composition', {
     expect(webRuntime).toMatchObject({ surfaceContext: true })
   })
 
+  it('registers the company model gateway in memory for a managed build', () => {
+    const home = temporaryHome()
+    const gateway = managedModelGateway(injectedDesktopPolicy(true, true))
+    if (gateway === undefined) throw new Error('test requires the embedded managed gateway blob')
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, true),
+    )
+    const rows = composeEntries([prepared.patches])
+
+    // The provider registers through the llm-pi-ai composition base: the
+    // gateway URL and model list live only in the composed Loader graph, the
+    // profile names only the credential reference, and nothing is written to
+    // the settings or credentials documents.
+    expect(rows.find(row => row.id === 'llm-pi-ai')?.config).toMatchObject({
+      providers: {
+        'dsh-company-gateway': {
+          displayName: 'Company LLM Gateway',
+          apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
+          api: 'openai-completions',
+          baseURL: gateway.baseUrl,
+          models: [{ id: 'DSV4-DSH' }],
+        },
+      },
+    })
+    // The pinned default rides the agent-default-model row config.
+    expect(rows.find(row => row.id === 'agent-default-model')?.config).toMatchObject({
+      provider: 'dsh-company-gateway',
+      model: 'DSV4-DSH',
+    })
+    // The web Models settings page is disabled, the same Loader mechanism
+    // the compatibility shell uses for ui-layout.
+    expect(rows.find(row => row.id === 'ui-settings-models')?.disabled).toBe(true)
+    // No gateway facts ever reach the user's settings document.
+    expect(existsSync(join(home, 'settings.yaml'))).toBe(false)
+    expect(existsSync(join(home, '.credentials.yaml'))).toBe(false)
+  })
+
+  it('keeps the model rows fully native for open, unlocked, and omitted policies', () => {
+    const home = temporaryHome()
+    const open = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, false),
+    )
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      temporaryHome(),
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false, true),
+    )
+    const omitted = prepareDesktopProfile(undefined, temporaryHome(), 'darwin')
+
+    for (const prepared of [open, unlocked, omitted]) {
+      const rows = composeEntries([prepared.patches])
+      expect(rows.find(row => row.id === 'llm-pi-ai')?.config).toBeUndefined()
+      expect(rows.find(row => row.id === 'agent-default-model')?.config).toMatchObject({
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+      })
+      expect(rows.find(row => row.id === 'ui-settings-models')?.disabled).toBeUndefined()
+      expect(prepared.patches.some(patch => patch.id === 'ui-settings-models')).toBe(false)
+    }
+  })
+
+  it('drops a stored default model selection in a managed build without touching other sections', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, [
+      'agent-default-model:',
+      '  provider: deepseek-official',
+      '  model: deepseek-chat',
+      '# user comment',
+      'dsh-desktop:',
+      '  port: 43189',
+      '',
+    ].join('\n'))
+
+    const prepared = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, true),
+    )
+
+    expect(readFileSync(settingsPath, 'utf8')).toBe([
+      '# user comment',
+      'dsh-desktop:',
+      '  port: 43189',
+      '',
+    ].join('\n'))
+    // The composition default still resolves to the pinned gateway model.
+    expect(composeEntries([prepared.patches]).find(row => row.id === 'agent-default-model')?.config)
+      .toMatchObject({ provider: 'dsh-company-gateway', model: 'DSV4-DSH' })
+  })
+
+  it('keeps a stored default model selection for open and unlocked builds', () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, [
+      'agent-default-model:',
+      '  provider: deepseek-official',
+      '  model: deepseek-chat',
+      '',
+    ].join('\n'))
+
+    prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, false),
+    )
+
+    expect(readFileSync(settingsPath, 'utf8')).toContain('deepseek-chat')
+  })
+
+  it('fails a managed build closed when the llm-pi-ai row is disabled', () => {
+    const home = temporaryHome()
+    const profileDir = ensureDesktopProfile(home)
+    writeFileSync(join(profileDir, 'cordis.patch.yml'), [
+      '- id: llm-pi-ai',
+      '  disabled: true',
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, true),
+    )).toThrow('managed build requires an enabled @deepseek-ai/dsh-llm-pi-ai row')
+  })
+
   it('fails a locked build closed when the system-prompt row loses its config map', () => {
     const home = temporaryHome()
     writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
@@ -1427,6 +1596,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked,
+      managedModels: false,
       trustRoots: bootTrustRoots,
     })
   }

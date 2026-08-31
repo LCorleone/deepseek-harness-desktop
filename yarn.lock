@@ -2329,7 +2329,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@deepseek-ai/dsh-credentials-local@npm:^0.1.1-rc.2":
+"@deepseek-ai/dsh-credentials-local@npm:0.1.1-rc.2, @deepseek-ai/dsh-credentials-local@npm:^0.1.1-rc.2":
   version: 0.1.1-rc.2
   resolution: "@deepseek-ai/dsh-credentials-local@npm:0.1.1-rc.2"
   dependencies:
@@ -8294,6 +8294,7 @@ __metadata:
     "@deepseek-ai/dsh-cordis-client-runner": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-cordis-host-runner": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-credentials": "npm:0.1.1-rc.2"
+    "@deepseek-ai/dsh-credentials-local": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-file-reference": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-fs": "npm:0.1.1-rc.2"
     "@deepseek-ai/dsh-fs-local": "npm:0.1.1-rc.2"

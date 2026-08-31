@@ -376,6 +376,7 @@ describe('desktop Host dsh runtime', () => {
     // is what reaches the batch shim.
     const contentModePolicy: DesktopPolicy = {
       locked: true,
+      managedModels: true,
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',
       allowHomePatch: false,

@@ -4,5 +4,6 @@
   "companyCatalogOrigin": null,
   "companyManifestUrl": "company-market/catalog-manifest.json",
   "locked": false,
+  "managedModels": false,
   "trustRoots": []
 }

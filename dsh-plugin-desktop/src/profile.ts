@@ -27,6 +27,15 @@ import FileSettingsProvider, {
 } from '@deepseek-ai/dsh-settings-file'
 import { parseDocument } from 'yaml'
 import { COMPANY_PRESET_ID } from './company-agent-presets.ts'
+import {
+  AGENT_DEFAULT_MODEL_ROW_ID,
+  COMPANY_LLM_GATEWAY_PROVIDER_ROUTE,
+  LLM_PI_AI_ROW_ID,
+  UI_SETTINGS_MODELS_ROW_ID,
+  companyModelGatewayDefaultModel,
+  companyModelGatewayProviderProfile,
+  managedModelGateway,
+} from './model-gateway.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
@@ -81,6 +90,9 @@ const DESKTOP_WINDOWS_AGENT_PRESETS_ROW_ID = 'desktop-windows-agent-presets'
 const DESKTOP_WINDOWS_AGENT_PRESETS_PACKAGE = 'dsh-plugin-desktop/windows-agent-presets'
 const DESKTOP_COMPANY_AGENT_PRESETS_ROW_ID = 'desktop-company-agent-presets'
 const DESKTOP_COMPANY_AGENT_PRESETS_PACKAGE = 'dsh-plugin-desktop/company-agent-presets'
+const UPSTREAM_LLM_PI_AI_PACKAGE = '@deepseek-ai/dsh-llm-pi-ai'
+/** Settings section the upstream `dsh-agent-default-model` plugin registers (its `AGENT_DEFAULT_MODEL_SETTINGS_NAMESPACE`). */
+const AGENT_DEFAULT_MODEL_SETTINGS_SECTION = 'agent-default-model'
 const REMOVED_PERMISSION_PRESET_ID = 'danger-full-access'
 const DEFAULT_DESKTOP_SHELL_MODE: DesktopShellMode = 'compatibility'
 const DEFAULT_DESKTOP_PORT = DESKTOP_DEFAULT_WEB_PORT
@@ -252,6 +264,57 @@ export function migrateLockedPermissionSettings(config: SettingsFileConfig): boo
     return false
   }
   delete (permission as Record<string, unknown>).defaultPreset
+  writeFileSync(spec.filename, `${JSON.stringify(root, null, 2)}\n`)
+  return true
+}
+
+/**
+ * Drop a persisted default model selection from the settings document
+ * (managed builds).
+ *
+ * The default model resolves through the settings seam's layering — schema
+ * defaults, then the composition `base` (this build's pinned
+ * `agent-default-model` row), then the stored user section — so a selection
+ * persisted while this build was open (or by an earlier default) survives as
+ * the resolved default and silently defeats the company pin. The Models
+ * settings page is hidden in managed builds, so no surface can write the
+ * section anymore; this migration deletes a stored one exactly like
+ * {@link migrateLockedPermissionSettings} deletes its stale preset: the
+ * composition default re-derives, every other section keeps its values,
+ * comments, and formatting (a comment block attached directly above the
+ * deleted section goes with it — the same YAML semantics as every other
+ * writer here). Idempotent, and never touches an absent or unparseable
+ * document.
+ * @param config - validated settings-file row config.
+ * @returns whether the document carried a stored default model selection.
+ */
+export function migrateManagedDefaultModelSettings(config: SettingsFileConfig): boolean {
+  const spec = resolveSettingsFileSpec(config)
+  let text: string
+  try {
+    text = readFileSync(spec.filename, 'utf8')
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw cause
+  }
+  if (text.trim().length === 0) return false
+  if (spec.format === 'yaml') {
+    const document = parseDocument(text, { prettyErrors: true })
+    if (document.errors.length > 0) return false
+    if (!document.hasIn([AGENT_DEFAULT_MODEL_SETTINGS_SECTION])) return false
+    document.deleteIn([AGENT_DEFAULT_MODEL_SETTINGS_SECTION])
+    writeFileSync(spec.filename, document.toString())
+    return true
+  }
+  let root: unknown
+  try {
+    root = JSON.parse(text)
+  } catch {
+    return false
+  }
+  const section = (root as Record<string, unknown> | null)?.[AGENT_DEFAULT_MODEL_SETTINGS_SECTION]
+  if (section === undefined) return false
+  delete (root as Record<string, unknown>)[AGENT_DEFAULT_MODEL_SETTINGS_SECTION]
   writeFileSync(spec.filename, `${JSON.stringify(root, null, 2)}\n`)
   return true
 }
@@ -949,12 +1012,23 @@ export function prepareDesktopProfile(
   const settingsDocument = resolveSettingsFileSpec(settingsConfig).filename
   hooks.onSettingsDocumentResolved?.(settingsDocument)
   const { mode: requestedMode, port } = readDesktopStartupSettings(settingsConfig)
+  // Managed company gateway (locked + managedModels): resolved once here so
+  // the settings migration and the composition patches below share one
+  // decoded blob; every other policy leaves the blob unread and the build
+  // fully native.
+  const managedGateway = managedModelGateway(policy)
   // Review P1-a: migrate a legacy full-access default out of the settings
   // document before the permission plugin can register its table-derived
   // (narrowed) schema against it. Unlocked and omitted policies never touch
   // the document — full access stays a legal default there.
   if (policy?.locked === true) {
     migrateLockedPermissionSettings(settingsConfig)
+  }
+  // Managed builds drop a stored default model selection for the same
+  // reason: the stored section would otherwise override the pinned
+  // composition base through the settings seam's layering.
+  if (managedGateway !== undefined) {
+    migrateManagedDefaultModelSettings(settingsConfig)
   }
   // Locked builds always run the compatibility shell: the company build ships
   // one presentation, so a previously persisted advanced request is ignored
@@ -1046,6 +1120,62 @@ export function prepareDesktopProfile(
       { id: 'system-prompt', config: { ...systemPrompt, includeHarnessIdentity: false } },
       { id: 'web-runtime', config: { ...webRuntime, surfaceContext: false } },
     )
+  }
+  // Managed company model gateway (locked + managedModels). Registration
+  // rides the composition base layer of the `llm-pi-ai` settings section —
+  // the same layering the upstream plugin already supports — so the gateway
+  // profile, base URL, and model list exist only in the in-memory Loader
+  // graph: nothing is ever written to settings.yaml or .credentials.yaml.
+  // The api key is deliberately absent here; the provider names only its
+  // environment reference, and the launcher's managed-mode injection (see
+  // main.ts) supplies the value into the inherited environment that the
+  // credentials seam resolves first. The default model pins to the gateway's
+  // first listed model by restating the `agent-default-model` row (again the
+  // composition base, never a settings write), and the web Models settings
+  // page is disabled wholesale — the same Loader mechanism the compatibility
+  // shell uses for `ui-layout` — because managed users pick models from the
+  // conversation surface, not the provider configuration page.
+  if (managedGateway !== undefined) {
+    const llmPiAi = rows.get(LLM_PI_AI_ROW_ID)
+    if (llmPiAi?.name !== UPSTREAM_LLM_PI_AI_PACKAGE || rowDisabledOnPlatform(llmPiAi, platform)) {
+      throw new Error(
+        `${BIN_NAME}: managed build requires an enabled ${UPSTREAM_LLM_PI_AI_PACKAGE} row to register the company model gateway`,
+      )
+    }
+    const llmPiAiConfig = rowConfig(llmPiAi)
+    const declaredProviders = llmPiAiConfig.providers
+    patches.push({
+      id: LLM_PI_AI_ROW_ID,
+      config: {
+        ...llmPiAiConfig,
+        providers: {
+          ...(declaredProviders !== null && typeof declaredProviders === 'object'
+            && !Array.isArray(declaredProviders)
+            ? declaredProviders as Record<string, unknown>
+            : {}),
+          [COMPANY_LLM_GATEWAY_PROVIDER_ROUTE]: companyModelGatewayProviderProfile(managedGateway),
+        },
+      },
+    })
+    const defaultModelRow = rows.get(AGENT_DEFAULT_MODEL_ROW_ID)
+    if (defaultModelRow === undefined) {
+      throw new Error(
+        `${BIN_NAME}: managed build requires an ${AGENT_DEFAULT_MODEL_ROW_ID} row to pin the default model`,
+      )
+    }
+    patches.push({
+      id: AGENT_DEFAULT_MODEL_ROW_ID,
+      config: {
+        ...rowConfig(defaultModelRow),
+        ...companyModelGatewayDefaultModel(managedGateway),
+      },
+    })
+    if (!rows.has(UI_SETTINGS_MODELS_ROW_ID)) {
+      throw new Error(
+        `${BIN_NAME}: managed build requires a ${UI_SETTINGS_MODELS_ROW_ID} row to hide the Models settings page`,
+      )
+    }
+    patches.push({ id: UI_SETTINGS_MODELS_ROW_ID, disabled: true })
   }
   const webserver = rows.get('webserver')
   if (webserver === undefined) {

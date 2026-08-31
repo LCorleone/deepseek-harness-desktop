@@ -16,6 +16,7 @@ import type { DesktopPolicy } from '../src/desktop-policy.ts'
 /** Content-mode policy fixture encoded exactly like production main.ts does. */
 const contentModePolicy: DesktopPolicy = {
   locked: true,
+  managedModels: true,
   companyCatalogOrigin: null,
   companyManifestUrl: 'company-market/catalog-manifest.json',
   allowHomePatch: false,
@@ -29,6 +30,7 @@ const contentModePolicy: DesktopPolicy = {
 /** Unlocked origin-mode counterpart: no roots pinned, so the trust-root hand-off encodes the absent sentinel too. */
 const originModePolicy: DesktopPolicy = {
   locked: false,
+  managedModels: false,
   companyCatalogOrigin: 'https://market.company.example',
   companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
   allowHomePatch: false,

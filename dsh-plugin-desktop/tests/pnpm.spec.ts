@@ -682,6 +682,7 @@ describe('pnpm policy environment hand-off', () => {
   /** Locked content-mode policy constant used to seed the hand-off fixture. */
   const lockedContentModePolicy: DesktopPolicy = {
     locked: true,
+    managedModels: true,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     allowHomePatch: false,

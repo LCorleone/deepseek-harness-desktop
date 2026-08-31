@@ -9,7 +9,7 @@
  *   a. artifact structure — bundled Node command, in-ASAR policy (locked),
  *      signed company catalog manifest verified by the packaged market lib;
  *   b. CLI policy chain — the bundled Node runs `desktop-cli.js` with the
- *      four-variable `DSH_DESKTOP_POLICY_*` hand-off (sentinel trust roots);
+ *      five-variable `DSH_DESKTOP_POLICY_*` hand-off (sentinel trust roots);
  *      `--version` must answer, and a locked `plugin add` outside the signed
  *      catalog must fail closed without touching the network;
  *   c. real install — a temporary `DSH_HOME` profile (upstream template),
@@ -343,6 +343,7 @@ let policy = undefined
 function sentinelPolicyEnvironment() {
   return {
     DSH_DESKTOP_POLICY_LOCKED: '1',
+    DSH_DESKTOP_POLICY_MANAGED_MODELS: '1',
     DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '-',
     DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
     DSH_DESKTOP_POLICY_TRUST_ROOTS: `e2e-smoke-key-1:${'a'.repeat(64)}`,
@@ -364,7 +365,7 @@ function sentinelPolicyEnvironment() {
     dshVersion = undefined
   }
   if (probe.status === 0 && dshVersion !== undefined && probe.stdout.trim() === dshVersion) {
-    pass('b1', `desktop-cli --version answered ${dshVersion} under the bundled Node with the four DSH_DESKTOP_POLICY_* sentinel variables present`)
+    pass('b1', `desktop-cli --version answered ${dshVersion} under the bundled Node with the five DSH_DESKTOP_POLICY_* sentinel variables present`)
   } else {
     fail('b1', `desktop-cli --version with the sentinel policy hand-off returned status ${String(probe.status)} stdout ${JSON.stringify(probe.stdout.trim())} stderr ${JSON.stringify(probe.stderr.trim().slice(0, 400))}`)
   }
@@ -426,6 +427,7 @@ try {
       DSH_HOME: smokeHome,
       DSH_DESKTOP_DEFAULT_PROFILE: installProfileName,
       DSH_DESKTOP_POLICY_LOCKED: '0',
+      DSH_DESKTOP_POLICY_MANAGED_MODELS: '0',
       DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '-',
       DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
       DSH_DESKTOP_POLICY_TRUST_ROOTS: '-',

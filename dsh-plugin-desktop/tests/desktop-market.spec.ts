@@ -44,6 +44,7 @@ function unlockedPolicy(): DesktopPolicy {
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: false,
+    managedModels: false,
     trustRoots: [],
   })
 }
@@ -55,6 +56,7 @@ function lockedPolicy(): DesktopPolicy {
     companyCatalogOrigin: 'https://market.company.example',
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
+    managedModels: false,
     trustRoots: [{ keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) }],
   })
 }

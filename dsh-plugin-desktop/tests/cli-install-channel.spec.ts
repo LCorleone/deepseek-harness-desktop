@@ -29,6 +29,7 @@ function lockedCatalogPolicy(overrides: Record<string, unknown> = {}): DesktopPo
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
+    managedModels: false,
     trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
     ...overrides,
   })

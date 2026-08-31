@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url'
  * path which forgets to select a variant still ships the locked posture.
  */
 const VARIANTS = Object.freeze({
-  dev: { source: 'desktop-policy.dev.json', locked: false },
-  release: { source: 'desktop-policy.release.json', locked: true },
+  dev: { source: 'desktop-policy.dev.json', locked: false, managedModels: false },
+  release: { source: 'desktop-policy.release.json', locked: true, managedModels: true },
 })
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -31,10 +31,15 @@ if (document.locked !== variant.locked) {
     `dsh-plugin-desktop: ${requested} desktop policy must have locked=${String(variant.locked)}`,
   )
 }
+if (document.managedModels !== variant.managedModels) {
+  throw new Error(
+    `dsh-plugin-desktop: ${requested} desktop policy must have managedModels=${String(variant.managedModels)}`,
+  )
+}
 
 const targetDirectory = join(packageRoot, 'lib', 'policy')
 mkdirSync(targetDirectory, { recursive: true })
 copyFileSync(sourcePath, join(targetDirectory, 'desktop-policy.json'))
 console.log(
-  `dsh-plugin-desktop: embedded the ${requested} desktop policy (locked=${String(variant.locked)}) at lib/policy/desktop-policy.json`,
+  `dsh-plugin-desktop: embedded the ${requested} desktop policy (locked=${String(variant.locked)}, managedModels=${String(variant.managedModels)}) at lib/policy/desktop-policy.json`,
 )

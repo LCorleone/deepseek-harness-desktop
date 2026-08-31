@@ -34,6 +34,7 @@ function desktopPolicy(locked: boolean): DesktopPolicy {
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked,
+    managedModels: false,
     trustRoots: [],
   })
 }
@@ -53,6 +54,7 @@ function companyLockedPolicy(): DesktopPolicy {
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
+    managedModels: false,
     trustRoots: catalogTrustRoots,
   })
 }
@@ -65,6 +67,7 @@ function companyLockedOriginPolicy(): DesktopPolicy {
     companyCatalogOrigin: 'https://market.company.example',
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
+    managedModels: false,
     trustRoots: catalogTrustRoots,
   })
 }
@@ -939,6 +942,6 @@ describe('packaged dsh bootstrap policy hand-off', () => {
     expect(() => desktopPolicyFromEnvironment(
       { DSH_DESKTOP_POLICY_LOCKED: '1' },
       packagedModuleUrl,
-    )).toThrow('must carry all four entries')
+    )).toThrow('must carry all five entries')
   })
 })

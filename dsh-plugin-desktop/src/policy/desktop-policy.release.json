@@ -4,6 +4,7 @@
   "companyCatalogOrigin": "https://gitlab.s.dai.deloitte.cn",
   "companyManifestUrl": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json",
   "locked": true,
+  "managedModels": true,
   "trustRoots": [
     {
       "keyId": "company-catalog-2026-08",

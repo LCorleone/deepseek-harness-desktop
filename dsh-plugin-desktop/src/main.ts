@@ -73,6 +73,13 @@ import {
 } from './desktop-market.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import {
+  COMPANY_LLM_GATEWAY_API_KEY_ENV,
+  managedModelGateway,
+  readStoredCredentialNames,
+  resolveManagedModelGatewayEnvironment,
+  storedCredentialsPath,
+} from './model-gateway.ts'
+import {
   createCachedDesktopBootTreeRootDigestMeasure,
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
@@ -508,6 +515,37 @@ async function start(): Promise<void> {
       exit: finalExit,
     }
     installFailLoud(BIN_NAME, failLoudProcess, async () => { await generation.release() })
+
+    // Managed company gateway token injection (locked + managedModels): the
+    // gateway api key enters the process environment here — BEFORE
+    // `loadLayeredEnv` takes the launch-environment snapshot — so it lands in
+    // the snapshot's `process` layer, which is exactly the layer the
+    // credentials seam (`dsh-credentials-local`, and through it the
+    // `llm-pi-ai` adapter's `apiKeyEnv` resolution) trusts most. The same
+    // `process.env` write also propagates to the terminal and CLI children
+    // through normal environment inheritance. User-priority yield: an
+    // inherited `DSH_COMPANY_LLM_KEY` or an entry with that name in
+    // `$DSH_HOME/.credentials.yaml` (probed read-only through the upstream
+    // parser) keeps the launcher's value out entirely; `.env` files cannot
+    // carry the `DSH_`-prefixed name at all (upstream rejects them).
+    const managedGateway = managedModelGateway(policy)
+    const storedCredentials = readStoredCredentialNames(storedCredentialsPath(homeDir))
+    const gatewayEnvironment = resolveManagedModelGatewayEnvironment(managedGateway, {
+      inheritedApiKeyValue: process.env[COMPANY_LLM_GATEWAY_API_KEY_ENV],
+      storedCredentials,
+    })
+    if (gatewayEnvironment.managed && gatewayEnvironment.inject) {
+      process.env[COMPANY_LLM_GATEWAY_API_KEY_ENV] = gatewayEnvironment
+        .environment[COMPANY_LLM_GATEWAY_API_KEY_ENV]!
+    } else if (
+      gatewayEnvironment.managed
+      && !gatewayEnvironment.inject
+      && storedCredentials.status === 'unreadable'
+    ) {
+      electronLogger.error(
+        `${BIN_NAME}: skipping the company gateway token injection because the credentials document could not be probed: ${storedCredentials.reason}`,
+      )
+    }
 
     startupStage = 'runtime-bootstrap'
     lifecycleRecorder.transitionStartupStage(startupStage)

@@ -37,6 +37,7 @@ function companyPolicy(): Record<string, unknown> {
     companyCatalogOrigin: 'https://market.company.example',
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
+    managedModels: false,
     trustRoots: [
       { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
       { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
@@ -50,6 +51,7 @@ describe('desktop policy schema parsing', () => {
 
     expect(policy).toEqual({
       locked: true,
+      managedModels: false,
       companyCatalogOrigin: 'https://market.company.example',
       companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
       allowHomePatch: false,
@@ -84,13 +86,22 @@ describe('desktop policy schema parsing', () => {
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked: false,
+      managedModels: false,
       trustRoots: [],
     })
 
     expect(policy.locked).toBe(false)
+    expect(policy.managedModels).toBe(false)
     expect(policy.companyCatalogOrigin).toBe(null)
     expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
     expect(policy.trustRoots).toEqual([])
+  })
+
+  it('accepts a locked managed-models policy', () => {
+    const policy = parseDesktopPolicy({ ...companyPolicy(), managedModels: true })
+
+    expect(policy.locked).toBe(true)
+    expect(policy.managedModels).toBe(true)
   })
 
   it.each([
@@ -99,6 +110,7 @@ describe('desktop policy schema parsing', () => {
     'companyCatalogOrigin',
     'companyManifestUrl',
     'locked',
+    'managedModels',
     'trustRoots',
   ])('rejects a policy missing %s', field => {
     const document = companyPolicy()
@@ -123,6 +135,8 @@ describe('desktop policy schema parsing', () => {
 
   it.each([
     ['locked as text', { locked: 'true' }, 'locked must be a boolean'],
+    ['managed models as text', { managedModels: 'true' }, 'managedModels must be a boolean'],
+    ['managed models as number', { managedModels: 1 }, 'managedModels must be a boolean'],
     ['enabled home patching', { allowHomePatch: true }, 'allowHomePatch must be false'],
     ['enabled manual plugin add', { allowManualPluginAdd: true }, 'allowManualPluginAdd must be false'],
     ['http catalog origin', { companyCatalogOrigin: 'http://market.company.example' }, 'companyCatalogOrigin'],
@@ -263,6 +277,7 @@ describe('shipped desktop policy assets', () => {
     const policy = parseDesktopPolicy(JSON.parse(text))
 
     expect(policy.locked).toBe(false)
+    expect(policy.managedModels).toBe(false)
     expect(policy.companyCatalogOrigin).toBe(null)
     expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
     expect(policy.allowHomePatch).toBe(false)
@@ -275,6 +290,9 @@ describe('shipped desktop policy assets', () => {
     const policy = parseDesktopPolicy(JSON.parse(text))
 
     expect(policy.locked).toBe(true)
+    // Managed-model posture: the release build registers the company gateway
+    // in memory, pins DSV4-DSH as the default, and hides the Models page.
+    expect(policy.managedModels).toBe(true)
     // Origin mode: the signed catalog manifest is fetched at runtime from the
     // pinned GitLab origin instead of the embedded content-mode asset.
     expect(policy.companyCatalogOrigin).toBe('https://gitlab.s.dai.deloitte.cn')
@@ -316,6 +334,7 @@ describe('desktop policy environment hand-off', () => {
     const policy = parseDesktopPolicy({
       ...companyPolicy(),
       locked: false,
+      managedModels: true,
       trustRoots: [
         { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
         { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
@@ -332,6 +351,7 @@ describe('desktop policy environment hand-off', () => {
     const entries = desktopPolicyEnvironmentEntries(parseDesktopPolicy(companyPolicy()))
     const cased: NodeJS.ProcessEnv = {
       dsh_desktop_policy_locked: entries[DESKTOP_POLICY_ENVIRONMENT.locked]!,
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: entries[DESKTOP_POLICY_ENVIRONMENT.managedModels]!,
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: entries[DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]!,
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: entries[DESKTOP_POLICY_ENVIRONMENT.manifestUrl]!,
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: entries[DESKTOP_POLICY_ENVIRONMENT.trustRoots]!,
@@ -361,18 +381,28 @@ describe('desktop policy environment hand-off', () => {
     ['a partial hand-off', { [DESKTOP_POLICY_ENVIRONMENT.locked]: '1' }],
     ['a non-boolean locked flag', {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: 'yes',
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
+    }],
+    ['a non-boolean managed-models flag', {
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: 'managed',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
     }],
     ['a tampered trust root', {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: 'company-2026-a:not-a-fingerprint',
     }],
     ['a tampered catalog origin', {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: 'http://market.company.example',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'https://market.company.example/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
