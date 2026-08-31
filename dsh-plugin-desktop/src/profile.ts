@@ -519,6 +519,36 @@ function rowConfig(row: EntryOptions | undefined): Record<string, unknown> {
     : {}
 }
 
+/**
+ * Read one composed row's config map for a locked restatement.
+ *
+ * Locked restatements replace the row's whole config (Loader patches swap
+ * config objects rather than merging keys), so both failure modes below abort
+ * the boot rather than degrade — the same fail-closed posture as the
+ * permission row: a missing row would let the restatement no-op, because an
+ * apply-time id miss only warns, and the plugin would then mount under its
+ * schema default (true for the preamble gates these restatements flip),
+ * flowing the suppressed preamble straight back; a non-map config would have
+ * the restatement drop keys this build never verified (for example
+ * `openBrowser: false` on the web-runtime row, whose schema default would
+ * launch a browser from a locked desktop launch).
+ *
+ * @param rows - composed entry index by id.
+ * @param rowId - row whose config a locked build must restate.
+ * @returns the row's config map to spread and override.
+ */
+function lockedRowConfig(rows: ReadonlyMap<string, EntryOptions>, rowId: string): Record<string, unknown> {
+  const row = rows.get(rowId)
+  if (row === undefined) {
+    throw new Error(`${BIN_NAME}: locked build requires a ${rowId} row to suppress the harness prompt preamble`)
+  }
+  const config = row.config
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`${BIN_NAME}: locked build requires the ${rowId} row config to be a map`)
+  }
+  return config as Record<string, unknown>
+}
+
 /** Resolve a Loader row's platform gate without mutating the host process. */
 function rowDisabledOnPlatform(row: EntryOptions, platform: NodeJS.Platform): boolean {
   if (!isJsExpr(row.disabled)) return row.disabled === true
@@ -997,6 +1027,25 @@ export function prepareDesktopProfile(
       throw new Error(`${BIN_NAME}: locked build requires a permission presets row to remove ${REMOVED_PERMISSION_PRESET_ID}`)
     }
     patches.push({ id: 'permission', config: lockedPermissionConfig(rowConfig(permission)) })
+  }
+  // Locked builds suppress the harness-owned system-prompt preamble: both
+  // gates default to true upstream and mount fixed sections BEFORE the company
+  // persona. `includeHarnessIdentity` registers `harness:identity` (order -100,
+  // the "You are an AI agent powered by DeepSeek Harness." opener) on the
+  // system-prompt row; `surfaceContext` registers `harness:source` plus
+  // `app:web-surface` (orders -99/-98 — this checkout's path and the GUI
+  // URL/HMR orientation) on the web-runtime row. The source section invites
+  // the model to inspect or extend the very checkout it runs from, against the
+  // company persona's terms, and both sections leak install layout the
+  // deployment never chose to disclose. Flipping `surfaceContext` also drops
+  // the `DSH_WEB_URL` shell variable — the intended narrowing, not a loss.
+  if (policy?.locked === true) {
+    const systemPrompt = lockedRowConfig(rows, 'system-prompt')
+    const webRuntime = lockedRowConfig(rows, 'web-runtime')
+    patches.push(
+      { id: 'system-prompt', config: { ...systemPrompt, includeHarnessIdentity: false } },
+      { id: 'web-runtime', config: { ...webRuntime, surfaceContext: false } },
+    )
   }
   const webserver = rows.get('webserver')
   if (webserver === undefined) {

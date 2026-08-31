@@ -870,6 +870,105 @@ describe('desktop profile composition', {
     )).toThrow('locked build requires the permission presets table to be a map')
   })
 
+  it('suppresses the harness prompt preamble gates in a locked build', () => {
+    const home = temporaryHome()
+    const locked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )
+    const rows = composeEntries([locked.patches])
+    const systemPrompt = rows.find(row => row.id === 'system-prompt')
+    const webRuntime = rows.find(row => row.id === 'web-runtime')
+
+    // Each gate flips while every other composed key passes through untouched:
+    // `persona` keeps the Web bundle's text and `openBrowser`/`printUrl`/
+    // `trustedHosts` keep the desktop layer's restated values, because a
+    // Loader patch replaces the whole row config instead of merging keys.
+    expect(systemPrompt?.config).toEqual({
+      persona: 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.',
+      includeHarnessIdentity: false,
+    })
+    expect(webRuntime?.config).toEqual({
+      openBrowser: false,
+      printUrl: false,
+      surfaceContext: false,
+      trustedHosts: [],
+    })
+  })
+
+  it('keeps the composed prompt rows untouched for unlocked and omitted policies', () => {
+    const home = temporaryHome()
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false),
+    )
+    const omitted = prepareDesktopProfile(undefined, home, 'darwin')
+
+    expect(unlocked.patches).toEqual(omitted.patches)
+    const rows = composeEntries([omitted.patches])
+    const systemPrompt = rows.find(row => row.id === 'system-prompt')?.config
+    const webRuntime = rows.find(row => row.id === 'web-runtime')?.config
+    expect(systemPrompt).not.toHaveProperty('includeHarnessIdentity')
+    expect(webRuntime).toMatchObject({ surfaceContext: true })
+  })
+
+  it('fails a locked build closed when the system-prompt row loses its config map', () => {
+    const home = temporaryHome()
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- id: system-prompt',
+      '  config:',
+      '    - not-a-map',
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )).toThrow('locked build requires the system-prompt row config to be a map')
+  })
+
+  it('fails a locked build closed when the web-runtime row loses its config map', () => {
+    const home = temporaryHome()
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- id: web-runtime',
+      '  config: 5',
+      '',
+    ].join('\n'))
+
+    expect(() => prepareDesktopProfile(
+      undefined,
+      home,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true),
+    )).toThrow('locked build requires the web-runtime row config to be a map')
+  })
+
   it('drops a stale full-access default from the locked permission row config', () => {
     // The plugin resolves config.defaultPreset against the narrowed table
     // while constructing, so a legacy full-access default (persisted by a
