@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { PresetExistsError } from '@deepseek-ai/dsh-agent-presets'
+import { evaluate } from '@deepseek-ai/cordis-plugin-loader'
 import { parseDocument } from 'yaml'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -34,14 +35,27 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+/** The exact managed-models gate line whitelisted on the tool-web row. */
+const TOOL_WEB_MANAGED_MODELS_GATE = "  disabled: !!js process.env.DSH_DESKTOP_POLICY_MANAGED_MODELS === '1'"
+
 /**
- * Split one composition file around its single persona text scalar.
+ * Split one composition file around its two whitelisted company diffs: the
+ * persona text scalar and the tool-web managed-models gate line.
  *
- * Everything outside the scalar block — every other row, comment, and blank
- * line — must stay byte-identical to the upstream standard composition, so an
- * upstream sync that silently drifts any other row fails the guard below.
+ * Everything outside the two hunks — every other row, comment, and blank
+ * line — must stay byte-identical to the upstream standard composition, so
+ * an upstream sync that silently drifts any other row fails the guard below.
+ * The gate hunk must sit on the tool-web row exactly between its `name` and
+ * `config` lines; the upstream file carries no such line, so its hunk is
+ * empty.
  */
-function splitAroundPersonaText(filename: string): { head: string[], persona: string[], tail: string[] } {
+function splitAroundCompanyDiffs(filename: string): {
+  head: string[]
+  persona: string[]
+  middle: string[]
+  toolWebGate: string[]
+  tail: string[]
+} {
   const lines = readFileSync(filename, 'utf8').split('\n')
   const textLines = lines
     .map((line, index) => ({ line, index }))
@@ -67,10 +81,21 @@ function splitAroundPersonaText(filename: string): { head: string[], persona: st
     }
     break
   }
+  const toolWebRow = lines.findIndex(line => line === '- id: tool-web')
+  if (toolWebRow === -1 || lines[toolWebRow + 1] !== "  name: '@deepseek-ai/dsh-tool-web'") {
+    throw new Error(`${filename} must carry the tool-web row with its package name`)
+  }
+  if (toolWebRow + 1 < end) {
+    throw new Error(`${filename} carries its tool-web row inside the persona scalar`)
+  }
+  const afterName = toolWebRow + 2
+  const gate = lines[afterName] === TOOL_WEB_MANAGED_MODELS_GATE ? [lines[afterName]!] : []
   return {
     head: lines.slice(0, textLine),
     persona: lines.slice(textLine, end),
-    tail: lines.slice(end),
+    middle: lines.slice(end, afterName),
+    toolWebGate: gate,
+    tail: lines.slice(afterName + gate.length),
   }
 }
 
@@ -94,15 +119,42 @@ function createCompanyRoster(defaultId: string): CompanyAgentPresets {
 }
 
 describe('company agent preset guard', () => {
-  it('keeps the composition byte-identical to upstream standard outside the persona text', () => {
-    const ours = splitAroundPersonaText(companyComposition)
-    const upstream = splitAroundPersonaText(upstreamStandardComposition)
+  it('keeps the composition byte-identical to upstream standard outside the two company hunks', () => {
+    const ours = splitAroundCompanyDiffs(companyComposition)
+    const upstream = splitAroundCompanyDiffs(upstreamStandardComposition)
 
     expect(ours.head).toEqual(upstream.head)
+    expect(ours.middle).toEqual(upstream.middle)
     expect(ours.tail).toEqual(upstream.tail)
+    // Whitelisted hunk 1 — the persona text scalar.
     expect(ours.persona[0]).toMatch(/^\s*text: [>|][-+]?$/u)
     expect(upstream.persona).toHaveLength(2)
     expect(ours.persona.join('\n')).toContain('Deloitte DSH Desktop')
+    // Whitelisted hunk 2 — the tool-web managed-models gate, exactly one
+    // byte-exact line and absent upstream.
+    expect(ours.toolWebGate).toEqual([TOOL_WEB_MANAGED_MODELS_GATE])
+    expect(upstream.toolWebGate).toEqual([])
+  })
+
+  it('gates the tool-web row on the launcher-written managed-models environment name', () => {
+    const document = parseDocument(readFileSync(companyComposition, 'utf8'), { prettyErrors: true })
+    expect(document.errors).toHaveLength(0)
+    const rows = document.toJS() as Array<{ id?: string, disabled?: unknown }>
+    const toolWeb = rows.find(row => row.id === 'tool-web')
+    if (toolWeb === undefined) throw new Error('company composition lost its tool-web row')
+
+    // The row's disabled expression is exactly the gate the launcher writes
+    // (src/model-gateway.ts managedModelsPresetGateEntry), so an upstream
+    // sync cannot silently wash it away or reword it into a dead check.
+    expect(toolWeb.disabled).toBe("process.env.DSH_DESKTOP_POLICY_MANAGED_MODELS === '1'")
+    expect(rows.filter(row => typeof row.disabled === 'string'
+      && row.disabled.includes('DSH_DESKTOP_POLICY_MANAGED_MODELS'))).toHaveLength(1)
+    // Loader semantics: the expression the Host evaluates disables the tool
+    // only for the managed value and stays false for open and unset builds.
+    const expression = toolWeb.disabled as string
+    expect(evaluate({ process: { env: { DSH_DESKTOP_POLICY_MANAGED_MODELS: '1' } } }, expression)).toBe(true)
+    expect(evaluate({ process: { env: { DSH_DESKTOP_POLICY_MANAGED_MODELS: '0' } } }, expression)).toBe(false)
+    expect(evaluate({ process: { env: {} } }, expression)).toBe(false)
   })
 
   it('carries the company persona text over the standard template base', () => {

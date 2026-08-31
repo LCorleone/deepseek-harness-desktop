@@ -30,6 +30,7 @@ import { COMPANY_PRESET_ID } from './company-agent-presets.ts'
 import {
   AGENT_DEFAULT_MODEL_ROW_ID,
   COMPANY_LLM_GATEWAY_PROVIDER_ROUTE,
+  LLM_DEEPSEEK_ROW_ID,
   LLM_PI_AI_ROW_ID,
   UI_SETTINGS_MODELS_ROW_ID,
   companyModelGatewayDefaultModel,
@@ -1131,10 +1132,14 @@ export function prepareDesktopProfile(
   // main.ts) supplies the value into the inherited environment that the
   // credentials seam resolves first. The default model pins to the gateway's
   // first listed model by restating the `agent-default-model` row (again the
-  // composition base, never a settings write), and the web Models settings
+  // composition base, never a settings write), the web Models settings
   // page is disabled wholesale — the same Loader mechanism the compatibility
   // shell uses for `ui-layout` — because managed users pick models from the
-  // conversation surface, not the provider configuration page.
+  // conversation surface, not the provider configuration page, and the
+  // native `llm-deepseek` adapter row goes dark: its built-in model catalog
+  // is composition-borne (it feeds the picker no matter what the user stored
+  // in settings or credentials), so without this the three official models
+  // would keep sitting beside the company gateway route.
   if (managedGateway !== undefined) {
     const llmPiAi = rows.get(LLM_PI_AI_ROW_ID)
     if (llmPiAi?.name !== UPSTREAM_LLM_PI_AI_PACKAGE || rowDisabledOnPlatform(llmPiAi, platform)) {
@@ -1176,6 +1181,18 @@ export function prepareDesktopProfile(
       )
     }
     patches.push({ id: UI_SETTINGS_MODELS_ROW_ID, disabled: true })
+    // The same disable removes the official catalog from the model picker.
+    // Only this row is touched: `llm-pi-ai` carries the company gateway
+    // provider, and `web-search-deepseek` (a separate api.deepseek.com
+    // client whose model-facing tool the preset gates instead) stays
+    // mounted. A missing row would let the disable no-op through the
+    // Loader's apply-time warning, so the posture fails closed here.
+    if (!rows.has(LLM_DEEPSEEK_ROW_ID)) {
+      throw new Error(
+        `${BIN_NAME}: managed build requires a ${LLM_DEEPSEEK_ROW_ID} row to hide the official DeepSeek model catalog`,
+      )
+    }
+    patches.push({ id: LLM_DEEPSEEK_ROW_ID, disabled: true })
   }
   const webserver = rows.get('webserver')
   if (webserver === undefined) {

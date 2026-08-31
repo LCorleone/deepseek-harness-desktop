@@ -969,6 +969,13 @@ describe('desktop profile composition', {
     // The web Models settings page is disabled, the same Loader mechanism
     // the compatibility shell uses for ui-layout.
     expect(rows.find(row => row.id === 'ui-settings-models')?.disabled).toBe(true)
+    // The native DeepSeek adapter goes dark too: its built-in catalog is
+    // composition-borne, so disabling the row is what removes the three
+    // official models from the picker. The rows managed builds must NOT
+    // touch stay untouched.
+    expect(rows.find(row => row.id === 'llm-deepseek')?.disabled).toBe(true)
+    expect(rows.find(row => row.id === 'llm-pi-ai')?.disabled).toBeUndefined()
+    expect(rows.find(row => row.id === 'web-search-deepseek')?.disabled).toBeUndefined()
     // No gateway facts ever reach the user's settings document.
     expect(existsSync(join(home, 'settings.yaml'))).toBe(false)
     expect(existsSync(join(home, '.credentials.yaml'))).toBe(false)
@@ -1009,7 +1016,62 @@ describe('desktop profile composition', {
       })
       expect(rows.find(row => row.id === 'ui-settings-models')?.disabled).toBeUndefined()
       expect(prepared.patches.some(patch => patch.id === 'ui-settings-models')).toBe(false)
+      // The native DeepSeek adapter keeps its built-in catalog live.
+      expect(rows.find(row => row.id === 'llm-deepseek')?.disabled).toBeUndefined()
+      expect(prepared.patches.some(patch => patch.id === 'llm-deepseek')).toBe(false)
     }
+  })
+
+  it('hides the official DeepSeek model catalog only in a managed build', () => {
+    const managed = prepareDesktopProfile(
+      undefined,
+      temporaryHome(),
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, true),
+    )
+    // locked + managedModels: the adapter row is disabled through the same
+    // Loader mechanism as ui-layout/ui-settings-models.
+    expect(composeEntries([managed.patches]).find(row => row.id === 'llm-deepseek')?.disabled)
+      .toBe(true)
+
+    // locked + open: no patch addresses the row at all — the adapter and its
+    // catalog stay exactly as the bundles ship them.
+    const open = prepareDesktopProfile(
+      undefined,
+      temporaryHome(),
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(true, false),
+    )
+    expect(open.patches.some(patch => patch.id === 'llm-deepseek')).toBe(false)
+
+    // unlocked: zero changes — the patch list is byte-equivalent to an
+    // omitted policy over the same home, the strongest form of native
+    // restoration.
+    const unlockedHome = temporaryHome()
+    const unlocked = prepareDesktopProfile(
+      undefined,
+      unlockedHome,
+      'darwin',
+      'desktop',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      injectedDesktopPolicy(false, true),
+    )
+    const omitted = prepareDesktopProfile(undefined, unlockedHome, 'darwin')
+    expect(unlocked.patches).toEqual(omitted.patches)
+    expect(unlocked.patches.some(patch => patch.id === 'llm-deepseek')).toBe(false)
   })
 
   it('drops a stored default model selection in a managed build without touching other sections', () => {

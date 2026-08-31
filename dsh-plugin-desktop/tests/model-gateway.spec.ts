@@ -9,7 +9,7 @@ import {
   modelGatewayPayloadFromEnvironment,
   renderModelGatewayBlobModule,
 } from '../scripts/make-model-gateway-blob.mjs'
-import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
+import { parseDesktopPolicy, DESKTOP_POLICY_ENVIRONMENT, type DesktopPolicy } from '../src/desktop-policy.ts'
 import {
   COMPANY_LLM_GATEWAY_API_KEY_ENV,
   COMPANY_LLM_GATEWAY_PROVIDER_ROUTE,
@@ -17,6 +17,7 @@ import {
   companyModelGatewayProviderProfile,
   decodeModelGatewayBlob,
   managedModelGateway,
+  managedModelsPresetGateEntry,
   readStoredCredentialNames,
   resolveManagedModelGatewayEnvironment,
   storedCredentialsPath,
@@ -208,6 +209,25 @@ describe('managed gateway provider profile', () => {
       apiKey: gateway.apiKey,
       models: ['FIRST-MODEL', 'SECOND-MODEL'],
     })).toEqual({ provider: COMPANY_LLM_GATEWAY_PROVIDER_ROUTE, model: 'FIRST-MODEL' })
+  })
+})
+
+describe('managed-models preset gate environment entry', () => {
+  it("reuses the CLI policy hand-off's managedModels environment name", () => {
+    // One name carries the same fact to the preset expression and to the CLI
+    // hand-off, so the two can never drift apart.
+    expect(managedModelsPresetGateEntry(policy(true, true)).name)
+      .toBe(DESKTOP_POLICY_ENVIRONMENT.managedModels)
+  })
+
+  it("writes '1' only for the effective managed posture and '0' otherwise", () => {
+    // main.ts applies this entry unconditionally before the Host composition
+    // loads, so an open or unlocked launch both evaluates the preset gate to
+    // false and scrubs any stray inherited '1'.
+    expect(managedModelsPresetGateEntry(policy(true, true)).value).toBe('1')
+    expect(managedModelsPresetGateEntry(policy(true, false)).value).toBe('0')
+    expect(managedModelsPresetGateEntry(policy(false, true)).value).toBe('0')
+    expect(managedModelsPresetGateEntry(policy(false, false)).value).toBe('0')
   })
 })
 

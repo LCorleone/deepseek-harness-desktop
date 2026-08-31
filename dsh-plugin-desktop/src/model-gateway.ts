@@ -19,11 +19,13 @@ import {
   parseCredentialsDocument,
   resolveSpec,
 } from '@deepseek-ai/dsh-credentials-local'
-import type { DesktopPolicy } from './desktop-policy.ts'
+import { DESKTOP_POLICY_ENVIRONMENT, type DesktopPolicy } from './desktop-policy.ts'
 import { MODEL_GATEWAY_BLOB } from './model-gateway-blob.ts'
 
 /** Loader row id of the pi-ai multi-provider adapter the company route joins. */
 export const LLM_PI_AI_ROW_ID = 'llm-pi-ai'
+/** Loader row id of the native DeepSeek adapter whose built-in catalog managed builds hide. */
+export const LLM_DEEPSEEK_ROW_ID = 'llm-deepseek'
 /** Loader row id of the agent default-model selection restated by managed builds. */
 export const AGENT_DEFAULT_MODEL_ROW_ID = 'agent-default-model'
 /** Loader row id of the web Models settings page hidden by managed builds. */
@@ -145,6 +147,34 @@ export function managedModelGateway(
 ): CompanyModelGateway | undefined {
   if (policy?.locked !== true || policy.managedModels !== true) return undefined
   return decodeModelGatewayBlob(blob)
+}
+
+/**
+ * The process-environment entry the company agent preset's managed-models
+ * gate reads. The Deloitte preset's `tool-web` row carries a `!!js` disabled
+ * expression over this exact name (web search rides api.deepseek.com with
+ * `DEEPSEEK_API_KEY`, a credential managed users do not hold), and Loader
+ * expressions evaluate in the Host process — so the launcher must write the
+ * value into `process.env` before the Host composition loads the preset.
+ *
+ * The name deliberately reuses the CLI policy hand-off's `managedModels` key
+ * ({@link DESKTOP_POLICY_ENVIRONMENT}) with its established `1`/`0` encoding,
+ * so one environment name carries the same fact everywhere it appears. The
+ * value pins the EFFECTIVE managed posture — `locked` && `managedModels` —
+ * and every other build resolves to `'0'`: the launcher writes the entry
+ * unconditionally, so an open, unlocked, or development build both evaluates
+ * the gate to false and scrubs any stray inherited `'1'`, restoring the
+ * native enabled tool exactly as upstream ships it.
+ * @param policy - embedded desktop policy of this launch.
+ * @returns the environment name and value to write before Host composition.
+ */
+export function managedModelsPresetGateEntry(
+  policy: DesktopPolicy,
+): Readonly<{ readonly name: string, readonly value: string }> {
+  return {
+    name: DESKTOP_POLICY_ENVIRONMENT.managedModels,
+    value: policy.locked && policy.managedModels ? '1' : '0',
+  }
 }
 
 /** The `llm-pi-ai` provider profile a managed build registers in memory. */

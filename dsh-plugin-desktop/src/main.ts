@@ -75,6 +75,7 @@ import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-po
 import {
   COMPANY_LLM_GATEWAY_API_KEY_ENV,
   managedModelGateway,
+  managedModelsPresetGateEntry,
   readStoredCredentialNames,
   resolveManagedModelGatewayEnvironment,
   storedCredentialsPath,
@@ -515,6 +516,21 @@ async function start(): Promise<void> {
       exit: finalExit,
     }
     installFailLoud(BIN_NAME, failLoudProcess, async () => { await generation.release() })
+
+    // Managed-models gate for the company agent preset (locked +
+    // managedModels): the Deloitte preset's `tool-web` row carries a `!!js`
+    // disabled expression over this environment name, and Loader expressions
+    // evaluate in THIS process — here, at the same layer as the gateway token
+    // injection below and BEFORE `loadLayeredEnv` takes the launch-environment
+    // snapshot and the Host composition loads the preset. The entry is written
+    // for every build; the value is '1' only for the effective managed
+    // posture, so open, unlocked, and development launches both evaluate the
+    // gate to false and scrub any stray inherited '1' — the tool stays enabled
+    // exactly as upstream ships it. Same name and encoding as the CLI policy
+    // hand-off (cliPolicyEnvironment below), which the terminal shims restate
+    // per child anyway.
+    const managedModelsGate = managedModelsPresetGateEntry(policy)
+    process.env[managedModelsGate.name] = managedModelsGate.value
 
     // Managed company gateway token injection (locked + managedModels): the
     // gateway api key enters the process environment here — BEFORE
