@@ -695,7 +695,7 @@ describe('pnpm policy environment hand-off', () => {
     const selectedBootstrap: DesktopPnpmBootstrap = {
       ...bootstrap(root),
       // The launcher encodes the in-archive policy through this overlay; the
-      // packaged CLI child fails closed without all four entries, so a future
+      // packaged CLI child fails closed without all five entries, so a future
       // refactor that drops this spread must fail right here.
       cliPolicyEnvironment: desktopPolicyEnvironmentEntries(lockedContentModePolicy),
     }
@@ -717,6 +717,7 @@ describe('pnpm policy environment hand-off', () => {
 
       const spawnedEnv = harness.spawn.mock.calls[0]?.[0].env as Record<string, string>
       expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.locked]).toBe('1')
+      expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.managedModels]).toBe('1')
       expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]).toBe('-')
       expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.manifestUrl]).toBe('company-market/catalog-manifest.json')
       expect(spawnedEnv[DESKTOP_POLICY_ENVIRONMENT.trustRoots]).toBe(`k1:${'a'.repeat(64)}`)

@@ -401,6 +401,7 @@ describe('desktop Host dsh runtime', () => {
 
     const shim = readFileSync(installation.dshShimPath, 'utf8')
     expect(shim).toContain('set "DSH_DESKTOP_POLICY_LOCKED=1"')
+    expect(shim).toContain('set "DSH_DESKTOP_POLICY_MANAGED_MODELS=1"')
     // The sentinel survives the batch `set` line (an empty value would delete
     // the variable and leave the CLI child without its policy hand-off).
     expect(shim).toContain('set "DSH_DESKTOP_POLICY_CATALOG_ORIGIN=-"')

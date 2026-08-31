@@ -14,10 +14,18 @@ const NAMED_SECRET = new RegExp(
   String.raw`\b(${SECRET_FIELD_NAME})\b(\s*[:=]\s*)(?!(?:Bearer|Basic)\b)[^\s,;&]+`,
   'giu',
 )
+// The company gateway key hand-off (`COMPANY_LLM_GATEWAY_API_KEY_ENV` in
+// model-gateway.ts). The generic NAMED_SECRET rule cannot see it: `\bkey\b`
+// finds no word boundary inside the underscored identifier, so the value
+// needs a dedicated rule of its own.
+const NAMED_COMPANY_GATEWAY_KEY = /DSH_COMPANY_LLM_KEY(\s*[:=]\s*)\S+/giu
 
 /** Secret-shaped patterns applied in order to a rendered log line. */
 const SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9]{12,}/gu, // OpenAI/DeepSeek-style sk- keys
+  // UUID-shaped gateway tokens: the hyphens split the hex into runs shorter
+  // than the 32+ character rule below, so a bare company key needs this shape.
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu,
   /\b[a-zA-Z0-9]{32,}\b/gu, // long hex/base64 tokens
   /Bearer\s+[A-Za-z0-9._-]+/giu, // Authorization bearer tokens
   /Basic\s+[A-Za-z0-9+/]+={0,2}/giu, // Authorization basic credentials
@@ -51,6 +59,7 @@ export function maskSecrets(text: string): string {
       return `Authorization: ${scheme === undefined ? '' : `${scheme} `}${MASK}`
     })
     .replace(NAMED_SECRET, (_match, name: string, separator: string) => `${name}${separator}${MASK}`)
+    .replace(NAMED_COMPANY_GATEWAY_KEY, (_match, separator: string) => `DSH_COMPANY_LLM_KEY${separator}${MASK}`)
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, (match) => {
       const authorizationScheme = /^(Bearer|Basic)/iu.exec(match)?.[1]
