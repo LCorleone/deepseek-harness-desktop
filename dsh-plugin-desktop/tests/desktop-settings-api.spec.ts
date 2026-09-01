@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import type { DesktopMarketSnapshot } from '../src/desktop-market.ts'
 import DesktopSettingsController, {
+  projectSsoSession,
   type DesktopSettingsControllerBootstrap,
 } from '../src/desktop-settings-controller.ts'
 import {
@@ -173,6 +174,29 @@ describe('desktop settings controller', () => {
     const controller = new DesktopSettingsController(bootstrap())
 
     expect(controller.read()).not.toHaveProperty('sso')
+  })
+
+  it('projects a valid SSO email through the renderer-safe view', () => {
+    expect(projectSsoSession('zhangsan@deloitte.com.cn', 'browser')).toEqual({
+      authenticated: true,
+      email: 'zhangsan@deloitte.com.cn',
+      source: 'browser',
+    })
+  })
+
+  it('drops a malformed SSO email instead of crashing the Settings read', () => {
+    // The silent path only requires a loose `looksLikeEmail` check, so it can
+    // surface a `a@x.y`-style address that the renderer's strict parser would
+    // reject. Projecting it here (as undefined) keeps the Settings view from
+    // loading a card that the strict client parser would reject wholesale.
+    expect(projectSsoSession('a@x.y', 'silent')).toBeUndefined()
+    expect(projectSsoSession('not-an-email', 'silent')).toBeUndefined()
+    expect(projectSsoSession('', 'silent')).toBeUndefined()
+  })
+
+  it('drops an SSO email that exceeds the shared byte limit', () => {
+    const oversized = `${'a'.repeat(400)}@deloitte.com.cn`
+    expect(projectSsoSession(oversized, 'silent')).toBeUndefined()
   })
 
   it('creates without selecting or restarting and returns a fresh safe state', () => {

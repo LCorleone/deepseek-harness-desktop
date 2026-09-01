@@ -98,7 +98,7 @@ import {
 import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
 import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
-import DesktopSettingsController from './desktop-settings-controller.ts'
+import DesktopSettingsController, { projectSsoSession } from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
 import {
   DesktopStartupRecoveryWindow,
@@ -1262,7 +1262,7 @@ async function start(): Promise<void> {
           readSso: () => {
             const session = getSsoSession()
             if (session === undefined) return undefined
-            return { authenticated: true, email: session.email, source: session.source }
+            return projectSsoSession(session.email, session.source)
           },
           prepareProfileRollback,
         }))

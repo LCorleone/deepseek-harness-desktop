@@ -17,6 +17,7 @@ import type {
   DesktopSettingsMarketView,
   DesktopSettingsProfileView,
   DesktopSettingsResponse,
+  DesktopSettingsSsoSource,
   DesktopSettingsSsoView,
   DesktopTerminalOpenResponse,
 } from './desktop-settings-contract.ts'
@@ -77,6 +78,40 @@ function projectMarket(
     effective,
     legacyDefaulted: value.legacyDefaulted,
   })
+}
+
+/**
+ * Strict SSO email pattern shared with the renderer parser. This module runs
+ * in the launcher main process, while the parser lives in the sandboxed
+ * renderer bundle (`client/desktop-settings-api.ts`), so they cannot share one
+ * import; keep this pattern and the `MAX_SSO_EMAIL_BYTES` limit in sync with
+ * `SSO_EMAIL_PATTERN` there.
+ */
+const SSO_EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/u
+const MAX_SSO_EMAIL_BYTES = 320
+
+/** UTF-8 byte length without the Node `Buffer` global (mirrors the renderer parser). */
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+/**
+ * Project a live SSO session into a renderer-safe view, or undefined when the
+ * authenticated email fails the same strict validation the renderer parser
+ * applies. A malformed address must never crash the whole Settings read: it
+ * degrades to the no-session projection (no user card) instead of a load
+ * failure, because the renderer `parseSso` runs synchronously inside the view.
+ */
+export function projectSsoSession(
+  email: string,
+  source: DesktopSettingsSsoSource,
+): DesktopSettingsSsoView | undefined {
+  if (email.length === 0
+    || !SSO_EMAIL_PATTERN.test(email)
+    || utf8ByteLength(email) > MAX_SSO_EMAIL_BYTES) {
+    return undefined
+  }
+  return Object.freeze({ authenticated: true, email, source })
 }
 
 /**

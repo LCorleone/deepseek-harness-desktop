@@ -81,6 +81,9 @@ function isSsoSource(value: unknown): value is DesktopSettingsSsoSource {
   return value === 'silent' || value === 'browser'
 }
 
+// Keep the pattern and byte limit in sync with `projectSsoSession` in
+// desktop-settings-controller.ts (main process): a session email that fails
+// this strict check must not reach the renderer, or the Settings view load fails.
 const SSO_EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/u
 const MAX_SSO_EMAIL_BYTES = 320
 

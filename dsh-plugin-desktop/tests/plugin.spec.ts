@@ -284,7 +284,7 @@ describe('desktop Host plugin', () => {
       .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32&dsh-desktop-locked=1')
     expect(plain.shell()?.windowTitle).toBe('Deloitte DSH Desktop')
     expect(desktopRendererUrl(43120, 'compatibility', 'win32', true))
-      .toBe(desktopRendererUrl(43120, 'compatibility', 'win32', true))
+      .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32&dsh-desktop-locked=1')
   })
 
   it('forwards same-origin renderer boot reports through the Host route', async () => {
