@@ -531,6 +531,10 @@ async function start(): Promise<void> {
         const gate = new DesktopSsoGateWindow({
           locale: desktopLocaleFromLanguageTag(app.getLocale()),
           silentFailureDetail: maskSecrets(silent.reason),
+          // Gate-window observability (issue #36): renderer console output,
+          // renderer loss, failed loads, and hangs land in the log through
+          // the same masked sink as every other sso line.
+          logError: message => { electronLogger.error(maskSecrets(message)) },
           startBrowserLogin: async () => {
             const result = await browserSsoLogin({
               openExternal: async url => { await shell.openExternal(url) },

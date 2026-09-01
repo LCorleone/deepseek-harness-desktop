@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Component, useEffect, type ReactNode } from 'react'
 import { Globe, RefreshCw } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { buttonVariants } from '../components/ui/button.tsx'
@@ -22,6 +22,8 @@ interface Copy {
   readonly errorTitle: string
   readonly gateBody: string
   readonly closeNotice: string
+  /** Boundary fallback body — the renderer itself failed, not the handshake. */
+  readonly renderFailure: string
 }
 
 const COPY: Record<Locale, Copy> = {
@@ -37,6 +39,7 @@ const COPY: Record<Locale, Copy> = {
     errorTitle: 'Sign-in attempt',
     gateBody: 'Deloitte DSH Desktop stays closed until single sign-on succeeds. Closing this window exits the application.',
     closeNotice: 'You can close this window to exit without signing in.',
+    renderFailure: 'Sign-in window failed to render. Quit and start again.',
   },
   zh: {
     title: 'Deloitte DSH Desktop 登录',
@@ -50,6 +53,7 @@ const COPY: Record<Locale, Copy> = {
     errorTitle: '登录尝试',
     gateBody: '完成单点登录前，Deloitte DSH Desktop 不会启动。关闭此窗口将退出应用。',
     closeNotice: '可以关闭此窗口并退出，不登录也不会启动应用。',
+    renderFailure: '登录窗口渲染失败，请退出后重新启动。',
   },
 }
 
@@ -59,6 +63,9 @@ interface SsoGateState {
   readonly errorDetail?: string
 }
 
+const LOCALES: readonly Locale[] = ['en', 'zh']
+const PHASES: readonly Phase[] = ['ready', 'waiting', 'authenticated']
+
 function decodeState(): SsoGateState | undefined {
   const encoded = new URLSearchParams(window.location.search).get('state')
   if (encoded === null || encoded.length > 512_000) return undefined
@@ -67,13 +74,66 @@ function decodeState(): SsoGateState | undefined {
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
     const bytes = Uint8Array.from(atob(padded), character => character.charCodeAt(0))
     const value: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    if (value !== null && typeof value === 'object') return value as SsoGateState
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const record = value as Record<string, unknown>
+    // Strict shape check: an unexpected locale or phase would index COPY or
+    // the status lookup with undefined and crash the renderer to a blank
+    // window (issue #36 — `state=e30` reproduced it locally). A malformed
+    // model must render the fallback card instead.
+    if (!LOCALES.includes(record.locale as Locale)) return undefined
+    if (!PHASES.includes(record.phase as Phase)) return undefined
+    if (record.errorDetail !== undefined && typeof record.errorDetail !== 'string') return undefined
+    return {
+      locale: record.locale as Locale,
+      phase: record.phase as Phase,
+      ...(record.errorDetail === undefined ? {} : { errorDetail: record.errorDetail }),
+    }
   } catch { /* Render the bounded fallback below. */ }
   return undefined
 }
 
 function signInHref(): string {
   return `${SCHEME}//sign-in`
+}
+
+/** Boundary fallback card: the renderer failed, but the window stays readable. */
+export function SsoGateRenderFailure({ locale }: { readonly locale: Locale }): JSX.Element {
+  return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTitle>{COPY[locale].title}</AlertTitle><AlertDescription>{COPY[locale].renderFailure}</AlertDescription></Alert></main>
+}
+
+/** Best-effort locale for the boundary fallback; any malformed state is English. */
+function boundaryLocale(): Locale {
+  try {
+    return decodeState()?.locale ?? 'en'
+  } catch {
+    return 'en'
+  }
+}
+
+interface SsoGateErrorBoundaryState {
+  readonly failed: boolean
+}
+
+/**
+ * Minimal render boundary for the gate window (issue #36): a throwing child
+ * must never leave a blank/black sign-in window with no visible diagnostic.
+ * The other native-ui windows have no boundary yet, so this is the first —
+ * deliberately a plain class component, the only React construct that can
+ * intercept a child render error.
+ */
+export class SsoGateErrorBoundary
+  extends Component<{ readonly children?: ReactNode }, SsoGateErrorBoundaryState> {
+  override state: SsoGateErrorBoundaryState = { failed: false }
+
+  static getDerivedStateFromError(): SsoGateErrorBoundaryState {
+    return { failed: true }
+  }
+
+  override render(): ReactNode {
+    return this.state.failed
+      ? <SsoGateRenderFailure locale={boundaryLocale()} />
+      : this.props.children
+  }
 }
 
 export function SsoGateApp(): JSX.Element {

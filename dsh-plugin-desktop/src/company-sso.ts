@@ -28,9 +28,9 @@
  * disk, logs, or diagnostics exports (the self-check section carries only
  * email and source). The embedded `app_id`/`app_key` (issued by IT ops for
  * DSH Desktop, app id 1007) and the portal base URL can be overridden
- * through `DSH_SSO_APP_ID` / `DSH_SSO_APP_KEY` / `DSH_SSO_BASE_URL` in
- * unpackaged runs only — a packaged build always ships the pinned
- * credentials and portal.
+ * through `DSH_SSO_APP_ID` / `DSH_SSO_APP_KEY` / `DSH_SSO_APP_NAME` /
+ * `DSH_SSO_BASE_URL` in unpackaged runs only — a packaged build always
+ * ships the pinned credentials and portal.
  *
  * This module is Electron-free on purpose — every Electron-owned boundary
  * (`net.fetch` for the system-CA TLS stack, `shell.openExternal` for the
@@ -75,8 +75,16 @@ export const SSO_VERIFY_TIMEOUT_MS = 45_000
  */
 const BUILTIN_APP_ID = '1007'
 const BUILTIN_APP_KEY = '[REDACTED-SO-APP-KEY-2026-09-02]'
-/** Application name sent inside SignEntity (display-only; not signed). */
-const APP_NAME = 'DSH Desktop'
+/**
+ * Application name sent inside SignEntity. The portal matches its client
+ * configuration by the `(appId, appName)` pair — observed live: appId 1005
+ * with `coWork.Nova` passes the portal's configuration check, while appId
+ * 1007 under any unregistered name answers configuration-does-not-exist.
+ * The registered name for our app id is `DSH` (ops, confirmed 2026-09-01;
+ * verified live: 1007 + `DSH` passes the check and returns a token, code
+ * 200). Not part of the signature, but the wrong name fails the lookup.
+ */
+const BUILTIN_APP_NAME = 'DSH'
 
 /** OS identity the silent path resolves. */
 export interface SsoOsUser {
@@ -175,6 +183,24 @@ export function ssoAppKey(
 }
 
 /**
+ * Application name inside SignEntity. The portal matches configuration by
+ * the `(appId, appName)` pair, so the name must stay the one registered for
+ * the app id — see {@link BUILTIN_APP_NAME} for the live evidence.
+ * `DSH_SSO_APP_NAME` is honored in unpackaged runs only — a packaged build
+ * must always present the registered name.
+ */
+export function ssoAppName(
+  environment: NodeJS.ProcessEnv = process.env,
+  modulePath: string = new URL(import.meta.url).pathname,
+): string {
+  if (!isPackagedApplicationPath(modulePath)) {
+    const override = environmentValue(environment, 'DSH_SSO_APP_NAME')
+    if (override !== undefined) return override
+  }
+  return BUILTIN_APP_NAME
+}
+
+/**
  * Portal base URL. The `DSH_SSO_BASE_URL` override is honored only in an
  * unpackaged run: a packaged build must always talk to the pinned portal.
  */
@@ -243,6 +269,8 @@ export interface SsoSignEntityInputs {
   readonly jsonData: string
   readonly appId: string
   readonly appKey: string
+  /** Application name; defaults to the registered {@link ssoAppName}. */
+  readonly appName?: string
   /** Clock injection; defaults to now (local time). */
   readonly now?: () => Date
   /** Id generator injection; defaults to `crypto.randomUUID`. */
@@ -270,7 +298,7 @@ export function buildSsoSignEntity(inputs: SsoSignEntityInputs): SsoSignEntity {
   return {
     id,
     appId: inputs.appId,
-    appName: APP_NAME,
+    appName: inputs.appName ?? ssoAppName(),
     jsonData: inputs.jsonData,
     processTime,
     signature,
@@ -311,7 +339,9 @@ export interface SsoFetchTokenOptions {
  * POST one SignEntity to `/web/dai/token`. Success is exactly
  * `code == "200"` (string or number member) with a non-empty `token`;
  * everything else — transport failure, non-2xx, other code — is an error
- * carrying the portal's message when present.
+ * carrying the portal's message when present. A portal answer that refused
+ * the SignEntity rejects as an {@link SsoPortalTokenError} so the caller can
+ * log the message and the `code` together; the token never enters an error.
  */
 export async function fetchSsoToken(jsonData: string, options: SsoFetchTokenOptions): Promise<string> {
   const entity = buildSsoSignEntity({
@@ -357,7 +387,30 @@ export async function fetchSsoToken(jsonData: string, options: SsoFetchTokenOpti
   const message = typeof record.message === 'string' && record.message.length > 0
     ? record.message
     : 'Unable to obtain access token'
-  throw new Error(message)
+  throw new SsoPortalTokenError(message, code)
+}
+
+/**
+ * {@link fetchSsoToken} rejection for a portal answer that refused the
+ * SignEntity: the portal's `message` plus its `code` member (`''` when the
+ * answer carried none). The token is never part of either field.
+ */
+export class SsoPortalTokenError extends Error {
+  readonly portalCode: string
+
+  constructor(message: string, portalCode: string) {
+    super(message)
+    this.name = 'SsoPortalTokenError'
+    this.portalCode = portalCode
+  }
+}
+
+/** One-line silent-path failure reason: the portal message plus its code when known. */
+export function describeSsoTokenFailure(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return cause instanceof SsoPortalTokenError && cause.portalCode.length > 0
+    ? `${message} (code ${cause.portalCode})`
+    : message
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1093,11 @@ export async function silentSsoLogin(options: SilentSsoLoginOptions): Promise<Ss
         },
       }
     } catch (cause) {
-      lastReason = cause instanceof Error ? cause.message : String(cause)
+      lastReason = describeSsoTokenFailure(cause)
+      // Each candidate's refusal lands in the warn sink (message + portal
+      // code on one line; never the token) — the final reason alone would
+      // hide the first candidate's code when both are attempted.
+      options.onWarn?.(`${BIN_NAME}: sso silent token request failed: ${lastReason}`)
     }
   }
   return { ok: false, reason: lastReason }

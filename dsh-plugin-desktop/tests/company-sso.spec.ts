@@ -23,7 +23,10 @@ import {
   probeSsoOsUser,
   setSsoSession,
   silentSsoLogin,
+  SsoPortalTokenError,
+  describeSsoTokenFailure,
   ssoAppId,
+  ssoAppName,
   ssoAppKey,
   ssoBaseUrl,
   ssoCallbackFailureHtml,
@@ -77,6 +80,9 @@ describe('sso credentials and endpoints', () => {
   it('pins the issued app credentials by default', () => {
     expect(ssoAppId({})).toBe('1007')
     expect(ssoAppKey({})).toBe(APP_KEY)
+    // Registered portal name for app id 1007 (ops, 2026-09-01) — the portal
+    // matches configuration by the (appId, appName) pair.
+    expect(ssoAppName({})).toBe('DSH')
     expect(ssoLoginUrl()).toBe('https://sdp.deloitte.com.cn/web/login')
     expect(ssoTokenUrl()).toBe('https://sdp.deloitte.com.cn/web/dai/token')
     expect(ssoVerifyAuthCodeUrl()).toBe('https://sdp.deloitte.com.cn/web/work/agent/verify_auth_code')
@@ -85,8 +91,10 @@ describe('sso credentials and endpoints', () => {
   it('honors environment overrides in unpackaged runs only', () => {
     expect(ssoAppId({ DSH_SSO_APP_ID: ' 9999 ' })).toBe('9999')
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'test-key' })).toBe('test-key')
+    expect(ssoAppName({ DSH_SSO_APP_NAME: ' coWork.Nova ' })).toBe('coWork.Nova')
     // Empty spellings fall back to the built-ins.
     expect(ssoAppId({ DSH_SSO_APP_ID: ' ' })).toBe('1007')
+    expect(ssoAppName({ DSH_SSO_APP_NAME: '' })).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://sso-test.example/' }))
       .toBe('https://sso-test.example')
     expect(ssoTokenUrl({ DSH_SSO_BASE_URL: 'https://sso-test.example' }))
@@ -99,9 +107,11 @@ describe('sso credentials and endpoints', () => {
     const packagedUnpacked = '/opt/Deloitte DSH Desktop/resources/app.asar.unpacked/lib/company-sso.js'
     expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packaged)).toBe('1007')
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packaged)).toBe(APP_KEY)
+    expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packaged)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packaged)).toBe('https://sdp.deloitte.com.cn')
     expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packagedUnpacked)).toBe('1007')
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packagedUnpacked)).toBe(APP_KEY)
+    expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packagedUnpacked)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packagedUnpacked))
       .toBe('https://sdp.deloitte.com.cn')
   })
@@ -148,7 +158,7 @@ describe('SignEntity protocol (silent path)', () => {
     })
     expect(entity.id).toBe('0123456789abcdef0123456789abcdef')
     expect(entity.processTime).toBe('2026-08-31 12:00:00')
-    expect(entity.appName).toBe('DSH Desktop')
+    expect(entity.appName).toBe('DSH')
     // Golden vector: sha256 over encodeStr(id + processTime + appKey + jsonData),
     // computed independently of the implementation under test. The signature
     // covers the concatenated values, so it is unaffected by the JSON key
@@ -158,7 +168,7 @@ describe('SignEntity protocol (silent path)', () => {
     // id-first insertion order, pinned as a literal so a spelling or key-order
     // regression cannot slip back in through a partial matcher.
     expect(JSON.stringify(entity)).toBe(
-      '{"id":"0123456789abcdef0123456789abcdef","appId":"1007","appName":"DSH Desktop",'
+      '{"id":"0123456789abcdef0123456789abcdef","appId":"1007","appName":"DSH",'
       + '"jsonData":"{\\"userName\\":\\"张三\\",\\"email\\":\\"zhangsan@deloitte.com.cn\\"}",'
       + '"processTime":"2026-08-31 12:00:00","signature":"LE+k93vW/q1D4EzZ4HuI8n4Y49UHq8EshfwvNPCbTsI="}',
     )
@@ -203,12 +213,24 @@ describe('SignEntity protocol (silent path)', () => {
     expect(SSO_TOKEN_TIMEOUT_MS).toBe(45_000)
   })
 
-  it('rejects every non-success answer with the portal message', async () => {
-    await expect(fetchSsoToken('{}', {
+  it('rejects every non-success answer with the portal message and its code', async () => {
+    const refusal = fetchSsoToken('{}', {
       request: boundary('{"code":"401","message":"Invalid username!"}'),
       appId: '1007',
       appKey: APP_KEY,
-    })).rejects.toThrow('Invalid username!')
+    })
+    await expect(refusal).rejects.toThrow('Invalid username!')
+    // The structured reason keeps the portal code beside the message so the
+    // silent path can log both on one line (never the token).
+    await expect(refusal).rejects.toBeInstanceOf(SsoPortalTokenError)
+    const error = await refusal.catch((cause: unknown) => cause) as SsoPortalTokenError
+    expect(error.portalCode).toBe('401')
+    expect(describeSsoTokenFailure(error)).toBe('Invalid username! (code 401)')
+    // A code-less answer degrades to the message alone.
+    expect(describeSsoTokenFailure(new Error('token network error: ECONNRESET')))
+      .toBe('token network error: ECONNRESET')
+    expect(describeSsoTokenFailure(new SsoPortalTokenError('Unable to obtain access token', '')))
+      .toBe('Unable to obtain access token')
     // Success code without a token is still a failure.
     await expect(fetchSsoLogin('{}', '{"code":"200","token":"  "}')).rejects
       .toThrow('Unable to obtain access token')
@@ -902,14 +924,22 @@ describe('silent login orchestration', () => {
 
   it('tries the canonical alias as the second candidate only when it differs', async () => {
     const request = boundary('{"code":"401","message":"Invalid username!"}')
+    const warnings: string[] = []
     const result = await silentSsoLogin({
       request,
       appId: '1007',
       appKey: APP_KEY,
       probe: async () => ({ ...os, email: 'jane.doe@deloittecn.com.cn' }),
+      onWarn: message => { warnings.push(message) },
     })
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.reason).toBe('Invalid username!')
+    // Message and portal code share one line — in the returned reason and in
+    // each candidate's warn line (the sink masks; the token never appears).
+    if (!result.ok) expect(result.reason).toBe('Invalid username! (code 401)')
+    expect(warnings).toEqual([
+      'dsh-plugin-desktop: sso silent token request failed: Invalid username! (code 401)',
+      'dsh-plugin-desktop: sso silent token request failed: Invalid username! (code 401)',
+    ])
     expect(request.calls).toHaveLength(2)
     expect(JSON.parse(request.calls[0]!.body).jsonData)
       .toBe('{"userName":"Jane Doe","email":"jane.doe@deloittecn.com.cn"}')

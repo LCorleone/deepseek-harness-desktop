@@ -19,6 +19,7 @@
 import { BrowserWindow, app } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
+import { formatDesktopExitCode } from './desktop-logger.ts'
 import type { DesktopLocale } from './runtime.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
 
@@ -42,6 +43,83 @@ export interface SsoGateViewModel {
 
 /** Outcome of {@link DesktopSsoGateWindow.run}: authenticated, or the user closed the gate. */
 export type SsoGateResult = 'authenticated' | 'quit'
+
+/** webContents event surface the gate observes (structural subset of `Electron.WebContents`). */
+export interface SsoGateWebContentsObserver {
+  on(event: 'console-message', listener: (details: { readonly level: string, readonly message: string }) => void): unknown
+  on(event: 'render-process-gone', listener: (
+    event: unknown,
+    details: { readonly reason: string, readonly exitCode: number },
+  ) => void): unknown
+  on(event: 'did-fail-load', listener: (
+    event: unknown,
+    errorCode: number,
+    errorDescription: string,
+    validatedUrl: string,
+    isMainFrame: boolean,
+  ) => void): unknown
+  on(event: 'unresponsive', listener: () => void): unknown
+}
+
+/** One renderer-console line; a failed React render leaves its stack here. */
+export function ssoGateConsoleLine(level: string, message: string): string {
+  return `dsh-plugin-desktop: sso gate renderer console (${level}): ${message}`
+}
+
+/** One renderer-loss line (the legacy `crashed` event is deprecated in favor of this). */
+export function ssoGateRendererGoneLine(reason: string, exitCode: number): string {
+  return `dsh-plugin-desktop: sso gate render process gone (reason: ${reason}, exitCode: ${formatDesktopExitCode(exitCode)})`
+}
+
+/** Only the file name of a failing load: the query carries the base64 state and stays out of logs. */
+function ssoGateLoadFileName(url: string): string {
+  try {
+    return new URL(url).pathname.split('/').filter(part => part.length > 0).pop() ?? 'unknown'
+  } catch {
+    return 'unparsed'
+  }
+}
+
+/** One failed-load line; `url` is reduced to its file name. */
+export function ssoGateLoadFailedLine(
+  errorCode: number,
+  errorDescription: string,
+  url: string,
+  isMainFrame: boolean,
+): string {
+  return `dsh-plugin-desktop: sso gate failed to load (${String(errorCode)}: ${errorDescription}, file: ${ssoGateLoadFileName(url)}, mainFrame: ${isMainFrame ? 'yes' : 'no'})`
+}
+
+/** One unresponsive-renderer line. */
+export function ssoGateUnresponsiveLine(): string {
+  return 'dsh-plugin-desktop: sso gate renderer unresponsive'
+}
+
+/**
+ * Make the gate window observable (issue #36): renderer console output,
+ * renderer-process loss, failed loads, and hangs each land in the log sink
+ * under the greppable `dsh-plugin-desktop: sso gate …` prefix. Everything
+ * passes the caller's sink, which masks secrets; the state query is never
+ * logged raw (loads record their file name only), while `errorDetail` text
+ * is loggable by design.
+ */
+export function attachSsoGateWindowObservability(
+  webContents: SsoGateWebContentsObserver,
+  logError: (message: string) => void,
+): void {
+  webContents.on('console-message', details => {
+    logError(ssoGateConsoleLine(details.level, details.message))
+  })
+  webContents.on('render-process-gone', (_event, details) => {
+    logError(ssoGateRendererGoneLine(details.reason, details.exitCode))
+  })
+  webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    logError(ssoGateLoadFailedLine(errorCode, errorDescription, validatedUrl, isMainFrame))
+  })
+  webContents.on('unresponsive', () => {
+    logError(ssoGateUnresponsiveLine())
+  })
+}
 
 /** Parsed renderer action; `sign-in` is the only navigation this document generates. */
 export function parseSsoGateAction(href: string): { readonly action: 'sign-in' } | undefined {
@@ -104,6 +182,9 @@ export class DesktopSsoGateWindow {
       },
     })
     this.window = window
+    if (this.options.logError !== undefined) {
+      attachSsoGateWindowObservability(window.webContents, this.options.logError)
+    }
     window.accessibleTitle = this.options.locale === 'zh'
       ? 'Deloitte DSH Desktop 登录'
       : 'Deloitte DSH Desktop Sign In'
