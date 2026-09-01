@@ -553,7 +553,7 @@
   <h1>DSH Desktop 架构与安全策略说明书</h1>
   <p class="sub">锁定部署与插件供应链管控 · 管理层汇报版 —— 结论先行，技术细节附白话解释</p>
   <div class="meta">
-    <span>日期：<b>2026 年 8 月 27 日</b></span>
+    <span>日期：<b>2026 年 8 月 27 日</b> · 更新 <b>2026-09-01</b></span>
     <span>文档版本：<b>v1.0</b></span>
     <span>呈报对象：<b>公司管理层</b></span>
     <span>范围：<b>DSH Desktop 桌面产品（公司版）</b></span>
@@ -568,8 +568,9 @@
   <a href="#ch1">01 产品与仓库结构</a>
   <a href="#ch2">02 运行架构</a>
   <a href="#ch3">03 安全架构 · 五层防线</a>
-  <a href="#ch4">04 关键问题澄清</a>
-  <a href="#ch5">05 残余风险与建议</a>
+  <a href="#ch4">04 攻击视角下的插件防护问答</a>
+  <a href="#ch5">05 关键问题澄清</a>
+  <a href="#ch6">06 残余风险与建议</a>
 </nav>
 
 <main class="page">
@@ -601,7 +602,7 @@
       我们没有 fork 出一套私有代码。</li>
     <li><b>当前防线：</b>插件安装 6 类入口全部管控；安装 + 启动双重验签（ed25519 签名）；
       Electron 加固（fuses 保险丝、强制签名更新、独立 Node 运行时）。</li>
-    <li><b>残余风险：</b>已知 7 项已登记在案，其中 3 项有明确缓解路径，<b>待管理层确认签收</b>（见第 5 章）。</li>
+    <li><b>残余风险：</b>已知 7 项已登记在案，其中 3 项有明确缓解路径，<b>待管理层确认签收</b>（见第 6 章）。</li>
   </ul>
 
   <div class="glossary">
@@ -616,6 +617,12 @@
     <div><b>loopback（127.0.0.1 回环）：</b>仅本机进程可访问的网络通道，外部机器无法连入。</div>
     <div><b>序列号棘轮：</b>只增不减的计数器，旧目录无法冒充新目录（防回滚、防重放）。</div>
     <div><b>Electron fuses（保险丝）：</b>Electron 官方提供的开关，可永久关闭危险能力（如以 Node 模式运行程序）。</div>
+  </div>
+
+  <div class="callout ok">
+    <span class="ct">2026-09-01 更新</span>
+    权威模式（signed-tree）已在试点 fleet 实机激活；发布链路已全自动化，上线零人工操作；SSO 启动门禁落地。
+    攻击视角下用户尝试各种绕过手段的实测问答，见第 4 章。
   </div>
 </section>
 
@@ -1070,7 +1077,76 @@
 
 <!-- ======================= 第 4 章 ======================= -->
 <section id="ch4" class="chapter">
-  <h2><span class="chip">04</span>关键问题澄清<span class="h2sub">管理层最可能问的两个问题</span></h2>
+  <h2><span class="chip">04</span>攻击视角下的插件防护问答<span class="h2sub">用户尝试不同手段时，系统如何响应（全部经过实机验证）</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead"><b>本章结论：</b>换一个攻击视角——用户想用各种手段绕过「锁定部署」时，系统如何响应。
+  以下 8 个问题与响应均经过实机验证，结论对应「拒绝 / 不生效」。</p>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q1</span>我从市场以外的渠道（npm 网站、同事传文件）拿到插件，手动装进去行不行？</div>
+    <div class="a">
+      <p>不行。插件加载的唯一入口是启动验签：不在公司签名目录（ed25519 签名的 manifest）里的插件，应用启动时直接拒载（<code>allowManualPluginAdd=false</code> 的服务级语义）。装进磁盘也永远不生效。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q2</span>我修改已经安装的插件文件，植入自己的代码呢？</div>
+    <div class="a">
+      <p>不行。权威模式（signed-tree）每次启动对插件文件树做实测，与公司签名摘要比对，不一致即拒载。安装凭据（receipt）在权威模式下无决策权——删除或伪造它都没有意义。（该模式已在试点 fleet 实机激活，sequence 7 起。）</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q3</span>我改本地配置文件，把插件源指向我自己的服务器？</div>
+    <div class="a">
+      <p>不行。插件目录源与签名信任根在构建时嵌入应用内部（只读），配置文件里没有任何安全字段。改配置最坏的结果是把应用改坏（自己启动异常），永远改不动信任边界。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q4</span>我在内网伪造/重放一个目录清单（假服务器、hosts 劫持、中间人）？</div>
+    <div class="a">
+      <p>不行。目录清单必须通过 ed25519 验签——没有公司私钥就签不出合法清单；序列棘轮拒绝一切回退（低序列硬拒、同序列异内容拒绝/自愈）。看到清单内容本身毫无帮助：签名值和摘要本来就是公开物（如同 TLS 证书），读权限不构成任何攻击面。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q5</span>我绕过界面，直接调用程序内部接口强行开启插件？</div>
+    <div class="a">
+      <p>写路径在服务层被管制（危险权限档已从服务端配置表删除，不提供手动插件添加接口）。理论残余：直接向本机回环端口裸注入事件、或手工运行安装目录内的 CLI 工具——两者都已登记为「推广前复审」事项，其前提是用户刻意进行技术性绕过，等同于用户本来就拥有系统终端的场景，不属于普通用户可达路径。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q6</span>我找一个旧版本的安装包（没有这些防护的老构建）用？</div>
+    <div class="a">
+      <p>首次启用权威模式时有 fleet 门禁（要求全部客户端已升级到支持签名目录的构建）；安装包只通过受控渠道分发。已知边界：栅栏强度取决于最旧可运行版本，旧安装包管理已列入推广前检查项。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q7</span>我让 AI 助手（应用内的 agent）帮我装插件、改配置？</div>
+    <div class="a">
+      <ul>
+        <li><b>① 指导层：</b>系统提示词注入公司安全条款，拒绝协助安装插件 / 修改桌面端配置。</li>
+        <li><b>② 权限层：</b>危险权限档（full access）已从产品中移除，agent 的文件操作受沙箱与审批约束。</li>
+        <li><b>③ 硬栅栏：</b>真正的硬栅栏是上面的签名链——即使提示词被诱导绕过，agent 也没有任何途径让未签名插件通过启动验签。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q8</span>内网同事都能看到这个目录清单，会不会有风险？</div>
+    <div class="a">
+      <p>清单内容（包名、版本、文件树摘要、签名值）不含任何秘密——客户端本来就是匿名拉取的，这是签名体系的正确形态。真正需要保护的是签名私钥与发布凭据，它们分别保存在 CI 密钥库与受控仓库，不随应用分发。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 第 5 章 ======================= -->
+<section id="ch5" class="chapter">
+  <h2><span class="chip">05</span>关键问题澄清<span class="h2sub">管理层最可能问的两个问题</span></h2>
   <hr class="h2rule">
 
   <div class="qa">
@@ -1082,7 +1158,7 @@
           公司自有的仅 <b>2 个行为级修复</b>：<code>dsh-agent-loop</code>（空名工具调用防护）、<code>dsh-token-meter</code>（计量缓存修复）。</li>
         <li><b>跟进能力：有文档化的升级流程</b>（pin 更新独立提交、<code>upstream.json</code> 三重校验）。</li>
         <li><b>成本点（需要管理层知悉）：</b>patch 打在编译产物上，上游大版本升级时 11 个 patch 需要重放；
-          且上游社区版已领先我方基线 <b>184 commits</b>，需要安排升级窗口（见第 5 章建议 ③）。</li>
+          且上游社区版已领先我方基线 <b>184 commits</b>，需要安排升级窗口（见第 6 章建议 ③）。</li>
       </ul>
     </div>
   </div>
@@ -1101,9 +1177,9 @@
   </div>
 </section>
 
-<!-- ======================= 第 5 章 ======================= -->
-<section id="ch5" class="chapter">
-  <h2><span class="chip">05</span>残余风险与建议<span class="h2sub">待管理层决策事项</span></h2>
+<!-- ======================= 第 6 章 ======================= -->
+<section id="ch6" class="chapter">
+  <h2><span class="chip">06</span>残余风险与建议<span class="h2sub">待管理层决策事项</span></h2>
   <hr class="h2rule">
 
   <p class="lead"><b>本章结论：</b>五层防线落地后，剩余风险均为<b>已知、已登记、可管理</b>的项；
