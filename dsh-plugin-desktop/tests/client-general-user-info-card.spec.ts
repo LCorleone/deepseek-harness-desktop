@@ -6,43 +6,31 @@ import { GeneralUserInfoCardView } from '../src/client/GeneralUserInfoCard.tsx'
 import type { DesktopSettingsSsoView } from '../src/client/desktop-settings-api.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from '../src/client/desktop-settings-locales.ts'
 
-const SILENT: DesktopSettingsSsoView = {
+const AUTHENTICATED: DesktopSettingsSsoView = {
   authenticated: true,
   email: 'zhangsan@deloitte.com.cn',
   source: 'silent',
-}
-
-const BROWSER: DesktopSettingsSsoView = {
-  authenticated: true,
-  email: 'lisi@deloitte.com.cn',
-  source: 'browser',
 }
 
 function translate(dict: Record<DesktopSettingsLocaleKey, string>): TranslateNS<'desktop.settings'> {
   return key => dict[key as DesktopSettingsLocaleKey] ?? key
 }
 
-describe('General user info card', () => {
-  it('renders the full email and auth source with the Chinese copy', () => {
+describe('General user info row', () => {
+  it('renders one Setting-Cell line with the Chinese label and the email', () => {
     const markup = renderToStaticMarkup(
-      createElement(GeneralUserInfoCardView, { sso: SILENT, t: translate(zh) }),
+      createElement(GeneralUserInfoCardView, { sso: AUTHENTICATED, t: translate(zh) }),
     )
-    expect(markup).toContain('用户信息')
     expect(markup).toContain('当前登录')
     expect(markup).toContain('zhangsan@deloitte.com.cn')
-    expect(markup).toContain('认证方式')
-    expect(markup).toContain('公司单点登录')
-    expect(markup).toContain('公司单点登录 · 自动认证')
-    expect(markup).toContain('状态')
-    expect(markup).toContain('已通过 Deloitte SSO 认证')
-  })
-
-  it('maps the browser path to the browser-auth source label', () => {
-    const markup = renderToStaticMarkup(
-      createElement(GeneralUserInfoCardView, { sso: BROWSER, t: translate(zh) }),
-    )
-    expect(markup).toContain('公司单点登录 · 浏览器认证')
-    expect(markup).toContain('lisi@deloitte.com.cn')
+    // One line only: no card title, auth-method, or status copy remains.
+    expect(markup).not.toContain('用户信息')
+    expect(markup).not.toContain('认证方式')
+    expect(markup).not.toContain('状态')
+    // Mirrors the General section's owned rows: label on the left, value right.
+    expect(markup).toContain('dshGeneralUserInfoRow')
+    expect(markup).toContain('dshGeneralUserInfoTitle')
+    expect(markup).toContain('dshGeneralUserInfoValue')
   })
 
   it('renders nothing without an authenticated session', () => {
@@ -54,24 +42,25 @@ describe('General user info card', () => {
     )).toBe('')
   })
 
-  it('uses the English copy when the locale is English', () => {
+  it('uses the English label when the locale is English', () => {
     const markup = renderToStaticMarkup(
-      createElement(GeneralUserInfoCardView, { sso: BROWSER, t: translate(en) }),
+      createElement(GeneralUserInfoCardView, { sso: AUTHENTICATED, t: translate(en) }),
     )
-    expect(markup).toContain('User Info')
     expect(markup).toContain('Signed in as')
-    expect(markup).toContain('lisi@deloitte.com.cn')
-    expect(markup).toContain('Auth method')
-    expect(markup).toContain('Company SSO · Browser')
-    expect(markup).toContain('Status')
-    expect(markup).toContain('Authenticated via Deloitte SSO')
+    expect(markup).toContain('zhangsan@deloitte.com.cn')
+    expect(markup).not.toContain('Auth method')
+    expect(markup).not.toContain('Status')
+    expect(markup).not.toContain('User Info')
   })
 
-  it('never truncates the email in markup', () => {
+  it('keeps a fallback dash when the session carries no email', () => {
     const markup = renderToStaticMarkup(
-      createElement(GeneralUserInfoCardView, { sso: SILENT, t: translate(zh) }),
+      createElement(GeneralUserInfoCardView, {
+        sso: { authenticated: true },
+        t: translate(zh),
+      }),
     )
-    expect(markup).not.toContain('text-overflow')
-    expect(markup).not.toContain('ellipsis')
+    expect(markup).toContain('当前登录')
+    expect(markup).toContain('—')
   })
 })

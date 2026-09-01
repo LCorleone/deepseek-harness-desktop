@@ -251,44 +251,41 @@ html.dsh-desktop-locked [data-slot='settings.action'] { display: none !important
   .dshDesktopSettingsToggleRow { align-items: flex-start; }
   .dshDesktopSettingsForm { align-items: stretch; flex-direction: column; }
 }
-/* Signed-in account card in the upstream Settings → General section: mirrors
-   the General section's owned rows (figma 'Setting-Cell': pad 16/0, hairline
-   separator) but stacks its label/value pairs vertically so the full email is
-   never truncated. The General section strips the separator on its last child. */
-.dshGeneralUserInfoCard {
-  box-sizing: border-box;
-  width: 100%;
+/* Signed-in account row in the upstream Settings → General section: mirrors
+   the General section's owned Setting-Cell rows (see ui-settings-general
+   occupants such as locale's LanguageRow — pad 16/0, hairline separator, 14px
+   primary title, right-aligned value where those rows carry their selector).
+   Upstream rows own hashed CSS-module classes, so this row keeps its own class
+   names with the form factors copied parameter for parameter. The General
+   section strips the separator on its last child. */
+.dshGeneralUserInfoRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 16px 0;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
+.dshGeneralUserInfoText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 48px;
+}
 .dshGeneralUserInfoTitle {
-  margin: 0;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
 }
-.dshGeneralUserInfoList {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 12px 0 0;
-}
-.dshGeneralUserInfoRow {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.dshGeneralUserInfoLabel {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--dsw-alias-label-secondary);
-}
 .dshGeneralUserInfoValue {
-  font-size: 13px;
-  line-height: 1.5;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
   color: var(--dsw-alias-label-primary);
+  text-align: right;
   word-break: break-word;
   overflow-wrap: anywhere;
 }

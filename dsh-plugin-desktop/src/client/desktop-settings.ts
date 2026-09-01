@@ -65,9 +65,9 @@ export function applyDesktopSettings(ctx: ClientContext, environment: DesktopCli
     locale: DESKTOP_SETTINGS_LOCALE_NAMESPACE,
     inject: () => ({ api }),
   }, DesktopTerminalSettingsAction))
-  // Authenticated-account card in the upstream Settings → General section. The
+  // Authenticated-account row in the upstream Settings → General section. The
   // seat is a list slot stacked by ui-settings-general's General entry (the
-  // GeneralSection renders each `settings.general.item` occupant); the card
+  // GeneralSection renders each `settings.general.item` occupant); the row
   // reads the live SSO session through the Desktop settings API and renders
   // nothing unless a session is authenticated, so unlocked and unauthenticated
   // builds show no account row. Rendered above the agent-preset / permission
