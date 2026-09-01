@@ -172,6 +172,17 @@ export interface DesktopRuntime {
   /** Locale currently used for native tray contributions. */
   readonly locale: DesktopLocale
 
+  /**
+   * Authenticated SSO account email, or undefined. The launcher sets it
+   * only on a locked `requireSso` build after the startup gate authenticated
+   * (silent or browser path); every other launch keeps it undefined, so its
+   * presence is exactly the authenticated-badge gating condition.
+   */
+  readonly ssoAccountEmail: string | undefined
+
+  /** Adopt or clear the authenticated SSO account for native surfaces. */
+  setSsoAccount(email: string | undefined): void
+
   /** Native network, update-download, and notification adapter. */
   readonly updates: DesktopUpdateAdapter
 

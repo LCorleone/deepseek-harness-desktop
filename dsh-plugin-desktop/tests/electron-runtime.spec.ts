@@ -411,6 +411,41 @@ describe('Electron desktop runtime', () => {
     await release()
   })
 
+  it('pins the authenticated sso account to the top of the tray menu', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    expect(runtime.ssoAccountEmail).toBeUndefined()
+    runtime.setSsoAccount('zhangsan@deloitte.com.cn')
+    expect(runtime.ssoAccountEmail).toBe('zhangsan@deloitte.com.cn')
+    const release = runtime.schedule(spec)
+    await runtime.mountScheduled()
+
+    const template = electron.menuTemplates[0] as Array<{ label?: string, enabled?: boolean, type?: string }>
+    expect(template[0]).toEqual({ label: 'Signed in: zhangsan@deloitte.com.cn', enabled: false })
+    expect(template[1]).toEqual({ type: 'separator' })
+    expect(template[2]).toEqual(expect.objectContaining({ label: 'Open Deloitte DSH Desktop' }))
+
+    // Clearing the account removes the badge row again.
+    runtime.setSsoAccount(undefined)
+    expect(runtime.ssoAccountEmail).toBeUndefined()
+    const refreshed = electron.menuTemplates.at(-1) as Array<{ label?: string }>
+    expect(refreshed[0]).toEqual(expect.objectContaining({ label: 'Open Deloitte DSH Desktop' }))
+    await release()
+  })
+
+  it('keeps the plain tray menu while no sso session is live', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(spec)
+    await runtime.mountScheduled()
+    const template = electron.menuTemplates[0] as Array<{ label?: string, enabled?: boolean }>
+    expect(template[0]).toEqual(expect.objectContaining({ label: 'Open Deloitte DSH Desktop' }))
+    expect(template.some(item => item.enabled === false)).toBe(false)
+    await release()
+  })
+
   it('opens one parented Windows folder chooser and returns its selected path', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
     electron.dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: ['C:\\Work'] })

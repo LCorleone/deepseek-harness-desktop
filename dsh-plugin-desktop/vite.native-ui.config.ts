@@ -21,6 +21,7 @@ export default defineConfig({
       input: {
         recovery: resolve(uiRoot, 'recovery.html'),
         'profile-create': resolve(uiRoot, 'profile-create.html'),
+        'sso-gate': resolve(uiRoot, 'sso-gate.html'),
       },
     },
   },

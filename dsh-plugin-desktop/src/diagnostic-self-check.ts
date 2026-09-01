@@ -243,6 +243,8 @@ export interface DesktopSelfCheckPolicyStatus {
   readonly reason: string | null
   /** Policy `locked` flag; null when unavailable. */
   readonly locked: boolean | null
+  /** Policy `requireSso` flag; null when unavailable. */
+  readonly requireSso: boolean | null
   /** SHA-256 (64 lowercase hex) of the exact policy asset bytes. */
   readonly sha256: string | null
   /** Policy asset size in bytes; null when unavailable. */
@@ -257,6 +259,23 @@ export interface DesktopSelfCheckNodeRuntimeStatus {
   readonly status: 'verified' | 'development' | 'failed'
   /** Human-readable context; null when there is nothing to add. */
   readonly detail: string | null
+}
+
+/**
+ * SSO section of the self-check report: whether the policy gates startup
+ * behind company SSO, and whether an authenticated session is live in the
+ * exporting process. The session token never appears — the section carries
+ * only the account email and the authenticating path.
+ */
+export interface DesktopSelfCheckSsoStatus {
+  /** Whether this build's policy requires SSO before startup. */
+  readonly required: boolean
+  /** Whether an authenticated SSO session is live in this process. */
+  readonly authenticated: boolean
+  /** Authenticated account email; present only when authenticated. */
+  readonly email?: string
+  /** Authenticating path (`silent` or `browser`); present only when authenticated. */
+  readonly source?: string
 }
 
 /** Detached ed25519 signature block of one signed report. */
@@ -281,6 +300,7 @@ export interface DesktopSelfCheckReport {
   readonly nodeVersion: string
   readonly policy: DesktopSelfCheckPolicyStatus
   readonly nodeRuntime: DesktopSelfCheckNodeRuntimeStatus
+  readonly sso: DesktopSelfCheckSsoStatus
   readonly bootVerification: DesktopSelfCheckBootVerification
   /** keyIds and fingerprints of the view keys this build pins. */
   readonly signing: { readonly viewKeys: readonly { readonly keyId: string, readonly fingerprint: string }[] }
@@ -295,6 +315,8 @@ export interface DesktopSelfCheckReportInput {
   readonly appVersion: string
   readonly policy: DesktopSelfCheckPolicyStatus
   readonly nodeRuntime: DesktopSelfCheckNodeRuntimeStatus
+  /** SSO gate state; see {@link DesktopSelfCheckSsoStatus}. */
+  readonly sso: DesktopSelfCheckSsoStatus
   /** Boot verification snapshot of the export; undefined records no boot data. */
   readonly bootSnapshot: DesktopBootVerificationSnapshot | undefined
   /** View keys pinned by this build (reported as fingerprints, never used to sign). */
@@ -364,6 +386,7 @@ export function buildDesktopSelfCheckReport(input: DesktopSelfCheckReportInput):
     nodeVersion: input.nodeVersion ?? process.version,
     policy: input.policy,
     nodeRuntime: input.nodeRuntime,
+    sso: input.sso,
     bootVerification: selfCheckBootVerification(input.bootSnapshot),
     signing: {
       viewKeys: viewKeys.map(key => ({
@@ -624,6 +647,7 @@ export function desktopPolicySelfCheckStatus(assetPath?: string): DesktopSelfChe
     available: false,
     reason,
     locked: null,
+    requireSso: null,
     sha256: null,
     bytes: null,
     trustRoots: [],
@@ -650,6 +674,7 @@ export function desktopPolicySelfCheckStatus(assetPath?: string): DesktopSelfChe
       available: true,
       reason: null,
       locked: policy.locked,
+      requireSso: policy.requireSso,
       sha256: createHash('sha256').update(body).digest('hex'),
       bytes: body.byteLength,
       trustRoots: policy.trustRoots,
@@ -688,6 +713,8 @@ export interface DesktopSelfCheckAssemblyInputs {
   readonly bootSnapshotPath?: string
   /** View keys override; defaults to the embedded {@link DIAGNOSTICS_SIGNING_PUBLIC_KEYS}. */
   readonly viewKeys?: readonly DiagnosticsViewKey[]
+  /** Live SSO session snapshot (email + source only, never the token); defaults to none. */
+  readonly ssoSession?: Readonly<{ readonly email: string, readonly source: string }>
   /** Clock injection for the generation timestamp. */
   readonly now?: () => Date
 }
@@ -713,10 +740,23 @@ export function assembleDesktopSelfCheckExport(
   inputs: DesktopSelfCheckAssemblyInputs = {},
 ): DesktopSelfCheckExportPayload {
   const viewKeys = inputs.viewKeys ?? normalizeDiagnosticsViewKeys(DIAGNOSTICS_SIGNING_PUBLIC_KEYS)
+  const policy = desktopPolicySelfCheckStatus(inputs.policyAssetPath)
+  const session = inputs.ssoSession
   const report = buildDesktopSelfCheckReport({
     appVersion,
-    policy: desktopPolicySelfCheckStatus(inputs.policyAssetPath),
+    policy,
     nodeRuntime: desktopNodeRuntimeSelfCheckStatus(),
+    // `required` follows the measured policy asset; `authenticated` follows
+    // the exporting process's live session (a headless export before any
+    // boot honestly reports not authenticated). The token never enters.
+    sso: session === undefined
+      ? { required: policy.requireSso === true, authenticated: false }
+      : {
+          required: policy.requireSso === true,
+          authenticated: true,
+          email: session.email,
+          source: session.source,
+        },
     bootSnapshot: readDesktopBootVerificationSnapshot(
       inputs.bootSnapshotPath ?? desktopBootVerificationSnapshotPath(userDataDir),
     ),

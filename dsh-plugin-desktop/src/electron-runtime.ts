@@ -105,6 +105,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   private generation: ElectronShellGeneration | undefined
   private readonly policyLocked: boolean
   private currentLocale: DesktopLocale = 'en'
+  private currentSsoAccountEmail: string | undefined
   private scheduled: DesktopShellSpec | undefined
   private mountTask: Promise<void> | undefined
   private quitting = false
@@ -166,6 +167,19 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   /** @inheritdoc */
   get locale(): DesktopLocale {
     return this.currentLocale
+  }
+
+  /** @inheritdoc */
+  get ssoAccountEmail(): string | undefined {
+    return this.currentSsoAccountEmail
+  }
+
+  /** @inheritdoc */
+  setSsoAccount(email: string | undefined): void {
+    this.currentSsoAccountEmail = email === undefined || email.trim().length === 0
+      ? undefined
+      : email.trim()
+    this.rebuildTrayMenu()
   }
 
   /** @inheritdoc */
@@ -777,7 +791,18 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     const tools = this.contributedTrayItems('tools')
     const profiles = this.contributedTrayItems('profiles')
     const status = this.contributedTrayItems('status')
+    // Authentication badge (native-required share of the SSO feature): a
+    // disabled informational row pinned to the very top while an SSO session
+    // is live. `ssoAccountEmail` is set only after a locked+requireSso gate
+    // authenticated, so its presence is the whole gating condition.
+    const signedIn = this.currentSsoAccountEmail === undefined
+      ? []
+      : [
+        { label: desktopTrayLabel(this.locale, 'signedInAs', this.currentSsoAccountEmail), enabled: false },
+        { type: 'separator' as const },
+      ]
     const template: Electron.MenuItemConstructorOptions[] = [
+      ...signedIn,
       { label: desktopTrayLabel(this.locale, 'openDesktop', spec.productName), click: show },
     ]
     if (tools.length > 0) template.push({ type: 'separator' }, ...tools)

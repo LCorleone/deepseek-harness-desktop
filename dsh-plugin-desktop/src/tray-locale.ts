@@ -12,6 +12,7 @@ export type DesktopTrayLabelKey =
   | 'openTerminal'
   | 'profile'
   | 'quit'
+  | 'signedInAs'
   | 'switchToAdvanced'
   | 'switchToCompatibility'
   | 'unavailableForDesktop'
@@ -28,6 +29,7 @@ const labels: Record<DesktopLocale, Record<DesktopTrayLabelKey, (value: string) 
     openTerminal: () => 'Open DSH Terminal',
     profile: profileName => `Profile: ${profileName}`,
     quit: () => 'Quit',
+    signedInAs: email => `Signed in: ${email}`,
     switchToAdvanced: () => 'Switch to Advanced Mode',
     switchToCompatibility: () => 'Switch to Compatibility Mode',
     unavailableForDesktop: profileName => `${profileName} (Unavailable for Desktop)`,
@@ -43,6 +45,7 @@ const labels: Record<DesktopLocale, Record<DesktopTrayLabelKey, (value: string) 
     openTerminal: () => '打开 DSH 终端',
     profile: profileName => `配置文件：${profileName}`,
     quit: () => '退出',
+    signedInAs: email => `已登录：${email}`,
     switchToAdvanced: () => '切换到高级模式',
     switchToCompatibility: () => '切换到兼容模式',
     unavailableForDesktop: profileName => `${profileName}（不可用于桌面端）`,

@@ -45,6 +45,7 @@ function unlockedPolicy(): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: false,
     managedModels: false,
+    requireSso: false,
     trustRoots: [],
   })
 }
@@ -57,6 +58,7 @@ function lockedPolicy(): DesktopPolicy {
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
     managedModels: false,
+    requireSso: false,
     trustRoots: [{ keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) }],
   })
 }

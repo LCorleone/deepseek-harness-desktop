@@ -3,6 +3,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { getSsoSession } from './company-sso.ts'
 import type { DiagnosticExportWorkerResult } from './diagnostic-export-worker.ts'
 import { assembleDesktopSelfCheckExport } from './diagnostic-self-check.ts'
 import type { DesktopSelfCheckExportPayload } from './diagnostic-self-check.ts'
@@ -133,8 +134,17 @@ export function exportDesktopDiagnostics(
 ): Promise<string> {
   const logsDir = join(userDataDir, 'logs')
   mkdirSync(logsDir, { recursive: true })
+  // The self-check assembles in THIS process, so the live in-memory SSO
+  // session (when the exporting process is the authenticated Electron main)
+  // reaches the report without ever touching disk; the token stays out by
+  // construction — only email and source cross this seam.
+  const ssoSession = getSsoSession()
   const selfCheck = options.selfCheck
-    ?? assembleDesktopSelfCheckExport(userDataDir, options.appVersion)
+    ?? assembleDesktopSelfCheckExport(userDataDir, options.appVersion, {
+      ...(ssoSession === undefined
+        ? {}
+        : { ssoSession: { email: ssoSession.email, source: ssoSession.source } }),
+    })
   return exportDiagnosticsZip(logsDir, userDataDir, {
     appVersion: options.appVersion,
     crashDumpsDir: options.crashDumpsDir ?? join(userDataDir, 'Crashpad'),

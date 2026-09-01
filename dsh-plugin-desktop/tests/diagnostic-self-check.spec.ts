@@ -225,6 +225,7 @@ describe('policy self-measurement', () => {
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked: true,
       managedModels: false,
+      requireSso: false,
       trustRoots: [{ keyId: 'company-catalog-2026.01', fingerprint: fingerprint }],
     })
     writeFileSync(asset, body)
@@ -233,6 +234,7 @@ describe('policy self-measurement', () => {
       available: true,
       reason: null,
       locked: true,
+      requireSso: false,
       sha256: createHash('sha256').update(body).digest('hex'),
       bytes: Buffer.byteLength(body),
       trustRoots: [{ keyId: 'company-catalog-2026.01', fingerprint }],
@@ -248,6 +250,57 @@ describe('policy self-measurement', () => {
     const invalid = join(dir, 'desktop-policy.json')
     writeFileSync(invalid, '{"locked":true}')
     expect(desktopPolicySelfCheckStatus(invalid).reason).toMatch(/strict parsing/u)
+  })
+})
+
+describe('sso self-check section', () => {
+  const requireSsoPolicy = (): string => {
+    const dir = temporaryDirectory('dsh-self-check-sso-')
+    const asset = join(dir, 'desktop-policy.json')
+    writeFileSync(asset, JSON.stringify({
+      allowHomePatch: false,
+      allowManualPluginAdd: false,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+      locked: true,
+      managedModels: true,
+      requireSso: true,
+      trustRoots: [],
+    }))
+    return asset
+  }
+
+  it('reports requirement and the live session without ever carrying the token', () => {
+    const userDataDir = temporaryDirectory('dsh-self-check-user-')
+    writeSnapshot(userDataDir, lockedBootVerification())
+    const payload = assembleDesktopSelfCheckExport(userDataDir, APP_VERSION, {
+      bootSnapshotPath: desktopBootVerificationSnapshotPath(userDataDir),
+      policyAssetPath: requireSsoPolicy(),
+      ssoSession: { email: 'zhangsan@deloitte.com.cn', source: 'browser' },
+      now: () => new Date('2026-08-20T09:00:00.000Z'),
+    })
+    const report = JSON.parse(payload.reportText)
+    expect(report.policy.requireSso).toBe(true)
+    expect(report.sso).toEqual({
+      required: true,
+      authenticated: true,
+      email: 'zhangsan@deloitte.com.cn',
+      source: 'browser',
+    })
+    // The section never carries the session token under any key.
+    expect(payload.reportText).not.toContain('secret-token')
+    expect(JSON.stringify(report.sso)).not.toContain('token')
+  })
+
+  it('reports an honest not-authenticated state without a session or a policy', () => {
+    const dir = temporaryDirectory('dsh-self-check-dev-')
+    const withPolicy = assembleDesktopSelfCheckExport(temporaryDirectory('dsh-self-check-user-'), APP_VERSION, {
+      policyAssetPath: requireSsoPolicy(),
+      now: () => new Date('2026-08-20T09:00:00.000Z'),
+    })
+    expect(JSON.parse(withPolicy.reportText).sso).toEqual({ required: true, authenticated: false })
+    const withoutPolicy = unsignedReportInput(dir, lockedBootVerification())
+    expect(JSON.parse(withoutPolicy.reportText).sso).toEqual({ required: false, authenticated: false })
   })
 })
 

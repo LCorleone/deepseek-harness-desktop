@@ -32,6 +32,15 @@ export interface DesktopPolicy {
    * build keeps fully native behavior regardless of this flag.
    */
   readonly managedModels: boolean
+  /**
+   * Whether this build gates startup behind company SSO authentication.
+   * Only meaningful while `locked` is true: a locked build with
+   * `requireSso` first tries the silent OS-identity token handshake and, on
+   * failure, opens a local login gate window whose browser flow must succeed
+   * before any Host boot, window, market, or CLI surface starts. An unlocked
+   * build keeps fully native behavior regardless of this flag.
+   */
+  readonly requireSso: boolean
   /** Company catalog network origin; null selects catalog-as-content mode. */
   readonly companyCatalogOrigin: string | null
   /** Manifest URL inside the catalog origin, or the bundled asset path in content mode. */
@@ -138,14 +147,18 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   const object = value as Record<string, unknown>
   const keys = Object.keys(object).sort()
-  if (keys.length !== 7 || keys[0] !== 'allowHomePatch' || keys[1] !== 'allowManualPluginAdd'
+  if (keys.length !== 8 || keys[0] !== 'allowHomePatch' || keys[1] !== 'allowManualPluginAdd'
     || keys[2] !== 'companyCatalogOrigin' || keys[3] !== 'companyManifestUrl'
-    || keys[4] !== 'locked' || keys[5] !== 'managedModels' || keys[6] !== 'trustRoots') {
+    || keys[4] !== 'locked' || keys[5] !== 'managedModels' || keys[6] !== 'requireSso'
+    || keys[7] !== 'trustRoots') {
     throw invalidPolicy('unexpected fields')
   }
   if (typeof object.locked !== 'boolean') throw invalidPolicy('locked must be a boolean')
   if (typeof object.managedModels !== 'boolean') {
     throw invalidPolicy('managedModels must be a boolean')
+  }
+  if (typeof object.requireSso !== 'boolean') {
+    throw invalidPolicy('requireSso must be a boolean')
   }
   if (object.allowHomePatch !== false) throw invalidPolicy('allowHomePatch must be false')
   if (object.allowManualPluginAdd !== false) throw invalidPolicy('allowManualPluginAdd must be false')
@@ -154,6 +167,7 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   return Object.freeze({
     locked: object.locked,
     managedModels: object.managedModels,
+    requireSso: object.requireSso,
     companyCatalogOrigin,
     companyManifestUrl,
     allowHomePatch: false,
@@ -233,14 +247,15 @@ export const desktopPolicyConstants = Object.freeze({
  * `app.asar`, and the physical `app.asar.unpacked` policy copy is
  * user-writable, so the CLI must not re-read it).
  *
- * Format: five case-insensitive environment keys carrying a JSON-free
+ * Format: six case-insensitive environment keys carrying a JSON-free
  * encoding of the policy — `1`/`0` for `locked`, `1`/`0` for `managedModels`,
- * the bare https origin or an empty string for content mode, the manifest URL
- * verbatim, and comma-separated `keyId:fingerprint` trust-root pairs (both
- * components are constrained to alphabets without commas, colons inside
- * keyIds, or any quoting characters, so the values stay safe inside generated
- * POSIX and batch shims). The decoding side re-parses through the strict
- * policy parser, so any tampered or malformed hand-off fails closed.
+ * `1`/`0` for `requireSso`, the bare https origin or an empty string for
+ * content mode, the manifest URL verbatim, and comma-separated
+ * `keyId:fingerprint` trust-root pairs (both components are constrained to
+ * alphabets without commas, colons inside keyIds, or any quoting characters,
+ * so the values stay safe inside generated POSIX and batch shims). The
+ * decoding side re-parses through the strict policy parser, so any tampered
+ * or malformed hand-off fails closed.
  *
  * Advisory positioning: the parent that sets these variables is trusted, so an
  * actor who can rewrite the physical `desktop-cli.js` under
@@ -253,6 +268,7 @@ export const desktopPolicyConstants = Object.freeze({
 export const DESKTOP_POLICY_ENVIRONMENT = Object.freeze({
   locked: 'DSH_DESKTOP_POLICY_LOCKED',
   managedModels: 'DSH_DESKTOP_POLICY_MANAGED_MODELS',
+  requireSso: 'DSH_DESKTOP_POLICY_REQUIRE_SSO',
   catalogOrigin: 'DSH_DESKTOP_POLICY_CATALOG_ORIGIN',
   manifestUrl: 'DSH_DESKTOP_POLICY_MANIFEST_URL',
   trustRoots: 'DSH_DESKTOP_POLICY_TRUST_ROOTS',
@@ -281,6 +297,7 @@ export function desktopPolicyEnvironmentEntries(
   return {
     [DESKTOP_POLICY_ENVIRONMENT.locked]: policy.locked ? '1' : '0',
     [DESKTOP_POLICY_ENVIRONMENT.managedModels]: policy.managedModels ? '1' : '0',
+    [DESKTOP_POLICY_ENVIRONMENT.requireSso]: policy.requireSso ? '1' : '0',
     // A real origin is always a bare https URL, so `-` can never collide.
     [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: policy.companyCatalogOrigin ?? ENVIRONMENT_ABSENT,
     [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: policy.companyManifestUrl,
@@ -311,7 +328,7 @@ function takeEnvironmentValue(environment: NodeJS.ProcessEnv, name: string): str
 /**
  * Consume the launcher-injected policy hand-off and decode it strictly.
  *
- * The five hand-off keys are removed from the environment so the upstream CLI
+ * The six hand-off keys are removed from the environment so the upstream CLI
  * and its children never inherit Desktop-owned policy markers. Behavior by
  * layout:
  *
@@ -332,10 +349,11 @@ export function desktopPolicyFromEnvironment(
 ): DesktopPolicy | undefined {
   const locked = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.locked)
   const managedModels = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.managedModels)
+  const requireSso = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.requireSso)
   const catalogOrigin = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.catalogOrigin)
   const manifestUrl = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.manifestUrl)
   const trustRoots = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.trustRoots)
-  const present = [locked, managedModels, catalogOrigin, manifestUrl, trustRoots]
+  const present = [locked, managedModels, requireSso, catalogOrigin, manifestUrl, trustRoots]
     .filter(value => value !== undefined)
   if (present.length === 0) {
     if (isPackagedApplicationPath(fileURLToPath(new URL(moduleUrl)))) {
@@ -346,8 +364,8 @@ export function desktopPolicyFromEnvironment(
     }
     return undefined
   }
-  if (present.length !== 5) {
-    throw invalidPolicy('the policy environment hand-off must carry all five entries')
+  if (present.length !== 6) {
+    throw invalidPolicy('the policy environment hand-off must carry all six entries')
   }
   const trustRootPairs = trustRoots === ENVIRONMENT_ABSENT
     ? []
@@ -359,6 +377,7 @@ export function desktopPolicyFromEnvironment(
     companyManifestUrl: manifestUrl!,
     locked: locked === '1' ? true : locked === '0' ? false : undefined,
     managedModels: managedModels === '1' ? true : managedModels === '0' ? false : undefined,
+    requireSso: requireSso === '1' ? true : requireSso === '0' ? false : undefined,
     trustRoots: trustRootPairs.map(pair => parseTrustRootPair(pair)),
   })
 }

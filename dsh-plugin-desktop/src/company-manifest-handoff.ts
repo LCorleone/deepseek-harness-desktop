@@ -9,7 +9,7 @@
  * it just fetched and verified for boot composition into one private,
  * generation-scoped file under the Electron user-data directory and points
  * the children at it through `DSH_COMPANY_MANIFEST_FILE` — the same
- * trusted-parent hand-off pattern the four `DSH_DESKTOP_POLICY_*` entries
+ * trusted-parent hand-off pattern the six `DSH_DESKTOP_POLICY_*` entries
  * use. The child still hands the bytes to `verifyCompanyManifest` itself:
  * the signature chain, not the transport, owns the trust decision.
  *

@@ -1,0 +1,1036 @@
+/**
+ * Company SSO startup gate: silent OS-identity token handshake and the
+ * browser loopback login flow, ported from the Deloitte "nova" reference
+ * implementation (`cowork-nova-tauri` `src/deloitte/`).
+ *
+ * Two authentication paths, both answering to the embedded policy's
+ * `requireSso` flag (effective only on locked builds — see
+ * {@link desktopSsoGateRequired}):
+ *
+ * - **Silent** (`silentSsoLogin`): probe the OS user (Windows UPN fast path
+ *   via `whoami /upn`, then the fast full-name sources), then POST one
+ *   `SignEntity` to the portal's `/web/dai/token`. This is an app-key
+ *   handshake over local identity, not true SSO — it is a convenience
+ *   accelerator only; anyone holding the embedded app key can forge it
+ *   (signed-off soft barrier, same positioning as the model-gateway blob).
+ * - **Browser** (`browserSsoLogin`): the true SSO decision. A loopback
+ *   HTTP server on `127.0.0.1:0` receives one `GET /callback?code=…`, the
+ *   base64url payload is validated (result code, ±10 min timestamp skew,
+ *   and the `verify` SHA-256 signature over token+timestamp+username+
+ *   app_key+email), and the login URL carries a `code_challenge` SHA-256
+ *   over redirect URI, app id, and timestamp.
+ *
+ * The session is process memory only: `{@link SsoSession}` never reaches
+ * disk, logs, or diagnostics exports (the self-check section carries only
+ * email and source). The embedded `app_id`/`app_key` (issued by IT ops for
+ * DSH Desktop, app id 1007) can be overridden through `DSH_SSO_APP_ID` /
+ * `DSH_SSO_APP_KEY` for tests; the portal base URL override
+ * (`DSH_SSO_BASE_URL`) is honored only in unpackaged runs.
+ *
+ * This module is Electron-free on purpose — every Electron-owned boundary
+ * (`net.fetch` for the system-CA TLS stack, `shell.openExternal` for the
+ * browser) is injected by the launcher, so the protocol surface stays unit
+ * testable under plain Node.
+ *
+ * @module dsh-plugin-desktop/company-sso
+ */
+
+import { randomUUID, createHash } from 'node:crypto'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { isPackagedApplicationPath } from './packaged-runtime-path.ts'
+import type { DesktopPolicy } from './desktop-policy.ts'
+
+const BIN_NAME = 'dsh-plugin-desktop'
+
+/** Portal base (sdp.deloitte.com.cn); overridable in unpackaged runs only. */
+export const SSO_BASE = 'https://sdp.deloitte.com.cn'
+/** Browser login page path. */
+export const SSO_LOGIN_PATH = '/web/login'
+/** Silent SignEntity token endpoint path. */
+export const SSO_TOKEN_PATH = '/web/dai/token'
+/** Loopback callback path the browser is redirected to. */
+export const SSO_CALLBACK_PATH = '/callback'
+/** Browser-login idle timeout (task spec: 10 minutes). */
+export const SSO_LOGIN_IDLE_TIMEOUT_MS = 10 * 60 * 1000
+/** Callback timestamp tolerance in seconds (task spec: ±600s). */
+export const SSO_TIMESTAMP_SKEW_SEC = 600
+/** Soft budget for the whole silent path (probe + token POST). */
+export const SSO_SILENT_BUDGET_MS = 6_000
+/** Whole-request bound for one SignEntity token POST (mirrors nova's 45s). */
+export const SSO_TOKEN_TIMEOUT_MS = 45_000
+
+/**
+ * Built-in app credentials issued by IT ops for DSH Desktop (app id 1007,
+ * 2026-08-31 hand-off). Embedding them in the client is a signed-off soft
+ * barrier, exactly like the demo signing key and the model-gateway blob.
+ */
+const BUILTIN_APP_ID = '1007'
+const BUILTIN_APP_KEY = '[REDACTED-SO-APP-KEY-2026-09-02]'
+/** Application name sent inside SignEntity (display-only; not signed). */
+const APP_NAME = 'DSH Desktop'
+
+/** OS identity the silent path resolves. */
+export interface SsoOsUser {
+  /** Windows login id (or Unix user name). */
+  readonly username: string
+  /** Display name; SignEntity's `userName` must be this, not the login id. */
+  readonly fullName: string
+  /** UPN-style email (whoami /upn, net user, or environment). */
+  readonly email: string
+  /** USERDOMAIN (or COMPUTERNAME fallback), mirroring the nova probe. */
+  readonly domain: string
+}
+
+/** Authenticated session held in process memory only. */
+export interface SsoSession {
+  readonly email: string
+  readonly username: string
+  readonly fullName: string
+  readonly domain: string
+  /** Portal access token; never logged, exported, or persisted. */
+  readonly token: string
+  /** Which path authenticated: silent OS handshake or browser SSO. */
+  readonly source: 'silent' | 'browser'
+}
+
+/** Decoded and validated browser-callback payload. */
+export interface SsoCallbackPayload {
+  readonly code: number
+  readonly message: string
+  readonly token: string
+  readonly username: string
+  readonly email: string
+  readonly timestamp: number
+  readonly verify: string
+}
+
+/** SignEntity body; field order matches the portal's Node-insertion-order check. */
+export interface SsoSignEntity {
+  readonly id: string
+  readonly app_id: string
+  readonly app_name: string
+  readonly json_data: string
+  readonly process_time: string
+  readonly signature: string
+}
+
+/** Union result of the silent and browser login paths. */
+export type SsoLoginResult =
+  | { readonly ok: true, readonly session: SsoSession }
+  | { readonly ok: false, readonly reason: string }
+
+// ---------------------------------------------------------------------------
+// Credentials and endpoints
+// ---------------------------------------------------------------------------
+
+function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = environment[name]
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  return trimmed.length === 0 ? undefined : trimmed
+}
+
+/** App id, overridable through `DSH_SSO_APP_ID` for tests. */
+export function ssoAppId(environment: NodeJS.ProcessEnv = process.env): string {
+  return environmentValue(environment, 'DSH_SSO_APP_ID') ?? BUILTIN_APP_ID
+}
+
+/** App key, overridable through `DSH_SSO_APP_KEY` for tests. */
+export function ssoAppKey(environment: NodeJS.ProcessEnv = process.env): string {
+  return environmentValue(environment, 'DSH_SSO_APP_KEY') ?? BUILTIN_APP_KEY
+}
+
+/**
+ * Portal base URL. The `DSH_SSO_BASE_URL` override is honored only in an
+ * unpackaged run: a packaged build must always talk to the pinned portal.
+ */
+export function ssoBaseUrl(environment: NodeJS.ProcessEnv = process.env): string {
+  if (!isPackagedApplicationPath(new URL(import.meta.url).pathname)) {
+    const override = environmentValue(environment, 'DSH_SSO_BASE_URL')
+    if (override !== undefined) return override.replace(/\/+$/u, '')
+  }
+  return SSO_BASE
+}
+
+/** Absolute browser login page URL. */
+export function ssoLoginUrl(environment?: NodeJS.ProcessEnv): string {
+  return `${ssoBaseUrl(environment)}${SSO_LOGIN_PATH}`
+}
+
+/** Absolute SignEntity token endpoint URL. */
+export function ssoTokenUrl(environment?: NodeJS.ProcessEnv): string {
+  return `${ssoBaseUrl(environment)}${SSO_TOKEN_PATH}`
+}
+
+// ---------------------------------------------------------------------------
+// SignEntity protocol (silent path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Character sieve of the portal's signature scheme: keep exactly the
+ * characters at indices divisible by 7, 11, or 23 (nova `getEncodeStr`,
+ * originally dowork `getEncodeStr`).
+ */
+export function getSsoEncodeStr(source: string): string {
+  let encoded = ''
+  for (let index = 0; index < source.length; index += 1) {
+    if (index % 11 === 0 || index % 7 === 0 || index % 23 === 0) encoded += source[index]
+  }
+  return encoded
+}
+
+/** Local-time `yyyy-MM-dd HH:mm:ss` (nova `formatDeloitteDateTime`). */
+export function formatSsoProcessTime(date: Date = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/**
+ * `JSON.stringify({ userName, email })` — the exact two keys in this exact
+ * order. Node preserves string-key insertion order, and the portal's server
+ * side validates the byte order of this string inside the signature, so the
+ * object literal below must never be re-sorted or rebuilt from a Map.
+ */
+export function buildSsoTokenJsonData(userName: string, email: string): string {
+  return JSON.stringify({ userName, email })
+}
+
+/** Inputs of {@link buildSsoSignEntity}; every member is injectable for golden-vector tests. */
+export interface SsoSignEntityInputs {
+  readonly jsonData: string
+  readonly appId: string
+  readonly appKey: string
+  /** Clock injection; defaults to now (local time). */
+  readonly now?: () => Date
+  /** Id generator injection; defaults to `crypto.randomUUID`. */
+  readonly uuid?: () => string
+}
+
+/**
+ * Build one SignEntity: a 32-hex-char random id (UUID without hyphens), the
+ * local process time, and `signature` = base64(SHA-256(encodeStr(id +
+ * processTime + appKey + jsonData))). Field order in the returned object is
+ * the JSON body's insertion order the portal expects.
+ */
+export function buildSsoSignEntity(inputs: SsoSignEntityInputs): SsoSignEntity {
+  const id = (inputs.uuid ?? randomUUID)().replaceAll('-', '')
+  const processTime = formatSsoProcessTime((inputs.now ?? (() => new Date()))())
+  const source = `${id}${processTime}${inputs.appKey}${inputs.jsonData}`
+  const signature = createHash('sha256')
+    .update(getSsoEncodeStr(source), 'utf8')
+    .digest('base64')
+  return {
+    id,
+    app_id: inputs.appId,
+    app_name: APP_NAME,
+    json_data: inputs.jsonData,
+    process_time: processTime,
+    signature,
+  }
+}
+
+/** Minimal fetch-shaped boundary the silent path needs (Electron `net.fetch` in production). */
+export type SsoRequestBoundary = (
+  url: string,
+  init: {
+    readonly method: 'POST'
+    readonly headers: Record<string, string>
+    readonly body: string
+    readonly signal?: AbortSignal
+  },
+) => Promise<{
+  readonly ok: boolean
+  readonly status: number
+  text(): Promise<string>
+}>
+
+/** Options of {@link fetchSsoToken}. */
+export interface SsoFetchTokenOptions {
+  /** Absolute token endpoint; defaults to the pinned portal. */
+  readonly url?: string
+  readonly appId?: string
+  readonly appKey?: string
+  /** Injected boundary; required in production wiring (Electron `net.fetch`). */
+  readonly request: SsoRequestBoundary
+  /** Whole-request bound; defaults to the 45 s nova bound. */
+  readonly timeoutMs?: number
+  /** Clock/uuid injection for tests. */
+  readonly now?: () => Date
+  readonly uuid?: () => string
+}
+
+/**
+ * POST one SignEntity to `/web/dai/token`. Success is exactly
+ * `code == "200"` (string or number member) with a non-empty `token`;
+ * everything else — transport failure, non-2xx, other code — is an error
+ * carrying the portal's message when present.
+ */
+export async function fetchSsoToken(jsonData: string, options: SsoFetchTokenOptions): Promise<string> {
+  const entity = buildSsoSignEntity({
+    jsonData,
+    appId: options.appId ?? ssoAppId(),
+    appKey: options.appKey ?? ssoAppKey(),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.uuid === undefined ? {} : { uuid: options.uuid }),
+  })
+  if (entity.id.length !== 32 || entity.id.includes('-') || !/^[0-9a-f]{32}$/u.test(entity.id)) {
+    throw new Error(`${BIN_NAME}: invalid SignEntity id (expected uuid without hyphens)`)
+  }
+  let response: Awaited<ReturnType<SsoRequestBoundary>>
+  try {
+    response = await options.request(options.url ?? ssoTokenUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entity),
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { signal: AbortSignal.timeout(options.timeoutMs) }),
+    })
+  } catch (cause) {
+    throw new Error(`token network error: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+  const body = await response.text().catch(() => '')
+  if (!response.ok) {
+    const snippet = body.length > 0 && body.length < 400 ? body : `token HTTP ${String(response.status)}`
+    throw new Error(snippet)
+  }
+  let document: unknown
+  try {
+    document = JSON.parse(body) as unknown
+  } catch {
+    throw new Error('Invalid JSON response')
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    throw new Error('Invalid JSON response')
+  }
+  const record = document as Record<string, unknown>
+  const rawCode = record.code
+  const code = typeof rawCode === 'string' ? rawCode : typeof rawCode === 'number' ? String(rawCode) : ''
+  const token = typeof record.token === 'string' ? record.token.trim() : ''
+  if (code === '200' && token.length > 0) return token
+  const message = typeof record.message === 'string' && record.message.length > 0
+    ? record.message
+    : 'Unable to obtain access token'
+  throw new Error(message)
+}
+
+// ---------------------------------------------------------------------------
+// Browser login protocol (code_challenge + callback payload)
+// ---------------------------------------------------------------------------
+
+/** `code_challenge` = base64(SHA-256(`{redirectUri}&&&{appId}&&&{timestampSec}`)). */
+export function buildSsoCodeChallenge(
+  redirectUri: string,
+  appId: string,
+  timestampSec: number,
+): string {
+  const source = `${redirectUri}&&&${appId}&&&${String(timestampSec)}`
+  return createHash('sha256').update(source, 'utf8').digest('base64')
+}
+
+/** Loopback redirect URI registered into the login URL (`http://localhost:{port}/callback`). */
+export function buildSsoRedirectUri(port: number): string {
+  return `http://localhost:${String(port)}${SSO_CALLBACK_PATH}`
+}
+
+/** Options of {@link buildSsoLoginUrl}. */
+export interface SsoLoginUrlOptions {
+  readonly appId?: string
+  /** Clock injection; defaults to now (seconds since the epoch). */
+  readonly now?: () => number
+}
+
+/** Build the browser login URL: `…/web/login?redirect_uri=…&app_id=…&timestamp=…&code_challenge=…`. */
+export function buildSsoLoginUrl(redirectUri: string, options: SsoLoginUrlOptions = {}): string {
+  const appId = options.appId ?? ssoAppId()
+  const timestamp = (options.now ?? (() => Math.floor(Date.now() / 1000)))()
+  const challenge = buildSsoCodeChallenge(redirectUri, appId, timestamp)
+  const base = ssoLoginUrl().replace(/\?$/u, '')
+  const parameters = new URLSearchParams({
+    redirect_uri: redirectUri,
+    app_id: appId,
+    timestamp: String(timestamp),
+    code_challenge: challenge,
+  })
+  return `${base}?${parameters.toString()}`
+}
+
+/** Decode one base64url JSON document strictly (standard or URL alphabet, padded or not). */
+function decodeBase64UrlJson(raw: string): Record<string, unknown> | undefined {
+  const normalized = raw.trim().replaceAll('-', '+').replaceAll('_', '/')
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized)) return undefined
+  const text = Buffer.from(normalized, 'base64').toString('utf8')
+  try {
+    const value: unknown = JSON.parse(text)
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>
+    }
+  } catch {
+    // Fall through to the payload-level error below.
+  }
+  return undefined
+}
+
+function parseCallbackNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim().length > 0 && /^[+-]?\d+$/u.test(value.trim())) {
+    return Number(value.trim())
+  }
+  return undefined
+}
+
+/** Options of {@link decodeSsoCallbackCode}. */
+export interface SsoCallbackDecodeOptions {
+  readonly appKey?: string
+  /** Clock injection in epoch seconds; defaults to now. */
+  readonly now?: () => number
+}
+
+/**
+ * Decode and fully validate one browser-callback `code` parameter:
+ * non-empty base64url JSON, non-empty token, result code 0, timestamp inside
+ * the ±600 s window, and `verify` equal to base64(SHA-256(token + timestamp +
+ * username + app_key + email)). Every deviation rejects with the portal's
+ * message when it carries one.
+ */
+export function decodeSsoCallbackCode(
+  codeParam: string,
+  options: SsoCallbackDecodeOptions = {},
+): { readonly ok: true, readonly payload: SsoCallbackPayload } | { readonly ok: false, readonly reason: string } {
+  if (codeParam.trim().length === 0) return { ok: false, reason: 'Missing callback code' }
+  const document = decodeBase64UrlJson(codeParam)
+  if (document === undefined) return { ok: false, reason: 'Invalid callback payload' }
+  const token = typeof document.token === 'string' ? document.token.trim() : ''
+  const username = typeof document.username === 'string' ? document.username.trim() : ''
+  const email = typeof document.email === 'string' ? document.email.trim() : ''
+  const verify = typeof document.verify === 'string' ? document.verify.trim() : ''
+  const code = parseCallbackNumber(document.code)
+  const timestamp = parseCallbackNumber(document.timestamp)
+  if (token.length === 0 || username.length === 0 || email.length === 0
+    || verify.length === 0 || code === undefined || timestamp === undefined) {
+    return { ok: false, reason: 'Invalid callback payload' }
+  }
+  const payload: SsoCallbackPayload = {
+    code,
+    message: typeof document.message === 'string' ? document.message : '',
+    token,
+    username,
+    email,
+    timestamp,
+    verify,
+  }
+  if (payload.code !== 0) {
+    return {
+      ok: false,
+      reason: payload.message.trim().length > 0
+        ? payload.message.trim()
+        : `Authentication failed (code ${String(payload.code)})`,
+    }
+  }
+  const now = (options.now ?? (() => Math.floor(Date.now() / 1000)))()
+  if (Math.abs(now - payload.timestamp) > SSO_TIMESTAMP_SKEW_SEC) {
+    return { ok: false, reason: 'Callback timestamp expired' }
+  }
+  const source = `${payload.token}${String(payload.timestamp)}${payload.username}`
+    + `${options.appKey ?? ssoAppKey()}${payload.email}`
+  const expected = createHash('sha256').update(source, 'utf8').digest('base64')
+  if (expected !== payload.verify) {
+    return { ok: false, reason: 'Signature verification failed' }
+  }
+  return { ok: true, payload }
+}
+
+/** Rewrite the `@deloittecn.com.cn` alias to `@deloitte.com.cn` (nova `canonicalize_email`). */
+export function canonicalizeSsoEmail(email: string): string {
+  const trimmed = email.trim()
+  const at = trimmed.lastIndexOf('@')
+  if (at < 0) return trimmed
+  if (trimmed.slice(at + 1).toLowerCase() === 'deloittecn.com.cn') {
+    return `${trimmed.slice(0, at)}@deloitte.com.cn`
+  }
+  return trimmed
+}
+
+/** Session username: the email's local part, else the payload username, else `user`. */
+export function ssoUsernameFromPayload(payload: Pick<SsoCallbackPayload, 'email' | 'username'>): string {
+  const local = payload.email.split('@')[0]?.trim() ?? ''
+  if (local.length > 0) return local
+  const username = payload.username.trim()
+  return username.length > 0 ? username : 'user'
+}
+
+/** Build the browser-path session from one validated callback payload. */
+export function ssoSessionFromPayload(payload: SsoCallbackPayload): SsoSession {
+  const email = canonicalizeSsoEmail(payload.email)
+  return {
+    email,
+    username: ssoUsernameFromPayload(payload),
+    fullName: payload.username.trim(),
+    domain: (email.split('@')[1] ?? '').trim(),
+    token: payload.token,
+    source: 'browser',
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Callback HTML responses (ported from nova, rebranded Deloitte DSH Desktop)
+// ---------------------------------------------------------------------------
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+/** Success page shown in the browser after a validated callback. */
+export const SSO_CALLBACK_SUCCESS_HTML: string = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>Deloitte DSH Desktop - 登录成功</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}
+.container{text-align:center;padding:2rem}h1{color:#4ade80}</style></head>
+<body><div class="container"><h1>登录成功</h1><p>认证已完成，您可以关闭此页面并返回 Deloitte DSH Desktop。</p></div>
+<script>setTimeout(function(){try{window.close()}catch(e){}},800)</script></body></html>`
+
+/** Failure page shown in the browser after a rejected callback. */
+export function ssoCallbackFailureHtml(message: string): string {
+  const safe = escapeHtml(message)
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>Deloitte DSH Desktop - 登录失败</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}
+.container{text-align:center;padding:2rem;max-width:32rem}h1{color:#f87171}.error{color:#fca5a5;font-family:monospace;margin-top:1rem;padding:1rem;background:rgba(248,113,113,.1);border-radius:.5rem;word-break:break-word}</style></head>
+<body><div class="container"><h1>认证失败，请重试</h1><p>请返回 Deloitte DSH Desktop 后再次点击「使用浏览器登录」。</p><div class="error">${safe}</div></div></body></html>`
+}
+
+// ---------------------------------------------------------------------------
+// Loopback callback server
+// ---------------------------------------------------------------------------
+
+/** Options of {@link SsoCallbackServer.waitForCallback}. */
+export interface SsoCallbackWaitOptions {
+  readonly appKey?: string
+  /** Idle timeout; defaults to the 10-minute login window. */
+  readonly timeoutMs?: number
+  /** Clock injection for the timestamp window (epoch seconds). */
+  readonly now?: () => number
+}
+
+/**
+ * Loopback HTTP server for the browser login redirect: one port on
+ * `127.0.0.1:0`, one `GET /callback?code=…` expectation at a time. A second
+ * waiter replaces the first (the first rejects), mirroring nova's
+ * single-pending semantics; the server answers every request with the
+ * branded success or failure page.
+ */
+export class SsoCallbackServer {
+  private server: Server | undefined
+  private port: number | undefined
+  private pending: {
+    resolve: (payload: SsoCallbackPayload) => void
+    reject: (reason: Error) => void
+  } | undefined
+  private timer: NodeJS.Timeout | undefined
+  /** Decode options (app key, clock) of the ACTIVE waiter: the pending
+   * request must validate against exactly the context that armed it. */
+  private activeDecodeOptions: SsoCallbackDecodeOptions = {}
+
+  /** Bind once and return the port plus the redirect URI for the login URL. */
+  async start(): Promise<{ readonly port: number, readonly redirectUri: string }> {
+    if (this.port !== undefined) {
+      return { port: this.port, redirectUri: buildSsoRedirectUri(this.port) }
+    }
+    const server = createServer((request, response) => { this.handle(request, response) })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => { resolve() })
+    })
+    const address = server.address()
+    const port = typeof address === 'object' && address !== null ? address.port : undefined
+    if (typeof port !== 'number' || port <= 0) {
+      server.close()
+      throw new Error(`${BIN_NAME}: callback server did not report a port`)
+    }
+    this.server = server
+    this.port = port
+    return { port, redirectUri: buildSsoRedirectUri(port) }
+  }
+
+  /**
+   * Wait for one validated callback. Only the newest call stays pending;
+   * superseded calls reject, and the idle timeout rejects the waiter without
+   * closing the server (a retry reuses the same port).
+   */
+  waitForCallback(options: SsoCallbackWaitOptions = {}): Promise<SsoCallbackPayload> {
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.pending?.reject(new Error('新的登录请求已取代当前等待'))
+    this.activeDecodeOptions = {
+      ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }
+    return new Promise<SsoCallbackPayload>((resolve, reject) => {
+      this.pending = { resolve, reject }
+      const timeoutMs = options.timeoutMs ?? SSO_LOGIN_IDLE_TIMEOUT_MS
+      this.timer = setTimeout(() => {
+        this.timer = undefined
+        const pending = this.pending
+        this.pending = undefined
+        pending?.reject(new Error('登录超时：10 分钟内未收到认证回调'))
+      }, timeoutMs)
+      if (typeof this.timer.unref === 'function') this.timer.unref()
+    })
+  }
+
+  /** Stop the server and reject any pending waiter with an optional reason. */
+  stop(reason?: string): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
+    const pending = this.pending
+    this.pending = undefined
+    if (reason !== undefined) pending?.reject(new Error(reason))
+    else pending?.reject(new Error('登录已取消'))
+    const server = this.server
+    this.server = undefined
+    this.port = undefined
+    if (server !== undefined) server.close()
+  }
+
+  private handle(request: IncomingMessage, response: ServerResponse): void {
+    const finish = (status: number, body: string): void => {
+      response.writeHead(status, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': String(Buffer.byteLength(body, 'utf8')),
+        Connection: 'close',
+      })
+      response.end(body)
+    }
+    const fail = (reason: string): void => {
+      // The rejected reason never includes the token; only the portal's
+      // message or a protocol-level string ever reaches the page.
+      finish(400, ssoCallbackFailureHtml(reason))
+      this.settle({ ok: false, reason })
+    }
+    let url: URL
+    try {
+      url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    } catch {
+      finish(400, ssoCallbackFailureHtml('Invalid callback request'))
+      return
+    }
+    if (url.pathname !== SSO_CALLBACK_PATH) {
+      finish(404, 'Not found')
+      return
+    }
+    const code = url.searchParams.get('code')
+    if (code === null || code.length === 0) {
+      fail('缺少认证参数 code')
+      return
+    }
+    const decoded = decodeSsoCallbackCode(code, this.activeDecodeOptions)
+    if (!decoded.ok) {
+      fail(decoded.reason)
+      return
+    }
+    finish(200, SSO_CALLBACK_SUCCESS_HTML)
+    this.settle({ ok: true, payload: decoded.payload })
+  }
+
+  private settle(
+    result: { readonly ok: true, readonly payload: SsoCallbackPayload }
+      | { readonly ok: false, readonly reason: string },
+  ): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
+    const pending = this.pending
+    this.pending = undefined
+    if (result.ok) pending?.resolve(result.payload)
+    else pending?.reject(new Error(result.reason))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OS identity probe (silent path), ported from nova os_user.rs fast sources
+// ---------------------------------------------------------------------------
+
+/** One bounded command run; resolves undefined on spawn failure or timeout. */
+export type SsoCommandRunner = (
+  program: string,
+  args: readonly string[],
+  timeoutMs: number,
+) => Promise<string | undefined>
+
+/** Options of {@link probeSsoOsUser}. */
+export interface SsoOsUserProbeOptions {
+  /** Platform selector; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform
+  /** Environment override; defaults to `process.env`. */
+  readonly environment?: NodeJS.ProcessEnv
+  /** Injected command runner; required in production wiring (`execFile`). */
+  readonly run: SsoCommandRunner
+  /** Total probe budget; defaults to the 6 s silent gate budget. */
+  readonly deadlineMs?: number
+  /** Weak-full-name warning sink (the probe continues regardless). */
+  readonly onWarn?: (message: string) => void
+  /** Clock injection for deadline arithmetic. */
+  readonly now?: () => number
+}
+
+const PROBE_FAST_TIMEOUT_MS = 2_000
+const PROBE_NET_TIMEOUT_MS = 15_000
+const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/u
+const NET_FULL_NAME_PATTERN = /(?:Full Name\s+|全名\s+)(.+?)(?:\r?\n|$)/iu
+const WMIC_FULL_NAME_PATTERN = /FullName=(.+)/iu
+
+function looksLikeEmail(value: string): boolean {
+  const trimmed = value.trim()
+  return trimmed.includes('@')
+    && /^[a-zA-Z0-9@._+-]+$/u.test(trimmed)
+    && (trimmed.split('@')[1] ?? '').includes('.')
+}
+
+function emailFromEnvironment(environment: NodeJS.ProcessEnv): string | undefined {
+  for (const name of ['EMAIL', 'USER_EMAIL', 'EMAIL_ADDRESS', 'SMTP_EMAIL']) {
+    const value = environment[name]
+    if (value !== undefined && looksLikeEmail(value)) return value.trim()
+  }
+  return undefined
+}
+
+function applyNetUserOutput(
+  output: string,
+  username: string,
+  state: { fullName: string, email: string },
+): void {
+  if (state.fullName.length === 0 || state.fullName.toLowerCase() === username.toLowerCase()) {
+    const match = NET_FULL_NAME_PATTERN.exec(output)
+    const candidate = match?.[1]?.trim()
+    if (candidate !== undefined && candidate.length > 0) state.fullName = candidate
+  }
+  if (state.email.length === 0) {
+    const match = EMAIL_PATTERN.exec(output)
+    if (match !== null && looksLikeEmail(match[0])) state.email = match[0]
+  }
+}
+
+/**
+ * Resolve the current OS user through the fast identity sources only (nova
+ * `os_user.rs` steps 1–4: `whoami /upn`, environment, `net user`,
+ * `net user /domain`, `wmic fullname`); the slow AD/gpresult sources are not
+ * ported because the silent gate owns a ~6 s budget. On non-Windows the
+ * probe reads `id -F` and the environment. A weak full name (empty or equal
+ * to the login id) warns through `onWarn` but never aborts — the SignEntity
+ * attempt continues, matching nova.
+ */
+export async function probeSsoOsUser(options: SsoOsUserProbeOptions): Promise<SsoOsUser | undefined> {
+  const platform = options.platform ?? process.platform
+  const environment = options.environment ?? process.env
+  const deadline = (options.now ?? (() => Date.now()))() + (options.deadlineMs ?? SSO_SILENT_BUDGET_MS)
+  const remaining = (): number => deadline - (options.now ?? (() => Date.now()))()
+  const run = async (program: string, args: readonly string[], wanted: number): Promise<string | undefined> => {
+    const left = remaining()
+    if (left < 200) return undefined
+    return await options.run(program, args, Math.min(wanted, left))
+  }
+  const username = (environment.USERNAME ?? environment.USER ?? '').trim()
+  if (username.length === 0) return undefined
+  const domain = (environment.USERDOMAIN ?? environment.COMPUTERNAME ?? '').trim()
+  const state = { fullName: '', email: '' }
+
+  if (platform === 'win32') {
+    // 1) Fast path: whoami /upn (usually well under a second).
+    const upn = await run('whoami', ['/upn'], PROBE_FAST_TIMEOUT_MS)
+    if (upn !== undefined && looksLikeEmail(upn)) state.email = upn.trim()
+    // 2) Environment fallback.
+    if (state.email.length === 0) state.email = emailFromEnvironment(environment) ?? ''
+    // 3) Local `net user`, then `net user /domain`, for Full Name and email.
+    const net = await run('net', ['user', username], PROBE_NET_TIMEOUT_MS)
+    if (net !== undefined) applyNetUserOutput(net, username, state)
+    if (state.fullName.length === 0 || state.fullName.toLowerCase() === username.toLowerCase()) {
+      const netDomain = await run('net', ['user', username, '/domain'], PROBE_NET_TIMEOUT_MS)
+      if (netDomain !== undefined) applyNetUserOutput(netDomain, username, state)
+    }
+    // 4) WMI full name, only if still weak and the budget allows.
+    if (state.fullName.length === 0 || state.fullName.toLowerCase() === username.toLowerCase()) {
+      const wmic = await run(
+        'wmic',
+        ['useraccount', 'where', `name="${username}"`, 'get', 'fullname', '/format:value'],
+        PROBE_NET_TIMEOUT_MS,
+      )
+      if (wmic !== undefined) {
+        const match = WMIC_FULL_NAME_PATTERN.exec(wmic)
+        const candidate = match?.[1]?.trim()
+        if (candidate !== undefined && candidate.length > 0) state.fullName = candidate
+      }
+    }
+  } else {
+    // Non-Windows: `id -F` carries the display name; email stays env-only.
+    const id = await run('id', ['-F'], PROBE_FAST_TIMEOUT_MS)
+    if (id !== undefined && id.trim().length > 0) state.fullName = id.trim()
+    state.email = emailFromEnvironment(environment) ?? ''
+  }
+
+  if (state.fullName.length === 0) {
+    const local = state.email.split('@')[0]?.trim()
+    state.fullName = local !== undefined && local.length > 0 ? local : username
+  }
+  state.fullName = state.fullName.replaceAll('\\', '').trim()
+  if (state.fullName.length === 0 || state.fullName.toLowerCase() === username.toLowerCase()) {
+    options.onWarn?.(
+      `${BIN_NAME}: sso os probe resolved a weak full name (fullName=${JSON.stringify(state.fullName)}, username=${JSON.stringify(username)}) — the silent SignEntity may fail; the browser login path remains available`,
+    )
+  }
+  return {
+    username,
+    fullName: state.fullName,
+    email: state.email.trim(),
+    domain,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Silent login orchestration
+// ---------------------------------------------------------------------------
+
+/** Options of {@link silentSsoLogin}. */
+export interface SilentSsoLoginOptions {
+  /** Injected fetch boundary (Electron `net.fetch` for the system CA store). */
+  readonly request: SsoRequestBoundary
+  /** OS probe override; defaults to {@link probeSsoOsUser} with an `execFile` runner. */
+  readonly probe?: () => Promise<SsoOsUser | undefined>
+  readonly appId?: string
+  readonly appKey?: string
+  /** Whole silent-path budget; defaults to 6 s. */
+  readonly budgetMs?: number
+  readonly timeoutMs?: number
+  /** Warning sink for the weak-full-name and skipped-probe cases. */
+  readonly onWarn?: (message: string) => void
+}
+
+/**
+ * Run the silent path: probe the OS user, then POST one SignEntity per email
+ * candidate (raw UPN first, the canonicalized `@deloitte.com.cn` alias only
+ * when it differs — nova's candidate order; the alias rewrite is identity
+ * bookkeeping, and the token endpoint expects the raw UPN). The SignEntity
+ * `userName` is the display name, never the login id.
+ */
+export async function silentSsoLogin(options: SilentSsoLoginOptions): Promise<SsoLoginResult> {
+  const probe = options.probe ?? (async () => await probeSsoOsUser({
+    run: defaultSsoCommandRunner,
+    ...(options.budgetMs === undefined ? {} : { deadlineMs: options.budgetMs }),
+    ...(options.onWarn === undefined ? {} : { onWarn: options.onWarn }),
+  }))
+  const os = await probe()
+  if (os === undefined) {
+    return { ok: false, reason: 'the operating system identity could not be resolved' }
+  }
+  const rawEmail = os.email.trim()
+  if (rawEmail.length === 0) {
+    return {
+      ok: false,
+      reason: 'no corporate email was resolved for the current OS user; use the browser login',
+    }
+  }
+  // dowork/nova: userName is the display name; warn (but continue) when weak.
+  const userName = os.fullName
+  if (userName.length === 0 || userName.toLowerCase() === os.username.toLowerCase()) {
+    options.onWarn?.(
+      `${BIN_NAME}: silent sso uses a weak display name (${JSON.stringify(userName)}); the portal may reject it`,
+    )
+  }
+  const canonical = canonicalizeSsoEmail(rawEmail)
+  const candidates = rawEmail.toLowerCase() === canonical.toLowerCase() ? [rawEmail] : [rawEmail, canonical]
+  let lastReason = 'no email candidate was attempted'
+  for (const candidate of candidates) {
+    try {
+      const token = await fetchSsoToken(buildSsoTokenJsonData(userName, candidate), {
+        request: options.request,
+        ...(options.appId === undefined ? {} : { appId: options.appId }),
+        ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      })
+      return {
+        ok: true,
+        session: {
+          email: candidate,
+          username: os.username,
+          fullName: os.fullName,
+          domain: os.domain,
+          token,
+          source: 'silent',
+        },
+      }
+    } catch (cause) {
+      lastReason = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+  return { ok: false, reason: lastReason }
+}
+
+// ---------------------------------------------------------------------------
+// Browser login orchestration
+// ---------------------------------------------------------------------------
+
+/** Options of {@link browserSsoLogin}. */
+export interface BrowserSsoLoginOptions {
+  /** Opens the login URL in the system browser (Electron `shell.openExternal`). */
+  readonly openExternal: (url: string) => void | Promise<void>
+  /** Callback server override for tests; defaults to a fresh loopback server. */
+  readonly server?: SsoCallbackServer
+  readonly appId?: string
+  readonly appKey?: string
+  /** Idle timeout; defaults to the 10-minute login window. */
+  readonly timeoutMs?: number
+  /** Clock injection for the login URL timestamp and callback window. */
+  readonly now?: () => number
+}
+
+/**
+ * Run the browser path: bind the loopback server, open the branded login URL
+ * in the system browser, and resolve once one validated callback lands (or
+ * reject with the timeout/cancel reason). The session email is the
+ * canonicalized payload email, matching nova's `session_from_payload`.
+ */
+export async function browserSsoLogin(options: BrowserSsoLoginOptions): Promise<SsoLoginResult> {
+  const server = options.server ?? new SsoCallbackServer()
+  const owned = options.server === undefined
+  let started: { port: number, redirectUri: string }
+  try {
+    started = await server.start()
+  } catch (cause) {
+    if (owned) server.stop()
+    return {
+      ok: false,
+      reason: `callback server bind failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    }
+  }
+  const loginUrl = buildSsoLoginUrl(started.redirectUri, {
+    ...(options.appId === undefined ? {} : { appId: options.appId }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  })
+  if (!loginUrl.startsWith('https://') && !loginUrl.startsWith('http://')) {
+    server.stop('不安全的登录 URL')
+    return { ok: false, reason: '不安全的登录 URL' }
+  }
+  const wait = server.waitForCallback({
+    ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  })
+  // A failed openExternal below stops the server and rejects this waiter
+  // through stop(); nobody awaits that branch, so mark it handled up front
+  // (the later `await wait` still observes the rejection).
+  void wait.catch(() => {})
+  try {
+    await options.openExternal(loginUrl)
+  } catch (cause) {
+    server.stop('无法打开浏览器登录页')
+    return {
+      ok: false,
+      reason: `无法打开浏览器登录页: ${cause instanceof Error ? cause.message : String(cause)}`,
+    }
+  }
+  try {
+    const payload = await wait
+    return { ok: true, session: ssoSessionFromPayload(payload) }
+  } catch (cause) {
+    return { ok: false, reason: cause instanceof Error ? cause.message : String(cause) }
+  } finally {
+    server.stop()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session store, gate decision, self-check projection
+// ---------------------------------------------------------------------------
+
+let sessionStore: SsoSession | undefined
+
+/** Current in-memory session, or undefined until authentication succeeds. */
+export function getSsoSession(): SsoSession | undefined {
+  return sessionStore
+}
+
+/** Adopt one authenticated session (memory only; never persisted). */
+export function setSsoSession(session: SsoSession): void {
+  sessionStore = session
+}
+
+/** Drop the session (used by tests and explicit teardown). */
+export function clearSsoSession(): void {
+  sessionStore = undefined
+}
+
+/**
+ * Whether this launch must pass the SSO gate: locked build with the
+ * `requireSso` policy flag. Every other combination keeps the boot sequence
+ * byte-for-byte identical to an un-gated build.
+ */
+export function desktopSsoGateRequired(policy: Pick<DesktopPolicy, 'locked' | 'requireSso'>): boolean {
+  return policy.locked && policy.requireSso
+}
+
+/** SSO section of the self-check report: policy requirement plus the memory session's presence. */
+export interface SsoSelfCheckStatus {
+  /** Whether this build's policy gates startup behind SSO. */
+  readonly required: boolean
+  /** Whether an authenticated session is live in this process. */
+  readonly authenticated: boolean
+  /** Authenticated account email; present only when authenticated. */
+  readonly email?: string
+  /** Which path authenticated (`silent` or `browser`); present only when authenticated. */
+  readonly source?: string
+}
+
+/**
+ * Project the SSO state for diagnostics: the token never appears. The
+ * session snapshot keeps the export decoupled from the store for tests.
+ */
+export function ssoSelfCheckStatus(
+  required: boolean,
+  session: SsoSession | undefined = getSsoSession(),
+): SsoSelfCheckStatus {
+  if (session === undefined) return { required, authenticated: false }
+  return {
+    required,
+    authenticated: true,
+    email: session.email,
+    source: session.source,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Default OS command runner (node child_process; Electron-free)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default {@link SsoCommandRunner}: `execFile` with a hard timeout, piped
+ * stdout, discarded stderr, and `windowsHide` so no console flashes on the
+ * Windows GUI path. Defined last so the function object stays a stable
+ * default for the silent-login probe.
+ */
+export const defaultSsoCommandRunner: SsoCommandRunner = async (program, args, timeoutMs) => {
+  const { execFile } = await import('node:child_process')
+  return await new Promise<string | undefined>(resolve => {
+    try {
+      execFile(program, [...args], {
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      }, (cause, stdout) => {
+        if (cause !== null && stdout === '') resolve(undefined)
+        else {
+          const text = typeof stdout === 'string' ? stdout.trim() : ''
+          resolve(text.length > 0 ? text : undefined)
+        }
+      })
+    } catch {
+      resolve(undefined)
+    }
+  })
+}

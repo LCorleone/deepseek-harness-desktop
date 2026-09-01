@@ -683,6 +683,7 @@ describe('pnpm policy environment hand-off', () => {
   const lockedContentModePolicy: DesktopPolicy = {
     locked: true,
     managedModels: true,
+    requireSso: false,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',
     allowHomePatch: false,
@@ -740,6 +741,14 @@ describe('pnpm enterprise TLS environment forwarding', () => {
       mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
       writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
       const previousEnv = { ...process.env }
+      // Machine-env independence: the forwarding collector dedupes proxy
+      // spellings case-insensitively by first occurrence, so a runner that
+      // already exports lowercase proxy variables (this container does)
+      // would otherwise win over the uppercase fixture below. Drop every
+      // competing spelling before assigning the fixture values.
+      for (const key of Object.keys(process.env)) {
+        if (/^(http|https|all|no)_proxy$/iu.test(key)) delete process.env[key]
+      }
       Object.assign(process.env, {
         NODE_EXTRA_CA_CERTS: 'C:/corp/ca.pem',
         https_proxy: 'http://proxy.corp:8080',

@@ -52,6 +52,9 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/node-runtime-sha256.json',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
+  // The SSO startup gate window's local document (locked requireSso builds
+  // load it from the unpacked mirror before any Host boot).
+  'lib/native-ui/sso-gate.html',
   'lib/profile.js',
   'lib/profile-manager.js',
   'lib/profile-service.js',
@@ -90,6 +93,7 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'lib/policy/desktop-policy.json',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
+  'lib/native-ui/sso-gate.html',
   'lib/index.js',
   'lib/profile.js',
   'lib/profile-manager.js',

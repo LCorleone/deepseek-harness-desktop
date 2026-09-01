@@ -1,6 +1,6 @@
 /** DSH Desktop executable: minimal Electron bootstrap around the Host Cordis root. */
 
-import { app, crashReporter, dialog } from 'electron'
+import { app, crashReporter, dialog, net, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +71,15 @@ import {
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
+import {
+  browserSsoLogin,
+  desktopSsoGateRequired,
+  setSsoSession,
+  silentSsoLogin,
+  type SsoRequestBoundary,
+  type SsoSession,
+} from './company-sso.ts'
+import { DesktopSsoGateWindow } from './sso-gate-window.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import {
   COMPANY_LLM_GATEWAY_API_KEY_ENV,
@@ -298,6 +307,7 @@ async function start(): Promise<void> {
     app.quit()
     return
   }
+  let ssoGateWindow: DesktopSsoGateWindow | undefined
   if (isDesktopInstallerQuitRequest(process.argv, process.platform)) {
     app.quit()
     return
@@ -477,7 +487,8 @@ async function start(): Promise<void> {
       requestQuit(0)
       return
     }
-    if (startupRecoveryWindow !== undefined) startupRecoveryWindow.show()
+    if (ssoGateWindow !== undefined) ssoGateWindow.show()
+    else if (startupRecoveryWindow !== undefined) startupRecoveryWindow.show()
     else runtime.show()
   })
   try {
@@ -486,6 +497,65 @@ async function start(): Promise<void> {
     lifecycleRecorder.transitionStartupStage(startupStage)
     if (process.platform === 'win32') app.setAppUserModelId('ai.deepseek.dsh.desktop')
     if (app.isPackaged && process.cwd() === '/') process.chdir(app.getPath('home'))
+    // SSO startup gate (locked + requireSso): the whole authentication runs
+    // BEFORE any window, Host boot, market composition, or CLI shim exists,
+    // so nothing company-controlled is reachable while unauthenticated. The
+    // silent path is one bounded OS probe plus one SignEntity POST through
+    // Electron's Chromium network stack (system CA store; Node's undici
+    // would fail the corporate-CA handshake). Its failure is an accelerator
+    // miss, not an error the user must fix: the gate window offers the true
+    // SSO decision — the browser loopback flow with the code_challenge and
+    // callback-signature checks. Closing the gate quits the application; a
+    // successful login adopts the in-memory session (never persisted, the
+    // token never logged) and the boot continues exactly as an un-gated
+    // launch from here on. Every other policy combination (unlocked, or
+    // requireSso=false) skips this block entirely, keeping the boot sequence
+    // byte-for-byte unchanged.
+    if (desktopSsoGateRequired(policy)) {
+      const ssoWarn = (message: string): void => { electronLogger.error(maskSecrets(message)) }
+      const ssoRequest: SsoRequestBoundary = (url, init) => net.fetch(url, init)
+      const adoptSession = (session: SsoSession): void => {
+        setSsoSession(session)
+        runtime.setSsoAccount(session.email)
+      }
+      const silent = await silentSsoLogin({ request: ssoRequest, onWarn: ssoWarn })
+      if (silent.ok) {
+        electronLogger.error(
+          `${BIN_NAME}: sso silent authentication ok (email=${silent.session.email})`,
+        )
+        adoptSession(silent.session)
+      } else {
+        electronLogger.error(`${BIN_NAME}: sso silent authentication unavailable: ${maskSecrets(silent.reason)}`)
+        const gate = new DesktopSsoGateWindow({
+          locale: desktopLocaleFromLanguageTag(app.getLocale()),
+          silentFailureDetail: maskSecrets(silent.reason),
+          startBrowserLogin: async () => {
+            const result = await browserSsoLogin({
+              openExternal: async url => { await shell.openExternal(url) },
+            })
+            if (result.ok) {
+              electronLogger.error(
+                `${BIN_NAME}: sso browser authentication ok (email=${result.session.email})`,
+              )
+              adoptSession(result.session)
+              return { ok: true as const }
+            }
+            const reason = maskSecrets(result.reason)
+            electronLogger.error(`${BIN_NAME}: sso browser authentication failed: ${reason}`)
+            return { ok: false, reason }
+          },
+        })
+        ssoGateWindow = gate
+        const verdict = await gate.run()
+        ssoGateWindow = undefined
+        if (verdict !== 'authenticated') {
+          electronLogger.error(`${BIN_NAME}: the sso gate closed without authentication; exiting`)
+          lifecycleRecorder.failStartup(startupStage, 'startup-failed')
+          await shutdown.request(0)
+          return
+        }
+      }
+    }
     const shellEnvironmentResolution = await resolveDesktopShellEnvironment({
       environment: process.env,
       home: app.getPath('home'),

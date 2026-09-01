@@ -35,6 +35,7 @@ function desktopPolicy(locked: boolean): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked,
     managedModels: false,
+    requireSso: false,
     trustRoots: [],
   })
 }
@@ -55,6 +56,7 @@ function companyLockedPolicy(): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
     managedModels: false,
+    requireSso: false,
     trustRoots: catalogTrustRoots,
   })
 }
@@ -68,6 +70,7 @@ function companyLockedOriginPolicy(): DesktopPolicy {
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
     managedModels: false,
+    requireSso: false,
     trustRoots: catalogTrustRoots,
   })
 }
@@ -942,6 +945,6 @@ describe('packaged dsh bootstrap policy hand-off', () => {
     expect(() => desktopPolicyFromEnvironment(
       { DSH_DESKTOP_POLICY_LOCKED: '1' },
       packagedModuleUrl,
-    )).toThrow('must carry all five entries')
+    )).toThrow('must carry all six entries')
   })
 })

@@ -44,6 +44,7 @@ function injectedDesktopPolicy(locked: boolean, managedModels = false): DesktopP
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked,
     managedModels,
+    requireSso: false,
     trustRoots: [],
   })
 }
@@ -1659,6 +1660,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked,
       managedModels: false,
+      requireSso: false,
       trustRoots: bootTrustRoots,
     })
   }

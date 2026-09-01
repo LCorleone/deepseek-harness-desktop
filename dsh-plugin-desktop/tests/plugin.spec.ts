@@ -54,6 +54,7 @@ interface PluginHarness {
 function createHarness(
   platform: DesktopRuntime['platform'] = 'darwin',
   locked: boolean = false,
+  ssoAccountEmail: string | undefined = undefined,
 ): PluginHarness {
   let shell: DesktopShellSpec | undefined
   let watcher: ((next: DesktopSettings, prev: DesktopSettings) => void | Promise<void>) | undefined
@@ -72,6 +73,8 @@ function createHarness(
     platform,
     locked,
     locale: 'en',
+    ssoAccountEmail,
+    setSsoAccount: vi.fn(),
     updates: {
       isPackaged: false,
       canDownload: platform === 'darwin' || platform === 'win32',
@@ -256,6 +259,28 @@ describe('desktop Host plugin', () => {
 
     expect(harness.shell()?.url)
       .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-locked=1')
+  })
+
+  it('marks the renderer URL and window title with the authenticated sso account', () => {
+    const harness = createHarness('win32', true, 'zhangsan@deloitte.com.cn')
+    apply(harness.ctx, config)
+    expect(harness.shell()?.url)
+      .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32&dsh-desktop-locked=1&dsh-desktop-account=zhangsan%40deloitte.com.cn')
+    expect(harness.shell()?.windowTitle).toBe('Deloitte DSH Desktop — zhangsan@deloitte.com.cn')
+    expect(harness.shell()?.productName).toBe('Deloitte DSH Desktop')
+  })
+
+  it('keeps the renderer URL and window title byte-identical without an sso session', () => {
+    // Equivalence guarantee of the gate: an unauthenticated launch (unlocked
+    // build, requireSso=false, or a not-yet-authenticated locked build)
+    // renders exactly the URL and title an un-gated build always produced.
+    const plain = createHarness('win32', true)
+    apply(plain.ctx, config)
+    expect(plain.shell()?.url)
+      .toBe('http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=win32&dsh-desktop-locked=1')
+    expect(plain.shell()?.windowTitle).toBe('Deloitte DSH Desktop')
+    expect(desktopRendererUrl(43120, 'compatibility', 'win32', true))
+      .toBe(desktopRendererUrl(43120, 'compatibility', 'win32', true, undefined))
   })
 
   it('forwards same-origin renderer boot reports through the Host route', async () => {
