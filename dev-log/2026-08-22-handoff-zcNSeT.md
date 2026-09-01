@@ -98,7 +98,12 @@ DSH Desktop「公司插件市场 + 客户端锁定」项目实施。**本会话�
 policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob（URL+token，仓库零明文，worker 实测 gateway HTTP 200）；provider 走 llm-pi-ai composition base 内存注册（settings.yaml 零痕迹，真机 host boot 实证默认模型 dsh-company-gateway/DSV4-DSH）；token 仅 env 注入（main.ts 于 loadLayeredEnv 前；shim 只固化 policy 键，token 永不落盘）；让位语义用上游同源解析器探测（.env 层结构性不可能携带 DSH_*——上游启动即拒）；默认模型迁移镜像 permission 先例；Models 页双门控隐藏。**评审确认要点**：让位/分层语义逐条对上游源码成立；mask-secrets 补 UUID+具名模式（纵深防御）；已知面（用户手改 llm-pi-ai 段可按字段覆盖 base 层、真 token 亦进 dev 构建——软屏障已签收）。check 基线 1260+5skip。
 ### SSO 启动门禁 ✅ 实装完成（2026-09-01，`cf52ba956e` + 评审修复 `84067e28cd`）
 评审两轮：首轮 P1×2（SignEntity 键名 snake→camelCase 对齐 nova 生产形状+完整键序字面量钉死；token POST 默认 45s 超时防无窗挂死）+ P2×2（verify_auth_code 确认往返忠实移植——code 单次消费兜底；APP_ID/KEY env 覆盖收紧 unpackaged-only，堵「设环境变量自签过门」）全修。评审确认：门无旁路（单实例锁第一句/恢复路径/二次实例/更新重启全过门）、金向量独立重算非恒真、token 零落盘、门窗继承 recovery 窗生产级配置、未要求 SSO 时 URL/标题等价。check 1336+6skip。
-**诚实边界（评审补记）**：①安装目录 desktop-cli.js 可手跑绕过启动门（六键交接非秘密）——归入既有「CLI/执行器硬钳制」待办卡；②认证成功 email 进 userData 日志（7 天留存）——与托盘/标题/徽章同敏感级，数据清单记一笔；③pnpm.spec 的 proxy 环境清洗为 test-only 夹带（良性）。**待实机验证**：camelCase 键名与静默路径的真身份验证（#36 装机即测）。
+**诚实边界（评审补记）**：①安装目录 desktop-cli.js 可手跑绕过启动门（六键交接非秘密）——归入既有「CLI/执行器硬钳制」待办卡；②认证成功 email 进 userData 日志（7 天留存）——与托盘/标题/徽章同敏感级，数据清单记一笔；③pnpm.spec 的 proxy 环境清洗为 test-only 夹带（良性）。**SSO 终态评审（2026-09-01，review-sso2 独立复核，master 通过）**：门序列正确（在一切 surface 前）、token 永不落盘/日志/URL、渲染端零 Node 全局、打包三清单同步、红线干净。**签收/记录项**：
+- **角落徽章 → Settings General 用户信息卡**（用户 2026-09-01 拍板选 B）：侧边栏角落徽章移除，完整邮箱展示收敛到设置 General 卡 + 托盘「Signed in」+ 窗口标题后缀——原「侧边栏角落显示 email」需求按此定稿。
+- **CLI 子进程旁路（含 SSO 门）**：desktop-cli.js 可绕过 requireSso 直接跑（六键交接非秘密）——并入既有「CLI/执行器硬钳制」卡（触发条件不变）。
+- **P3 记录**：门窗口关窗时浏览器登录 in-flight 的浮点 promise（app 退出中，无安全影响，可留清理项）。
+
+**待实机验证**：camelCase 键名与静默路径的真身份验证（#36 装机即测）。
 
 ### #36 实机首验 + 门户协议排障（2026-09-01）
 **#36 结果**：门控链路工作（未认证不放行、关窗=退出实证），但 ①静默路径被门户拒：「此应用对应配置不存在」②门窗口黑屏。排障全程（容器+用户机双网实证）：
