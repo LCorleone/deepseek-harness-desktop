@@ -645,6 +645,43 @@ describe('loopback callback server', () => {
       server.stop('登录已取消')
     }
   })
+
+  it('does not time the waiter out once a validated callback is being confirmed', async () => {
+    // The confirmation round trip is held in flight across the (shortened)
+    // idle deadline: the timer bounds only the wait for the browser to
+    // come back, so a callback that lands late in the login window must
+    // not time the login out mid-confirmation.
+    let releaseConfirm!: () => void
+    const inFlight = new Promise<void>(resolve => { releaseConfirm = resolve })
+    const confirm = vi.fn(async (): Promise<{ ok: boolean, status: number, text: () => Promise<string> }> => {
+      await inFlight
+      return { ok: true, status: 200, text: async () => '{"code":0}' }
+    })
+    const server = new SsoCallbackServer()
+    try {
+      const { port } = await server.start()
+      const wait = server.waitForCallback({
+        appKey: APP_KEY,
+        now: () => 1_789_000_000,
+        timeoutMs: 40,
+        confirm: { request: confirm, appKey: APP_KEY },
+      })
+      let rejection: unknown
+      void wait.catch(cause => { rejection = cause })
+      const settling = request(port, `/callback?code=${encodeCallback(validPayload)}`)
+      await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+      // The idle deadline passes while the portal confirms.
+      await new Promise(resolve => { setTimeout(resolve, 150) })
+      expect(rejection).toBeUndefined()
+      releaseConfirm()
+      const response = await settling
+      expect(response.status).toBe(200)
+      expect(response.body).toContain('登录成功')
+      await expect(wait).resolves.toMatchObject({ token: 'demo-token-abcdef' })
+    } finally {
+      server.stop()
+    }
+  })
 })
 
 describe('browser login orchestration', () => {

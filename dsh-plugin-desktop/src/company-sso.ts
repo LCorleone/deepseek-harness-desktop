@@ -708,7 +708,11 @@ export interface SsoCallbackConfirm {
 /** Options of {@link SsoCallbackServer.waitForCallback}. */
 export interface SsoCallbackWaitOptions {
   readonly appKey?: string
-  /** Idle timeout; defaults to the 10-minute login window. */
+  /**
+   * Idle timeout; defaults to the 10-minute login window. It bounds only
+   * the wait for the browser to redirect back — never the portal
+   * confirmation round trip, which owns its own request bound.
+   */
   readonly timeoutMs?: number
   /** Clock injection for the timestamp window (epoch seconds). */
   readonly now?: () => number
@@ -774,7 +778,7 @@ export class SsoCallbackServer {
    * closing the server (a retry reuses the same port).
    */
   waitForCallback(options: SsoCallbackWaitOptions = {}): Promise<SsoCallbackPayload> {
-    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.disarmIdleTimer()
     this.pending?.reject(new Error('新的登录请求已取代当前等待'))
     this.activeDecodeOptions = {
       ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
@@ -796,10 +800,7 @@ export class SsoCallbackServer {
 
   /** Stop the server and reject any pending waiter with an optional reason. */
   stop(reason?: string): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer)
-      this.timer = undefined
-    }
+    this.disarmIdleTimer()
     const pending = this.pending
     this.pending = undefined
     if (reason !== undefined) pending?.reject(new Error(reason))
@@ -808,6 +809,13 @@ export class SsoCallbackServer {
     this.server = undefined
     this.port = undefined
     if (server !== undefined) server.close()
+  }
+
+  /** Disarm the idle timer; a no-op once disarmed (every settle path is idempotent). */
+  private disarmIdleTimer(): void {
+    if (this.timer === undefined) return
+    clearTimeout(this.timer)
+    this.timer = undefined
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -846,6 +854,13 @@ export class SsoCallbackServer {
       fail(decoded.reason)
       return
     }
+    // Local validation passed, so the browser came back and the idle wait
+    // is over: disarm the timer before the confirmation round trip. The
+    // timer bounds only "waiting for the browser to return" — the portal
+    // confirmation below owns its own request bound — so a callback that
+    // lands late in the login window must not time the waiter out
+    // mid-confirmation while the browser still receives its success page.
+    this.disarmIdleTimer()
     const confirm = this.activeConfirm
     if (confirm !== undefined) {
       // Local validation passed; confirm the code with the portal before
@@ -870,10 +885,7 @@ export class SsoCallbackServer {
     result: { readonly ok: true, readonly payload: SsoCallbackPayload }
       | { readonly ok: false, readonly reason: string },
   ): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer)
-      this.timer = undefined
-    }
+    this.disarmIdleTimer()
     const pending = this.pending
     this.pending = undefined
     if (result.ok) pending?.resolve(result.payload)
