@@ -99,6 +99,17 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### SSO 启动门禁 ✅ 实装完成（2026-09-01，`cf52ba956e` + 评审修复 `84067e28cd`）
 评审两轮：首轮 P1×2（SignEntity 键名 snake→camelCase 对齐 nova 生产形状+完整键序字面量钉死；token POST 默认 45s 超时防无窗挂死）+ P2×2（verify_auth_code 确认往返忠实移植——code 单次消费兜底；APP_ID/KEY env 覆盖收紧 unpackaged-only，堵「设环境变量自签过门」）全修。评审确认：门无旁路（单实例锁第一句/恢复路径/二次实例/更新重启全过门）、金向量独立重算非恒真、token 零落盘、门窗继承 recovery 窗生产级配置、未要求 SSO 时 URL/标题等价。check 1336+6skip。
 **诚实边界（评审补记）**：①安装目录 desktop-cli.js 可手跑绕过启动门（六键交接非秘密）——归入既有「CLI/执行器硬钳制」待办卡；②认证成功 email 进 userData 日志（7 天留存）——与托盘/标题/徽章同敏感级，数据清单记一笔；③pnpm.spec 的 proxy 环境清洗为 test-only 夹带（良性）。**待实机验证**：camelCase 键名与静默路径的真身份验证（#36 装机即测）。
+
+### #36 实机首验 + 门户协议排障（2026-09-01）
+**#36 结果**：门控链路工作（未认证不放行、关窗=退出实证），但 ①静默路径被门户拒：「此应用对应配置不存在」②门窗口黑屏。排障全程（容器+用户机双网实证）：
+- **黑屏**：打包资产齐全（unpacked 镜像验证）；本地同款资产正常渲染；复现路径=畸形 state 使 `COPY[locale]` undefined 崩溃。用户机黑屏根因未最终定位（本地无法复现真实形态），以三道防线+观测收口（见下）
+- **门户协议发现（重要）**：SignEntity 的配置检查按 **(appId, appName) 成对匹配**——实证 1005+coWork.Nova 过检查（返回 Invalid username）、1007+任意名都配置不存在；运维注册表记录 app_name='DSH'；**运维调整后 1007+DSH 实测 code 200 + 换到 token**（容器直打验证）
+- **静默路径安全本质再确认**：假身份（"Julu Test"+真实形邮箱）也能换到 token——SignEntity=app_key 握手+身份声明，非真 SSO；门禁安全重心在浏览器回调路径（设计如此，无修正需要）
+- **排障工具**：容器探针脚本（SignEntity 构造+getEncodeStr+签名，NODE_TLS_REJECT_UNAUTHORIZED=0 旁路容器不认的公司 CA）——门户侧问题速诊利器，模式记此可随时重建
+- **运维协作记录**：appName 必须逐字符匹配注册名（我们发 'DSH Desktop' vs 注册 'DSH' 差一步）；注册表有记录 ≠ 门户运行时可见（本次运维侧同步修复）
+
+### SSO 观测加固批次（2026-09-01，`94bb25d16b`，#37 发车）
+黑屏三道防线：①decodeState 严格校验（locale/phase/errorDetail 非法 → 可见 fallback 卡，`state=e30` 崩溃路径已断）②SsoGateErrorBoundary（渲染抛错显示中英错误卡）③门窗口四类 webContents 事件（console/render-gone/did-fail-load/unresponsive）masked 回传主进程日志（`grep "dsh-plugin-desktop: sso gate"`）。appName 可配置（BUILTIN='DSH'，DSH_SSO_APP_NAME unpackaged-only 覆盖）。静默失败带门户 code 入日志/门 errorDetail。check 1346+6skip。**#37 待用户装机验证：静默认证直通（不弹门）+ 徽章三处 + 黑屏不再。**
 ## 企业定制第三批·SSO 启动门禁（2026-08-31 设计定稿，暂缓实施）
 **机制来源**：参考 cowork-nova-tauri（dowork 移植）实测代码。公司 SSO 门户 sdp.deloitte.com.cn。**凭据（2026-08-31 运维下发，DSH Desktop 专属，替代原复用 nova 1005 的方案）：app_id=1007，app_key=[REDACTED-SO-APP-KEY-2026-09-02]**（与 demo 签名钥/PAT 同级：会话+私有仓库存量已知悉；最终嵌入客户端为软屏障）。两路径：A 静默（whoami /upn → SignEntity POST /web/dai/token，注意本质是 app_key 握手非真 SSO，只做便捷加速）；B 浏览器手动（loopback 回调 + code_challenge + 回调签名校验 verify=sha256(token+ts+username+app_key+email)，±10min）= 真 SSO，门禁以此为准。
 **定稿设计**：policy 新开关 requireSso（与 managedModels 同款快速开关）；locked && requireSso 时启动序列=先静默（5s 预算）→ 失败出登录门窗口（复用 recovery window 基建）→ 浏览器 B 路径认证 → 过门才 boot 主窗口/host（含 CLI/市场全在门后）。会话内存态不落盘。**用户标识徽章**（用户要求，SSO 卡一部分）：认证后侧边栏角落显示 email 徽章（client 插件 slot，同品牌字样机制）+ 托盘「已登录」项。**诚实边界**：门禁为进程级软屏障，A 路径防不住提取 app_key 者（已签收威胁模型内）。
