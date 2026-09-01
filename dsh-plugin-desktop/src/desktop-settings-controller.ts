@@ -17,6 +17,7 @@ import type {
   DesktopSettingsMarketView,
   DesktopSettingsProfileView,
   DesktopSettingsResponse,
+  DesktopSettingsSsoView,
   DesktopTerminalOpenResponse,
 } from './desktop-settings-contract.ts'
 
@@ -41,6 +42,8 @@ export interface DesktopSettingsControllerBootstrap {
   exportDiagnostics(): void | Promise<void>
   /** Open the isolated native Profile creator. */
   openProfileCreator(): void
+  /** Read the live SSO session projection (token-free), or undefined when none. */
+  readSso(): DesktopSettingsSsoView | undefined
   /** Prepare a last-known-good rollback without quiescing the Host yet. */
   prepareProfileRollback(): DesktopSettingsPostResponse<DesktopProfileRollbackResponse>
 }
@@ -92,6 +95,7 @@ export class DesktopSettingsController {
 
   /** Read a fresh, renderer-safe settings projection. */
   read(): DesktopSettingsResponse {
+    const sso = this.bootstrap.readSso()
     return Object.freeze({
       current: this.bootstrap.profiles.current.name,
       locked: this.bootstrap.locked,
@@ -102,6 +106,7 @@ export class DesktopSettingsController {
         )),
       ),
       market: projectMarket(this.bootstrap.readMarket(), this.effectiveMarket),
+      ...(sso === undefined ? {} : { sso }),
     })
   }
 

@@ -74,6 +74,7 @@ import {
 import {
   browserSsoLogin,
   desktopSsoGateRequired,
+  getSsoSession,
   setSsoSession,
   silentSsoLogin,
   type SsoRequestBoundary,
@@ -1257,6 +1258,11 @@ async function start(): Promise<void> {
                 await hostCtx.desktopProfiles.select(name)
               },
             })
+          },
+          readSso: () => {
+            const session = getSsoSession()
+            if (session === undefined) return undefined
+            return { authenticated: true, email: session.email, source: session.source }
           },
           prepareProfileRollback,
         }))

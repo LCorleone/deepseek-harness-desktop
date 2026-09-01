@@ -28,6 +28,18 @@ export interface DesktopMarketView {
   readonly legacyDefaulted: boolean
 }
 
+/** Which startup-gate path authenticated: silent OS handshake or browser SSO. */
+export type DesktopSettingsSsoSource = 'silent' | 'browser'
+
+/** Renderer-safe SSO session projection (the portal token never appears). */
+export interface DesktopSettingsSsoView {
+  readonly authenticated: boolean
+  /** Authenticated account email; present only when authenticated. */
+  readonly email?: string
+  /** Which path authenticated (`silent` or `browser`); present only when authenticated. */
+  readonly source?: DesktopSettingsSsoSource
+}
+
 /** Complete launcher-owned settings projection. */
 export interface DesktopSettingsView {
   readonly current: string
@@ -35,6 +47,8 @@ export interface DesktopSettingsView {
   readonly locked: boolean
   readonly profiles: readonly DesktopProfileView[]
   readonly market: DesktopMarketView
+  /** Live SSO session projection, or undefined when no session is authenticated. */
+  readonly sso?: DesktopSettingsSsoView
 }
 
 /** A persisted selection that requires a new Desktop generation. */
@@ -61,6 +75,33 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isMarketProvider(value: unknown): value is DesktopMarketProvider {
   return value === 'disabled' || value === 'community-market' || value === 'dsh-market'
+}
+
+function isSsoSource(value: unknown): value is DesktopSettingsSsoSource {
+  return value === 'silent' || value === 'browser'
+}
+
+const SSO_EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/u
+const MAX_SSO_EMAIL_BYTES = 320
+
+/** UTF-8 byte length without the Node `Buffer` global (this module runs in the sandboxed renderer). */
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+/** Validate the optional SSO projection (absent means no authenticated session). */
+function parseSso(value: unknown): DesktopSettingsSsoView | undefined {
+  if (value === undefined) return undefined
+  if (!isObject(value)
+    || value.authenticated !== true
+    || typeof value.email !== 'string'
+    || value.email.length === 0
+    || !SSO_EMAIL_PATTERN.test(value.email)
+    || utf8ByteLength(value.email) > MAX_SSO_EMAIL_BYTES
+    || !isSsoSource(value.source)) {
+    throw new Error('dsh-plugin-desktop: invalid sso settings response')
+  }
+  return Object.freeze({ authenticated: true, email: value.email, source: value.source })
 }
 
 function parseProfile(value: unknown): DesktopProfileView {
@@ -102,6 +143,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
   if (new Set(profiles.map(profile => profile.name)).size !== profiles.length) {
     throw new Error('dsh-plugin-desktop: duplicate profile in settings response')
   }
+  const sso = parseSso(value.sso)
   return Object.freeze({
     current: value.current,
     locked: value.locked,
@@ -111,6 +153,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
       effective: value.market.effective,
       legacyDefaulted: value.market.legacyDefaulted,
     }),
+    ...(sso === undefined ? {} : { sso }),
   })
 }
 

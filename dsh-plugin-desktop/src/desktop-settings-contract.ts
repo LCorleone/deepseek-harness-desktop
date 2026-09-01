@@ -53,6 +53,19 @@ export interface DesktopSettingsMarketView {
   readonly legacyDefaulted: boolean
 }
 
+/** Which startup-gate path authenticated: silent OS handshake or browser SSO. */
+export type DesktopSettingsSsoSource = 'silent' | 'browser'
+
+/** Renderer-safe SSO session projection (the portal token never appears). */
+export interface DesktopSettingsSsoView {
+  /** Whether an authenticated session is live in this process. */
+  readonly authenticated: boolean
+  /** Authenticated account email; present only when authenticated. */
+  readonly email?: string
+  /** Which path authenticated (`silent` or `browser`); present only when authenticated. */
+  readonly source?: DesktopSettingsSsoSource
+}
+
 /** Complete renderer-safe Desktop settings state. */
 export interface DesktopSettingsResponse {
   /** Profile backing the currently running generation. */
@@ -63,6 +76,8 @@ export interface DesktopSettingsResponse {
   readonly profiles: readonly DesktopSettingsProfileView[]
   /** Market choice for the current and next generation. */
   readonly market: DesktopSettingsMarketView
+  /** Live SSO session projection, or undefined when no session is authenticated. */
+  readonly sso?: DesktopSettingsSsoView
 }
 
 /** Exact body accepted by the profile-creation endpoint. */

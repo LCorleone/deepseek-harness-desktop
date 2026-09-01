@@ -73,6 +73,7 @@ function bootstrap(
     openTerminal: () => {},
     exportDiagnostics: async () => {},
     openProfileCreator: () => {},
+    readSso: () => undefined,
     prepareProfileRollback: () => ({
       response: { accepted: true, restartRequired: true, targetProfile: 'desktop' },
     }),
@@ -154,6 +155,24 @@ describe('desktop settings controller', () => {
     const read = controller.read()
     expect(read.profiles).toHaveLength(3)
     expect(read.market).toEqual({ requested: 'disabled', effective: 'disabled', legacyDefaulted: false })
+  })
+
+  it('projects the live SSO session without the portal token', () => {
+    const controller = new DesktopSettingsController(bootstrap({
+      readSso: () => ({ authenticated: true, email: 'zhangsan@deloitte.com.cn', source: 'browser' }),
+    }))
+
+    expect(controller.read()).toMatchObject({
+      sso: { authenticated: true, email: 'zhangsan@deloitte.com.cn', source: 'browser' },
+    })
+    expect(JSON.stringify(controller.read())).not.toContain('token')
+    expect(JSON.stringify(controller.read())).not.toContain('not-an-email')
+  })
+
+  it('omits the sso projection entirely without an authenticated session', () => {
+    const controller = new DesktopSettingsController(bootstrap())
+
+    expect(controller.read()).not.toHaveProperty('sso')
   })
 
   it('creates without selecting or restarting and returns a fresh safe state', () => {

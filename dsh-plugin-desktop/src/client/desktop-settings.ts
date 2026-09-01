@@ -5,6 +5,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { DesktopSettingsSection, type DesktopNotificationSettings, type DesktopShellSettings } from './DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from './DesktopTerminalSettingsAction.tsx'
+import { GeneralUserInfoCard } from './GeneralUserInfoCard.tsx'
 import { createDesktopSettingsApi } from './desktop-settings-api.ts'
 import { en, zh, type DesktopSettingsLocaleKey } from './desktop-settings-locales.ts'
 import { installDesktopSettingsStyles } from './desktop-settings-styles.ts'
@@ -64,4 +65,18 @@ export function applyDesktopSettings(ctx: ClientContext, environment: DesktopCli
     locale: DESKTOP_SETTINGS_LOCALE_NAMESPACE,
     inject: () => ({ api }),
   }, DesktopTerminalSettingsAction))
+  // Authenticated-account card in the upstream Settings → General section. The
+  // seat is a list slot stacked by ui-settings-general's General entry (the
+  // GeneralSection renders each `settings.general.item` occupant); the card
+  // reads the live SSO session through the Desktop settings API and renders
+  // nothing unless a session is authenticated, so unlocked and unauthenticated
+  // builds show no account row. Rendered above the agent-preset / permission
+  // preference rows that the upstream bundle composes here.
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item',
+    id: 'desktop-user-info',
+    order: -30,
+    locale: DESKTOP_SETTINGS_LOCALE_NAMESPACE,
+    inject: () => ({ api }),
+  }, GeneralUserInfoCard))
 }

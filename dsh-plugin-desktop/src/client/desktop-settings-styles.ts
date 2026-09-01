@@ -251,6 +251,47 @@ html.dsh-desktop-locked [data-slot='settings.action'] { display: none !important
   .dshDesktopSettingsToggleRow { align-items: flex-start; }
   .dshDesktopSettingsForm { align-items: stretch; flex-direction: column; }
 }
+/* Signed-in account card in the upstream Settings → General section: mirrors
+   the General section's owned rows (figma 'Setting-Cell': pad 16/0, hairline
+   separator) but stacks its label/value pairs vertically so the full email is
+   never truncated. The General section strips the separator on its last child. */
+.dshGeneralUserInfoCard {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.dshGeneralUserInfoTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+.dshGeneralUserInfoList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 0;
+}
+.dshGeneralUserInfoRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dshGeneralUserInfoLabel {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+}
+.dshGeneralUserInfoValue {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
 `
 
 /** Install one scoped stylesheet; tolerate headless Client boot. */

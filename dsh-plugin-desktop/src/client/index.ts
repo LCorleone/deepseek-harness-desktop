@@ -8,7 +8,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import { applyAdvancedShell } from './advanced-shell.ts'
 import { startRendererBootReporter } from './boot-health.ts'
 import { DeloitteBrandName } from './DeloitteBrandName.tsx'
-import { ssoAccountBadgeOccupant } from './SsoAccountBadge.tsx'
 import { applyDesktopSettings } from './desktop-settings.ts'
 import { installDesktopDirectoryPickerBridge, requestDesktopDirectoryValidation } from './directory-picker.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
@@ -29,12 +28,18 @@ export type {
   DesktopProfileView,
   DesktopRestartAcceptance,
   DesktopSettingsApi,
+  DesktopSettingsSsoSource,
+  DesktopSettingsSsoView,
   DesktopSettingsView,
 } from './desktop-settings-api.ts'
 export { DesktopSettingsSection } from './DesktopSettingsSection.tsx'
 export { DesktopTerminalSettingsAction } from './DesktopTerminalSettingsAction.tsx'
 export { DeloitteBrandName } from './DeloitteBrandName.tsx'
-export { SsoAccountBadge, ssoAccountBadgeOccupant } from './SsoAccountBadge.tsx'
+export { GeneralUserInfoCard, GeneralUserInfoCardView } from './GeneralUserInfoCard.tsx'
+export type {
+  GeneralUserInfoCardInjected,
+  GeneralUserInfoCardProps,
+} from './GeneralUserInfoCard.tsx'
 export type {
   DesktopTerminalSettingsActionInjected,
   DesktopTerminalSettingsActionProps,
@@ -120,19 +125,5 @@ export function apply(ctx: ClientContext): void {
     { name: 'sidebar.brand.name', priority: -1 },
     DeloitteBrandName,
   ))
-  // Authenticated-account badge (locked + requireSso + gate passed): the
-  // Electron Host injects `dsh-desktop-account` into the renderer URL only
-  // for an authenticated launch, so the marker's presence is the whole gate.
-  // 'sidebar.footer.action' is a LIST-kind slot — entries coexist by design
-  // at the default priority, so no brand-slot-style priority juggling is
-  // needed — and the inject wrapper keys the registration to the slot's
-  // declaration lifetime exactly like the brand registration above.
-  const account = environment.account
-  if (account !== undefined) {
-    ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-      { name: 'sidebar.footer.action', id: 'dsh-desktop-sso-account' },
-      ssoAccountBadgeOccupant(account),
-    ))
-  }
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
 }

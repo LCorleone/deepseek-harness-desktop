@@ -127,9 +127,6 @@ export const Config: z<Config> = z.object({
  * @param mode - active native presentation mode.
  * @param platform - active Electron platform.
  * @param locked - whether the embedded company policy locks this build.
- * @param account - authenticated SSO account email; omitted (and the URL
- * byte-identical to an un-gated launch) unless a locked `requireSso` build
- * authenticated at the startup gate.
  * @returns the URL loaded by the BrowserWindow.
  */
 export function desktopRendererUrl(
@@ -137,7 +134,6 @@ export function desktopRendererUrl(
   mode: DesktopShellMode,
   platform: Context['desktopRuntime']['platform'],
   locked: boolean,
-  account?: string,
 ): string {
   const url = new URL(`http://127.0.0.1:${String(port)}/`)
   url.searchParams.set('dsh-desktop-mode', mode)
@@ -145,9 +141,6 @@ export function desktopRendererUrl(
   // The lock marker rides the URL only on company builds; an unlocked
   // development shell omits it, and the client treats absence as unlocked.
   if (locked) url.searchParams.set('dsh-desktop-locked', '1')
-  // Same gating discipline for the account marker: present only when the
-  // launcher actually holds an authenticated SSO session.
-  if (account !== undefined && account.length > 0) url.searchParams.set('dsh-desktop-account', account)
   return url.href
 }
 
@@ -322,7 +315,6 @@ export function apply(ctx: Context, config: Config): void {
         config.mode,
         runtime.platform,
         runtime.locked,
-        runtime.ssoAccountEmail,
       ),
       productName: 'Deloitte DSH Desktop',
       // Authenticated SSO builds suffix the visible caption with the account

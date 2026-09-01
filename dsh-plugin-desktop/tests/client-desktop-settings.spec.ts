@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import { DesktopSettingsSection, desktopSettingsSectionVisibility } from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
+import { GeneralUserInfoCard } from '../src/client/GeneralUserInfoCard.tsx'
 import {
   createDesktopSettingsApi,
   desktopSettingsPaths,
@@ -54,6 +55,21 @@ describe('Desktop settings API', () => {
     expect(parseDesktopActionAcceptance({ accepted: true })).toBeUndefined()
     expect(() => parseDesktopActionAcceptance({ accepted: true, detail: 'extra' }))
       .toThrow('invalid Desktop action response')
+  })
+
+  it('validates the optional sso session projection', () => {
+    const withSso = {
+      ...VIEW,
+      sso: { authenticated: true, email: 'zhangsan@deloitte.com.cn', source: 'browser' },
+    }
+    expect(parseDesktopSettingsView(withSso)).toEqual(withSso)
+    expect(parseDesktopSettingsView(VIEW)).not.toHaveProperty('sso')
+    expect(() => parseDesktopSettingsView({ ...VIEW, sso: { authenticated: 'yes' } }))
+      .toThrow('invalid sso settings response')
+    expect(() => parseDesktopSettingsView({ ...VIEW, sso: { authenticated: true, email: 'not-an-email', source: 'browser' } }))
+      .toThrow('invalid sso settings response')
+    expect(() => parseDesktopSettingsView({ ...VIEW, sso: { authenticated: true, email: 'a@d.com', source: 'unknown' } }))
+      .toThrow('invalid sso settings response')
   })
 
   it('uses the strict same-origin routes and request bodies', async () => {
@@ -221,5 +237,18 @@ describe('Desktop settings Slot registration', () => {
     })
     expect(actionOptions.inject()).toHaveProperty('api')
     expect(actionComponent).toBe(DesktopTerminalSettingsAction)
+
+    const [generalItemOptions, generalItemComponent] = register.mock.calls[2] as unknown as [
+      { id: string; order: number; locale: string; inject: () => Record<string, unknown> },
+      unknown,
+    ]
+    expect(generalItemOptions).toMatchObject({
+      name: 'settings.general.item',
+      id: 'desktop-user-info',
+      order: -30,
+      locale: DESKTOP_SETTINGS_LOCALE_NAMESPACE,
+    })
+    expect(generalItemOptions.inject()).toHaveProperty('api')
+    expect(generalItemComponent).toBe(GeneralUserInfoCard)
   })
 })
