@@ -21,6 +21,11 @@ const PLATFORMS = new Set<DesktopClientPlatform>(['darwin', 'win32', 'linux'])
 const ACCOUNT_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/u
 const MAX_ACCOUNT_BYTES = 320
 
+/** UTF-8 byte length without the Node `Buffer` global (this module runs in the sandboxed renderer). */
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
 /**
  * Validate the Electron-owned query marker before any desktop client effects run.
  * @param search - URL search string, including or omitting the leading question mark.
@@ -52,7 +57,7 @@ export function parseDesktopClientEnvironment(search: string): DesktopClientEnvi
   // session; absence means no session, and a non-email spelling is a
   // corrupted desktop URL rather than a badge worth rendering.
   if (account !== null) {
-    if (!ACCOUNT_PATTERN.test(account) || Buffer.byteLength(account, 'utf8') > MAX_ACCOUNT_BYTES) {
+    if (!ACCOUNT_PATTERN.test(account) || utf8ByteLength(account) > MAX_ACCOUNT_BYTES) {
       throw new Error(`dsh-plugin-desktop: invalid dsh-desktop-account ${JSON.stringify(account)}`)
     }
     return {
