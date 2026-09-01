@@ -37,6 +37,7 @@ function desktopPolicy(locked: boolean): DesktopPolicy {
     managedModels: false,
     requireSso: false,
     trustRoots: [],
+    usageReport: false,
   })
 }
 
@@ -58,6 +59,7 @@ function companyLockedPolicy(): DesktopPolicy {
     managedModels: false,
     requireSso: false,
     trustRoots: catalogTrustRoots,
+    usageReport: false,
   })
 }
 
@@ -72,6 +74,7 @@ function companyLockedOriginPolicy(): DesktopPolicy {
     managedModels: false,
     requireSso: false,
     trustRoots: catalogTrustRoots,
+    usageReport: false,
   })
 }
 

@@ -26,6 +26,7 @@ const contentModePolicy: DesktopPolicy = {
     keyId: 'company-2026-a',
     fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   }],
+  usageReport: false,
 }
 
 /** Unlocked origin-mode counterpart: no roots pinned, so the trust-root hand-off encodes the absent sentinel too. */
@@ -38,6 +39,7 @@ const originModePolicy: DesktopPolicy = {
   allowHomePatch: false,
   allowManualPluginAdd: false,
   trustRoots: [],
+  usageReport: false,
 }
 
 const temporaryDirectories: string[] = []

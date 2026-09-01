@@ -75,6 +75,10 @@
       "types": "./lib/types/notifications.d.ts",
       "default": "./lib/notifications.js"
     },
+    "./model-usage-reporter": {
+      "types": "./lib/types/model-usage-reporter.d.ts",
+      "default": "./lib/model-usage-reporter.js"
+    },
     "./updates": {
       "types": "./lib/types/updates.d.ts",
       "default": "./lib/updates.js"
@@ -253,6 +257,7 @@
     "dsh-community-market": "0.1.0-dev.0",
     "dshmarket": "1.17.1",
     "koffi": "3.1.5",
+    "mysql2": "^3.24.2",
     "node-addon-require-builtin": "^0.1.4",
     "pnpm": "11.8.0",
     "react": "18.3.1",

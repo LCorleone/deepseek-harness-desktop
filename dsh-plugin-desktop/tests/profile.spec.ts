@@ -46,6 +46,7 @@ function injectedDesktopPolicy(locked: boolean, managedModels = false): DesktopP
     managedModels,
     requireSso: false,
     trustRoots: [],
+    usageReport: false,
   })
 }
 
@@ -292,6 +293,9 @@ describe('desktop profile composition', {
     }))
     expect(rows.find(row => row.id === 'desktop-notifications')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/notifications',
+    }))
+    expect(rows.find(row => row.id === 'desktop-model-usage-report')).toEqual(expect.objectContaining({
+      name: 'dsh-plugin-desktop/model-usage-reporter',
     }))
     expect(rows.find(row => row.id === 'desktop-profiles')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/profiles',
@@ -1662,6 +1666,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
       managedModels: false,
       requireSso: false,
       trustRoots: bootTrustRoots,
+    usageReport: false,
     })
   }
 

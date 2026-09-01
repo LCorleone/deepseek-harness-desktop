@@ -43,6 +43,7 @@ function companyPolicy(): Record<string, unknown> {
       { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
       { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
     ],
+    usageReport: false,
   }
 }
 
@@ -62,6 +63,7 @@ describe('desktop policy schema parsing', () => {
         { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
         { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
       ],
+      usageReport: false,
     })
     expect(policy.trustRoots).toHaveLength(2)
     expect(Object.isFrozen(policy)).toBe(true)
@@ -91,6 +93,7 @@ describe('desktop policy schema parsing', () => {
       managedModels: false,
       requireSso: false,
       trustRoots: [],
+      usageReport: false,
     })
 
     expect(policy.locked).toBe(false)
@@ -107,6 +110,12 @@ describe('desktop policy schema parsing', () => {
     expect(policy.managedModels).toBe(true)
   })
 
+  it('accepts a usage-reporting policy', () => {
+    const policy = parseDesktopPolicy({ ...companyPolicy(), usageReport: true })
+
+    expect(policy.usageReport).toBe(true)
+  })
+
   it.each([
     'allowHomePatch',
     'allowManualPluginAdd',
@@ -116,6 +125,7 @@ describe('desktop policy schema parsing', () => {
     'managedModels',
     'requireSso',
     'trustRoots',
+    'usageReport',
   ])('rejects a policy missing %s', field => {
     const document = companyPolicy()
     delete document[field]
@@ -143,6 +153,8 @@ describe('desktop policy schema parsing', () => {
     ['managed models as number', { managedModels: 1 }, 'managedModels must be a boolean'],
     ['require sso as text', { requireSso: 'true' }, 'requireSso must be a boolean'],
     ['require sso as number', { requireSso: 1 }, 'requireSso must be a boolean'],
+    ['usage report as text', { usageReport: 'true' }, 'usageReport must be a boolean'],
+    ['usage report as number', { usageReport: 1 }, 'usageReport must be a boolean'],
     ['enabled home patching', { allowHomePatch: true }, 'allowHomePatch must be false'],
     ['enabled manual plugin add', { allowManualPluginAdd: true }, 'allowManualPluginAdd must be false'],
     ['http catalog origin', { companyCatalogOrigin: 'http://market.company.example' }, 'companyCatalogOrigin'],
@@ -285,6 +297,7 @@ describe('shipped desktop policy assets', () => {
     expect(policy.locked).toBe(false)
     expect(policy.managedModels).toBe(false)
     expect(policy.requireSso).toBe(false)
+    expect(policy.usageReport).toBe(false)
     expect(policy.companyCatalogOrigin).toBe(null)
     expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
     expect(policy.allowHomePatch).toBe(false)
@@ -303,6 +316,10 @@ describe('shipped desktop policy assets', () => {
     // SSO startup gate: the release build authenticates through the company
     // portal (silent fast path, browser gate fallback) before any boot.
     expect(policy.requireSso).toBe(true)
+    // Usage reporting: the release build wires the per-call model usage
+    // reporter against the company telemetry database; the dev variant
+    // stays fully unwired.
+    expect(policy.usageReport).toBe(true)
     // Origin mode: the signed catalog manifest is fetched at runtime from the
     // pinned GitLab origin instead of the embedded content-mode asset.
     expect(policy.companyCatalogOrigin).toBe('https://gitlab.s.dai.deloitte.cn')
@@ -356,6 +373,21 @@ describe('desktop policy environment hand-off', () => {
       desktopPolicyEnvironmentEntries(policy),
       devModuleUrl,
     )).toEqual(policy)
+  })
+
+  it('pins the main-process-only usage-report flag to false in the hand-off', () => {
+    // The reporter runs only inside the Electron main process, which reads
+    // the policy asset directly; the CLI hand-off carries no seventh entry,
+    // so a usage-reporting release policy reconstructs with the flag inert.
+    const policy = parseDesktopPolicy({ ...companyPolicy(), usageReport: true })
+
+    const decoded = desktopPolicyFromEnvironment(
+      desktopPolicyEnvironmentEntries(policy),
+      devModuleUrl,
+    )
+
+    expect(decoded).toEqual({ ...policy, usageReport: false })
+    expect(Object.keys(DESKTOP_POLICY_ENVIRONMENT)).toHaveLength(6)
   })
 
   it('decodes case-insensitive keys and rejects conflicting duplicates', () => {

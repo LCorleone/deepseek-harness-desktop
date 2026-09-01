@@ -47,6 +47,7 @@ function unlockedPolicy(): DesktopPolicy {
     managedModels: false,
     requireSso: false,
     trustRoots: [],
+    usageReport: false,
   })
 }
 
@@ -60,6 +61,7 @@ function lockedPolicy(): DesktopPolicy {
     managedModels: false,
     requireSso: false,
     trustRoots: [{ keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) }],
+    usageReport: false,
   })
 }
 

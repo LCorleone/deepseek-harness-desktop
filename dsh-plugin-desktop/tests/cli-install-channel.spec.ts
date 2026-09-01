@@ -32,6 +32,7 @@ function lockedCatalogPolicy(overrides: Record<string, unknown> = {}): DesktopPo
     managedModels: false,
     requireSso: false,
     trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
+    usageReport: false,
     ...overrides,
   })
 }

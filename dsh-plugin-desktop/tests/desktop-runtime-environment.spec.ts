@@ -386,6 +386,7 @@ describe('desktop Host dsh runtime', () => {
         keyId: 'company-2026-a',
         fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       }],
+      usageReport: false,
     }
 
     const installation = installDesktopDshRuntime({

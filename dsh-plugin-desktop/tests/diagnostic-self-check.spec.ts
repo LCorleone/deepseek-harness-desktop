@@ -227,6 +227,7 @@ describe('policy self-measurement', () => {
       managedModels: false,
       requireSso: false,
       trustRoots: [{ keyId: 'company-catalog-2026.01', fingerprint: fingerprint }],
+      usageReport: false,
     })
     writeFileSync(asset, body)
     const status = desktopPolicySelfCheckStatus(asset)
@@ -266,6 +267,7 @@ describe('sso self-check section', () => {
       managedModels: true,
       requireSso: true,
       trustRoots: [],
+      usageReport: false,
     }))
     return asset
   }

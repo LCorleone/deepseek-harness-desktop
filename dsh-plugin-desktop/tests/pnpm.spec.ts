@@ -689,6 +689,7 @@ describe('pnpm policy environment hand-off', () => {
     allowHomePatch: false,
     allowManualPluginAdd: false,
     trustRoots: [{ keyId: 'k1', fingerprint: 'a'.repeat(64) }],
+    usageReport: false,
   }
 
   it('forwards the bootstrap policy hand-off into spawned install children', async () => {

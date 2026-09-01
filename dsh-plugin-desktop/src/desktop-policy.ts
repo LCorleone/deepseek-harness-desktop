@@ -51,6 +51,14 @@ export interface DesktopPolicy {
   readonly allowManualPluginAdd: false
   /** Trusted manifest signing keys; empty until company keys are finalized. */
   readonly trustRoots: readonly DesktopPolicyTrustRoot[]
+  /**
+   * Whether this build reports per-call model usage to the company
+   * telemetry database. The Electron-main reporter plugin is the only
+   * consumer: a `usageReport: false` policy (the dev variant) keeps it
+   * completely unwired — no subscription, no connection, no blob decode —
+   * and the CLI policy environment hand-off carries no entry for it.
+   */
+  readonly usageReport: boolean
 }
 
 function invalidPolicy(message: string): Error {
@@ -147,10 +155,10 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   const object = value as Record<string, unknown>
   const keys = Object.keys(object).sort()
-  if (keys.length !== 8 || keys[0] !== 'allowHomePatch' || keys[1] !== 'allowManualPluginAdd'
+  if (keys.length !== 9 || keys[0] !== 'allowHomePatch' || keys[1] !== 'allowManualPluginAdd'
     || keys[2] !== 'companyCatalogOrigin' || keys[3] !== 'companyManifestUrl'
     || keys[4] !== 'locked' || keys[5] !== 'managedModels' || keys[6] !== 'requireSso'
-    || keys[7] !== 'trustRoots') {
+    || keys[7] !== 'trustRoots' || keys[8] !== 'usageReport') {
     throw invalidPolicy('unexpected fields')
   }
   if (typeof object.locked !== 'boolean') throw invalidPolicy('locked must be a boolean')
@@ -159,6 +167,9 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   if (typeof object.requireSso !== 'boolean') {
     throw invalidPolicy('requireSso must be a boolean')
+  }
+  if (typeof object.usageReport !== 'boolean') {
+    throw invalidPolicy('usageReport must be a boolean')
   }
   if (object.allowHomePatch !== false) throw invalidPolicy('allowHomePatch must be false')
   if (object.allowManualPluginAdd !== false) throw invalidPolicy('allowManualPluginAdd must be false')
@@ -173,6 +184,7 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
     allowHomePatch: false,
     allowManualPluginAdd: false,
     trustRoots: parseTrustRoots(object.trustRoots),
+    usageReport: object.usageReport,
   })
 }
 
@@ -379,5 +391,11 @@ export function desktopPolicyFromEnvironment(
     managedModels: managedModels === '1' ? true : managedModels === '0' ? false : undefined,
     requireSso: requireSso === '1' ? true : requireSso === '0' ? false : undefined,
     trustRoots: trustRootPairs.map(pair => parseTrustRootPair(pair)),
+    // `usageReport` has no hand-off entry: the reporter runs only inside the
+    // Electron main process (which reads the asset directly), and the CLI
+    // child has no consumer. The reconstruction pins false so the strict
+    // parser accepts the six-entry document while every CLI-side policy
+    // consumer keeps byte-identical behavior.
+    usageReport: false,
   })
 }

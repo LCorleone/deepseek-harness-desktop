@@ -31,6 +31,7 @@ const originPolicy = parseDesktopPolicy({
   managedModels: false,
   requireSso: false,
   trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
+    usageReport: false,
 })
 
 /** Signed manifest fixture the fake Chromium boundary serves. */
@@ -186,6 +187,7 @@ describe('origin-mode market catalog scan over the injected Chromium boundary', 
     managedModels: false,
     requireSso: false,
     trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
+    usageReport: false,
   })
   const verifiedNow = Date.parse('2026-09-01T00:00:00.000Z')
 

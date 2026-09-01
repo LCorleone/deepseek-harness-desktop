@@ -211,6 +211,7 @@ export const REQUIRED_UNPACKED_PACKAGE_SPECIFIERS = [
   'dsh-plugin-desktop/profiles',
   'dsh-plugin-desktop/diagnostics',
   'dsh-plugin-desktop/notifications',
+  'dsh-plugin-desktop/model-usage-reporter',
   'dsh-plugin-desktop/updates',
   'dsh-plugin-desktop/windows-agent-presets',
   'dsh-plugin-desktop/company-agent-presets',

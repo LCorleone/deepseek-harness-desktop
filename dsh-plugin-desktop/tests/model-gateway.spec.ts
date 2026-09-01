@@ -47,6 +47,7 @@ function policy(locked: boolean, managedModels: boolean): DesktopPolicy {
     managedModels,
     requireSso: false,
     trustRoots: [],
+    usageReport: false,
   })
 }
 
