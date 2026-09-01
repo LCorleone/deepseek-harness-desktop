@@ -488,6 +488,38 @@ describe('model usage projection', () => {
 
     expect(row).toMatchObject({ sessionId: 'session-9', ttftMs: null, latencyMs: 1_000 })
   })
+
+  it('nulls timing when the message does not match the stale open step', () => {
+    const projection = new ModelUsageProjection(ATTRIBUTION)
+    const active = session('session-11')
+
+    // A step/start whose message never arrives (a missed step/end leaves a
+    // stale boundary behind); the next message belongs to another step.
+    projection.sessionEvent(active, requestHeader('p', 'm', 1, 100))
+    projection.sessionEvent(active, event('step/start', { turn: 1, step: 1 }, 2, 1_000))
+    projection.sessionEvent(active, textDelta('token', 1, 1, 3, 1_500))
+    const row = projection.sessionEvent(active, assistantMessage({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+    }, 2, 1, 4, 9_000))
+
+    // Same rejection rule as the session-stats projection (which drops such
+    // messages outright): the row survives with its token columns, but the
+    // stale step's clock must not leak into ttft/latency/tps.
+    expect(row).toMatchObject({
+      sessionId: 'session-11',
+      turn: 2,
+      step: 1,
+      inputTokens: 10,
+      cacheReadTokens: 2,
+      outputTokens: 5,
+      totalTokens: 17,
+      tokensPerSecond: null,
+      ttftMs: null,
+      latencyMs: null,
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

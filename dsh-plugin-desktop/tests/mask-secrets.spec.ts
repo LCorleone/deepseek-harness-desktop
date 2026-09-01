@@ -62,6 +62,17 @@ describe('maskSecrets', () => {
     expect(masked).not.toContain('shortkey1')
   })
 
+  it('masks the usage report DB password the generic named rule misses', () => {
+    // Contrast with NAMED_SECRET: `\bpassword\b` finds no word boundary
+    // inside the underscored DSH_REPORT_DB_PASSWORD identifier, so the
+    // generic rule passes over it; the dedicated rule masks even values too
+    // short for any token pattern to catch.
+    const masked = maskSecrets('DSH_REPORT_DB_PASSWORD=abc host=db.telemetry.example')
+    expect(masked).toBe('DSH_REPORT_DB_PASSWORD=**** host=db.telemetry.example')
+    expect(masked).not.toContain('abc')
+    expect(maskSecrets('DSH_REPORT_DB_PASSWORD:hunter2')).toBe('DSH_REPORT_DB_PASSWORD:****')
+  })
+
   it('masks UUID-valued company gateway keys in env and JSON renderings', () => {
     const uuid = '0f8d4a1c-23b5-47e9-8c6a-9d0e1f2a3b4c'
     expect(maskSecrets(`DSH_COMPANY_LLM_KEY=${uuid}`)).toBe('DSH_COMPANY_LLM_KEY=****')

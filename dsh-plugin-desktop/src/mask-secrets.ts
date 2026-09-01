@@ -19,6 +19,11 @@ const NAMED_SECRET = new RegExp(
 // finds no word boundary inside the underscored identifier, so the value
 // needs a dedicated rule of its own.
 const NAMED_COMPANY_GATEWAY_KEY = /DSH_COMPANY_LLM_KEY(\s*[:=]\s*)\S+/giu
+// The usage-report DSN password (`DSH_REPORT_DB_PASSWORD` in
+// model-usage-reporter.ts). Same blind spot: `\bpassword\b` finds no word
+// boundary inside the underscored identifier, so the credential needs a
+// dedicated rule of its own.
+const NAMED_REPORT_DB_PASSWORD = /DSH_REPORT_DB_PASSWORD(\s*[:=]\s*)\S+/giu
 
 /** Secret-shaped patterns applied in order to a rendered log line. */
 const SECRET_PATTERNS: readonly RegExp[] = [
@@ -60,6 +65,7 @@ export function maskSecrets(text: string): string {
     })
     .replace(NAMED_SECRET, (_match, name: string, separator: string) => `${name}${separator}${MASK}`)
     .replace(NAMED_COMPANY_GATEWAY_KEY, (_match, separator: string) => `DSH_COMPANY_LLM_KEY${separator}${MASK}`)
+    .replace(NAMED_REPORT_DB_PASSWORD, (_match, separator: string) => `DSH_REPORT_DB_PASSWORD${separator}${MASK}`)
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, (match) => {
       const authorizationScheme = /^(Bearer|Basic)/iu.exec(match)?.[1]

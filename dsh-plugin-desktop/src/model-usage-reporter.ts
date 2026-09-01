@@ -23,7 +23,10 @@
  *   total.
  * - Timing mirrors `sessionStats` projection math: latency is
  *   `step/start → assistant/message`, TTFT is the first non-empty delta
- *   chunk, and tokens/second is output tokens over the decode span.
+ *   chunk, and tokens/second is output tokens over the decode span. A
+ *   boundary whose (turn, step) does not match the assembled message is
+ *   rejected exactly like `sessionStats` rejects it — the row survives with
+ *   NULL timing instead of inheriting a stale step's clock.
  * - Queueing is bounded (5 000 rows, drop-oldest plus a counter) and flushed
  *   on a double trigger (50 rows or every 10 s). The MySQL connection is
  *   created lazily on the FIRST flush attempt — the module never touches
@@ -386,9 +389,17 @@ export class ModelUsageProjection {
       }
       case 'assistant/message': {
         const open = state.openStep
+        // Only a boundary whose (turn, step) matches this message may source
+        // timing. A stale step must not lend its clock to a different row:
+        // the session-stats projection rejects such messages outright; here
+        // the tokens still count, but the three timing columns go NULL
+        // instead of being misattributed to the leftover step.
+        const boundary = open !== undefined && open.turn === event.data.turn && open.step === event.data.step
+          ? open
+          : undefined
         // Consume the boundary regardless of reportability so a defensive
         // duplicate message cannot accrue stale timing.
-        if (open !== undefined && open.turn === event.data.turn && open.step === event.data.step) {
+        if (boundary !== undefined) {
           state.openStep = undefined
         }
         const usage = reportableUsage(event.data.usage)
@@ -409,11 +420,11 @@ export class ModelUsageProjection {
           reasoningTokens: finiteNonNegative(usage.reasoningTokens) ? usage.reasoningTokens : null,
           // reasoning is a subset of output and deliberately NOT added here.
           totalTokens: modelUsageTotalTokens(usage),
-          tokensPerSecond: decodeTokensPerSecond(open, event, usage),
-          ttftMs: open?.firstTokenTime !== undefined && open.firstTokenTime !== null
-            ? Math.max(0, open.firstTokenTime - open.startTime)
+          tokensPerSecond: decodeTokensPerSecond(boundary, event, usage),
+          ttftMs: boundary !== undefined && boundary.firstTokenTime !== null
+            ? Math.max(0, boundary.firstTokenTime - boundary.startTime)
             : null,
-          latencyMs: open === undefined ? null : Math.max(0, event.time - open.startTime),
+          latencyMs: boundary === undefined ? null : Math.max(0, event.time - boundary.startTime),
           sessionId: state.sessionId,
           turn: event.data.turn,
           step: event.data.step,
@@ -658,6 +669,10 @@ export class ModelUsageSink {
       this.#dropped += 1
       return
     }
+    // Overflow path 1 of 2 (dual overflow semantics, design P5-2 in
+    // dev-log/2026-08-22-company-market-lockdown-plan-v2.md): a full queue
+    // at enqueue drops the OLDEST row; the retry path in #runFlush drops
+    // from the opposite end instead.
     if (this.#queue.length >= MODEL_USAGE_QUEUE_LIMIT_ROWS) {
       this.#queue.shift()
       this.#dropped += 1
@@ -730,8 +745,12 @@ export class ModelUsageSink {
         const connection = await this.#connectionRef()
         await connection.query(modelUsageInsertSql(rows.length), rows.flatMap(modelUsageRowValues))
       } catch (cause) {
-        // A failed batch goes back to the front; newest rows beyond the
-        // limit are dropped (the queue must stay bounded through retries).
+        // Overflow path 2 of 2 (dual overflow semantics, design P5-2 in
+        // dev-log/2026-08-22-company-market-lockdown-plan-v2.md): a failed
+        // batch goes back to the front intact, and rows beyond the limit
+        // are dropped from the TAIL (newest) — the retry batch must stay
+        // complete and the queue bounded through retries, so this end is
+        // the opposite of enqueue's drop-oldest.
         this.#queue.unshift(...rows)
         while (this.#queue.length > MODEL_USAGE_QUEUE_LIMIT_ROWS) {
           this.#queue.pop()
