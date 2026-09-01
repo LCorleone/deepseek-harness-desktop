@@ -188,6 +188,32 @@ July，收到决策。已补验三处关键事实：`bin.ts:11-124` 确认支持
 
 ---
 
+## Phase 5 · 模型调用上报（新增企业工作流，2026-09-01 开卡）
+
+> 独立于 L1-L3 锁定，属「公司级企业定制」扩大的目标。目的：记录用户实际调用模型，发现用户在用默认模型还是自配置。**合规硬约束：不记录任何用户内容/会话内容，仅 token 与元数据。**
+
+#### P5-1 上报数据表（DB 已建）
+- **目标**：公司 MySQL（10.173.46.21:3306，库 `dsh_usage`）落表。
+- **现状（2026-09-01 已做）**：新表 `dsh_model_call_events`（明细，一次调用一行）已建。字段：`user_email`(AAD email 用户标记)、`provider/model/base_url`、六 token（input/cache_read/cache_write/output/reasoning/total）、`tokens_per_second`(tps)、`ttft_ms`、`latency_ms`、`session_id`(可选关联)、`created_at`。索引 `(user_email,created_at)`、`(model)`、`(created_at)`。**已删聚合表**（用户：只要明细上报，不做比对字段，故 no `is_default_model`）。库存旧表 `conversation_summary/usage`（上游遗留，不触碰）。
+- **待办**：建低权账号 `dsh_report_writer`（仅 INSERT dsh_usage，无 SELECT/其他库，绝不用 root）；删已建/确认 `is_default_model` 不再需要（用户拍板不做比对，若表里有该列则 DROP）。
+
+#### P5-2 主进程 usage 采集模块`
+- **目标**：订阅 `session/event` → `assistant/message` 的 `data.usage`（scout 已证：`TokenUsage` 五字段 input/output/cacheRead/cacheWrite/reasoning，互斥统计；`packages/llm/llm/src/types.ts:135-142`）。桌面已有先例 `dsh-plugin-desktop/src/notifications.ts:132`。`total_tokens`=求和；`tps/ttft/latency` 不在负载里，需按 session-stats projection 公式从事件时间戳派生（`session-stats/src/projection.ts:126-160`）。
+- **要点**：注入事件/DB 依赖做成可单测纯函数核心；AAD email 从 SSO 会话取；model/base_url 实现时实测从事件字段拿还是从插件自持网关配置断定；**零内容落库（测试断言覆盖）**；批量 INSERT 缓冲 + 断连重试 + 不阻塞聊天。
+
+#### P5-3 写库路径与凭据
+- **传输**：主进程直连 MySQL，`mysql2` 纯 JS（无原生编译，进 Electron main）。**绝不用 root 口令打包进客户端**。
+- **凭据**：DSN（低权 `dsh_report_writer`）走混淆 blob 分发（同 model gateway key，仓库零明文）；env 覆盖口 `DSH_REPORT_DB_*` unpackaged-only 忽略（沿用 SSO/网关模式）。
+
+#### P5-4 开关与验收
+- **待定（需用户拍板）**：上报是否受 `policy.usageReport` 控（release 开/dev 关，推荐）还是构建后恒定开；DSN blob 自动分发（推荐）还是 env 每台手动。
+- **验收**：mock 事件/DB 单测（字段投影全、tps/ttft/latency 算式、零内容断言、批量写、开关关闭不写）；根 `corepack yarn check` 绿；构建 #41 装机实测入库一行。
+
+### P5 状态
+- 开卡 2026-09-01。P5-3/P5-4 的 3 个拍板点等用户：①Step0 现在做？（删列+建 account）②开关 policy 控 vs 恒定开 ③DSN blob vs env。
+
+---
+
 ## 兼容模式红线汇总
 
 | 卡 | 触碰 |
