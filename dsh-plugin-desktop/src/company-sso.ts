@@ -18,14 +18,19 @@
  *   base64url payload is validated (result code, ±10 min timestamp skew,
  *   and the `verify` SHA-256 signature over token+timestamp+username+
  *   app_key+email), and the login URL carries a `code_challenge` SHA-256
- *   over redirect URI, app id, and timestamp.
+ *   over redirect URI, app id, and timestamp. The locally-validated code is
+ *   then confirmed with the portal (`verify_auth_code`: md5 digest of
+ *   app key + raw code, callback token in `x-auth-token`) before anything
+ *   settles — only a confirmed code establishes the session (nova
+ *   `callback.rs` → `api::verify_confirmed_code`).
  *
  * The session is process memory only: `{@link SsoSession}` never reaches
  * disk, logs, or diagnostics exports (the self-check section carries only
  * email and source). The embedded `app_id`/`app_key` (issued by IT ops for
- * DSH Desktop, app id 1007) can be overridden through `DSH_SSO_APP_ID` /
- * `DSH_SSO_APP_KEY` for tests; the portal base URL override
- * (`DSH_SSO_BASE_URL`) is honored only in unpackaged runs.
+ * DSH Desktop, app id 1007) and the portal base URL can be overridden
+ * through `DSH_SSO_APP_ID` / `DSH_SSO_APP_KEY` / `DSH_SSO_BASE_URL` in
+ * unpackaged runs only — a packaged build always ships the pinned
+ * credentials and portal.
  *
  * This module is Electron-free on purpose — every Electron-owned boundary
  * (`net.fetch` for the system-CA TLS stack, `shell.openExternal` for the
@@ -48,6 +53,8 @@ export const SSO_BASE = 'https://sdp.deloitte.com.cn'
 export const SSO_LOGIN_PATH = '/web/login'
 /** Silent SignEntity token endpoint path. */
 export const SSO_TOKEN_PATH = '/web/dai/token'
+/** Browser-callback confirmation endpoint path (nova `CONFIRMED_CODE_PATH`). */
+export const SSO_VERIFY_AUTH_CODE_PATH = '/web/work/agent/verify_auth_code'
 /** Loopback callback path the browser is redirected to. */
 export const SSO_CALLBACK_PATH = '/callback'
 /** Browser-login idle timeout (task spec: 10 minutes). */
@@ -58,6 +65,8 @@ export const SSO_TIMESTAMP_SKEW_SEC = 600
 export const SSO_SILENT_BUDGET_MS = 6_000
 /** Whole-request bound for one SignEntity token POST (mirrors nova's 45s). */
 export const SSO_TOKEN_TIMEOUT_MS = 45_000
+/** Whole-request bound for one verify_auth_code POST (same nova 45s bound). */
+export const SSO_VERIFY_TIMEOUT_MS = 45_000
 
 /**
  * Built-in app credentials issued by IT ops for DSH Desktop (app id 1007,
@@ -104,13 +113,18 @@ export interface SsoCallbackPayload {
   readonly verify: string
 }
 
-/** SignEntity body; field order matches the portal's Node-insertion-order check. */
+/**
+ * SignEntity request body. Keys are camelCase with `id` first, matching the
+ * nova wire format (`#[serde(rename_all = "camelCase")]` over struct field
+ * order id, appId, appName, jsonData, processTime, signature) verified
+ * against the production portal.
+ */
 export interface SsoSignEntity {
   readonly id: string
-  readonly app_id: string
-  readonly app_name: string
-  readonly json_data: string
-  readonly process_time: string
+  readonly appId: string
+  readonly appName: string
+  readonly jsonData: string
+  readonly processTime: string
   readonly signature: string
 }
 
@@ -130,22 +144,45 @@ function environmentValue(environment: NodeJS.ProcessEnv, name: string): string 
   return trimmed.length === 0 ? undefined : trimmed
 }
 
-/** App id, overridable through `DSH_SSO_APP_ID` for tests. */
-export function ssoAppId(environment: NodeJS.ProcessEnv = process.env): string {
-  return environmentValue(environment, 'DSH_SSO_APP_ID') ?? BUILTIN_APP_ID
+/**
+ * App id. `DSH_SSO_APP_ID` is honored in unpackaged runs only — a packaged
+ * build must always present the pinned app id.
+ */
+export function ssoAppId(
+  environment: NodeJS.ProcessEnv = process.env,
+  modulePath: string = new URL(import.meta.url).pathname,
+): string {
+  if (!isPackagedApplicationPath(modulePath)) {
+    const override = environmentValue(environment, 'DSH_SSO_APP_ID')
+    if (override !== undefined) return override
+  }
+  return BUILTIN_APP_ID
 }
 
-/** App key, overridable through `DSH_SSO_APP_KEY` for tests. */
-export function ssoAppKey(environment: NodeJS.ProcessEnv = process.env): string {
-  return environmentValue(environment, 'DSH_SSO_APP_KEY') ?? BUILTIN_APP_KEY
+/**
+ * App key. `DSH_SSO_APP_KEY` is honored in unpackaged runs only — a packaged
+ * build must always sign with the pinned app key.
+ */
+export function ssoAppKey(
+  environment: NodeJS.ProcessEnv = process.env,
+  modulePath: string = new URL(import.meta.url).pathname,
+): string {
+  if (!isPackagedApplicationPath(modulePath)) {
+    const override = environmentValue(environment, 'DSH_SSO_APP_KEY')
+    if (override !== undefined) return override
+  }
+  return BUILTIN_APP_KEY
 }
 
 /**
  * Portal base URL. The `DSH_SSO_BASE_URL` override is honored only in an
  * unpackaged run: a packaged build must always talk to the pinned portal.
  */
-export function ssoBaseUrl(environment: NodeJS.ProcessEnv = process.env): string {
-  if (!isPackagedApplicationPath(new URL(import.meta.url).pathname)) {
+export function ssoBaseUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+  modulePath: string = new URL(import.meta.url).pathname,
+): string {
+  if (!isPackagedApplicationPath(modulePath)) {
     const override = environmentValue(environment, 'DSH_SSO_BASE_URL')
     if (override !== undefined) return override.replace(/\/+$/u, '')
   }
@@ -160,6 +197,11 @@ export function ssoLoginUrl(environment?: NodeJS.ProcessEnv): string {
 /** Absolute SignEntity token endpoint URL. */
 export function ssoTokenUrl(environment?: NodeJS.ProcessEnv): string {
   return `${ssoBaseUrl(environment)}${SSO_TOKEN_PATH}`
+}
+
+/** Absolute browser-callback confirmation endpoint URL. */
+export function ssoVerifyAuthCodeUrl(environment?: NodeJS.ProcessEnv): string {
+  return `${ssoBaseUrl(environment)}${SSO_VERIFY_AUTH_CODE_PATH}`
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +253,12 @@ export interface SsoSignEntityInputs {
  * Build one SignEntity: a 32-hex-char random id (UUID without hyphens), the
  * local process time, and `signature` = base64(SHA-256(encodeStr(id +
  * processTime + appKey + jsonData))). Field order in the returned object is
- * the JSON body's insertion order the portal expects.
+ * the JSON body's insertion order the portal expects (id first, camelCase
+ * keys — nova `sign_token.rs`). The signature covers the concatenated
+ * *values* (`id + processTime + appKey + jsonData`) through the same
+ * `getEncodeStr` sieve, so it is independent of the JSON key spelling: the
+ * snake_case → camelCase rename changes the wire body's key names only,
+ * not the signed string.
  */
 export function buildSsoSignEntity(inputs: SsoSignEntityInputs): SsoSignEntity {
   const id = (inputs.uuid ?? randomUUID)().replaceAll('-', '')
@@ -222,10 +269,10 @@ export function buildSsoSignEntity(inputs: SsoSignEntityInputs): SsoSignEntity {
     .digest('base64')
   return {
     id,
-    app_id: inputs.appId,
-    app_name: APP_NAME,
-    json_data: inputs.jsonData,
-    process_time: processTime,
+    appId: inputs.appId,
+    appName: APP_NAME,
+    jsonData: inputs.jsonData,
+    processTime,
     signature,
   }
 }
@@ -253,7 +300,7 @@ export interface SsoFetchTokenOptions {
   readonly appKey?: string
   /** Injected boundary; required in production wiring (Electron `net.fetch`). */
   readonly request: SsoRequestBoundary
-  /** Whole-request bound; defaults to the 45 s nova bound. */
+  /** Whole-request bound; always armed, defaulting to the 45 s nova bound. */
   readonly timeoutMs?: number
   /** Clock/uuid injection for tests. */
   readonly now?: () => Date
@@ -283,9 +330,7 @@ export async function fetchSsoToken(jsonData: string, options: SsoFetchTokenOpti
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entity),
-      ...(options.timeoutMs === undefined
-        ? {}
-        : { signal: AbortSignal.timeout(options.timeoutMs) }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? SSO_TOKEN_TIMEOUT_MS),
     })
   } catch (cause) {
     throw new Error(`token network error: ${cause instanceof Error ? cause.message : String(cause)}`)
@@ -313,6 +358,96 @@ export async function fetchSsoToken(jsonData: string, options: SsoFetchTokenOpti
     ? record.message
     : 'Unable to obtain access token'
   throw new Error(message)
+}
+
+// ---------------------------------------------------------------------------
+// Browser-callback confirmation (verify_auth_code), ported from nova api.rs
+// ---------------------------------------------------------------------------
+
+/**
+ * The `code` body member of the confirmation POST: the md5 hex digest over
+ * `appKey + rawCode` (nova `confirmed_code_digest`), where `rawCode` is the
+ * callback URL's original `code` parameter string, before any decoding.
+ */
+export function ssoConfirmedCodeDigest(appKey: string, rawCode: string): string {
+  return createHash('md5').update(appKey, 'utf8').update(rawCode, 'utf8').digest('hex')
+}
+
+/** Options of {@link verifySsoAuthCode}. */
+export interface SsoVerifyAuthCodeOptions {
+  /** Absolute confirmation endpoint; defaults to the pinned portal. */
+  readonly url?: string
+  readonly appKey?: string
+  /** Injected boundary; required in production wiring (Electron `net.fetch`). */
+  readonly request: SsoRequestBoundary
+  /** Whole-request bound; always armed, defaulting to the 45 s nova bound. */
+  readonly timeoutMs?: number
+}
+
+/** Parse one verify_auth_code answer: success is exactly `code == 0`. */
+function parseSsoVerifyOutcome(raw: string): { readonly ok: true } | { readonly ok: false, readonly reason: string } {
+  let document: unknown
+  try {
+    document = JSON.parse(raw) as unknown
+  } catch {
+    return { ok: false, reason: '认证码确认接口返回非 JSON' }
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    return { ok: false, reason: '认证码确认接口返回非 JSON' }
+  }
+  const record = document as Record<string, unknown>
+  const rawCode = record.code
+  const code = typeof rawCode === 'number' && Number.isFinite(rawCode)
+    ? rawCode
+    : typeof rawCode === 'string' && /^[+-]?\d+$/u.test(rawCode.trim())
+      ? Number(rawCode.trim())
+      : undefined
+  if (code === undefined) return { ok: false, reason: '认证码确认接口返回无效 code' }
+  if (code === 0) return { ok: true }
+  const message = typeof record.message === 'string' && record.message.trim().length > 0
+    ? record.message.trim()
+    : `认证码确认失败 (code ${String(code)})`
+  return { ok: false, reason: message }
+}
+
+/**
+ * Confirm one locally-validated callback code with the portal (nova
+ * `api::verify_confirmed_code`): `POST {code: md5hex(appKey + rawCode)}`
+ * with the callback token in `x-auth-token`. Success is exactly
+ * `code == 0` (number or numeric string); every other answer — transport
+ * failure, non-2xx, other code — rejects, because only a confirmed code
+ * may settle a session. The rejection reason never contains the token.
+ */
+export async function verifySsoAuthCode(
+  rawCode: string,
+  token: string,
+  options: SsoVerifyAuthCodeOptions,
+): Promise<void> {
+  const code = rawCode.trim()
+  const bearer = token.trim()
+  if (code.length === 0) throw new Error('缺少认证参数 code')
+  if (bearer.length === 0) throw new Error('缺少访问令牌')
+  let response: Awaited<ReturnType<SsoRequestBoundary>>
+  try {
+    response = await options.request(options.url ?? ssoVerifyAuthCodeUrl(), {
+      method: 'POST',
+      headers: { 'x-auth-token': bearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: ssoConfirmedCodeDigest(options.appKey ?? ssoAppKey(), code) }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? SSO_VERIFY_TIMEOUT_MS),
+    })
+  } catch (cause) {
+    throw new Error(`认证码确认网络错误: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+  const body = await response.text().catch(() => '')
+  if (!response.ok) {
+    // A failure status with a success-shaped body is still a failure (nova
+    // `parse_confirmed_error` falls back to the HTTP status).
+    const outcome = parseSsoVerifyOutcome(body)
+    if (!outcome.ok) throw new Error(outcome.reason)
+    throw new Error(`认证码确认 HTTP ${String(response.status)}`)
+  }
+  const outcome = parseSsoVerifyOutcome(body)
+  if (!outcome.ok) throw new Error(outcome.reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +643,15 @@ export function ssoCallbackFailureHtml(message: string): string {
 // Loopback callback server
 // ---------------------------------------------------------------------------
 
+/** Portal-confirmation context armed with one pending callback wait. */
+export interface SsoCallbackConfirm {
+  /** Injected fetch boundary (Electron `net.fetch` for the system CA store). */
+  readonly request: SsoRequestBoundary
+  readonly appKey?: string
+  /** Whole-request bound; defaults to the 45 s nova bound. */
+  readonly timeoutMs?: number
+}
+
 /** Options of {@link SsoCallbackServer.waitForCallback}. */
 export interface SsoCallbackWaitOptions {
   readonly appKey?: string
@@ -515,6 +659,14 @@ export interface SsoCallbackWaitOptions {
   readonly timeoutMs?: number
   /** Clock injection for the timestamp window (epoch seconds). */
   readonly now?: () => number
+  /**
+   * Portal confirmation (nova `callback.rs` → `api::verify_confirmed_code`):
+   * when armed, every locally-validated callback is confirmed against
+   * `verify_auth_code` before the waiter settles — a rejected confirmation
+   * rejects the login. `browserSsoLogin` always arms one; direct waits
+   * without it exercise the pure payload validation.
+   */
+  readonly confirm?: SsoCallbackConfirm
 }
 
 /**
@@ -522,7 +674,11 @@ export interface SsoCallbackWaitOptions {
  * `127.0.0.1:0`, one `GET /callback?code=…` expectation at a time. A second
  * waiter replaces the first (the first rejects), mirroring nova's
  * single-pending semantics; the server answers every request with the
- * branded success or failure page.
+ * branded success or failure page. When the active waiter armed a
+ * confirmation context, a locally-validated code additionally survives the
+ * portal's `verify_auth_code` round-trip before the success page is served
+ * and the waiter resolves — only a confirmed callback settles (nova
+ * `handle_conn`).
  */
 export class SsoCallbackServer {
   private server: Server | undefined
@@ -535,13 +691,15 @@ export class SsoCallbackServer {
   /** Decode options (app key, clock) of the ACTIVE waiter: the pending
    * request must validate against exactly the context that armed it. */
   private activeDecodeOptions: SsoCallbackDecodeOptions = {}
+  /** Confirmation context of the ACTIVE waiter, when one was armed. */
+  private activeConfirm: SsoCallbackConfirm | undefined
 
   /** Bind once and return the port plus the redirect URI for the login URL. */
   async start(): Promise<{ readonly port: number, readonly redirectUri: string }> {
     if (this.port !== undefined) {
       return { port: this.port, redirectUri: buildSsoRedirectUri(this.port) }
     }
-    const server = createServer((request, response) => { this.handle(request, response) })
+    const server = createServer((request, response) => { void this.handle(request, response) })
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', () => { resolve() })
@@ -569,6 +727,7 @@ export class SsoCallbackServer {
       ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
       ...(options.now === undefined ? {} : { now: options.now }),
     }
+    this.activeConfirm = options.confirm
     return new Promise<SsoCallbackPayload>((resolve, reject) => {
       this.pending = { resolve, reject }
       const timeoutMs = options.timeoutMs ?? SSO_LOGIN_IDLE_TIMEOUT_MS
@@ -598,7 +757,7 @@ export class SsoCallbackServer {
     if (server !== undefined) server.close()
   }
 
-  private handle(request: IncomingMessage, response: ServerResponse): void {
+  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const finish = (status: number, body: string): void => {
       response.writeHead(status, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -633,6 +792,22 @@ export class SsoCallbackServer {
     if (!decoded.ok) {
       fail(decoded.reason)
       return
+    }
+    const confirm = this.activeConfirm
+    if (confirm !== undefined) {
+      // Local validation passed; confirm the code with the portal before
+      // anything settles. The raw `code` parameter string is exactly what
+      // nova hands to `verify_confirmed_code` (the URL-decoded value).
+      try {
+        await verifySsoAuthCode(code, decoded.payload.token, {
+          request: confirm.request,
+          ...(confirm.appKey === undefined ? {} : { appKey: confirm.appKey }),
+          ...(confirm.timeoutMs === undefined ? {} : { timeoutMs: confirm.timeoutMs }),
+        })
+      } catch (cause) {
+        fail(cause instanceof Error ? cause.message : String(cause))
+        return
+      }
     }
     finish(200, SSO_CALLBACK_SUCCESS_HTML)
     this.settle({ ok: true, payload: decoded.payload })
@@ -879,6 +1054,11 @@ export async function silentSsoLogin(options: SilentSsoLoginOptions): Promise<Ss
 export interface BrowserSsoLoginOptions {
   /** Opens the login URL in the system browser (Electron `shell.openExternal`). */
   readonly openExternal: (url: string) => void | Promise<void>
+  /**
+   * Injected fetch boundary (Electron `net.fetch` for the system CA store)
+   * for the verify_auth_code confirmation of every validated callback.
+   */
+  readonly request: SsoRequestBoundary
   /** Callback server override for tests; defaults to a fresh loopback server. */
   readonly server?: SsoCallbackServer
   readonly appId?: string
@@ -891,8 +1071,9 @@ export interface BrowserSsoLoginOptions {
 
 /**
  * Run the browser path: bind the loopback server, open the branded login URL
- * in the system browser, and resolve once one validated callback lands (or
- * reject with the timeout/cancel reason). The session email is the
+ * in the system browser, and resolve once one validated callback lands and
+ * the portal has confirmed its code through `verify_auth_code` (or reject
+ * with the timeout/cancel/confirmation reason). The session email is the
  * canonicalized payload email, matching nova's `session_from_payload`.
  */
 export async function browserSsoLogin(options: BrowserSsoLoginOptions): Promise<SsoLoginResult> {
@@ -920,6 +1101,10 @@ export async function browserSsoLogin(options: BrowserSsoLoginOptions): Promise<
     ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    confirm: {
+      request: options.request,
+      ...(options.appKey === undefined ? {} : { appKey: options.appKey }),
+    },
   })
   // A failed openExternal below stops the server and rejects this waiter
   // through stop(); nobody awaits that branch, so mark it handled up front

@@ -505,7 +505,9 @@ async function start(): Promise<void> {
     // would fail the corporate-CA handshake). Its failure is an accelerator
     // miss, not an error the user must fix: the gate window offers the true
     // SSO decision — the browser loopback flow with the code_challenge and
-    // callback-signature checks. Closing the gate quits the application; a
+    // callback-signature checks, confirmed against the portal's
+    // verify_auth_code endpoint before the session settles. Closing the
+    // gate quits the application; a
     // successful login adopts the in-memory session (never persisted, the
     // token never logged) and the boot continues exactly as an un-gated
     // launch from here on. Every other policy combination (unlocked, or
@@ -532,6 +534,7 @@ async function start(): Promise<void> {
           startBrowserLogin: async () => {
             const result = await browserSsoLogin({
               openExternal: async url => { await shell.openExternal(url) },
+              request: ssoRequest,
             })
             if (result.ok) {
               electronLogger.error(
