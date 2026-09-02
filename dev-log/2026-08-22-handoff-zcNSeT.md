@@ -129,6 +129,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### SSO app_key 泄露事故处置·历史重写与仓库回归（2026-09-02 续，完结）
 **② git filter-repo 历史重写（已执行）**：克隆重写（`--replace-text`：`zI9t…`→`[REDACTED-SO-APP-KEY-2026-09-02]`），覆盖 master/catalog-artifacts/全标签；验证：重写后全历史 `-S` 搜索与前 50 commit 树 grep 双零命中；force-push 后远端 master = `d40e7470bb`（树内容与重写前 tip 逐字节等价——worker 抹密在前，重写只清历史），本地已 reset 同步。**仓库状态终局**：公开仓回归原名 `LCorleone/deepseek-harness-desktop`（原名/原工作流/原 secrets 全在，Actions 免费）；私有仓残留改名 `deepseek-harness-desktop-private-obsolete`（含旧 key 历史快照，**待用户网页删除**，delete_repo scope 需交互授权）；#42 验证构建中。**影响评估（用户问过，存档）**：桌面客户端零影响——已装包不追 commit、插件信任链是 ed25519 指纹+treeDigest 非 SHA、子模块 pin 指向 upstream 另一仓未重写、构建树内容不变。仅两残余：devlog 里引用的旧 SHA 变幽灵引用（事故记录佐证）；GitHub 对被重写历史 ~90 天 reflog 可达（轮换兑底）。**待办**：③ 运维轮换 1007 key（新值→重跑 make-sso-app-key-blob 生成器→构建发版即闭环）；用户网页删除 -obsolete 仓；GitGuardian 面板 resolve finding；给 IT 的回复稿在会话中。
 
+### 待办批注落账（2026-09-02 午，用户 review 待办表批示）
+-obsolete 私有仓**保留不删**（放着）；GitGuardian 已 resolve；IT 已回复；P4 双钥轮换**签收不换**（demo 钮 c469 继续，已改卡表）；测试组扩面**进行中**（用户主导）；P6 三问仍待定；自有更新源/CLI 硬钳制/lint 守护均**未做**属挂起卡（会话已向用户澄清三者内容）。
+
 ### SSO key 轮换落地（2026-09-02 上午，③ 完成）
 运维重发凭据：**app_id 1007→1008**（app_name 仍 'DSH'），新 app_key 仅进混淆 blob（会话交接，仓库/devlog 零明文——blob 生成器 env 供值）。代码改动：`BUILTIN_APP_ID` 切 1008 + 测试 6 处默认值/code_challenge 期望参数同步（`code_challenge`=sha256(redirectUri&&&appId&&&ts) 随 appId 变更属预期）；`src/sso-app-key-blob.ts` 重生成。check 1422+6skip 全绿。**泄漏事故至此完整闭环**：当前树无明文（blob）+ 历史重写 + 旧 key 作废。待装机验证 1008+DSH 门户静默认证直通。
 
@@ -150,7 +153,7 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 | P1 | **真 revoked 语义演练** | 用新自动链路走一遍：allowlist revoked→publish→用户重启验证市场消失+已装拒载→恢复 publish。既验证吊销路径又是自动链路第二次实操 | 无，随时（10 分钟） | S |
 | P2 | ~~扩面物料~~ **挂起（2026-08-30 用户拍板不做）** | 理由：①receipt 迁移文案已死项（唯一旧机器已迁移，同事全新装）；②RUNBOOK 在 N=3-5 不如口头支持，凭想象写的文档没价值。**复活触发条件：用户第三次回答同一个问题时** | 触发式 | S |
 | P3 | **测试组扩面** | 3-5 台同事机器（待办⑤ GUI 三面冒烟顺带做）；收集安装/市场/升级反馈；旧包机器注意 M2 门禁（≤#23 机器必须先升 #29+）| P1 P2 完成 | 用户主导 |
-| P4 | **双钥轮换演练**（待办②）**挂起（2026-08-30）** | 正式钥 keygen→策略双指纹→新钥 publish→下版策略收旧钥；PAT 一并轮换。演示钥泄漏完整利用链=私钥+PAT 双泄漏，当前泄漏面有界（你我环境），测试组规模风险不变。**触发条件：正式推广/装机量超出可盯范围；天然搭下次发版** | 推广决策触发 | M |
+| P4 | **双钥轮换演练**（待办②）**签收不换（2026-09-02 用户拍板：demo 钥 c469 继续用，懒得换）** | 正式钥 keygen→策略双指纹→新钥 publish→下版策略收旧钥；PAT 一并轮换。演示钥泄漏完整利用链=私钥+PAT 双泄漏，当前泄漏面有界（你我环境），测试组规模风险不变。**触发条件：正式推广/装机量超出可盯范围；天然搭下次发版** | 推广决策触发 | M |
 | P5 | **上游 0.1.2 正式版评估** | 子模块现钉 0.1.1-rc.2；0.1.2-alpha(+1079 ptc 重命名)——等正式版后评估升级窗口（allowlist runtime 范围、补丁面、回归）| 上游发正式版 | M |
 | P6 | **自有更新源**（待办⑩选项 A）**挂起（2026-08-30）** | GitLab 托管签名 update-manifest + ARTIFACT_TRUST_ROOTS 替换 → fleet 自动升级（git push 即发版）。挂起理由：当前装机量手动升级可控；技术风险三项里最高（electron-updater 格式非自有 schema，信任根替换需仔细做）。**触发条件：装机量让手动升级变痛/正式推广；建议与 P4 同批发版** | 推广决策触发 | M |
 | P7 | **技术尾巴** | ①E2E origin 稳态步——**挂起**（单测已覆盖+实机数周稳定，下次动 E2E 顺手）②blob 下载备选——**✅ 完成（2026-08-30，`35830b899d`+评审修复 `d50f066018`）并全链路首验通过**：workflow mirror job 把签名产物镜像到 catalog-artifacts 分支（快进 push+rebase 重试，保留 5 个 run）；publish-local --run 在 gh 下载失败（blob 域 TLS）时自动回退 git 分支拉取。首验 run 33291765023：seq 10 全自动发布（验签→棘轮→GitLab push→回读复核），**发布流程零人工环节达成**。评审实证：伪造签名在 git 通道同样 fail-closed③M1 post-install 校验——**挂起**（低概率+后果非安全+下次升级自愈，等真实案例） | ②进行中 | S |
