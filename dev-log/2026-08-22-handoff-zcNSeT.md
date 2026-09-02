@@ -138,6 +138,13 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### SSO key 轮换落地（2026-09-02 上午，③ 完成）
 运维重发凭据：**app_id 1007→1008**（app_name 仍 'DSH'），新 app_key 仅进混淆 blob（会话交接，仓库/devlog 零明文——blob 生成器 env 供值）。代码改动：`BUILTIN_APP_ID` 切 1008 + 测试 6 处默认值/code_challenge 期望参数同步（`code_challenge`=sha256(redirectUri&&&appId&&&ts) 随 appId 变更属预期）；`src/sso-app-key-blob.ts` 重生成。check 1422+6skip 全绿。**泄漏事故至此完整闭环**：当前树无明文（blob）+ 历史重写 + 旧 key 作废。待装机验证 1008+DSH 门户静默认证直通。
 
+## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
+**当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
+**进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
+**Gotchas**：origin=anywhere-labs 上游（223 分叉警告=噪音，push 目标是 fork）；GitHub 对重写历史 ~90 天 reflog 可达（轮换已兜底）；devlog 旧 SHA（2026-09-02 重写前）为幽灵引用；CI 四 secrets 已恢复（签名钥 c469 逐位验证）。
+**当日决策**（防重议）：凭据入库一律混淆 blob（明文只经 env/会话，轮换=重跑生成器）；仓库保持公开（私有仓因 Actions 计费放弃，-obsolete 残仓保留不删）；usage 三列恒 0 口径签收（网关不报+pi-ai 折叠，思考已计入 output）；demo 签名钥不轮换；CLI 钳制甲路线已做、乙（执行器纵深+resume 旧事件）留卡；渲染端 Node 全局已机器守门。
+**冷启动指引**：卡表与 P5/P6 细节见 dev-log/2026-08-22-company-market-lockdown-plan-v2.md；本文件各节按时间序含全部实现细节；DB 10.173.46.21:3306 dsh_usage（root 口令在会话交接，report_writer 仅 INSERT）。
+
 ## 企业定制第三批·SSO 启动门禁（2026-08-31 设计定稿，暂缓实施）
 **机制来源**：参考 cowork-nova-tauri（dowork 移植）实测代码。公司 SSO 门户 sdp.deloitte.com.cn。**凭据（2026-08-31 运维下发，DSH Desktop 专属，替代原复用 nova 1005 的方案）：app_id=1007，app_key=[REDACTED 2026-09-02：GitGuardian 检出，历史重写+轮换处置]**（与 demo 签名钥/PAT 同级：会话+私有仓库存量已知悉；最终嵌入客户端为软屏障）。两路径：A 静默（whoami /upn → SignEntity POST /web/dai/token，注意本质是 app_key 握手非真 SSO，只做便捷加速）；B 浏览器手动（loopback 回调 + code_challenge + 回调签名校验 verify=sha256(token+ts+username+app_key+email)，±10min）= 真 SSO，门禁以此为准。
 **定稿设计**：policy 新开关 requireSso（与 managedModels 同款快速开关）；locked && requireSso 时启动序列=先静默（5s 预算）→ 失败出登录门窗口（复用 recovery window 基建）→ 浏览器 B 路径认证 → 过门才 boot 主窗口/host（含 CLI/市场全在门后）。会话内存态不落盘。**用户标识徽章**（用户要求，SSO 卡一部分）：认证后侧边栏角落显示 email 徽章（client 插件 slot，同品牌字样机制）+ 托盘「已登录」项。**诚实边界**：门禁为进程级软屏障，A 路径防不住提取 app_key 者（已签收威胁模型内）。
