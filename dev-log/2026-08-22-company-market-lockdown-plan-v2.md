@@ -221,6 +221,12 @@ July，收到决策。已补验三处关键事实：`bin.ts:11-124` 确认支持
 ### P5 运行口径（2026-09-02 实测定案，用户接受）
 `cache_read/cache_write/reasoning_tokens` 三列在 vLLM 网关（ai.deloitte.com.cn，DSV4-DSH）下**恒 0**：①网关 usage 块不返回 prompt_tokens_details/completion_tokens_details（实测探针：仅三数 usage；思考以 delta.reasoning 流传输故 UI 可见）；②上游 pi-ai mapUsage 对 cache 仅非零透传、reasoning 一律折进 output（子模块不可改）。**思考 token 已计入 output_tokens/total（vLLM 把 reasoning 算进 completion），总账无损**。不做客户端估算、不向网关提需求（用户拍板接受）。装机验证记录：#42 实机 4 行真数据全字段正确（含 tps/ttft/latency/turn/step/client_version），#43 SSO 1008 直通通过。
 
+### 上游 cherry-pick 台账（2026-09-02 scout-upstream-pick 全量梳理，709 commit 三档分拣）
+**已摘（8 月早前）**：安装链七件套 a91a4de519/fa02953210/d399c7f65f/baa6659368/9dc7cb0c0e/5f404c792f/8c73074ad2、rc.2 pin、投影缓存/空工具调用/token-meter/pnpm 漏洞移除等稳定性批。
+**本轮摘取中（upstream-pick worker，Top3 批 9 项）**：dcd65823da 长路径 manifest / b29072b0cb 保留插件失败报告 / rc.2 补丁批 6464c187f5+6c26c4e22a(会话恢复)+9f6270f7d6(输入模态)+12e88bf129(遮罩冲突)+6201080cfa(目录选择器)+69cd90021f(标题栏拖动) / b7a020d114(Host 目录能力透传,**安全对照门**:不得恢复托管模型目录屏蔽)。
+**挂起待需**：7446de1a89 主窗口位置持久化；mac 窗口修复四件 dbf826a853/fea89ad88e/17f3e7c77c/c142120ece（发 mac 包才需要）；8994c5acad+ad597a7aa9 per-profile 偏好隔离（main.ts 冲突大，价值中等）；pnpm profile 迁移对 a965ca022b/d9316c958c（需人工比对 08556947aa 构建审批交叠）。
+**绝对别碰**：0.1.2-alpha 全组（PR #702/#711 共 14 个外层配套——挂本卡 P5 正式版评估，配套清单：Electron 43.3.0、renderer 迁移+会话鉴权 588bef5dec/645a756531[撞 SSO/渲染边界]、LAN HTTPS、layout service、7d7295342a[verify-packaged-runtime 我们改了 1059 行]）；985bd4c6fb PTY 移除（空操作且 hunks 撞 CLI 钳制 4a5881d6d3）；设置线 b0e6b380bb/8790eaec51/5913496fc3（踩 SSO 设置卡与锁定）；市场功能线（1024Store/GitHub 固定源/live adapters/npm 简化——市场双方 101 文件重叠）；setup wizard 家族（无向导基线）；fd6dd6c1c2 版本头（更新检查已关）；2.0.4+release diff gate（版本节奏自有）；大 UI blob（#573-577）。
+
 ### P5 状态
 - 开卡 2026-09-01；同日设计评审（review-p5-design）= NEEDS REVISION，P0 total 口径与 P1 归因/边界/队列已折入上文 v2；红线核查通过（零子模块/market 触碰）。review-usage（2026-09-01，基于 `34b448c8db`）已通过，评审尾巴（P2 覆盖缺口文档化/P3 陈旧 openStep 计时、mask 专用规则、队列双语义同步）已另行收口。
 - **覆盖缺口（review-usage P2 发现，P4-3 残余风险风格·明示接受）**：usage 遥测仅覆盖桌面 Host（web UI）与后台会话；CLI 子进程会话不上报——架构性缺口：CLI 进程不加载桌面 Host 组合，事件无消费者；最可能自配 provider 的终端用户恰在盲区。数据消费者不得把缺行解读为零使用。
