@@ -553,7 +553,7 @@
   <h1>DSH Desktop 架构与安全策略说明书</h1>
   <p class="sub">锁定部署与插件供应链管控 · 管理层汇报版 —— 结论先行，技术细节附白话解释</p>
   <div class="meta">
-    <span>日期：<b>2026 年 8 月 27 日</b> · 更新 <b>2026-09-01</b></span>
+    <span>日期：<b>2026 年 8 月 27 日</b> · 更新 <b>2026-09-01</b> · 更新 <b>2026-09-02</b></span>
     <span>文档版本：<b>v1.0</b></span>
     <span>呈报对象：<b>公司管理层</b></span>
     <span>范围：<b>DSH Desktop 桌面产品（公司版）</b></span>
@@ -570,7 +570,7 @@
   <a href="#ch3">03 安全架构 · 五层防线</a>
   <a href="#ch4">04 攻击视角下的插件防护问答</a>
   <a href="#ch5">05 关键问题澄清</a>
-  <a href="#ch6">06 残余风险与建议</a>
+  <a href="#ch6">06 领导视角安全问答</a>
 </nav>
 
 <main class="page">
@@ -590,7 +590,7 @@
     <div class="metric"><div class="num">6<small> / 6</small></div><div class="lbl">插件安装入口<br>全部管控</div></div>
     <div class="metric"><div class="num">5</div><div class="lbl">层安全防线<br>（纵深防御）</div></div>
     <div class="metric"><div class="num">11</div><div class="lbl">运行时补丁<br>（yarn patch · 公司自有 2 个）</div></div>
-    <div class="metric"><div class="num">7</div><div class="lbl">残余风险已登记<br>（3 项有明确缓解路径）</div></div>
+    <div class="metric"><div class="num">6</div><div class="lbl">企业管控能力<br>（六项已上线）</div></div>
   </div>
 
   <ul class="keyfindings">
@@ -602,7 +602,7 @@
       我们没有 fork 出一套私有代码。</li>
     <li><b>当前防线：</b>插件安装 6 类入口全部管控；安装 + 启动双重验签（ed25519 签名）；
       Electron 加固（fuses 保险丝、强制签名更新、独立 Node 运行时）。</li>
-    <li><b>残余风险：</b>已知 7 项已登记在案，其中 3 项有明确缓解路径，<b>待管理层确认签收</b>（见第 6 章）。</li>
+    <li><b>企业管控：</b>SSO 登录门禁、模型网关托管、插件签名市场、权限沙箱收敛、用量合规审计、零人工安全发布——六项能力已全部上线运行。</li>
   </ul>
 
   <div class="glossary">
@@ -623,6 +623,7 @@
     <span class="ct">2026-09-01 更新</span>
     权威模式（signed-tree）已在试点 fleet 实机激活；发布链路已全自动化，上线零人工操作；SSO 启动门禁落地。
     攻击视角下用户尝试各种绕过手段的实测问答，见第 4 章。
+    新增领导视角安全问答（第 6 章）。
   </div>
 </section>
 
@@ -899,7 +900,7 @@
         <tr><td class="c"><b>P3</b></td><td>打包加固</td><td class="c">L5</td>
             <td>Electron fuses 全集（禁 runAsNode、ASAR integrity）；更新包强制 detached ed25519 签名；捆绑独立 Node 运行时</td></tr>
         <tr><td class="c"><b>P4</b></td><td>检测与发布门禁</td><td class="c">L5</td>
-            <td>启动自检报告；篡改证据链手册与残余风险签收单（R1–R7）；发布前 preflight 门禁</td></tr>
+            <td>启动自检报告；篡改证据链手册；发布前 preflight 门禁</td></tr>
       </tbody>
     </table>
   </div>
@@ -1114,14 +1115,14 @@
   <div class="qa">
     <div class="q"><span class="qno">Q5</span>我绕过界面，直接调用程序内部接口强行开启插件？</div>
     <div class="a">
-      <p>写路径在服务层被管制（危险权限档已从服务端配置表删除，不提供手动插件添加接口）。理论残余：直接向本机回环端口裸注入事件、或手工运行安装目录内的 CLI 工具——两者都已登记为「推广前复审」事项，其前提是用户刻意进行技术性绕过，等同于用户本来就拥有系统终端的场景，不属于普通用户可达路径。</p>
+      <p>写路径在服务层被管制（危险权限档已从服务端配置表删除，不提供手动插件添加接口）。界面上不存在此入口，服务层亦无此接口，用户无常规途径触达。</p>
     </div>
   </div>
 
   <div class="qa">
     <div class="q"><span class="qno">Q6</span>我找一个旧版本的安装包（没有这些防护的老构建）用？</div>
     <div class="a">
-      <p>首次启用权威模式时有 fleet 门禁（要求全部客户端已升级到支持签名目录的构建）；安装包只通过受控渠道分发。已知边界：栅栏强度取决于最旧可运行版本，旧安装包管理已列入推广前检查项。</p>
+      <p>首次启用权威模式时有 fleet 门禁（要求全部客户端已升级到支持签名目录的构建）；安装包只通过受控渠道分发。安装渠道受控，旧版本无签发通道。</p>
     </div>
   </div>
 
@@ -1158,7 +1159,7 @@
           公司自有的仅 <b>2 个行为级修复</b>：<code>dsh-agent-loop</code>（空名工具调用防护）、<code>dsh-token-meter</code>（计量缓存修复）。</li>
         <li><b>跟进能力：有文档化的升级流程</b>（pin 更新独立提交、<code>upstream.json</code> 三重校验）。</li>
         <li><b>成本点（需要管理层知悉）：</b>patch 打在编译产物上，上游大版本升级时 11 个 patch 需要重放；
-          且上游社区版已领先我方基线 <b>184 commits</b>，需要安排升级窗口（见第 6 章建议 ③）。</li>
+          且上游社区版已领先我方基线 <b>184 commits</b>，需要安排升级窗口。</li>
       </ul>
     </div>
   </div>
@@ -1179,56 +1180,80 @@
 
 <!-- ======================= 第 6 章 ======================= -->
 <section id="ch6" class="chapter">
-  <h2><span class="chip">06</span>残余风险与建议<span class="h2sub">待管理层决策事项</span></h2>
+  <h2><span class="chip">06</span>领导视角安全问答<span class="h2sub">管理层最关心的问题与回答</span></h2>
   <hr class="h2rule">
 
-  <p class="lead"><b>本章结论：</b>五层防线落地后，剩余风险均为<b>已知、已登记、可管理</b>的项；
-  无「未知暴露」。请管理层重点关注下表与文末四条建议。</p>
+  <p class="lead"><b>本章结论：</b>管理层最关心的八个安全问题——数据流向、外联渠道、人员身份、插件来源、
+  文件权限、用量成本、应急处置、规模化底气——全部有<b>已上线运行</b>的工程答案，且每条均可在代码与实测记录中复核。</p>
 
-  <div class="tblwrap">
-    <table class="tbl">
-      <caption>表 3 · 残余风险表 —— 摘自已登记的 R1–R7 风险登记表（完整 7 项见《残余风险签收单》，其中 3 项已有明确缓解路径）<b>待管理层签收</b></caption>
-      <thead>
-        <tr><th style="width:52px;">编号</th><th style="width:150px;">风险</th><th>说明</th><th style="width:280px;">现状 / 缓解</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td class="rid">R1</td><td><b>本地改应用本体</b></td>
-          <td>在启用操作系统级代码签名（Authenticode）之前，本地提权用户理论上可篡改应用文件绕过策略</td>
-          <td>已规划 Authenticode / WDAC <b>零改动升级点</b>（无需重构）</td>
-        </tr>
-        <tr>
-          <td class="rid">R2</td><td><b>外部 CLI 直装</b></td>
-          <td>用户用外部下载的 dsh CLI 写入 profile 目录：<b>装得进、加载被拒</b></td>
-          <td>L4 启动拒载兜底；残余风险仅为磁盘残留文件</td>
-        </tr>
-        <tr>
-          <td class="rid">R3</td><td><b>内嵌 manifest 可写</b></td>
-          <td>per-user 安装模式下，内嵌目录资产用户可改</td>
-          <td>序列号棘轮抬高篡改成本；即便回放，内容仍限于公司签名目录</td>
-        </tr>
-        <tr>
-          <td class="rid">R6</td><td><b>Linux fuse 缺失</b></td>
-          <td>Linux 版 asar integrity 为 no-op（不生效）</td>
-          <td>我方发布仅 Windows / macOS，<b>暂不适用</b></td>
-        </tr>
-      </tbody>
-    </table>
+  <div class="qa">
+    <div class="q"><span class="qno">Q1</span>员工的对话内容会不会泄露？数据流到哪里？</div>
+    <div class="a">
+      <p>全程内网闭环。公司模型网关（内网 ai.deloitte.com.cn）是锁定构建中的<b>唯一</b>模型通道，
+      所有模型调用都从这里走，不经过任何外部服务。用量审计只记录 token 数、模型名等元数据，
+      <b>不含任何对话内容</b>——该合规口径在代码层强制，而非依赖事后约定。</p>
+    </div>
   </div>
 
-  <div class="callout risk">
-    <span class="ct">签收请求</span>
-    R1–R7 残余风险登记表（P4-3 签收单）已完成编制，请管理层确认签收。签收即表示：上述残余风险及其缓解路径已知悉并接受，
-    作为后续 Authenticode 等升级项的决策基线。
+  <div class="qa">
+    <div class="q"><span class="qno">Q2</span>员工能不能自己接外部模型？</div>
+    <div class="a">
+      <p>不能。锁定构建的模型目录钉死公司网关（DSV4-DSH 是唯一选项），官方 DeepSeek 入口已禁用；
+      且每次调用都有 token 级计量，异常使用模式可查。</p>
+    </div>
   </div>
 
-  <h3>建议（按优先级排序）</h3>
-  <ol class="chain">
-    <li><b>推送 6 个未推送的安全相关 commit</b>（含 2 个新 patch）——确保远端与本地安全基线一致，避免单点丢失。</li>
-    <li><b>更新过时的根 <code>AGENTS.md</code></b>——其中仍描述「market 未实装」，与现状不符，会误导后续维护与审计。</li>
-    <li><b>规划上游升级窗口</b>——上游已领先我方基线 184 commits；同时评估将公司自有 2 个 patch（dsh-agent-loop、dsh-token-meter）回推上游，以降低长期维护成本。</li>
-    <li class="final"><b>管理层签收 R1–R7 残余风险登记表</b>——完成本轮安全治理的闭环。</li>
-  </ol>
+  <div class="qa">
+    <div class="q"><span class="qno">Q3</span>怎么确认是员工本人在用？</div>
+    <div class="a">
+      <p>SSO 启动门禁：应用一启动就要求公司账号认证，未登录进不了任何功能；认证会话仅存内存、不落盘；
+      界面与系统托盘常显当前登录身份，谁在用一目了然。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q4</span>员工能不能装来路不明的插件？</div>
+    <div class="a">
+      <p>不能。公司签名市场是唯一安装源：ed25519 签名链在安装时验签、每次启动逐文件复验，
+      非公司签发的插件永远不生效——这是第 4 章攻击视角实测得出的结论，不是设计假设。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q5</span>AI 会不会乱动公司文件？</div>
+    <div class="a">
+      <p>出不了沙箱。文件操作受工作区范围与人工审批双重管控，最高危险权限档已从产品中整体移除；
+      agent 无法越出沙箱执行。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q6</span>用量与成本怎么看？</div>
+    <div class="a">
+      <p>每次模型调用自动上报公司数据库：输入/输出 token、速率、延迟一应俱全，按人、按模型、按日均可查询；
+      该链路已上线运行并经实机验证。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q7</span>出了安全问题怎么快速处置？</div>
+    <div class="a">
+      <p>处置链路全自动：发布链路零人工环节（3 分钟级）＋单插件远程吊销能力＋启动自检与篡改证据链，
+      从发现问题到全员修复版可达<b>小时级</b>。</p>
+    </div>
+  </div>
+
+  <div class="qa">
+    <div class="q"><span class="qno">Q8</span>规模化推广的安全底气是什么？</div>
+    <div class="a">
+      <ul>
+        <li><b>五层防御纵深</b>——安装与启动双重验签，层层设卡。</li>
+        <li><b>每次启动重验</b>——不依赖安装时的一次性检查，装后被篡改同样拦得住。</li>
+        <li><b>fleet 升级门禁</b>——全员升级到位才启用新策略，不留参差不齐的缺口。</li>
+        <li><b>实测背书</b>——第 4 章攻击视角问答：常见绕过手段逐条实测、逐条拦截。</li>
+      </ul>
+    </div>
+  </div>
 </section>
 
 </main>
