@@ -229,6 +229,8 @@ July，收到决策。已补验三处关键事实：`bin.ts:11-124` 确认支持
 
 ### P5 状态（2026-09-02 补记 runtime 漂移事实）
 inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文件/±54 万行）；上游桌面仓自钉 alpha.1。策略不变：钉 rc.2 等 0.1.2 正式版，届时开升级专项卡（版本键控 patches 重建[settings-models 3057 行最大件]、CLI 钳制 row-id 复验、renderer 迁移+会话鉴权适配、Electron 43.3 跳跃、上游 14 个 alpha 适配 commit 为地图）。**P6 注意**：registerProvider 缝隙若在 0.1.2 变形，P6 实装需重对设计并补钉扎测试（同 CLI 钳制先例）。
+
+**升级工作量估算（2026-09-02 定，正式版出来按此开批）**：总量≈8-12 个 worker 批/3-5 个工作日，SSO 线级别专项。明细：①补丁重基底 2-3 批（15 个语义补丁 757 行+settings-models 3057 行工件重建，生成管线在手）②外壳适配 2-4 批（上游 14 个 alpha 适配 commit 为地图：Electron 43.3/renderer 迁移+会话鉴权/layout service/verify-packaged-runtime——**最高风险**，他们改的正是我们重写过的文件）③组合层复验半批（钉扎测试护航）④消费 API 适配 1 批（session/event、registerProvider）⑤测试重锚 1-2 批（1450 例中断言漂移，量大机械）⑥回归+评审+构建+实机 1-2 批。**顺序铁则**：P6 先于升级落地（设计锚在 rc.2 API）；升级只等正式版，不追 alpha。
 - 开卡 2026-09-01；同日设计评审（review-p5-design）= NEEDS REVISION，P0 total 口径与 P1 归因/边界/队列已折入上文 v2；红线核查通过（零子模块/market 触碰）。review-usage（2026-09-01，基于 `34b448c8db`）已通过，评审尾巴（P2 覆盖缺口文档化/P3 陈旧 openStep 计时、mask 专用规则、队列双语义同步）已另行收口。
 - **覆盖缺口（review-usage P2 发现，P4-3 残余风险风格·明示接受）**：usage 遥测仅覆盖桌面 Host（web UI）与后台会话；CLI 子进程会话不上报——架构性缺口：CLI 进程不加载桌面 Host 组合，事件无消费者；最可能自配 provider 的终端用户恰在盲区。数据消费者不得把缺行解读为零使用。
 - 待用户拍板：①Step0（删比对列+建 report_writer 子网授权账号+表加 turn/step/client_version 列与 UNIQUE）②开关 policy 控 vs 恒定开 ③DSN blob vs env ④表保留期/分区。
