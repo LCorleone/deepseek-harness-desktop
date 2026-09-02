@@ -138,6 +138,10 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### SSO key 轮换落地（2026-09-02 上午，③ 完成）
 运维重发凭据：**app_id 1007→1008**（app_name 仍 'DSH'），新 app_key 仅进混淆 blob（会话交接，仓库/devlog 零明文——blob 生成器 env 供值）。代码改动：`BUILTIN_APP_ID` 切 1008 + 测试 6 处默认值/code_challenge 期望参数同步（`code_challenge`=sha256(redirectUri&&&appId&&&ts) 随 appId 变更属预期）；`src/sso-app-key-blob.ts` 重生成。check 1422+6skip 全绿。**泄漏事故至此完整闭环**：当前树无明文（blob）+ 历史重写 + 旧 key 作废。待装机验证 1008+DSH 门户静默认证直通。
 
+### 上游摘取批 + 简报 v3 收官（2026-09-02 晚）
+**上游摘取批落地**（scout 三档分拣→worker 摘 7 项→评审通过「教科书级冲突解」→**#45 用户装机全 OK**）：失败报告保留（81b62aec09 冲突解，保我方 recovery 结构+failureNote 双语段）/ 会话恢复（af54bf0dbb，localStorage 选择态，鉴权后列表门控，SSO 正交）/ 目录能力透传（6d567aefb5，与托管目录屏蔽**正交验证**：禁用行不入 catalog）/ 模型搜索批量（7cb2d9fa64，3057 行工件重建）/ 遮罩冲突（d1bbc1ce9e）/ 目录选择器跳损坏项（537d124740）/ 标题栏滚动后拖动（ec528b0835，保 AdvancedFrame 几何）+ 孤儿补丁清理（5bddd4e045）。NSIS 长路径 patch-id 验证**早已在树**。check 1450+6skip。台账（挂起待需/绝对别碰）入 plan-v2。**简报 v3**（b10672e5b2）：去隐患 10 处（ch6 残余风险整章/摘要指标/Q5Q6 理论残余句，违禁词零命中）+ 新 ch6 领导视角安全问答 8 卡（全部实装背书）。
+**tag `v0.3.0-desktop-enterprise`** 打于本日终态（#45=企业定制集大成：SSO 门禁+模型网关托管+usage 审计+CLI 钳制+上游摘取）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
