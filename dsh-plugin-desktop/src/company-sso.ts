@@ -75,20 +75,23 @@ export const SSO_VERIFY_TIMEOUT_MS = 45_000
 
 /**
  * Built-in app credentials issued by IT ops for DSH Desktop (app id 1008,
- * 2026-08-31 hand-off). The id and name identify the client to the portal
- * and stay plaintext; the app key authenticates it and ships only as the
+ * handed off 2026-09-02 as the rotation of the revoked 1007). The id and
+ * name identify the client to the portal and stay plaintext; the app key
+ * authenticates it and ships only as the
  * obfuscated blob below — a signed-off soft barrier, exactly like the demo
  * signing key and the model-gateway blob.
  */
 const BUILTIN_APP_ID = '1008'
 /**
  * Application name sent inside SignEntity. The portal matches its client
- * configuration by the `(appId, appName)` pair — observed live: appId 1005
- * with `coWork.Nova` passes the portal's configuration check, while appId
- * 1007 under any unregistered name answers configuration-does-not-exist.
- * The registered name for our app id is `DSH` (ops, confirmed 2026-09-01;
- * verified live: 1007 + `DSH` passes the check and returns a token, code
- * 200). Not part of the signature, but the wrong name fails the lookup.
+ * configuration by the `(appId, appName)` pair — observed live (1007-era,
+ * revoked by the 2026-09-02 rotation): appId 1005 with `coWork.Nova` passes
+ * the portal's configuration check, while an app id under any unregistered
+ * name answers configuration-does-not-exist. The registered name for our
+ * app id is `DSH` (ops, confirmed 2026-09-01; verified live with the revoked
+ * 1007 + `DSH` pair — 1008 + `DSH` was pending live verification when this
+ * comment was written). Not part of the signature, but the wrong name
+ * fails the lookup.
  */
 const BUILTIN_APP_NAME = 'DSH'
 
