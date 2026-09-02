@@ -218,6 +218,9 @@ July，收到决策。已补验三处关键事实：`bin.ts:11-124` 确认支持
 - **待定（需用户拍板）**：上报是否受 `policy.usageReport` 控（release 开/dev 关，推荐）还是构建后恒定开；DSN blob 自动分发（推荐）还是 env 每台手动。
 - **验收**：mock 事件/DB 单测（字段投影全、tps/ttft/latency 算式、零内容断言、批量写、开关关闭不写）；根 `corepack yarn check` 绿；构建 #41 装机实测入库一行。
 
+### P5 运行口径（2026-09-02 实测定案，用户接受）
+`cache_read/cache_write/reasoning_tokens` 三列在 vLLM 网关（ai.deloitte.com.cn，DSV4-DSH）下**恒 0**：①网关 usage 块不返回 prompt_tokens_details/completion_tokens_details（实测探针：仅三数 usage；思考以 delta.reasoning 流传输故 UI 可见）；②上游 pi-ai mapUsage 对 cache 仅非零透传、reasoning 一律折进 output（子模块不可改）。**思考 token 已计入 output_tokens/total（vLLM 把 reasoning 算进 completion），总账无损**。不做客户端估算、不向网关提需求（用户拍板接受）。装机验证记录：#42 实机 4 行真数据全字段正确（含 tps/ttft/latency/turn/step/client_version），#43 SSO 1008 直通通过。
+
 ### P5 状态
 - 开卡 2026-09-01；同日设计评审（review-p5-design）= NEEDS REVISION，P0 total 口径与 P1 归因/边界/队列已折入上文 v2；红线核查通过（零子模块/market 触碰）。review-usage（2026-09-01，基于 `34b448c8db`）已通过，评审尾巴（P2 覆盖缺口文档化/P3 陈旧 openStep 计时、mask 专用规则、队列双语义同步）已另行收口。
 - **覆盖缺口（review-usage P2 发现，P4-3 残余风险风格·明示接受）**：usage 遥测仅覆盖桌面 Host（web UI）与后台会话；CLI 子进程会话不上报——架构性缺口：CLI 进程不加载桌面 Host 组合，事件无消费者；最可能自配 provider 的终端用户恰在盲区。数据消费者不得把缺行解读为零使用。
