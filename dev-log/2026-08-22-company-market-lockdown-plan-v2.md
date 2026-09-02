@@ -226,6 +226,34 @@ July，收到决策。已补验三处关键事实：`bin.ts:11-124` 确认支持
 - **覆盖缺口（review-usage P2 发现，P4-3 残余风险风格·明示接受）**：usage 遥测仅覆盖桌面 Host（web UI）与后台会话；CLI 子进程会话不上报——架构性缺口：CLI 进程不加载桌面 Host 组合，事件无消费者；最可能自配 provider 的终端用户恰在盲区。数据消费者不得把缺行解读为零使用。
 - 待用户拍板：①Step0（删比对列+建 report_writer 子网授权账号+表加 turn/step/client_version 列与 UNIQUE）②开关 policy 控 vs 恒定开 ③DSN blob vs env ④表保留期/分区。
 
+
+
+## Phase 6 · 公司 skill 资产防护（2026-09-02 开卡，scout 已摸底）
+
+> 目的：公司 skill 资产（SKILL.md 提示词+脚本+assets）集成进桌面端但**明文不落盘**（防拷贝）。威胁模型=防同事顺手拷（非 APT）；诚实边界：全文进模型上下文后「模型之口」通道仍在——prompt 墙+输出过滤+水印照叠（用户三层方案 ①加密驻留 ②system prompt 限制 ③每轮输入防护，已讨论定案）。
+
+### scout 裁决（scout-skill-seam，2026-09-02）
+- **路线 B（采纳）：原生 provider**——`ctx.skills.registerProvider()`（docs/subsystems/skills.md:248-280；参照 skill-badge 65 行实现）+ `resourceBase:{kind:'opaque'}`。`list()` 返回解密 description 索引，`get()` 按需内存解密全文。catalog 注入/`skill` 工具按需加载/UI 与 slash 发现/digest 替换**全部免费**。
+- 路线 A（备选，不采）：自造 load_company_skill 工具 + 手拼 prompt——Q1 `ctx.tools.register` 与 Q2 system prompt 双缝隙虽都成立，但重造轮子。
+- Q5：tool result 无截断上限；仅 catalog description 500 字默认截断（索引层，不影响正文）。
+
+### P6-1 容器插件「company-skills」
+- 签名市场分发（复用 ed25519 全链路）；内嵌加密 skill bundle（blob 三钥同模式：XOR+base64，密钥不入仓）。
+- provider：list()=解密索引；get()=内存解密 SKILL.md 正文；resourceBase opaque。
+- 打包脚本：原始 skill 目录（作者照旧写 markdown）→ 加密 bundle；加载指令行自动改写（原生 read 语法 → skill 工具语义，实际原生即走 skill({name}) 工具，改写量趋零）。
+
+### P6-2 脚本执行通道（硬骨头①）
+- opaque 下模型无法直接 bash/read 加密资源 → 插件注册脚本执行工具：解密 → **stdin 管道**（node -/python -）跑，不落盘。skill 正文脚本调用改走该工具（打包脚本约定化改写）。相对路径依赖的资源经工具参数内存传递。
+- 妥协预案：个别写死相对路径读文件的脚本 → 局部落临时目录 + 用后即删（该 skill 单独评估）。
+
+### P6-3 残余签收（硬骨头②③）
+- catalog 首条消息（description 索引）在会话历史明文可见 → description 写脱敏版（索引不含方法论本体）。
+- tool result（skill 全文）进会话历史即持久化明文（session 存储）→ **防拷贝边界=「分发与落盘」层**，会话内可见性接受（与「进上下文即可被套话」同级别残余，prompt 墙缓解）。
+- 叠加层：system prompt 资产条款 + 每轮输入防护（用户方案②③）+ 输出指纹过滤（④）+ 逐用户水印（⑤）后续按需加。
+
+### P6 状态
+- 开卡 2026-09-02；scout 五问全绿（工具面开放/system prompt 双缝隙/原生 provider 存在/opaque 三态/无截断）。待用户拍板：①P6-2 脚本管道方案 OK？②description 脱敏口径；③是否首批就叠⑤水印。设计评审后再实装。
+
 ---
 
 ## 兼容模式红线汇总
