@@ -27,7 +27,7 @@
  * The session is process memory only: `{@link SsoSession}` never reaches
  * disk, logs, or diagnostics exports (the self-check section carries only
  * email and source). The embedded `app_id`/`app_name` (issued by IT ops for
- * DSH Desktop, app id 1007), the app key, and the portal base URL can be
+ * DSH Desktop, app id 1008), the app key, and the portal base URL can be
  * overridden through `DSH_SSO_APP_ID` / `DSH_SSO_APP_KEY` / `DSH_SSO_APP_NAME` /
  * `DSH_SSO_BASE_URL` in unpackaged runs only — a packaged build always
  * ships the pinned credentials and portal. The app key itself ships as an
@@ -74,13 +74,13 @@ export const SSO_TOKEN_TIMEOUT_MS = 45_000
 export const SSO_VERIFY_TIMEOUT_MS = 45_000
 
 /**
- * Built-in app credentials issued by IT ops for DSH Desktop (app id 1007,
+ * Built-in app credentials issued by IT ops for DSH Desktop (app id 1008,
  * 2026-08-31 hand-off). The id and name identify the client to the portal
  * and stay plaintext; the app key authenticates it and ships only as the
  * obfuscated blob below — a signed-off soft barrier, exactly like the demo
  * signing key and the model-gateway blob.
  */
-const BUILTIN_APP_ID = '1007'
+const BUILTIN_APP_ID = '1008'
 /**
  * Application name sent inside SignEntity. The portal matches its client
  * configuration by the `(appId, appName)` pair — observed live: appId 1005

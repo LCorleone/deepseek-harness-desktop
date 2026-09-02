@@ -85,13 +85,13 @@ afterEach(() => {
 
 describe('sso credentials and endpoints', () => {
   it('pins the issued app credentials by default', () => {
-    expect(ssoAppId({})).toBe('1007')
+    expect(ssoAppId({})).toBe('1008')
     // The shipped app key is asserted structurally — it resolves through
     // the obfuscated blob and only its issued shape (32 alphanumeric
     // characters) is pinned here, never the value itself.
     expect(ssoAppKey({})).toMatch(/^[A-Za-z0-9]{32}$/u)
     expect(ssoAppKey({})).toBe(decodeSsoAppKeyBlob(SSO_APP_KEY_BLOB))
-    // Registered portal name for app id 1007 (ops, 2026-09-01) — the portal
+    // Registered portal name for app id 1008 (ops rotation, 2026-09-02) — the portal
     // matches configuration by the (appId, appName) pair.
     expect(ssoAppName({})).toBe('DSH')
     expect(ssoLoginUrl()).toBe('https://sdp.deloitte.com.cn/web/login')
@@ -104,7 +104,7 @@ describe('sso credentials and endpoints', () => {
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'test-key' })).toBe('test-key')
     expect(ssoAppName({ DSH_SSO_APP_NAME: ' coWork.Nova ' })).toBe('coWork.Nova')
     // Empty spellings fall back to the built-ins.
-    expect(ssoAppId({ DSH_SSO_APP_ID: ' ' })).toBe('1007')
+    expect(ssoAppId({ DSH_SSO_APP_ID: ' ' })).toBe('1008')
     expect(ssoAppName({ DSH_SSO_APP_NAME: '' })).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://sso-test.example/' }))
       .toBe('https://sso-test.example')
@@ -116,11 +116,11 @@ describe('sso credentials and endpoints', () => {
     // credentials and portal — including the app.asar.unpacked mirror.
     const packaged = '/opt/Deloitte DSH Desktop/resources/app.asar/lib/company-sso.js'
     const packagedUnpacked = '/opt/Deloitte DSH Desktop/resources/app.asar.unpacked/lib/company-sso.js'
-    expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packaged)).toBe('1007')
+    expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packaged)).toBe('1008')
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packaged)).toMatch(/^[A-Za-z0-9]{32}$/u)
     expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packaged)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packaged)).toBe('https://sdp.deloitte.com.cn')
-    expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packagedUnpacked)).toBe('1007')
+    expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packagedUnpacked)).toBe('1008')
     expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packagedUnpacked)).toMatch(/^[A-Za-z0-9]{32}$/u)
     expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packagedUnpacked)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packagedUnpacked))
@@ -795,10 +795,10 @@ describe('browser login orchestration', () => {
     await openedSignal
     const url = new URL(opened[0]!)
     expect(url.origin + url.pathname).toBe('https://sdp.deloitte.com.cn/web/login')
-    expect(url.searchParams.get('app_id')).toBe('1007')
+    expect(url.searchParams.get('app_id')).toBe('1008')
     expect(url.searchParams.get('redirect_uri')).toMatch(/^http:\/\/localhost:\d+\/callback$/u)
     expect(url.searchParams.get('code_challenge')).toBe(
-      buildSsoCodeChallenge(url.searchParams.get('redirect_uri')!, '1007', 1_789_000_000),
+      buildSsoCodeChallenge(url.searchParams.get('redirect_uri')!, '1008', 1_789_000_000),
     )
     const callbackPort = Number(new URL(url.searchParams.get('redirect_uri')!).port)
     const rawCode = encodeCallback(validPayload)

@@ -5,4 +5,4 @@
  * see the generator header for the signed-off soft-barrier positioning.
  */
 
-export const SSO_APP_KEY_BLOB = "H1EJXRQuFhJWVVJXOkobaFEAIh0HN0xXJ1sWP0YEJEwDIl5bIlUYfU9ePlEV"
+export const SSO_APP_KEY_BLOB = "H1EJXRQuFhJWVVJVNEIXfFEDJRgENk1YP1MKOkYII0IPKF5HOFwNeEdfKlEV"
