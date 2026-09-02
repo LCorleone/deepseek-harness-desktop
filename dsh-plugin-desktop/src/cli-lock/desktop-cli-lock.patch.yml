@@ -1,0 +1,80 @@
+# Locked-build CLI clamp (scout verdict: the bundled-Node CLI child is an
+# executor-side bypass of the GUI's in-memory locked composition).
+#
+# desktop-cli.ts appends this overlay (`--patch <this file>`) to every
+# boot-shaped invocation before importing the upstream dsh entry, so the CLI
+# child composes from disk the same locked posture the Electron GUI composes
+# in memory (src/profile.ts). The profile's bundle layers on disk are the
+# upstream base + web-app pair: they still carry the unlocked-era rows this
+# overlay must override, and the base row for sandbox-policy still derives
+# its mode from process.env.DSH_PERMISSION_MODE.
+#
+# Layer order at boot: bundle layers, profile patch, $DSH_HOME home layer,
+# --patch overlays in argv order (this overlay first, so a user-typed overlay
+# still stacks above it), then the CLI's own final pins. Honest boundary: the
+# home layer and later overlays are user-writable, so this is a soft barrier
+# by construction — it removes the unintentional bypass (environment-driven
+# escalation and upstream defaults that never carried the company decision),
+# not the permission a user already has to compose their own tree.
+#
+# Restated faces, each the literal the locked GUI runs:
+#
+# - sandbox-policy / approval: the GUI process never carries
+#   DSH_PERMISSION_MODE, so the upstream `!!js` expressions resolve to
+#   'workspace-write' and 'ask' there; pinning the same literals here
+#   disarms the expressions in this child, whose environment comes from a
+#   user shell. desktop-cli.ts additionally deletes every case-insensitive
+#   spelling of DSH_PERMISSION_MODE from the child environment before the
+#   import, so the expressions cannot re-arm from a stray variable.
+#   workspaceRoot is restated verbatim because a loader patch swaps the
+#   row's whole config object (no key merging) and the schema has no
+#   default for it.
+#
+# - permission.presets: the full-access-free table lockedPermissionConfig
+#   (src/profile.ts) derives from the same upstream base row — identical
+#   entries minus danger-full-access, so the service table, the UI, and the
+#   write path stop offering full access. The inferred default re-derives
+#   from the composed sandbox/approval pair (workspace-write + ask).
+#
+# - agent-presets: the GUI's locked restatement swaps the roster row to the
+#   company provider pinned to the packaged company preset directory with
+#   default deloitte-standard. The upstream row is disabled (not
+#   reconfigured) because the CLI's own composeProfile appends a final
+#   overlay that overwrites `roots` on the upstream row id after every
+#   --patch overlay; an inserted row under a fresh id is outside that pin.
+#   The inserted row is the same provider and config the GUI composes, and
+#   the roots path rides DSH_DESKTOP_LOCK_PRESET_ROOT — a process-local
+#   variable desktop-cli.ts sets to the packaged company preset root before
+#   the import (a static file cannot know its own install path; a missing
+#   variable fails the row's schema, never an unlocked fallback).
+
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.cwd()
+
+- id: approval
+  config:
+    policy: ask
+
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+
+- id: agent-presets
+  disabled: true
+
+- insert:
+    - id: desktop-company-agent-presets
+      name: dsh-plugin-desktop/company-agent-presets
+      config:
+        default: deloitte-standard
+        roots:
+          - path: !!js process.env.DSH_DESKTOP_LOCK_PRESET_ROOT
+            trust: system

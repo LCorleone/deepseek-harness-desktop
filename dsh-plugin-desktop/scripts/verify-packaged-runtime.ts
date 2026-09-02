@@ -50,6 +50,11 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   // Build-time digest manifest the packaged runtime verifies the bundled Node
   // command against (`beforePack` generates it from the pinned archives).
   'lib/node-runtime-sha256.json',
+  // The locked CLI clamp overlay the bundled-Node bootstrap appends as a
+  // `--patch` flag: dual-homed like the policy asset so the in-archive copy
+  // pins the shipped bytes while the CLI child reads the physical mirror
+  // (plain Node cannot read inside app.asar).
+  'lib/cli-lock/desktop-cli-lock.patch.yml',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
   // The SSO startup gate window's local document (locked requireSso builds
@@ -91,6 +96,10 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   // variant. No runtime consumer may trust it as policy — the main process
   // reads the in-archive entry and the CLI reads its environment hand-off.
   'lib/policy/desktop-policy.json',
+  // The CLI clamp overlay must be physical: the bundled-Node child reads it
+  // through `--patch` before any composition, and no Electron process owns
+  // the read.
+  'lib/cli-lock/desktop-cli-lock.patch.yml',
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
   'lib/native-ui/sso-gate.html',

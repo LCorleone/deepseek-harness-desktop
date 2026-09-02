@@ -1,18 +1,27 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import { healProfilesModuleFallback, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import {
   canonicalJsonText,
   createCompanyManifestSignature,
   ed25519PublicKeyFingerprint,
 } from 'dsh-community-market'
 import {
+  DESKTOP_CLI_CLAMP_ENVIRONMENT,
+  desktopCliClampLocked,
+  desktopCliCompanyPresetRoot,
+  desktopCliLockOverlayPath,
   runDesktopDshCli,
   withDefaultDesktopProfile,
+  withLockedClampOverlay,
 } from '../src/desktop-cli.ts'
+import { COMPANY_PRESET_ID } from '../src/company-agent-presets.ts'
+import { companyPresetRoot, lockedPermissionConfig } from '../src/profile.ts'
 import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from '../src/company-manifest-origin.ts'
 import {
   desktopPolicyEnvironmentEntries,
@@ -949,5 +958,219 @@ describe('packaged dsh bootstrap policy hand-off', () => {
       { DSH_DESKTOP_POLICY_LOCKED: '1' },
       packagedModuleUrl,
     )).toThrow('must carry all six entries')
+  })
+})
+
+describe('locked CLI clamp', () => {
+  const packagedModuleUrl = pathToFileURL(join(
+    '/Applications', 'DSH Desktop.app', 'Contents', 'Resources',
+    'app.asar.unpacked', 'lib', 'desktop-cli.js',
+  )).href
+
+  /** Read the shipped clamp overlay through the loader's own patch parser. */
+  function loadClampOverlay(): ReturnType<typeof loadOverlayPatches> {
+    return loadOverlayPatches('dsh-desktop', desktopCliLockOverlayPath())
+  }
+
+  it('branches the clamp overlay by command form like the default profile does', () => {
+    const overlayPath = '/app/lib/cli-lock/desktop-cli-lock.patch.yml'
+    expect(withLockedClampOverlay([], overlayPath)).toEqual(['--patch', overlayPath])
+    expect(withLockedClampOverlay(['--profile', 'web', '--dump-config'], overlayPath)).toEqual([
+      '--patch', overlayPath, '--profile', 'web', '--dump-config',
+    ])
+    // `web` owns its own --patch flag position: the overlay follows the token.
+    expect(withLockedClampOverlay(['web', '--port', '3210'], overlayPath)).toEqual([
+      'web', '--patch', overlayPath, '--port', '3210',
+    ])
+    // The plugin subcommand rejects a parent --patch, so it stays untouched.
+    expect(withLockedClampOverlay(['plugin', '--profile', 'desktop', 'add', 'p'], overlayPath))
+      .toEqual(['plugin', '--profile', 'desktop', 'add', 'p'])
+    // Help and version print and exit without booting any composition.
+    expect(withLockedClampOverlay(['--help'], overlayPath)).toEqual(['--help'])
+    expect(withLockedClampOverlay(['-h'], overlayPath)).toEqual(['-h'])
+    expect(withLockedClampOverlay(['--version'], overlayPath)).toEqual(['--version'])
+    expect(withLockedClampOverlay(['-V'], overlayPath)).toEqual(['-V'])
+  })
+
+  it('decides the clamp from the hand-off, an injected policy, or fail-closed packaging', () => {
+    const devModuleUrl = pathToFileURL('/workspace/dsh-plugin-desktop/lib/desktop-cli.js').href
+    // An injected policy decides outright (tests and embedders).
+    expect(desktopCliClampLocked({}, desktopPolicy(true))).toBe(true)
+    expect(desktopCliClampLocked({}, desktopPolicy(false))).toBe(false)
+    // The hand-off is peeked, not consumed: '0' is a trusted unlocked launcher.
+    expect(desktopCliClampLocked({ DSH_DESKTOP_POLICY_LOCKED: '0' }, undefined, devModuleUrl)).toBe(false)
+    expect(desktopCliClampLocked({ dsh_desktop_policy_locked: '1' }, undefined, devModuleUrl)).toBe(true)
+    // Malformed hand-off values clamp rather than degrade.
+    expect(desktopCliClampLocked({ DSH_DESKTOP_POLICY_LOCKED: 'maybe' }, undefined, devModuleUrl)).toBe(true)
+    // Fail-closed: a packaged layout without the launcher hand-off is locked.
+    expect(desktopCliClampLocked({}, undefined, packagedModuleUrl)).toBe(true)
+    expect(desktopCliClampLocked({ DSH_DESKTOP_POLICY_LOCKED: '0' }, undefined, packagedModuleUrl)).toBe(false)
+    // An unpackaged development checkout stays clamp-free.
+    expect(desktopCliClampLocked({}, undefined, devModuleUrl)).toBe(false)
+  })
+
+  it('clamps a locked boot invocation: overlay flag, scrubbed mode override, company root', async () => {
+    const environment: NodeJS.ProcessEnv = {
+      DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      DSH_PERMISSION_MODE: 'danger-full-access',
+      dsh_permission_mode: 'danger-full-access',
+      ...desktopPolicyEnvironmentEntries(companyLockedPolicy()),
+    }
+    const argv = [process.execPath, '/app/desktop-cli.js']
+    const load = vi.fn(async () => undefined)
+
+    await runDesktopDshCli(environment, load, argv, undefined)
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(argv.slice(2)).toEqual([
+      '--patch', desktopCliLockOverlayPath(), '--profile', 'desktop',
+    ])
+    // Every case-insensitive spelling of the upstream override is gone before
+    // the import, and the overlay's preset-root expression is fed the same
+    // directory the locked GUI composes. The six-key hand-off stays in place:
+    // boot forms only peek at it (the plugin-add branch owns consumption).
+    expect(environment).toEqual({
+      ...desktopPolicyEnvironmentEntries(companyLockedPolicy()),
+      [DESKTOP_CLI_CLAMP_ENVIRONMENT.presetRoot]: desktopCliCompanyPresetRoot(),
+    })
+    expect(desktopCliCompanyPresetRoot()).toBe(companyPresetRoot())
+  })
+
+  it('keeps the web subcommand and config dumps clamped, and help/version untouched', async () => {
+    const lockedEntries = desktopPolicyEnvironmentEntries(companyLockedPolicy())
+    const webArgv = [process.execPath, '/app/desktop-cli.js', 'web', '--port', '3210']
+    await runDesktopDshCli({ ...lockedEntries, DSH_PERMISSION_MODE: 'read-only' }, async () => undefined, webArgv, undefined)
+    expect(webArgv.slice(2)).toEqual(['web', '--patch', desktopCliLockOverlayPath(), '--port', '3210'])
+
+    // --dump-config still runs with the overlay included in the printed tree.
+    const dumpArgv = [process.execPath, '/app/desktop-cli.js', '--dump-config']
+    await runDesktopDshCli({ ...lockedEntries }, async () => undefined, dumpArgv, undefined)
+    expect(dumpArgv.slice(2)).toEqual(['--patch', desktopCliLockOverlayPath(), '--dump-config'])
+
+    // --version prints and exits without booting: no overlay, no preset root.
+    // This is the shape the packaged e2e `--version` sentinel (scripts/
+    // e2e-install-smoke.mjs b1) rides under the locked hand-off.
+    const versionEnvironment: NodeJS.ProcessEnv = { ...lockedEntries, DSH_PERMISSION_MODE: 'danger-full-access' }
+    const versionArgv = [process.execPath, '/app/desktop-cli.js', '--version']
+    await runDesktopDshCli(versionEnvironment, async () => undefined, versionArgv, undefined)
+    expect(versionArgv.slice(2)).toEqual(['--version'])
+    expect(versionEnvironment).not.toHaveProperty(DESKTOP_CLI_CLAMP_ENVIRONMENT.presetRoot)
+    expect(versionEnvironment).not.toHaveProperty('DSH_PERMISSION_MODE')
+  })
+
+  it('leaves locked plugin adds on the existing authorization path without an overlay', async () => {
+    const assetPath = writeCompanyCatalogAsset(mkdtempSync(join(tmpdir(), 'dsh-desktop-clamp-plugin-')), unsignedCatalog())
+    try {
+      const environment: NodeJS.ProcessEnv = {
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        DSH_PERMISSION_MODE: 'danger-full-access',
+        ...desktopPolicyEnvironmentEntries(companyLockedPolicy()),
+      }
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli(environment, load, argv, undefined, assetPath)
+
+      // The plugin subcommand rejects a parent --patch, so the clamp adds
+      // none; the signed-catalog authorization still ran to completion and
+      // consumed the whole hand-off.
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
+      expect(environment).toEqual({})
+    } finally {
+      rmSync(dirname(assetPath), { recursive: true, force: true })
+    }
+  })
+
+  it('keeps unlocked and development runs byte-identical with today', async () => {
+    const environment: NodeJS.ProcessEnv = {
+      DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      DSH_PERMISSION_MODE: 'read-only',
+      ...desktopPolicyEnvironmentEntries(desktopPolicy(false)),
+    }
+    const argv = [process.execPath, '/app/desktop-cli.js', '--dump-config']
+    const load = vi.fn(async () => undefined)
+
+    await runDesktopDshCli(environment, load, argv, undefined)
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(argv.slice(2)).toEqual(['--profile', 'desktop', '--dump-config'])
+    // No scrub, no preset root, and the environment keeps both the upstream
+    // override and the (unconsumed — this is a boot form) unlocked hand-off.
+    expect(environment).toEqual({
+      DSH_PERMISSION_MODE: 'read-only',
+      ...desktopPolicyEnvironmentEntries(desktopPolicy(false)),
+    })
+  })
+
+  it('resolves the inserted company roster row from the healed profile fallback', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-clamp-row-resolution-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
+        name: 'dsh-profile-desktop',
+        private: true,
+      }))
+      // The launcher heals this fallback on every GUI composition; the clamp
+      // relies on the same symlink from its own package anchor, because the
+      // upstream `plugin`/boot children never import desktop rows themselves.
+      healProfilesModuleFallback(
+        fileURLToPath(new URL('../package.json', import.meta.url)),
+        homeDir,
+      )
+      const require = createRequire(join(profileDir, 'package.json'))
+      expect(require.resolve('dsh-plugin-desktop/company-agent-presets'))
+        .toMatch(/company-agent-presets\.js$/u)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('restates the GUI locked composition: presets, roster, sandbox, approval', () => {
+    const patches = loadClampOverlay()
+    const byId = new Map(patches.map(patch => [patch.id, patch]))
+
+    // Permission face: the clamp table is exactly what lockedPermissionConfig
+    // derives from the upstream base row the CLI child composes.
+    const upstreamBasePresets = {
+      'read-only': { sandbox: 'read-only', approval: 'ask' },
+      'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+    }
+    const permissionPatch = byId.get('permission')
+    expect((permissionPatch?.config as Record<string, unknown>).presets)
+      .toEqual(lockedPermissionConfig({ presets: upstreamBasePresets }).presets)
+    expect((permissionPatch?.config as Record<string, unknown>).presets)
+      .not.toHaveProperty('danger-full-access')
+
+    // Roster face: the upstream row is disabled and the inserted company row
+    // carries the GUI's config shape — default preset id and a single
+    // system-trust root — with the directory arriving through the launcher's
+    // process-local expression variable.
+    expect(byId.get('agent-presets')).toEqual({ id: 'agent-presets', disabled: true })
+    const inserted = patches.flatMap(patch => patch.insert ?? [])[0] as unknown as {
+      id: string
+      name: string
+      config: { default: string, roots: { path: { __jsExpr: string }, trust: string }[] }
+    }
+    expect(inserted.id).toBe('desktop-company-agent-presets')
+    expect(inserted.name).toBe('dsh-plugin-desktop/company-agent-presets')
+    expect(inserted.config.default).toBe(COMPANY_PRESET_ID)
+    expect(inserted.config.roots).toEqual([
+      { path: { __jsExpr: `process.env.${DESKTOP_CLI_CLAMP_ENVIRONMENT.presetRoot}` }, trust: 'system' },
+    ])
+
+    // Sandbox and approval faces: the same effective literals the locked GUI
+    // runs (its process never carries the mode override), with the workspace
+    // root restated verbatim because a loader patch swaps the whole config.
+    expect(byId.get('sandbox-policy')?.config).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: { __jsExpr: 'process.cwd()' },
+    })
+    expect(byId.get('approval')?.config).toEqual({ policy: 'ask' })
   })
 })

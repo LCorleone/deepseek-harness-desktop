@@ -97,6 +97,7 @@
     "lib/**/*.map",
     "lib/policy/*.json",
     "lib/company-market/*.json",
+    "lib/cli-lock/*.yml",
     "lib/native-ui/**",
     "lib/types/**/*.d.ts",
     "README.md",
@@ -124,7 +125,7 @@
     }
   },
   "scripts": {
-    "build": "node scripts/generate-mac-app-icon.mjs && node scripts/generate-tray-icons.mjs && node scripts/clean.mjs && tsdown && node scripts/embed-desktop-policy.mjs && node scripts/embed-company-manifest.mjs && vite build --config vite.native-ui.config.ts && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
+    "build": "node scripts/generate-mac-app-icon.mjs && node scripts/generate-tray-icons.mjs && node scripts/clean.mjs && tsdown && node scripts/embed-desktop-policy.mjs && node scripts/embed-company-manifest.mjs && node scripts/embed-cli-lock-patch.mjs && vite build --config vite.native-ui.config.ts && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.native-ui.json --noEmit && tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.tests.client.json --noEmit",
     "test": "vitest run",
     "verify:closure": "node --test scripts/runtime-closure.spec.mjs && node scripts/verify-runtime-closure.mjs",

@@ -1,7 +1,7 @@
 /** Private bootstrap for the packaged DeepSeek Harness CLI under the bundled Node. */
 
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import {
@@ -11,8 +11,8 @@ import {
 } from './install-recovery.ts'
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
 import { companyManifestFileRequest, DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
-import { desktopPolicyFromEnvironment, readDesktopPolicy } from './desktop-policy.ts'
-import { packagedDependencyPath } from './packaged-runtime-path.ts'
+import { desktopPolicyFromEnvironment, DESKTOP_POLICY_ENVIRONMENT, readDesktopPolicy } from './desktop-policy.ts'
+import { isPackagedApplicationPath, packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
@@ -22,6 +22,20 @@ const DSH_HOME = 'DSH_HOME'
 const DSH_ENTRY_URL = pathToFileURL(
   packagedDependencyPath(import.meta.url, '@deepseek-ai/dsh/lib/bin.js'),
 ).href
+
+/**
+ * Environment names of the locked CLI clamp: the upstream override the clamp
+ * deletes and the process-local variable that feeds the clamp overlay's
+ * company preset-root expression (set by this bootstrap, never persisted in
+ * a shim).
+ */
+export const DESKTOP_CLI_CLAMP_ENVIRONMENT = Object.freeze({
+  permissionMode: 'DSH_PERMISSION_MODE',
+  presetRoot: 'DSH_DESKTOP_LOCK_PRESET_ROOT',
+})
+
+/** First argv tokens that print and exit without booting any composition. */
+const NON_BOOTING_FIRST_ARGUMENTS: ReadonlySet<string> = new Set(['--help', '-h', '--version', '-V'])
 
 /**
  * Apply the terminal-owned default without overriding global help or an explicit profile.
@@ -42,6 +56,114 @@ export function withDefaultDesktopProfile(argv: readonly string[], profileName: 
     return ['plugin', '--profile', profileName, ...argv.slice(1)]
   }
   return ['--profile', profileName, ...argv]
+}
+
+/** Resolve the shipped CLI clamp overlay beside this module (src and lib layouts match). */
+export function desktopCliLockOverlayPath(moduleUrl: string = import.meta.url): string {
+  return join(dirname(fileURLToPath(new URL(moduleUrl))), 'cli-lock', 'desktop-cli-lock.patch.yml')
+}
+
+/**
+ * Resolve the packaged company agent-preset directory for the clamp overlay.
+ *
+ * Same layout contract and same primitives as `companyPresetRoot` in
+ * src/profile.ts (a module one level below the package root, mapped to the
+ * physical `app.asar.unpacked` tree when packaged): the CLI child must name
+ * the exact directory the locked GUI composes, and importing the whole
+ * profile module into this bootstrap would drag the desktop composition
+ * graph into every plugin-add child. tests/desktop-cli.spec.ts pins the two
+ * resolutions equal so the layouts cannot drift.
+ * @param moduleUrl - URL of a module emitted one level below the package root.
+ * @returns the physical company preset root of the locked roster.
+ */
+export function desktopCliCompanyPresetRoot(moduleUrl: string = import.meta.url): string {
+  return unpackedAsarPath(fileURLToPath(new URL('../agent-presets', moduleUrl)))
+}
+
+/** Delete every case-insensitive spelling of one environment variable. */
+function removeEnvironmentVariable(environment: NodeJS.ProcessEnv, name: string): void {
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === name) delete environment[key]
+  }
+}
+
+/** Peek (without consuming) the locked flag of the launcher policy hand-off. */
+function environmentHandoffLocked(environment: NodeJS.ProcessEnv): boolean | undefined {
+  let value: string | undefined
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === DESKTOP_POLICY_ENVIRONMENT.locked) value ??= environment[key]
+  }
+  return value === undefined ? undefined : value !== '0'
+}
+
+/**
+ * Decide whether this CLI child must run under the locked clamp.
+ *
+ * Three signals, in trust order:
+ *
+ * - an injected `policy` (tests and embedders) decides outright;
+ * - the launcher's six-key environment hand-off, peeked case-insensitively
+ *   and never consumed here (the plugin-add branch below still owns the
+ *   hand-off lifecycle through `desktopPolicyFromEnvironment`): `0` is a
+ *   trusted unlocked launcher, anything else — including malformed values —
+ *   clamps (fail closed);
+ * - no hand-off at all in a packaged layout (`app.asar` beside this module)
+ *   also clamps: a hand-run `desktop-cli.js` without the launcher's
+ *   environment is treated as locked rather than trusted. Only an unpackaged
+ *   development checkout stays clamp-free, keeping the dev CLI shape
+ *   byte-identical with today's.
+ *
+ * @param environment - process environment inherited from the shim or shell.
+ * @param policy - explicitly injected policy, when a caller owns the decision.
+ * @param moduleUrl - URL of the module deciding the packaged-layout check.
+ * @returns whether the locked clamp applies to this child.
+ */
+export function desktopCliClampLocked(
+  environment: NodeJS.ProcessEnv,
+  policy: DesktopPolicy | undefined,
+  moduleUrl: string = import.meta.url,
+): boolean {
+  if (policy !== undefined) return policy.locked
+  const handoff = environmentHandoffLocked(environment)
+  if (handoff !== undefined) return handoff
+  return isPackagedApplicationPath(fileURLToPath(new URL(moduleUrl)))
+}
+
+/** Whether one first CLI argument boots a composition the clamp must shape. */
+function lockedClampApplies(first: string | undefined): boolean {
+  return first !== 'plugin' && (first === undefined || !NON_BOOTING_FIRST_ARGUMENTS.has(first))
+}
+
+/**
+ * Prepend the locked clamp overlay to one boot-shaped argv window.
+ *
+ * Branching mirrors {@link withDefaultDesktopProfile}'s command forms:
+ *
+ * - `plugin` subcommands take none of the parent `--patch` (upstream args.ts
+ *   rejects it), and the plugin-add branch keeps its own policy authorization
+ *   path — no overlay is injected there;
+ * - `--help`/`--version` print and exit without booting, so they stay
+ *   untouched (the e2e `--version` sentinel rides this);
+ * - `web` owns a `--patch` flag on its subcommand parser, so the overlay
+ *   follows the `web` token;
+ * - every other first token (including none) is the default boot form, where
+ *   the overlay leads the launcher flags.
+ *
+ * A user-typed `--patch` still stacks after the clamp overlay in argv order —
+ * the same user-writable permission the home layer already grants, and part
+ * of the clamp's documented soft-barrier boundary. `--dump-default-config`
+ * deliberately refuses to run with any `--patch`, so under the clamp it
+ * errors instead of printing an unclamped tree: fail-closed by upstream
+ * design, not a silent skip that could misdetect app arguments.
+ * @param argv - arguments after the executable and bootstrap entry.
+ * @param overlayPath - shipped clamp overlay resolved by {@link desktopCliLockOverlayPath}.
+ * @returns argv with the clamp overlay prepended for boot forms, verbatim otherwise.
+ */
+export function withLockedClampOverlay(argv: readonly string[], overlayPath: string): string[] {
+  if (!lockedClampApplies(argv[0])) return [...argv]
+  return argv[0] === 'web'
+    ? ['web', '--patch', overlayPath, ...argv.slice(1)]
+    : ['--patch', overlayPath, ...argv]
 }
 
 /** Remove and return the case-insensitive terminal default-profile marker. */
@@ -219,6 +341,14 @@ async function loadWithInstallRecovery(
 
 /**
  * Enter the packaged DSH CLI under the bundled Node runtime.
+ *
+ * Locked children additionally clamp the invocation before the import (see
+ * {@link desktopCliClampLocked} for the decision and {@link withLockedClampOverlay}
+ * for the command-form branching): boot-shaped argv gains the shipped clamp
+ * overlay and the environment loses every spelling of the upstream
+ * permission-mode override. Unlocked and development runs keep today's CLI
+ * shape byte-for-byte.
+ *
  * @param environment - process environment inherited from the generated shim.
  * @param load - ESM loader used by the executable and focused tests.
  * @param argv - mutable process arguments presented to the upstream CLI.
@@ -249,6 +379,31 @@ export async function runDesktopDshCli(
   )
   if (profileName !== undefined) {
     argv.splice(2, argv.length - 2, ...withDefaultDesktopProfile(argv.slice(2), profileName))
+  }
+  // Executor-side hard clamp (scout verdict: the bundled-Node CLI child is
+  // an unlocked-composition bypass of the GUI's in-memory locked profile —
+  // the on-disk bundle layers are the upstream base + web-app pair). Before
+  // the upstream import below, a locked child rewrites argv and environment
+  // in full: every spelling of the upstream permission-mode override is
+  // deleted, and boot-shaped invocations gain the shipped clamp overlay
+  // (`--patch`), whose literal restatement pins the sandbox/approval pair,
+  // removes the full-access permission preset, and swaps the agent-preset
+  // roster to the company row pinned at the packaged company root.
+  //
+  // Honest boundary: the clamp covers only CLI children launched or led by
+  // DSH Desktop (the built-in terminal shim, the install children, and a
+  // hand-run packaged bootstrap without the launcher hand-off, which the
+  // fail-closed decision above treats as locked). A user running the
+  // upstream `bin.js` under their own Node is equivalent to the shell access
+  // they already hold, and the user-writable home layer plus any later
+  // user-typed `--patch` overlay stack above the clamp — a soft barrier by
+  // construction, matching the accepted sign-off.
+  if (desktopCliClampLocked(environment, policy)) {
+    removeEnvironmentVariable(environment, DESKTOP_CLI_CLAMP_ENVIRONMENT.permissionMode)
+    if (lockedClampApplies(argv[2])) {
+      environment[DESKTOP_CLI_CLAMP_ENVIRONMENT.presetRoot] = desktopCliCompanyPresetRoot()
+      argv.splice(2, argv.length - 2, ...withLockedClampOverlay(argv.slice(2), desktopCliLockOverlayPath()))
+    }
   }
   const homeDir = environment[DSH_HOME]
   const installCommand = pluginAddCommand(argv.slice(2))
