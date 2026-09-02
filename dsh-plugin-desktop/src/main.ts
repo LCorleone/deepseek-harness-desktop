@@ -42,7 +42,7 @@ import { FileExporter } from './file-exporter.ts'
 import { DESKTOP_SETTINGS_NAMESPACE, type DesktopSettings } from './index.ts'
 import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
-import { resolveDesktopShellEnvironment } from './shell-environment.ts'
+import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } from './shell-environment.ts'
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
@@ -417,6 +417,27 @@ async function start(): Promise<void> {
   // update wiring below, and the same immutable policy document reaches the
   // profile composition (boot verification, market, CLI environment).
   const policy = readDesktopPolicy()
+  // Launcher-environment hygiene (review guard-clamp P2-1): the locked GUI
+  // evaluates the base rows' `!!js` sandbox/approval expressions in THIS
+  // process, and the locked restatement deliberately leaves those two rows
+  // alone — it rests on the GUI process never carrying the upstream override.
+  // A shell-inherited spelling (`DSH_PERMISSION_MODE=danger-full-access open
+  // "DSH Desktop.app"`) would arm them straight to full access with approval
+  // `never`, so every spelling is deleted here: before the SSO gate, before
+  // the login-shell environment recovery (which refuses `DSH_*` exports but
+  // never scrubbed the inherited half), before the launch-environment
+  // snapshot (`loadLayeredEnv` below), before the Host composition evaluates
+  // any row, and before a terminal or CLI child could inherit it. Unlocked
+  // and development launches keep the upstream deployment override, the same
+  // trust boundary the CLI clamp draws.
+  if (policy.locked) {
+    const droppedPermissionModeSpellings = scrubInheritedPermissionModeOverride(process.env)
+    if (droppedPermissionModeSpellings.length > 0) {
+      electronLogger.error(
+        `${BIN_NAME}: dropped an inherited sandbox-mode override from the locked launch environment: ${droppedPermissionModeSpellings.join(', ')}`,
+      )
+    }
+  }
   runtime = new ElectronDesktopRuntime(async () => {
     if (shutdown === undefined) {
       throw new Error('dsh-plugin-desktop: shutdown coordinator is not ready')

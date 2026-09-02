@@ -231,6 +231,46 @@ export async function captureLoginShellEnvironment(
   })
 }
 
+/**
+ * The upstream sandbox-mode override a locked GUI process must never carry.
+ *
+ * Same variable the CLI clamp deletes in every bundled-Node child
+ * (`DESKTOP_CLI_CLAMP_ENVIRONMENT.permissionMode` in src/desktop-cli.ts);
+ * restated here because the Electron main must not import the CLI bootstrap
+ * (its `isDirectExecution` guard would ride into the main bundle).
+ */
+const INHERITED_PERMISSION_MODE_ENVIRONMENT = 'DSH_PERMISSION_MODE'
+
+/**
+ * Delete every case-insensitive spelling of the upstream permission-mode
+ * override from one environment object.
+ *
+ * The locked GUI composes the base rows' `!!js` sandbox/approval expressions
+ * in its own process, and the locked restatement deliberately restates every
+ * face except those two rows — it rests on the GUI process never carrying the
+ * override. That invariant holds for launcher-started launches but not for a
+ * shell-inherited one (`DSH_PERMISSION_MODE=danger-full-access open "DSH
+ * Desktop.app"`), and {@link resolveDesktopShellEnvironment} closes only the
+ * login-shell half of the gap (its capture scrub refuses `DSH_*` exports; the
+ * inherited process environment is this function's half). Mirrors the CLI
+ * clamp's `removeEnvironmentVariable`: a whole-key scan, case-insensitive,
+ * exact-name only.
+ *
+ * @param environment - mutable environment to scrub (the GUI process passes
+ * `process.env`; tests inject a stand-in object).
+ * @returns the removed key spellings, for the launcher's log line.
+ */
+export function scrubInheritedPermissionModeOverride(environment: NodeJS.ProcessEnv): string[] {
+  const removed: string[] = []
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === INHERITED_PERMISSION_MODE_ENVIRONMENT) {
+      removed.push(key)
+      delete environment[key]
+    }
+  }
+  return removed
+}
+
 function inheritedEnvironment(
   fallbackReason: NonNullable<DesktopShellEnvironmentResolution['fallbackReason']>,
 ): DesktopShellEnvironmentResolution {

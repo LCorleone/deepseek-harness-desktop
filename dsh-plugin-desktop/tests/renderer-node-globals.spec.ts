@@ -40,6 +40,15 @@ const compiler = require('typescript') as typeof ts
  * Genuinely renderer-safe survivors (for example a property literally named
  * `process`) go into `ALLOWED_OCCURRENCES` with a reason; an empty allowlist
  * is the steady state this guard enforces.
+ *
+ * Design boundary (declared, not a gap): the scan is lexical over these
+ * banned tokens, so aliasing (`const B = Buffer` followed by references to
+ * `B`), other Node globals such as `global`/`setImmediate`, dynamic access
+ * through `eval`/`new Function`, and import specifiers assembled at runtime
+ * are outside its reach — those belong to the bundler/runtime boundary, not
+ * a source scan. Matching against `ALLOWED_OCCURRENCES` is line-level snippet
+ * containment: an entry suppresses a violation when its snippet appears in
+ * the flagged line, not across the file.
  */
 
 const PLUGIN_ROOT = fileURLToPath(new URL('..', import.meta.url))

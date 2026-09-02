@@ -16,6 +16,7 @@ import {
   captureLoginShellEnvironment,
   parseShellEnvironment,
   resolveDesktopShellEnvironment,
+  scrubInheritedPermissionModeOverride,
   selectDesktopShellEnvironment,
 } from '../src/shell-environment.ts'
 
@@ -418,5 +419,65 @@ describe('desktop shell environment resolution', () => {
       if (originalSafe === undefined) delete process.env.DSH_DESKTOP_CAPTURE_SAFE
       else process.env.DSH_DESKTOP_CAPTURE_SAFE = originalSafe
     }
+  })
+})
+
+describe('inherited permission-mode scrub', () => {
+  it('deletes every case-insensitive spelling and keeps every other name', () => {
+    const environment: NodeJS.ProcessEnv = {
+      DSH_PERMISSION_MODE: 'danger-full-access',
+      dsh_permission_mode: 'danger-full-access',
+      Dsh_Permission_Mode: 'read-only',
+      // Longer and prefix-only look-alikes must survive: the scan matches the
+      // exact name case-insensitively, not by prefix.
+      DSH_PERMISSION_MODES: 'look-alike',
+      DSH_PERMISSION_MOD: 'look-alike',
+      DSH_TELEMETRY_DISABLED: '1',
+      PATH: '/usr/bin',
+    }
+
+    expect(scrubInheritedPermissionModeOverride(environment)).toEqual([
+      'DSH_PERMISSION_MODE',
+      'dsh_permission_mode',
+      'Dsh_Permission_Mode',
+    ])
+    expect(environment).toEqual({
+      DSH_PERMISSION_MODES: 'look-alike',
+      DSH_PERMISSION_MOD: 'look-alike',
+      DSH_TELEMETRY_DISABLED: '1',
+      PATH: '/usr/bin',
+    })
+  })
+
+  it('is a no-op reporting nothing on a clean environment', () => {
+    const environment: NodeJS.ProcessEnv = { PATH: '/usr/bin', HOME: '/Users/tester' }
+    expect(scrubInheritedPermissionModeOverride(environment)).toEqual([])
+    expect(environment).toEqual({ PATH: '/usr/bin', HOME: '/Users/tester' })
+  })
+
+  it('scrubs the GUI process environment in the Electron main before any env consumer', () => {
+    // The scrub runs where the review found the leak: the Electron main's
+    // startup sequence. main.ts cannot be imported under vitest (it pulls the
+    // Electron binary), so this pins the wiring the way the installer-quit and
+    // PATH-ordering specs do — by landmark order in the source.
+    const main = readFileSync(join(process.cwd(), 'src', 'main.ts'), 'utf8')
+    const policyRead = main.indexOf('const policy = readDesktopPolicy()')
+    const scrub = main.indexOf('scrubInheritedPermissionModeOverride(process.env)')
+    const lockedGate = main.indexOf('if (policy.locked) {\n    const droppedPermissionModeSpellings')
+    const ready = main.indexOf('await app.whenReady()')
+    const shellEnvironment = main.indexOf('await resolveDesktopShellEnvironment')
+    const managedGate = main.indexOf('process.env[managedModelsGate.name]')
+    const snapshot = main.indexOf('const environment = loadLayeredEnv')
+    const prepare = main.indexOf('const prepared = prepareDesktopProfile(')
+
+    expect(policyRead).toBeGreaterThanOrEqual(0)
+    expect(scrub).toBeGreaterThan(policyRead)
+    expect(lockedGate).toBeGreaterThan(policyRead)
+    expect(lockedGate).toBeLessThan(scrub)
+    expect(scrub).toBeLessThan(ready)
+    expect(ready).toBeLessThan(shellEnvironment)
+    expect(shellEnvironment).toBeLessThan(managedGate)
+    expect(managedGate).toBeLessThan(snapshot)
+    expect(snapshot).toBeLessThan(prepare)
   })
 })
