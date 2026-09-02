@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { get } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { encodeSsoAppKeyBlob } from '../scripts/make-sso-app-key-blob.mjs'
 import {
   SSO_CALLBACK_SUCCESS_HTML,
   SSO_TOKEN_TIMEOUT_MS,
@@ -14,6 +15,7 @@ import {
   buildSsoTokenJsonData,
   canonicalizeSsoEmail,
   clearSsoSession,
+  decodeSsoAppKeyBlob,
   decodeSsoCallbackCode,
   desktopSsoGateRequired,
   fetchSsoToken,
@@ -41,8 +43,13 @@ import {
   type SsoOsUser,
   type SsoRequestBoundary,
 } from '../src/company-sso.ts'
+import { SSO_APP_KEY_BLOB } from '../src/sso-app-key-blob.ts'
 
-const APP_KEY = '[REDACTED-SO-APP-KEY-2026-09-02]'
+// Test golden vectors are decoupled from the real credential: this synthetic
+// fixed key mirrors the issued key's 32-alphanumeric shape but never was a
+// secret. The shipped key lives only inside the obfuscated blob and is
+// asserted structurally (see the blob codec tests), never by value.
+const APP_KEY = 'testSsoAppKey0000000000000000000'
 
 /** One recorded call of the injected fetch boundary stub. */
 type BoundaryCall = {
@@ -79,7 +86,11 @@ afterEach(() => {
 describe('sso credentials and endpoints', () => {
   it('pins the issued app credentials by default', () => {
     expect(ssoAppId({})).toBe('1007')
-    expect(ssoAppKey({})).toBe(APP_KEY)
+    // The shipped app key is asserted structurally — it resolves through
+    // the obfuscated blob and only its issued shape (32 alphanumeric
+    // characters) is pinned here, never the value itself.
+    expect(ssoAppKey({})).toMatch(/^[A-Za-z0-9]{32}$/u)
+    expect(ssoAppKey({})).toBe(decodeSsoAppKeyBlob(SSO_APP_KEY_BLOB))
     // Registered portal name for app id 1007 (ops, 2026-09-01) — the portal
     // matches configuration by the (appId, appName) pair.
     expect(ssoAppName({})).toBe('DSH')
@@ -106,14 +117,80 @@ describe('sso credentials and endpoints', () => {
     const packaged = '/opt/Deloitte DSH Desktop/resources/app.asar/lib/company-sso.js'
     const packagedUnpacked = '/opt/Deloitte DSH Desktop/resources/app.asar.unpacked/lib/company-sso.js'
     expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packaged)).toBe('1007')
-    expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packaged)).toBe(APP_KEY)
+    expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packaged)).toMatch(/^[A-Za-z0-9]{32}$/u)
     expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packaged)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packaged)).toBe('https://sdp.deloitte.com.cn')
     expect(ssoAppId({ DSH_SSO_APP_ID: '9999' }, packagedUnpacked)).toBe('1007')
-    expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packagedUnpacked)).toBe(APP_KEY)
+    expect(ssoAppKey({ DSH_SSO_APP_KEY: 'evil-key' }, packagedUnpacked)).toMatch(/^[A-Za-z0-9]{32}$/u)
     expect(ssoAppName({ DSH_SSO_APP_NAME: 'evil-name' }, packagedUnpacked)).toBe('DSH')
     expect(ssoBaseUrl({ DSH_SSO_BASE_URL: 'https://evil.example/' }, packagedUnpacked))
       .toBe('https://sdp.deloitte.com.cn')
+  })
+})
+
+describe('sso app key blob codec', () => {
+  // The obfuscation key is public by design (it ships in the runtime
+  // decoder), so tests can build arbitrary malformed payloads with it.
+  const obfuscate = (json: string): string => {
+    const key = Buffer.from('dsh-desktop-sso-app-key-obfuscation-key-v1', 'utf8')
+    const cipher = Buffer.from(json, 'utf8')
+    for (let index = 0; index < cipher.length; index += 1) {
+      cipher[index] = cipher[index]! ^ key[index % key.length]!
+    }
+    return cipher.toString('base64')
+  }
+
+  it('round-trips a key through the generator encoder and the runtime decoder', () => {
+    expect(decodeSsoAppKeyBlob(encodeSsoAppKeyBlob('company-sso-test-key'))).toBe('company-sso-test-key')
+  })
+
+  it('never leaves the key inside the blob', () => {
+    const blob = encodeSsoAppKeyBlob('company-sso-test-key')
+
+    expect(blob).not.toContain('company-sso-test-key')
+    expect(blob).not.toContain('company')
+  })
+
+  it('decodes the committed blob to the issued key shape', () => {
+    // The repository must never carry the app key in plaintext, so the
+    // assertion stays structural: decoding succeeds and yields exactly the
+    // issued 32-character alphanumeric shape. The value itself is never
+    // pinned in a test (or anywhere else outside the blob).
+    const appKey = decodeSsoAppKeyBlob(SSO_APP_KEY_BLOB)
+
+    expect(appKey).toMatch(/^[A-Za-z0-9]{32}$/u)
+    // And the committed ciphertext carries no plaintext run of it.
+    expect(SSO_APP_KEY_BLOB).not.toContain(appKey)
+  })
+
+  it.each([
+    ['an empty blob', ''],
+    ['a whitespace blob', '   '],
+    ['a non-base64 blob', '!!!!not-base64-payload!!!!'],
+    ['a blob that is not JSON', Buffer.from('this is not json at all', 'utf8').toString('base64')],
+    ['a JSON array payload', Buffer.from('[1,2,3]', 'utf8').toString('base64')],
+    ['a payload without appKey', obfuscate(JSON.stringify({ appId: '1007' }))],
+    ['a payload with extra fields', obfuscate(JSON.stringify({ appKey: 'k', appId: '1007' }))],
+    ['a payload with an empty appKey', obfuscate(JSON.stringify({ appKey: '' }))],
+    ['a payload with a non-string appKey', obfuscate(JSON.stringify({ appKey: 17 }))],
+  ])('rejects %s', (_label, blob) => {
+    expect(() => decodeSsoAppKeyBlob(blob)).toThrow('invalid sso app key blob')
+  })
+
+  it('keeps blob content out of the failure diagnostics', () => {
+    const blob = encodeSsoAppKeyBlob('company-sso-test-key')
+    // Truncate the tail so the decoded payload is unterminated JSON: the
+    // failure must name the condition, never the payload bytes.
+    const malformed = blob.slice(0, -4)
+
+    try {
+      decodeSsoAppKeyBlob(malformed)
+      expect.unreachable('decoding must fail')
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      expect(message).not.toContain('company-sso-test-key')
+      expect(message).not.toContain('company')
+    }
   })
 })
 
@@ -160,17 +237,18 @@ describe('SignEntity protocol (silent path)', () => {
     expect(entity.processTime).toBe('2026-08-31 12:00:00')
     expect(entity.appName).toBe('DSH')
     // Golden vector: sha256 over encodeStr(id + processTime + appKey + jsonData),
-    // computed independently of the implementation under test. The signature
-    // covers the concatenated values, so it is unaffected by the JSON key
-    // spelling (nova's camelCase SignEntity signs the same string).
-    expect(entity.signature).toBe('LE+k93vW/q1D4EzZ4HuI8n4Y49UHq8EshfwvNPCbTsI=')
+    // computed independently of the implementation under test with the
+    // synthetic test key. The signature covers the concatenated values, so
+    // it is unaffected by the JSON key spelling (nova's camelCase SignEntity
+    // signs the same string).
+    expect(entity.signature).toBe('N+RaOK6aBThzjnX81CqjlVMSmJ36VdkKtvQeAu5bEX4=')
     // The exact wire body — complete camelCase key set in the portal's
     // id-first insertion order, pinned as a literal so a spelling or key-order
     // regression cannot slip back in through a partial matcher.
     expect(JSON.stringify(entity)).toBe(
       '{"id":"0123456789abcdef0123456789abcdef","appId":"1007","appName":"DSH",'
       + '"jsonData":"{\\"userName\\":\\"张三\\",\\"email\\":\\"zhangsan@deloitte.com.cn\\"}",'
-      + '"processTime":"2026-08-31 12:00:00","signature":"LE+k93vW/q1D4EzZ4HuI8n4Y49UHq8EshfwvNPCbTsI="}',
+      + '"processTime":"2026-08-31 12:00:00","signature":"N+RaOK6aBThzjnX81CqjlVMSmJ36VdkKtvQeAu5bEX4="}',
     )
   })
 
@@ -261,7 +339,7 @@ describe('verify_auth_code confirmation (browser path)', () => {
     // Golden vectors computed independently of the implementation.
     expect(ssoConfirmedCodeDigest('key', 'code')).toBe('1a54c1036ccb10069e9c06281d52007a')
     expect(ssoConfirmedCodeDigest(APP_KEY, 'raw-callback-code'))
-      .toBe('4fd9ad7e552d49602577e4412f69c08f')
+      .toBe('d9958e1f1c96ac8a5b42ac842b49ca44')
     expect(ssoConfirmedCodeDigest(APP_KEY, 'raw-callback-code')).toMatch(/^[0-9a-f]{32}$/u)
   })
 
@@ -365,7 +443,7 @@ describe('callback payload validation', () => {
     username: 'Zhang San',
     email: 'zhangsan@deloitte.com.cn',
     timestamp: 1_789_000_123,
-    verify: 'TYCiKE7vnZjble54pVfNyOdHR0qypov5BiWgCl0TMx8=',
+    verify: 'Io3ITKrDdDQMQuEe3hly6otwbfp2UaxUSk/CyDagI9s=',
   }
 
   it('accepts a correctly signed fresh payload', () => {
@@ -497,7 +575,7 @@ describe('loopback callback server', () => {
     username: 'Zhang San',
     email: 'zhangsan@deloitte.com.cn',
     timestamp: 1_789_000_123,
-    verify: 'TYCiKE7vnZjble54pVfNyOdHR0qypov5BiWgCl0TMx8=',
+    verify: 'Io3ITKrDdDQMQuEe3hly6otwbfp2UaxUSk/CyDagI9s=',
   }
 
   /** Issue one raw HTTP request against the loopback server. */
