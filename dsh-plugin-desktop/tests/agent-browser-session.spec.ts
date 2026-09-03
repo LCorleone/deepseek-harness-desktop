@@ -13,6 +13,7 @@ import type {
 import {
   AUDITED_SNIPPET_FOCUS,
   AUDITED_SNIPPET_FOCUS_SELECT,
+  AUDITED_SNIPPET_IS_SUBMIT_CONTROL,
   AUDITED_SNIPPET_SCROLL_INTO_VIEW,
   AgentBrowserError,
   AgentBrowserGenerationCounter,
@@ -629,9 +630,12 @@ describe('agent-browser act loop', () => {
     expect(input[1]!.params).toEqual({
       type: 'mousePressed', x: BOX_CENTER.x, y: BOX_CENTER.y, button: 'left', clickCount: 1,
     })
-    // The ref resolved through the backendNodeId path (e2s = 100 base36).
+    // The ref resolved through the backendNodeId path (e2s = 100 base36) in
+    // the ISOLATED world (B2 review P2): executionContextId rides the resolve.
     expect(debugger_.commands.find(command => command.method === 'DOM.resolveNode')?.params)
-      .toEqual({ backendNodeId: 100 })
+      .toEqual({ backendNodeId: 100, executionContextId: 7 })
+    // The act-phase isolated world was created for the helper snippets.
+    expect(debugger_.commands.find(command => command.method === 'Page.createIsolatedWorld')).toBeDefined()
     // The overlay learned the click point for the zero-injection layer.
     const overlayState = hosts[0]!.states.map(state => state.overlay).find(overlay => overlay !== undefined)
     expect(overlayState).toMatchObject({ cursor: BOX_CENTER, click: BOX_CENTER })
@@ -794,7 +798,47 @@ describe('agent-browser act loop', () => {
       // Only the validated integer is interpolated into the audited snippet.
       functionDeclaration: auditedSnippetScrollBy(300),
     })
+    // The scroll target resolved in the isolated world (B2 review P2).
+    expect(debugger_.commands.find(command => command.method === 'DOM.resolveNode')?.params)
+      .toEqual({ backendNodeId: 100, executionContextId: 7 })
     expect(debugger_.commands.some(command => command.method === 'Input.dispatchMouseEvent')).toBe(false)
+  })
+
+  it('classifies a submit-control ref through the isolated world (B2 review P1)', async () => {
+    const debugger_ = fakeGuestDebugger(ACT_RESPONSES)
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    expect(await session.isSubmitControl('e2s')).toBe(true)
+
+    const classify = debugger_.commands.find(command => command.method === 'Runtime.callFunctionOn')
+    expect(classify!.params).toMatchObject({
+      objectId: 'obj-1',
+      functionDeclaration: AUDITED_SNIPPET_IS_SUBMIT_CONTROL,
+      returnByValue: true,
+    })
+    // The classification resolved the ref in the isolated world.
+    expect(debugger_.commands.find(command => command.method === 'DOM.resolveNode')?.params)
+      .toEqual({ backendNodeId: 100, executionContextId: 7 })
+  })
+
+  it('reports a dead submit-control classification as false instead of throwing', async () => {
+    const debugger_ = fakeGuestDebugger({ ...ACT_RESPONSES, 'DOM.resolveNode': { __reject: 'No node with given id' } })
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    expect(await session.isSubmitControl('e2s')).toBe(false)
+  })
+
+  it('returns false for a non-submit control through the classification plumbing', async () => {
+    const debugger_ = fakeGuestDebugger({
+      ...ACT_RESPONSES,
+      'Runtime.callFunctionOn': { result: { type: 'boolean', value: false } },
+    })
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    expect(await session.isSubmitControl('e2s')).toBe(false)
   })
 
   it('falls back to the wheel at the element center when scrollBy did not move', async () => {

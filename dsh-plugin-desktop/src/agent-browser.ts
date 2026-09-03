@@ -49,7 +49,6 @@ const TOOL_TIMEOUT_MS = 60_000
  * `will-redirect`, download cancel) land in B4 (design §5.5).
  */
 export function agentBrowserAllowsUrl(url: string, policy: DesktopPolicyAgentBrowser): boolean {
-  if (policy.allowOrigins.includes('*')) return true
   if (policy.allowOrigins.length === 0) return false
   let parsed: URL
   try {
@@ -57,7 +56,10 @@ export function agentBrowserAllowsUrl(url: string, policy: DesktopPolicyAgentBro
   } catch {
     return false
   }
+  // The wildcard admits every *origin* (http/https), never every scheme:
+  // file:/data:/javascript: must fail even under `['*']` (B2 review P1).
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+  if (policy.allowOrigins.includes('*')) return true
   return policy.allowOrigins.includes(parsed.origin)
 }
 
@@ -73,6 +75,13 @@ export interface AgentBrowserPreExecuteContext {
   readonly open: boolean
   /** Current main-frame URL (`about:blank` before the first navigation). */
   readonly url: string
+  /**
+   * Best-effort ref classifier: whether one `#e…` ref resolves to a
+   * form-submit control (a `<button>`/`<input type=submit|image>` inside a
+   * form). Returns false when the ref is dead or the classification cannot
+   * run — the act body then reports the real failure (B2 review P1).
+   */
+  readonly isSubmitControl?: (ref: string) => Promise<boolean>
 }
 
 /** The origin of one url, or undefined when it has none (about:blank, bad input). */
@@ -93,23 +102,35 @@ function originOf(url: string): string | undefined {
  * - cross-origin navigation: `browser_open`/`browser_navigate` whose TARGET
  *   origin differs from the CURRENT page's origin (the first open has no
  *   current page — the allowlist deny gate already owns that case);
- * - form submission: `browser_type` with `submit` truthy (Enter-into-form —
- *   the only Enter this surface ever sends).
+ * - form submission: `browser_type` with `submit` truthy (Enter-into-form),
+ *   or a `browser_click` whose target resolves to a form-submit control
+ *   (icon-specific button/input — the B2-review scope completion).
  *
  * The returned decision is routed by the registry through the standard
  * approval seam; the plugin never touches the approval service itself.
  */
-export function agentBrowserPreExecuteAsk(
+export async function agentBrowserPreExecuteAsk(
   tool: string,
   args: unknown,
   context: AgentBrowserPreExecuteContext,
-): { kind: 'ask', reason: string } | undefined {
+): Promise<{ kind: 'ask', reason: string } | undefined> {
   if (tool === 'browser_type') {
     const normalized = normalizeBrowserArgs('browser_type', args)
     if (normalized.submit === true) {
       return {
         kind: 'ask',
         reason: `browser_type would SUBMIT the form on ${context.url} by pressing Enter; approve to let the agent submit it`,
+      }
+    }
+    return undefined
+  }
+  if (tool === 'browser_click') {
+    const normalized = normalizeBrowserArgs('browser_click', args)
+    if (normalized.ref !== undefined && context.isSubmitControl !== undefined
+      && await context.isSubmitControl(normalized.ref)) {
+      return {
+        kind: 'ask',
+        reason: `browser_click would SUBMIT the form on ${context.url} by clicking the submit control; approve to let the agent submit it`,
       }
     }
     return undefined
@@ -147,7 +168,7 @@ Observation discipline:
 Acting discipline:
 - Act only with refs from the CURRENT generation and pass that \`generation\` with every act call. \`STALE_SNAPSHOT\` means re-observe and retry with a fresh ref; \`REF_NOT_FOUND\` means the element died with the page — re-observe.
 - \`browser_click\` clicks the element's center with real trusted input; \`browser_type\` focuses the field and inserts text (\`clear\` replaces, \`submit\` presses Enter); \`browser_scroll\` scrolls an element or the page.
-- An approval ask on a cross-origin navigation or a \`submit: true\` typing is the operator reviewing the action — that is the approval flow working, not an error.
+- An approval ask on a cross-origin navigation, a \`submit: true\` typing, or a click on a form's submit control is the operator reviewing the action — that is the approval flow working, not an error.
 - When the operator claims control, act tools fail with \`OPERATOR_HAS_CONTROL\`; wait, and after the release re-observe (the generation advances on release).
 
 Credentials policy: never read, request, or type passwords or payment data. Password fields appear in snapshots as \`[password field: value hidden]\` and \`browser_type\` refuses them outright; when a task needs credentials, invite the operator to type them personally via claimControl.
@@ -266,7 +287,12 @@ export function apply(ctx: Context): void {
   ])
   ctx.on('tools/pre-execute', async (exec, next) => {
     if (!browserToolNames.has(exec.name)) return next()
-    const ask = agentBrowserPreExecuteAsk(exec.name, exec.arguments, executor.describe())
+    const ask = await agentBrowserPreExecuteAsk(exec.name, exec.arguments, {
+      ...executor.describe(),
+      // The click ask needs the target's node classification, which only the
+      // executor can read from the live page (B2 review P1).
+      isSubmitControl: ref => executor.isSubmitControl(ref),
+    })
     return ask === undefined ? await next() : ask
   })
 
@@ -420,7 +446,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'browser_click',
-    description: 'Click the center of an element identified by its #e… ref from the latest browser_snapshot, using trusted mouse input. Pass the generation the ref was observed in.',
+    description: 'Click the center of an element identified by its #e… ref from the latest browser_snapshot, using trusted mouse input. Pass the generation the ref was observed in. Clicking a form\'s submit control raises an approval ask (as does typing with submit: true).',
     // `ref` presence is enforced after normalization so alias keys
     // (`element`, `ref_id`, …) survive registry validation.
     parameters: {

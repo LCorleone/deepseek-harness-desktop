@@ -122,6 +122,7 @@ export const AUDITED_SNIPPET_FOCUS = 'function(){ this.focus(); return document.
 export const AUDITED_SNIPPET_FOCUS_SELECT = 'function(){ this.focus(); if (typeof this.select === "function") this.select(); return document.activeElement === this; }'
 export const AUDITED_SNIPPET_SCROLL_INTO_VIEW = 'function(){ if (typeof this.scrollIntoView === "function") this.scrollIntoView({ block: "center", inline: "nearest" }); }'
 export const AUDITED_SNIPPET_READ_VALUE = 'function(){ return (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) && this.type !== "password" ? this.value : undefined; }'
+export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const el = this; const tag = el && el.tagName !== undefined ? String(el.tagName).toLowerCase() : ""; if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }'
 
 /** Audited `scrollBy` snippet; only a rounded finite number is interpolated. */
 export function auditedSnippetScrollBy(deltaY: number): string {
@@ -982,6 +983,34 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     }))
   }
 
+  /**
+   * Best-effort §5.1 classifier: whether one ref resolves to a form-submit
+   * control (a `<button>`/`<input type=submit|image>` inside a form). Runs
+   * the audited snippet in the isolated world and is deliberately forgiving —
+   * any failure returns false so the ask gate never blocks a normal click; a
+   * dead ref is reported by the act body instead.
+   */
+  async isSubmitControl(ref: string): Promise<boolean> {
+    try {
+      const client = this.assertClient()
+      const backendNodeId = agentBrowserBackendNodeId(ref)
+      const executionContextId = await this.ensureIsolatedWorld(client)
+      const objectId = await this.resolveRef(
+        backendNodeId,
+        'classifying the click target as a submit control',
+        executionContextId,
+      )
+      const outcome = await this.runCdp('classifying the click target', candidate => candidate.callFunctionOn({
+        objectId,
+        functionDeclaration: AUDITED_SNIPPET_IS_SUBMIT_CONTROL,
+        returnByValue: true,
+      }))
+      return outcome.value === true
+    } catch {
+      return false
+    }
+  }
+
   /** `browser_click` — trusted Input press/release at the box-model center. */
   async click(request: AgentBrowserClickRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult> {
     return await this.runExclusive(async () => {
@@ -993,7 +1022,12 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       this.phase = 'acting'
       this.pushViewModel(`clicking ${request.ref}`)
       try {
-        const objectId = await this.resolveRef(backendNodeId, 'resolving the click target')
+        // Act-phase helpers run in the isolated world, never the page's own
+        // realm: page-patched scrollIntoView and the audited scrollBy must not
+        // be observable by the page (B2 review P2; the type path sets the
+        // precedent at the resolveRef below).
+        const executionContextId = await this.ensureIsolatedWorld(client)
+        const objectId = await this.resolveRef(backendNodeId, 'resolving the click target', executionContextId)
         this.assertActContinues(composed)
         const box = await this.boxForRef(client, backendNodeId, objectId, composed)
         this.noteOverlay({ cursor: { x: box.x, y: box.y }, click: { x: box.x, y: box.y } })
@@ -1128,10 +1162,14 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       try {
         let moved = false
         let wheelPoint: { readonly x: number, readonly y: number }
+        // Act-phase helpers run in the isolated world: page-patched
+        // scrollIntoView and the audited scrollBy must not run against the
+        // page's own realm, where they would be observable or lie about being
+        // moved (B2 review P2). The world is created once per document.
+        const executionContextId = await this.ensureIsolatedWorld(client)
         if (backendNodeId === undefined) {
           // Document scroll: the audited expression runs over the scrolling
           // element in the isolated world.
-          const executionContextId = await this.ensureIsolatedWorld(client)
           const outcome = await this.runCdp('scrolling the document', candidate =>
             candidate.evaluateInContext(executionContextId, auditedExpressionDocumentScrollBy(delta)))
           const positions = outcome.value as { before?: number, after?: number } | undefined
@@ -1139,7 +1177,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
           const viewport = await this.readViewport(client, composed)
           wheelPoint = { x: viewport.width / 2, y: viewport.height / 2 }
         } else {
-          const objectId = await this.resolveRef(backendNodeId, 'resolving the scroll target')
+          const objectId = await this.resolveRef(backendNodeId, 'resolving the scroll target', executionContextId)
           this.assertActContinues(composed)
           const box = await this.boxForRef(client, backendNodeId, objectId, composed)
           wheelPoint = { x: box.x, y: box.y }

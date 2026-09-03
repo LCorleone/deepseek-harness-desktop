@@ -200,6 +200,12 @@ export interface DesktopAgentBrowser {
   type(request: AgentBrowserTypeRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult>
   /** Scroll one ref (or the document) by `amount` px; wheel fallback. */
   scroll(request: AgentBrowserScrollRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult>
+  /**
+   * Best-effort §5.1 classifier: whether one `#e…` ref resolves to a
+   * form-submit control (`<button>`/`<input type=submit|image>` inside a
+   * form). Resolves the ref in the isolated world; false when unknown/dead.
+   */
+  isSubmitControl(ref: string): Promise<boolean>
   /** Human takes over: aborts in-flight agent input, act tools fail fast (§5.4). */
   claimControl(reason?: string): void
   /** Human hands control back: generation bump (the page likely changed). */

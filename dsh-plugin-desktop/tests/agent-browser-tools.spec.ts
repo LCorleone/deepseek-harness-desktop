@@ -64,6 +64,7 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
       click: vi.fn(),
       type: vi.fn(),
       scroll: vi.fn(),
+      isSubmitControl: vi.fn(async () => false),
       claimControl: vi.fn(),
       releaseControl: vi.fn(),
       close: vi.fn(),
@@ -126,6 +127,16 @@ describe('agent-browser URL gate (policy skeleton)', () => {
     const policy = devPolicy().agentBrowser
     expect(agentBrowserAllowsUrl('https://example.test/page', policy)).toBe(true)
     expect(agentBrowserAllowsUrl('http://127.0.0.1:8080/', policy)).toBe(true)
+  })
+
+  it('rejects non-http(s) schemes even under the wildcard allowlist (B2 review P1)', () => {
+    const wildcard = devPolicy().agentBrowser // allowOrigins: ['*']
+    expect(agentBrowserAllowsUrl('file:///etc/passwd', wildcard)).toBe(false)
+    expect(agentBrowserAllowsUrl('file:///home/user/.aws/credentials', wildcard)).toBe(false)
+    expect(agentBrowserAllowsUrl('data:text/html,<script>alert(1)</script>', wildcard)).toBe(false)
+    // The wildcard still admits every http(s) origin.
+    expect(agentBrowserAllowsUrl('https://example.test/', wildcard)).toBe(true)
+    expect(agentBrowserAllowsUrl('http://127.0.0.1:8080/', wildcard)).toBe(true)
   })
 
   it('denies everything while the allowlist is empty, matches exact origins otherwise', () => {
@@ -402,33 +413,49 @@ describe('agent-browser act tools (B2)', () => {
 describe('agent-browser approval asks (§5.1 trigger matrix)', () => {
   const live = (open: boolean, url: string) => ({ open, url })
 
-  it('asks on cross-origin navigation and form submission (pure classifier)', () => {
+  it('asks on cross-origin navigation and form submission (pure classifier)', async () => {
     const current = live(true, 'https://example.test/page')
 
     // Cross-origin: ask on both tools, canonical and alias urls alike.
-    expect(agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://other.example.test/' }, current))
+    expect(await agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://other.example.test/' }, current))
       .toMatchObject({ kind: 'ask' })
-    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'other.example.test' }, current)?.reason)
+    expect((await agentBrowserPreExecuteAsk('browser_open', { url: 'other.example.test' }, current))?.reason)
       .toContain('CROSS-ORIGIN')
     // Same-origin (including subpaths and ports): no ask.
-    expect(agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://example.test/deeper/page' }, current)).toBeUndefined()
-    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://example.test:443/other' }, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://example.test/deeper/page' }, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_open', { url: 'https://example.test:443/other' }, current)).toBeUndefined()
     // No current page yet (closed surface or about:blank): the allowlist deny
     // gate owns the first open — no cross-origin ask exists to answer.
-    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(false, 'about:blank'))).toBeUndefined()
-    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(true, 'about:blank'))).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(false, 'about:blank'))).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(true, 'about:blank'))).toBeUndefined()
 
     // Form submission: submit:true (or the press_enter alias) asks; typing alone never does.
-    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', submit: true }, current))
+    expect(await agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', submit: true }, current))
       .toMatchObject({ kind: 'ask' })
-    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', press_enter: true }, current))
+    expect(await agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', press_enter: true }, current))
       .toMatchObject({ kind: 'ask' })
-    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x' }, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x' }, current)).toBeUndefined()
 
     // Everything else delegates: observation, same-site acts, foreign tools.
-    expect(agentBrowserPreExecuteAsk('browser_snapshot', {}, current)).toBeUndefined()
-    expect(agentBrowserPreExecuteAsk('browser_click', { ref: 'e1' }, current)).toBeUndefined()
-    expect(agentBrowserPreExecuteAsk('bash', { command: 'true' }, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_snapshot', {}, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('browser_click', { ref: 'e1' }, current)).toBeUndefined()
+    expect(await agentBrowserPreExecuteAsk('bash', { command: 'true' }, current)).toBeUndefined()
+  })
+
+  it('asks on clicking a form-submit control through the ref classifier (B2 review P1)', async () => {
+    const current = live(true, 'https://example.test/form')
+    const isSubmitControl = vi.fn(async (ref: string) => ref === 'e9')
+    const classified = { ...current, isSubmitControl }
+
+    // Clicking the submit-control ref raises the ask with a submit reason.
+    expect((await agentBrowserPreExecuteAsk('browser_click', { ref: 'e9' }, classified))?.reason)
+      .toContain('SUBMIT')
+    // A plain button/link ref (isSubmitControl false) never does.
+    expect(await agentBrowserPreExecuteAsk('browser_click', { ref: 'e5' }, classified)).toBeUndefined()
+    // Without a classifier injected (no executor) the click delegates — the
+    // act body still owns the real failure.
+    expect(await agentBrowserPreExecuteAsk('browser_click', { ref: 'e9' }, current)).toBeUndefined()
+    expect(isSubmitControl).toHaveBeenCalledWith('e9')
   })
 
   it('routes only its own tool names through the registered pre-execute listener', async () => {
@@ -456,6 +483,23 @@ describe('agent-browser approval asks (§5.1 trigger matrix)', () => {
     expect(await listener!({ name: 'browser_type', arguments: { ref: 'e9', text: 'x', submit: true } }, next))
       .toMatchObject({ kind: 'ask' })
     expect(delegated).toEqual(['next', 'next'])
+  })
+
+  it('routes a submit-control click to the ask through the ref classifier', async () => {
+    const isSubmitControl = vi.fn(async (ref: string) => ref === 'e9')
+    const describe = vi.fn((): AgentBrowserLiveState => ({ open: true, url: 'https://example.test/form', title: 'Form', phase: 'observing', generation: 2 }))
+    const { context, preExecute } = fakeContext(devPolicy(), { describe, isSubmitControl })
+    apply(context)
+    const listener = preExecute()!
+    const next = async (): Promise<PreToolDecision> => ({ kind: 'allow' })
+
+    // A submit-control click raises the ask for the approval seam.
+    expect(await listener({ name: 'browser_click', arguments: { ref: 'e9' } }, next))
+      .toMatchObject({ kind: 'ask' })
+    // A plain target click delegates to allow.
+    expect(await listener({ name: 'browser_click', arguments: { ref: 'e5' } }, next))
+      .toEqual({ kind: 'allow' })
+    expect(isSubmitControl).toHaveBeenCalledWith('e9')
   })
 
   it('gates the act tool body behind the ask through a stubbed approval service', async () => {

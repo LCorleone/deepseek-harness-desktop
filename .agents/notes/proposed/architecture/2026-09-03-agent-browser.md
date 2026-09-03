@@ -251,7 +251,12 @@ can claim control at any moment (§5.4). *(rev: 2026-09-03 review)*
    the plugin registers a `tools/pre-execute` waterfall listener for its own
    tool names and returns `{ kind: 'ask', reason }` for: cross-origin
    navigation (origin change vs. current page) and form submission
-   (`submit:true` or Enter-into-form). An `ask` return is routed by the
+   (`submit:true` or Enter-into-form). *(rev: 2026-09-03 B2 review — the
+   form-submission scope is completed: clicking a form-submit control, a
+   `<button type=submit>`/`<input type=submit|image>` inside a form, also
+   raises the ask, classified pre-dispatch by the executor through the SAME
+   seam, so the submit-button path can no longer bypass the approval gate.)*
+   An `ask` return is routed by the
    registry through the approval seam automatically — the plugin never
    looks the service up itself — into the standard client approval UI with
    audit pair (`approval/asked`/`decided`), the same path
