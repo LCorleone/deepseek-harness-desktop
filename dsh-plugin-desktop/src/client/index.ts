@@ -8,6 +8,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import { applyAdvancedShell } from './advanced-shell.ts'
 import { startRendererBootReporter } from './boot-health.ts'
 import { DeloitteBrandName } from './DeloitteBrandName.tsx'
+import {
+  AgentBrowserBanner,
+  AgentBrowserToolCard,
+  createAgentBrowserEventConnection,
+  createAgentBrowserSurfaceApi,
+  DESKTOP_AGENT_BROWSER_LOCALE_NAMESPACE,
+  en as agentBrowserEn,
+  zh as agentBrowserZh,
+} from './agent-browser-ui.tsx'
 import { applyDesktopSettings } from './desktop-settings.ts'
 import { installDesktopDirectoryPickerBridge, requestDesktopDirectoryValidation } from './directory-picker.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
@@ -15,6 +24,29 @@ import { installWorkspaceFolderDrop } from './workspace-folder-drop.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
 export { applyDesktopSettings } from './desktop-settings.ts'
+export {
+  DESKTOP_AGENT_BROWSER_LOCALE_NAMESPACE,
+  AgentBrowserBanner,
+  AgentBrowserBannerView,
+  AgentBrowserToolCard,
+  AgentBrowserToolCardView,
+  agentBrowserToolLabel,
+  createAgentBrowserEventConnection,
+  createAgentBrowserSurfaceApi,
+  foldAgentBrowserFrame,
+  parseAgentBrowserFrame,
+  parseAgentBrowserSurfaceState,
+  projectAgentBrowserToolCard,
+} from './agent-browser-ui.tsx'
+export type {
+  AgentBrowserBannerInjected,
+  AgentBrowserBannerProps,
+  AgentBrowserSurfaceApi,
+  AgentBrowserSurfaceState,
+  AgentBrowserToolCardData,
+  AgentBrowserToolCardProps,
+  AgentBrowserFrameConnection,
+} from './agent-browser-ui.tsx'
 export {
   createDesktopSettingsApi,
   desktopSettingsPaths,
@@ -125,5 +157,35 @@ export function apply(ctx: ClientContext): void {
     { name: 'sidebar.brand.name', priority: -1 },
     DeloitteBrandName,
   ))
+  // P8 B3 (§5.4/§2): the conversation banner mirroring the browser window
+  // (URL/generation/phase, take-over/release through the loopback routes) and
+  // the compact browser tool cards. Both ride plain same-origin fetch and
+  // EventSource — the native browser window cannot load these routes (it is
+  // file:// and uses the preload bridge), and nothing here touches Node.
+  ctx.effect(
+    () => ctx.locale.register(DESKTOP_AGENT_BROWSER_LOCALE_NAMESPACE, {
+      zh: agentBrowserZh,
+      en: agentBrowserEn,
+    }),
+    'dsh-plugin-desktop: agent-browser dictionaries',
+  )
+  const agentBrowserApi = createAgentBrowserSurfaceApi()
+  const agentBrowserConnect = createAgentBrowserEventConnection()
+  ctx.slots.inject('conversation.input.dock', () => ctx.slots.register(
+    {
+      name: 'conversation.input.dock',
+      id: 'agent-browser',
+      order: 40,
+      locale: DESKTOP_AGENT_BROWSER_LOCALE_NAMESPACE,
+      inject: () => ({ api: agentBrowserApi, connect: agentBrowserConnect }),
+    },
+    AgentBrowserBanner,
+  ))
+  for (const tool of ['browser_open', 'browser_navigate', 'browser_snapshot', 'browser_screenshot'] as const) {
+    ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
+      { name: 'tool.call.toolview', key: tool, locale: DESKTOP_AGENT_BROWSER_LOCALE_NAMESPACE },
+      AgentBrowserToolCard,
+    ))
+  }
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
 }

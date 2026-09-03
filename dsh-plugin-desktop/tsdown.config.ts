@@ -37,6 +37,8 @@ export default defineConfig([
       'model-gateway-blob': 'src/model-gateway-blob.ts',
       'agent-browser': 'src/agent-browser.ts',
       'agent-browser-session': 'src/agent-browser-session.ts',
+      'agent-browser-partition': 'src/agent-browser-partition.ts',
+      'agent-browser-route': 'src/agent-browser-route.ts',
       'agent-browser-window': 'src/agent-browser-window.ts',
       main: 'src/main.ts',
     },

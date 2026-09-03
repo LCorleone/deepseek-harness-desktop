@@ -28,6 +28,8 @@ import {
   handleDesktopDirectoryValidationRequest,
 } from './directory-picker-route.ts'
 import {
+  DESKTOP_AGENT_BROWSER_LOGIN_CLEAR_PATH,
+  DESKTOP_AGENT_BROWSER_PERSIST_PATH,
   DESKTOP_DIAGNOSTICS_EXPORT_PATH,
   DESKTOP_MARKET_SELECT_PATH,
   DESKTOP_PROFILE_CREATE_PATH,
@@ -39,6 +41,8 @@ import {
   DESKTOP_TERMINAL_OPEN_PATH,
 } from './desktop-settings-contract.ts'
 import {
+  handleDesktopAgentBrowserLoginClearRequest,
+  handleDesktopAgentBrowserPersistRequest,
   handleDesktopDiagnosticsExportRequest,
   handleDesktopMarketSelectRequest,
   handleDesktopProfileCreateRequest,
@@ -211,6 +215,8 @@ export function apply(ctx: Context, config: Config): void {
       [DESKTOP_MARKET_SELECT_PATH, handleDesktopMarketSelectRequest],
       [DESKTOP_TERMINAL_OPEN_PATH, handleDesktopTerminalOpenRequest],
       [DESKTOP_DIAGNOSTICS_EXPORT_PATH, handleDesktopDiagnosticsExportRequest],
+      [DESKTOP_AGENT_BROWSER_PERSIST_PATH, handleDesktopAgentBrowserPersistRequest],
+      [DESKTOP_AGENT_BROWSER_LOGIN_CLEAR_PATH, handleDesktopAgentBrowserLoginClearRequest],
     ] as const
     for (const [path, handler] of settingsRoutes) {
       ctx.effect(

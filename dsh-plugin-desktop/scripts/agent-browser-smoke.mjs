@@ -23,7 +23,12 @@
  *      hidden CSRF tokens never enter the model context (B1 review P3);
  *   4. the act loop — typing lands in the input (mirrored into an attribute
  *      the snapshot observes), the trusted click fires the page's handler,
- *      and page scroll moves without the wheel fallback erroring.
+ *      and page scroll moves without the wheel fallback erroring;
+ *   5. the persist form (B3 §5.2) — enabling persistence mints the UUID once,
+ *      the guest rides `persist:dsh-agent-browser-<uuid>`, the partition
+ *      directory survives close (the one-shot form leaves none), a fresh
+ *      session over the same document reuses the token, and the clear action
+ *      removes the directory and rotates the UUID.
  *
  * Run it headless exactly like the B1 spike did:
  *   xvfb-run -a node_modules/electron/dist/electron --no-sandbox \
@@ -36,14 +41,18 @@
  * loop instead.
  */
 
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { app, session as electronSession } from 'electron'
 import { DesktopAgentBrowserSession } from '../lib/agent-browser-session.js'
-import { DesktopAgentBrowserWindowHost } from '../lib/agent-browser-window.js'
+import { DesktopAgentBrowserWindowHost, clearAgentBrowserPersistedPartition } from '../lib/agent-browser-window.js'
+import {
+  AgentBrowserLoginFileStore,
+  agentBrowserPersistPartition,
+} from '../lib/agent-browser-partition.js'
 
 /**
  * Login-plus-act fixture. The `oninput` handler mirrors the typed text into
@@ -226,6 +235,81 @@ async function main() {
           && listingAfter.every((entry, index) => entry === listingBefore[index]),
         `default session dir changed: before [${listingBefore.join(', ')}] after [${listingAfter.join(', ')}]`,
       )
+    })
+
+    // ── B3 §5.2: the persist form, contrasted against the one-shot cycle ──
+
+    await step('the one-shot cycle leaves no agent-browser partition directory', () => {
+      const partitions = join(userData, 'Partitions')
+      const leftovers = existsSync(partitions)
+        ? readdirSync(partitions).filter(entry => entry.startsWith('dsh-agent-browser'))
+        : []
+      assert(leftovers.length === 0, `one-shot cycle left partition dirs: ${leftovers.join(', ')}`)
+    })
+
+    const loginPath = join(userData, 'agent-browser', 'login-state.json')
+    const loginStore = new AgentBrowserLoginFileStore(loginPath)
+    let mountedPartition = ''
+    const loginHarness = () => new DesktopAgentBrowserSession({
+      createWindowHost: options => {
+        mountedPartition = options.partition
+        return new DesktopAgentBrowserWindowHost(options)
+      },
+      mintPartitionToken: () => `dsh-agent-browser-${randomUUID()}`,
+      login: {
+        store: loginStore,
+        mintUuid: () => randomUUID(),
+        wipePersistedPartition: async partition => {
+          await clearAgentBrowserPersistedPartition(electronSession, userData, partition)
+        },
+      },
+    })
+    let persistedUuid = ''
+
+    await step('enabling persistence mints the UUID once into the login document', async () => {
+      const view = await loginHarness().setPersistLogin(true)
+      assert(view.persistLogin === true && view.persisted === true, 'persist view after enable')
+      const document = loginStore.read()
+      persistedUuid = document.persistUuid ?? ''
+      assert(persistedUuid.length > 0, 'the login document carries no persist UUID')
+      const again = await loginHarness().setPersistLogin(false)
+      await loginHarness().setPersistLogin(true)
+      assert(again !== undefined, 'toggle round-trip')
+      assert(loginStore.read().persistUuid === persistedUuid, 'the UUID re-minted across toggles')
+    })
+
+    let persistSession = loginHarness()
+    await step('the persist partition mounts and its directory survives close', async () => {
+      const info = await persistSession.open(fixtureUrl, { waitForLoad: true })
+      assert(info.generation >= 1, 'persist open did not navigate')
+      const partition = agentBrowserPersistPartition(persistedUuid)
+      assert(mountedPartition === partition, `the guest mounted ${mountedPartition}, expected ${partition}`)
+      // Deterministically materialize storage inside the partition.
+      await electronSession.fromPartition(partition).cookies.set({ url: fixtureUrl, name: 'dsh-smoke', value: '1' })
+      const dir = join(userData, 'Partitions', partition.slice('persist:'.length))
+      await persistSession.close()
+      await settle(1_500)
+      assert(existsSync(dir), `the persist partition directory is missing: ${dir}`)
+    })
+
+    await step('a fresh session over the same document reuses the persist partition', async () => {
+      persistSession = loginHarness()
+      const view0 = persistSession.describeLogin()
+      assert(view0.persistLogin === true, 'the login document lost the preference across restart')
+      await persistSession.open(fixtureUrl, { waitForLoad: true })
+      assert(persistSession.describeLogin().windowOnPersistPartition === true, 'the restarted session did not mount the persist partition')
+    })
+
+    await step('clearing login state removes the partition directory and rotates the UUID', async () => {
+      const partition = agentBrowserPersistPartition(persistedUuid)
+      const dir = join(userData, 'Partitions', partition.slice('persist:'.length))
+      assert(existsSync(dir), 'the partition directory vanished before the clear')
+      const view = await persistSession.clearLoginState()
+      assert(view.persisted === true, 'the clear view lost the partition identity')
+      assert(!existsSync(dir), 'the clear action left the partition directory behind')
+      const document = loginStore.read()
+      assert((document.persistUuid ?? '') !== persistedUuid, 'the clear action did not rotate the UUID')
+      assert(document.persistLogin === true, 'clearing uninstallated the preference')
     })
 
     await step('closes cleanly', () => {

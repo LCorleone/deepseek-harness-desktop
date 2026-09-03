@@ -7,6 +7,7 @@ import {
   createDesktopSettingsApi,
   desktopSettingsPaths,
   parseDesktopActionAcceptance,
+  parseDesktopAgentBrowserLogin,
   parseDesktopRestartAcceptance,
   parseDesktopSettingsView,
   type DesktopSettingsView,
@@ -128,11 +129,13 @@ describe('Desktop settings section visibility', () => {
       profile: true,
       market: true,
       presentation: true,
+      agentBrowser: false,
     })
     expect(desktopSettingsSectionVisibility(undefined)).toEqual({
       profile: true,
       market: true,
       presentation: true,
+      agentBrowser: false,
     })
   })
 
@@ -141,6 +144,63 @@ describe('Desktop settings section visibility', () => {
       profile: false,
       market: false,
       presentation: false,
+      agentBrowser: false,
+    })
+  })
+
+  it('keeps the agent-browser login group unreachable until the view proves it allowed (§5.2)', () => {
+    // Absent member (policy denies / capability absent) and the unread view
+    // both hide the group — unlike the lock-flag groups, this one must stay
+    // hidden until positively allowed.
+    expect(desktopSettingsSectionVisibility(VIEW).agentBrowser).toBe(false)
+    expect(desktopSettingsSectionVisibility(undefined).agentBrowser).toBe(false)
+    expect(desktopSettingsSectionVisibility({
+      ...VIEW,
+      agentBrowser: { allowed: true, persistLogin: false, persisted: false, windowOnPersistPartition: false },
+    }).agentBrowser).toBe(true)
+  })
+
+  it('validates the agent-browser login projection like the server emits it', () => {
+    const agentBrowser = { allowed: true, persistLogin: true, persisted: true, windowOnPersistPartition: false }
+    const withAgentBrowser = { ...VIEW, agentBrowser }
+    expect(parseDesktopSettingsView(withAgentBrowser)).toEqual(withAgentBrowser)
+    expect(parseDesktopSettingsView(VIEW)).not.toHaveProperty('agentBrowser')
+    expect(() => parseDesktopSettingsView({ ...VIEW, agentBrowser: { allowed: true, persistLogin: 'yes' } }))
+      .toThrow('invalid agent browser settings response')
+    expect(parseDesktopAgentBrowserLogin({ accepted: true, persistLogin: true, persisted: true, windowOnPersistPartition: false }))
+      .toEqual({ accepted: true, persistLogin: true, persisted: true, windowOnPersistPartition: false })
+    expect(() => parseDesktopAgentBrowserLogin({ accepted: true }))
+      .toThrow('invalid agent browser login response')
+  })
+
+  it('persists and clears the browser login state through the fixed endpoints', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const path = String(input)
+      if (path === desktopSettingsPaths.agentBrowserPersist) {
+        return json({ accepted: true, persistLogin: true, persisted: true, windowOnPersistPartition: false })
+      }
+      return json({ accepted: true, persistLogin: false, persisted: false, windowOnPersistPartition: false })
+    })
+    const api = createDesktopSettingsApi(fetcher)
+
+    await expect(api.setAgentBrowserPersistLogin(true)).resolves.toEqual({
+      accepted: true, persistLogin: true, persisted: true, windowOnPersistPartition: false,
+    })
+    await expect(api.clearAgentBrowserLogin()).resolves.toEqual({
+      accepted: true, persistLogin: false, persisted: false, windowOnPersistPartition: false,
+    })
+    expect(fetcher.mock.calls.map(call => call[0])).toEqual([
+      desktopSettingsPaths.agentBrowserPersist,
+      desktopSettingsPaths.agentBrowserLoginClear,
+    ])
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      credentials: 'same-origin',
+      body: JSON.stringify({ enabled: true }),
+    })
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({}),
     })
   })
 })

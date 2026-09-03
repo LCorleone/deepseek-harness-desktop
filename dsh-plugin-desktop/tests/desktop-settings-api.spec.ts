@@ -7,6 +7,8 @@ import DesktopSettingsController, {
   type DesktopSettingsControllerBootstrap,
 } from '../src/desktop-settings-controller.ts'
 import {
+  handleDesktopAgentBrowserLoginClearRequest,
+  handleDesktopAgentBrowserPersistRequest,
   handleDesktopDiagnosticsExportRequest,
   handleDesktopMarketSelectRequest,
   handleDesktopProfileCreateRequest,
@@ -654,5 +656,127 @@ describe('desktop settings HTTP boundary', () => {
     expect(res.statusCode).toBe(405)
     expect(res.setHeader).toHaveBeenCalledWith('allow', 'GET')
     expect(readMarket).not.toHaveBeenCalled()
+  })
+})
+
+describe('agent-browser login persistence gate (§5.2, B3)', () => {
+  const LOGIN_VIEW = { persistLogin: true, persisted: true, windowOnPersistPartition: false }
+
+  function loginSeam(allowed: boolean, overrides: Partial<{
+    read: () => typeof LOGIN_VIEW
+    setPersistLogin: (enabled: boolean) => Promise<typeof LOGIN_VIEW>
+    clearLoginState: () => Promise<typeof LOGIN_VIEW>
+  }> = {}) {
+    return {
+      allowed,
+      read: overrides.read ?? (() => LOGIN_VIEW),
+      setPersistLogin: overrides.setPersistLogin ?? (async () => LOGIN_VIEW),
+      clearLoginState: overrides.clearLoginState ?? (async () => LOGIN_VIEW),
+    }
+  }
+
+  it('projects the login view only when the seam exists and policy allows', () => {
+    expect(new DesktopSettingsController(bootstrap()).read()).not.toHaveProperty('agentBrowser')
+
+    const denied = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(false),
+    }))
+    expect(denied.read()).not.toHaveProperty('agentBrowser')
+    expect(denied.agentBrowserLoginAllowed()).toBe(false)
+
+    const allowed = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(true),
+    }))
+    expect(allowed.read()).toMatchObject({ agentBrowser: { allowed: true, ...LOGIN_VIEW } })
+    expect(allowed.agentBrowserLoginAllowed()).toBe(true)
+  })
+
+  it('saves the toggle and clears through the executor when allowed', async () => {
+    const setPersistLogin = vi.fn(async (enabled: boolean) => ({ ...LOGIN_VIEW, persistLogin: enabled }))
+    const clearLoginState = vi.fn(async () => ({ ...LOGIN_VIEW, windowOnPersistPartition: true }))
+    const controller = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(true, { setPersistLogin, clearLoginState }),
+    }))
+
+    expect(await controller.setAgentBrowserPersistLogin(false)).toEqual({
+      accepted: true,
+      ...LOGIN_VIEW,
+      persistLogin: false,
+    })
+    expect(setPersistLogin).toHaveBeenCalledExactlyOnceWith(false)
+    expect(await controller.clearAgentBrowserLogin()).toEqual({
+      accepted: true,
+      ...LOGIN_VIEW,
+      windowOnPersistPartition: true,
+    })
+    expect(clearLoginState).toHaveBeenCalledExactlyOnceWith()
+  })
+
+  it('refuses both operations when policy denies (the API-rejected half)', async () => {
+    const controller = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(false),
+    }))
+    await expect(controller.setAgentBrowserPersistLogin(true))
+      .rejects.toThrow('agent browser login persistence is not allowed by policy')
+    await expect(controller.clearAgentBrowserLogin())
+      .rejects.toThrow('not allowed by policy')
+  })
+
+  it('serves the two fixed endpoints with exact bodies', async () => {
+    const setPersistLogin = vi.fn(async (enabled: boolean) => ({ ...LOGIN_VIEW, persistLogin: enabled }))
+    const clearLoginState = vi.fn(async () => LOGIN_VIEW)
+    const controller = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(true, { setPersistLogin, clearLoginState }),
+    }))
+
+    const persist = response()
+    await handleDesktopAgentBrowserPersistRequest(jsonRequest({ enabled: true }), persist, ORIGIN, controller)
+    expect(persist.statusCode).toBe(200)
+    expect(JSON.parse(persist.body)).toEqual({ accepted: true, ...LOGIN_VIEW, persistLogin: true })
+
+    const clear = response()
+    await handleDesktopAgentBrowserLoginClearRequest(jsonRequest({}), clear, ORIGIN, controller)
+    expect(clear.statusCode).toBe(200)
+    expect(JSON.parse(clear.body)).toEqual({ accepted: true, ...LOGIN_VIEW })
+
+    for (const [body, handler] of [
+      [{ enabled: 'yes' }, handleDesktopAgentBrowserPersistRequest],
+      [{ enabled: true, extra: 1 }, handleDesktopAgentBrowserPersistRequest],
+      [{ command: 'x' }, handleDesktopAgentBrowserLoginClearRequest],
+    ] as const) {
+      const rejected = response()
+      await handler(jsonRequest(body), rejected, ORIGIN, controller)
+      expect(rejected.statusCode).toBe(400)
+    }
+    expect(setPersistLogin).toHaveBeenCalledExactlyOnceWith(true)
+    expect(clearLoginState).toHaveBeenCalledExactlyOnceWith()
+  })
+
+  it('answers 403 on both endpoints when policy denies — the hidden group cannot be API-forced', async () => {
+    const setPersistLogin = vi.fn(async () => LOGIN_VIEW)
+    const clearLoginState = vi.fn(async () => LOGIN_VIEW)
+    const controller = new DesktopSettingsController(bootstrap({
+      agentBrowserLogin: loginSeam(false, { setPersistLogin, clearLoginState }),
+    }))
+
+    const persist = response()
+    await handleDesktopAgentBrowserPersistRequest(jsonRequest({ enabled: true }), persist, ORIGIN, controller)
+    expect(persist.statusCode).toBe(403)
+    expect(JSON.parse(persist.body)).toEqual({ error: 'agent browser login persistence is not allowed' })
+
+    const clear = response()
+    await handleDesktopAgentBrowserLoginClearRequest(jsonRequest({}), clear, ORIGIN, controller)
+    expect(clear.statusCode).toBe(403)
+
+    const offsite = response()
+    await handleDesktopAgentBrowserPersistRequest(
+      jsonRequest({ enabled: true }, { headers: { origin: 'https://evil.example' } }),
+      offsite,
+      ORIGIN,
+      controller,
+    )
+    expect(offsite.statusCode).toBe(403)
+    expect(setPersistLogin).not.toHaveBeenCalled()
+    expect(clearLoginState).not.toHaveBeenCalled()
   })
 })

@@ -1,7 +1,8 @@
 /**
- * Agent-browser host plugin: the five B1 tools, policy gating, the URL gate,
- * the prompt section (including the revised injection discipline), and the
- * screenshot ImageBlock path — over fake context services.
+ * Agent-browser host plugin: the browser tools (B1 read-only set, the B2 act
+ * loop, the B3 claim tool), policy gating, the URL gate, the prompt section
+ * (including the revised injection discipline), and the screenshot ImageBlock
+ * path — over fake context services.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -90,6 +91,9 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
       listeners.push({ event, listener })
       return () => {}
     },
+    // The B3 loopback routes wait for the webServer service; the tool-focused
+    // suites never provide one, so the no-op keeps the injection inert.
+    inject: (_names: string[], _callback: (ctx: Context) => void) => { },
     get: (key: string) => {
       if (key === 'attachments') return attachments
       if (key === 'desktopAgentBrowser') return context.desktopAgentBrowser
@@ -169,12 +173,13 @@ describe('agent-browser host plugin registration', () => {
     expect(sections).toHaveLength(0)
   })
 
-  it('registers the eight browser tools, the prompt section, and the live context', () => {
+  it('registers the nine browser tools, the prompt section, and the live context', () => {
     const { context, tools, sections, contexts } = fakeContext(devPolicy(), {})
 
     apply(context)
 
     expect(tools.map(tool => tool.name).sort()).toEqual([
+      'browser_claim_control',
       'browser_click',
       'browser_navigate',
       'browser_open',
@@ -195,10 +200,32 @@ describe('agent-browser host plugin registration', () => {
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('never instructions')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('password field: value hidden')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('claimControl')
+    expect(AGENT_BROWSER_PROMPT_SECTION).toContain('browser_claim_control')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('Screenshots are expensive')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('STALE_SNAPSHOT')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('OPERATOR_HAS_CONTROL')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('approval')
+  })
+
+  it('hands control to the operator through browser_claim_control (§5.4 entry 3)', async () => {
+    const claimControl = vi.fn()
+    const describe = vi.fn((): AgentBrowserLiveState => ({
+      open: true,
+      url: 'https://example.test/login',
+      title: 'Login',
+      phase: 'claimed',
+      generation: 3,
+    }))
+    const { context, tools } = fakeContext(devPolicy(), { claimControl, describe })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_claim_control')!
+
+    const value = await tool.execute({ reason: 'please type the second factor' }, execution) as { claimed: boolean, reason?: string }
+    expect(value).toEqual({ claimed: true, reason: 'please type the second factor' })
+    expect(claimControl).toHaveBeenCalledExactlyOnceWith('the agent invited the operator to take over: please type the second factor')
+    expect(tool.output.render({ reason: 'x' }, { claimed: true, reason: 'x' })).toEqual([
+      { type: 'text', text: '<browser action="claim_control" claimed="true" reason="x" />' },
+    ])
   })
 
   it('guards open and navigate through the allowlist and forwards exec.signal', async () => {

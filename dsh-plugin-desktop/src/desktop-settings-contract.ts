@@ -78,6 +78,28 @@ export interface DesktopSettingsResponse {
   readonly market: DesktopSettingsMarketView
   /** Live SSO session projection, or undefined when no session is authenticated. */
   readonly sso?: DesktopSettingsSsoView
+  /**
+   * Agent-browser login persistence projection (§5.2, B3), or undefined
+   * when the surface is unreachable (capability absent or policy denies it)
+   * — absence is what hides the settings group.
+   */
+  readonly agentBrowser?: DesktopSettingsAgentBrowserView
+}
+
+/**
+ * Renderer-safe agent-browser login projection. `allowed` is constant true
+ * in the projection: the controller omits the whole member when the policy
+ * denies persistence, so a renderer never has to re-derive the gate.
+ */
+export interface DesktopSettingsAgentBrowserView {
+  /** Constant true; the member is omitted entirely when policy denies. */
+  readonly allowed: true
+  /** Whether login persistence is enabled (applies at the next window creation). */
+  readonly persistLogin: boolean
+  /** Whether a persist UUID (and therefore a persist partition) exists. */
+  readonly persisted: boolean
+  /** Whether the live browser window, if any, runs on the persist partition. */
+  readonly windowOnPersistPartition: boolean
 }
 
 /** Exact body accepted by the profile-creation endpoint. */
@@ -148,6 +170,25 @@ export type DesktopProfileRollbackRequest = Readonly<Record<string, never>>
 /** Persisted rollback handoff returned before the running Host is quiesced. */
 export interface DesktopProfileRollbackResponse extends DesktopRestartAcceptance {
   readonly targetProfile: string
+}
+
+/** Toggle the agent-browser persist-login preference (§5.2, policy-gated). */
+export const DESKTOP_AGENT_BROWSER_PERSIST_PATH = '/api/desktop/agent-browser/persist-login'
+
+/** Clear the agent browser's persisted login state (§5.2, policy-gated). */
+export const DESKTOP_AGENT_BROWSER_LOGIN_CLEAR_PATH = '/api/desktop/agent-browser/login/clear'
+
+/** Exact body accepted by the persist-login endpoint. */
+export interface DesktopAgentBrowserPersistRequest {
+  readonly enabled: boolean
+}
+
+/** Fresh login projection returned by both agent-browser login endpoints. */
+export interface DesktopAgentBrowserLoginResponse {
+  readonly accepted: true
+  readonly persistLogin: boolean
+  readonly persisted: boolean
+  readonly windowOnPersistPartition: boolean
 }
 
 /** Stable API failure shape that never contains native paths or raw causes. */

@@ -1,0 +1,164 @@
+/**
+ * Shared headless harness for agent-browser session specs: a fake guest
+ * debugger transport, a fake guest webContents, and the fake window-host
+ * factory `createHarness` binds into `DesktopAgentBrowserSession` (the
+ * day-1 spike shapes, reused by the session/claim/overlay specs).
+ *
+ * Test-only module — never shipped; imports mirror the spec files' needs.
+ */
+
+import { vi } from 'vitest'
+import type {
+  AgentBrowserGuestWebContents,
+  AgentBrowserWindowHost,
+  AgentBrowserSessionOptions,
+  AgentBrowserWindowHostFactory,
+} from '../src/agent-browser-session.ts'
+import { DesktopAgentBrowserSession } from '../src/agent-browser-session.ts'
+import type { AgentBrowserDebuggerTarget } from '../src/agent-browser-cdp.ts'
+
+/** Fake debugger with scripted responses and event emission. */
+export function fakeGuestDebugger(responses: Record<string, unknown> = {}) {
+  const listeners = new Map<string, Set<(params: unknown) => void>>()
+  const detachListeners = new Set<(reason: string) => void>()
+  const commands: Array<{ method: string, params?: unknown }> = []
+  let attached = false
+  let attachCount = 0
+  const target: AgentBrowserDebuggerTarget = {
+    attach: () => { attached = true; attachCount += 1 },
+    detach: () => { attached = false },
+    isAttached: () => attached,
+    sendCommand: async (method, params) => {
+      commands.push({ method, ...(params === undefined ? {} : { params }) })
+      if (method in responses) {
+        const scripted = (responses as Record<string, unknown>)[method]
+        if (scripted !== null && typeof scripted === 'object' && '__reject' in (scripted as Record<string, unknown>)) {
+          throw new Error(String((scripted as { __reject: string }).__reject))
+        }
+        if (typeof scripted === 'function') return scripted(params)
+        return scripted
+      }
+      return {}
+    },
+    on: (event, listener) => {
+      // Only message listeners forward; detach subscriptions are ignored so
+      // event emission can never masquerade as a session teardown.
+      if (event === 'message') {
+        let entry = listeners.get('*')
+        if (entry === undefined) {
+          entry = new Set()
+          listeners.set('*', entry)
+        }
+        entry.add(listener as never)
+      } else {
+        detachListeners.add(listener as never)
+      }
+    },
+    off: (event, listener) => {
+      if (event !== 'message') detachListeners.delete(listener as never)
+    },
+  }
+  return {
+    commands,
+    attachCount: () => attachCount,
+    emit(method: string, params: unknown): void {
+      for (const listener of [...(listeners.get('*') ?? [])]) {
+        (listener as unknown as (event: unknown, method: string, params: unknown, sessionId: string) => void)(
+          undefined,
+          method,
+          params,
+          '',
+        )
+      }
+    },
+    /** Deliver a debugger detach exactly as Electron would. */
+    emitDetach(reason: string): void {
+      attached = false
+      for (const listener of [...detachListeners]) (listener as unknown as (event: unknown, reason: string) => void)(undefined, reason)
+    },
+    target,
+  }
+}
+
+/** Fake guest webContents bound to the fake debugger. */
+export function fakeGuest(target: AgentBrowserDebuggerTarget, url = 'https://example.test/'): AgentBrowserGuestWebContents {
+  return {
+    debugger: target,
+    getURL: () => url,
+    getTitle: () => 'Example',
+    setWindowOpenHandler: vi.fn(),
+  }
+}
+
+/** Fake window host recording pushed view models; guest attach is scripted. */
+export interface FakeWindowHost extends AgentBrowserWindowHost {
+  readonly states: Array<Record<string, unknown>>
+  emitClosed(): void
+}
+
+export type AgentBrowserWindowHostFactoryOptions = Parameters<
+  NonNullable<AgentBrowserSessionOptions['createWindowHost']>
+>[0]
+
+/** Latest factory options, so tests can drive the toolbar claim seam. */
+let lastFactoryOptionsValue: AgentBrowserWindowHostFactoryOptions | undefined
+
+/** The latest window-host factory options (the toolbar button seams). */
+export function lastFactoryOptions(): AgentBrowserWindowHostFactoryOptions | undefined {
+  return lastFactoryOptionsValue
+}
+
+/** Record the latest window-host factory options (called by createHarness). */
+export function noteFactoryOptions(options: AgentBrowserWindowHostFactoryOptions): void {
+  lastFactoryOptionsValue = options
+}
+
+export function createHarness(options: {
+  responses?: Record<string, unknown>
+  attachGuest?: (host: FakeWindowHost) => AgentBrowserGuestWebContents
+  now?: () => number
+  settleQuietMs?: number
+  pollMs?: number
+  login?: AgentBrowserSessionOptions['login']
+} = {}) {
+  const hosts: FakeWindowHost[] = []
+  const tokens: string[] = []
+  const closed: string[] = []
+  const factory: AgentBrowserWindowHostFactory = hostOptions => {
+    lastFactoryOptionsValue = hostOptions
+    tokens.push(hostOptions.partition)
+    const states: Array<Record<string, unknown>> = []
+    const host: FakeWindowHost = {
+      states,
+      async open() {
+        return options.attachGuest?.(host) ?? fakeGuest(fakeGuestDebugger(options.responses).target)
+      },
+      pushState: state => { states.push(state as unknown as Record<string, unknown>) },
+      close() { closed.push(hostOptions.partition) },
+      isClosed: () => false,
+      emitClosed() { hostOptions.onWindowClosed() },
+    }
+    hosts.push(host)
+    return host
+  }
+  const session = new DesktopAgentBrowserSession({
+    createWindowHost: factory,
+    mintPartitionToken: () => {
+      const token = `dsh-agent-browser-test-${String(tokens.length + 1)}`
+      return token
+    },
+    ...(options.login === undefined ? {} : { login: options.login }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.settleQuietMs === undefined ? {} : { settleQuietMs: options.settleQuietMs }),
+    ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+  })
+  return {
+    session,
+    hosts,
+    tokens,
+    closed,
+    /** Drive the toolbar buttons through the same callbacks the real host fires. */
+    pressClaimButton: () => { lastFactoryOptionsValue?.onHumanClaim() },
+    pressReleaseButton: () => { lastFactoryOptionsValue?.onHumanRelease() },
+  }
+}

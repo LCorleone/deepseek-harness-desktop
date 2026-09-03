@@ -6,6 +6,8 @@ const PROFILE_SELECT_PATH = '/api/desktop/profiles/select'
 const PROFILE_DELETE_PATH = '/api/desktop/profiles/delete'
 const MARKET_SELECT_PATH = '/api/desktop/market/select'
 const TERMINAL_OPEN_PATH = '/api/desktop/terminal/open'
+const AGENT_BROWSER_PERSIST_PATH = '/api/desktop/agent-browser/persist-login'
+const AGENT_BROWSER_LOGIN_CLEAR_PATH = '/api/desktop/agent-browser/login/clear'
 const MAX_PROFILES = 256
 const MAX_PROFILE_NAME_LENGTH = 255
 
@@ -40,6 +42,26 @@ export interface DesktopSettingsSsoView {
   readonly source?: DesktopSettingsSsoSource
 }
 
+/** Agent-browser login persistence projection (absent = unreachable, §5.2). */
+export interface DesktopAgentBrowserView {
+  /** Constant true; the member is omitted entirely when policy denies. */
+  readonly allowed: true
+  /** Whether login persistence is enabled (applies at the next window creation). */
+  readonly persistLogin: boolean
+  /** Whether a persist UUID (and therefore a persist partition) exists. */
+  readonly persisted: boolean
+  /** Whether the live browser window, if any, runs on the persist partition. */
+  readonly windowOnPersistPartition: boolean
+}
+
+/** Fresh login projection returned by both agent-browser login endpoints. */
+export interface DesktopAgentBrowserLoginView {
+  readonly accepted: true
+  readonly persistLogin: boolean
+  readonly persisted: boolean
+  readonly windowOnPersistPartition: boolean
+}
+
 /** Complete launcher-owned settings projection. */
 export interface DesktopSettingsView {
   readonly current: string
@@ -49,6 +71,8 @@ export interface DesktopSettingsView {
   readonly market: DesktopMarketView
   /** Live SSO session projection, or undefined when no session is authenticated. */
   readonly sso?: DesktopSettingsSsoView
+  /** Agent-browser login persistence projection, or undefined when unreachable. */
+  readonly agentBrowser?: DesktopAgentBrowserView
 }
 
 /** A persisted selection that requires a new Desktop generation. */
@@ -65,6 +89,8 @@ export interface DesktopSettingsApi {
   deleteProfile(name: string): Promise<DesktopSettingsView>
   selectMarket(provider: DesktopMarketProvider): Promise<DesktopRestartAcceptance>
   openTerminal(): Promise<void>
+  setAgentBrowserPersistLogin(enabled: boolean): Promise<DesktopAgentBrowserLoginView>
+  clearAgentBrowserLogin(): Promise<DesktopAgentBrowserLoginView>
 }
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -107,6 +133,24 @@ function parseSso(value: unknown): DesktopSettingsSsoView | undefined {
   return Object.freeze({ authenticated: true, email: value.email, source: value.source })
 }
 
+/** Validate the optional agent-browser login projection (absent = unreachable). */
+function parseAgentBrowser(value: unknown): DesktopAgentBrowserView | undefined {
+  if (value === undefined) return undefined
+  if (!isObject(value)
+    || value.allowed !== true
+    || typeof value.persistLogin !== 'boolean'
+    || typeof value.persisted !== 'boolean'
+    || typeof value.windowOnPersistPartition !== 'boolean') {
+    throw new Error('dsh-plugin-desktop: invalid agent browser settings response')
+  }
+  return Object.freeze({
+    allowed: true as const,
+    persistLogin: value.persistLogin,
+    persisted: value.persisted,
+    windowOnPersistPartition: value.windowOnPersistPartition,
+  })
+}
+
 function parseProfile(value: unknown): DesktopProfileView {
   if (!isObject(value)
     || typeof value.name !== 'string'
@@ -147,6 +191,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
     throw new Error('dsh-plugin-desktop: duplicate profile in settings response')
   }
   const sso = parseSso(value.sso)
+  const agentBrowser = parseAgentBrowser(value.agentBrowser)
   return Object.freeze({
     current: value.current,
     locked: value.locked,
@@ -157,6 +202,7 @@ export function parseDesktopSettingsView(value: unknown): DesktopSettingsView {
       legacyDefaulted: value.market.legacyDefaulted,
     }),
     ...(sso === undefined ? {} : { sso }),
+    ...(agentBrowser === undefined ? {} : { agentBrowser }),
   })
 }
 
@@ -175,6 +221,23 @@ export function parseDesktopActionAcceptance(value: unknown): void {
     || value.accepted !== true) {
     throw new Error('dsh-plugin-desktop: invalid Desktop action response')
   }
+}
+
+/** Validate the login projection returned by both login endpoints. */
+export function parseDesktopAgentBrowserLogin(value: unknown): DesktopAgentBrowserLoginView {
+  if (!isObject(value)
+    || value.accepted !== true
+    || typeof value.persistLogin !== 'boolean'
+    || typeof value.persisted !== 'boolean'
+    || typeof value.windowOnPersistPartition !== 'boolean') {
+    throw new Error('dsh-plugin-desktop: invalid agent browser login response')
+  }
+  return Object.freeze({
+    accepted: true as const,
+    persistLogin: value.persistLogin,
+    persisted: value.persisted,
+    windowOnPersistPartition: value.windowOnPersistPartition,
+  })
 }
 
 async function readResponse(response: Response): Promise<unknown> {
@@ -229,6 +292,12 @@ export function createDesktopSettingsApi(fetcher: FetchLike = globalThis.fetch.b
     async openTerminal() {
       parseDesktopActionAcceptance(await readResponse(await post(fetcher, TERMINAL_OPEN_PATH, {})))
     },
+    async setAgentBrowserPersistLogin(enabled: boolean) {
+      return parseDesktopAgentBrowserLogin(await readResponse(await post(fetcher, AGENT_BROWSER_PERSIST_PATH, { enabled })))
+    },
+    async clearAgentBrowserLogin() {
+      return parseDesktopAgentBrowserLogin(await readResponse(await post(fetcher, AGENT_BROWSER_LOGIN_CLEAR_PATH, {})))
+    },
   })
 }
 
@@ -239,4 +308,6 @@ export const desktopSettingsPaths = Object.freeze({
   profileDelete: PROFILE_DELETE_PATH,
   marketSelect: MARKET_SELECT_PATH,
   terminalOpen: TERMINAL_OPEN_PATH,
+  agentBrowserPersist: AGENT_BROWSER_PERSIST_PATH,
+  agentBrowserLoginClear: AGENT_BROWSER_LOGIN_CLEAR_PATH,
 })

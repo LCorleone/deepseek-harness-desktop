@@ -1,6 +1,6 @@
 /** DSH Desktop executable: minimal Electron bootstrap around the Host Cordis root. */
 
-import { app, crashReporter, dialog, net, shell } from 'electron'
+import { app, crashReporter, dialog, net, session, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,7 +120,8 @@ import { materializeProfile, ProfileMaterializationError } from './profile-mater
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import { DesktopAgentBrowserSession } from './agent-browser-session.ts'
-import { DesktopAgentBrowserWindowHost } from './agent-browser-window.ts'
+import { DesktopAgentBrowserWindowHost, clearAgentBrowserPersistedPartition } from './agent-browser-window.ts'
+import { AgentBrowserLoginFileStore } from './agent-browser-partition.ts'
 import {
   createDesktopExitCoordinator,
   createDesktopShutdown,
@@ -1117,18 +1118,26 @@ async function start(): Promise<void> {
         // P8: the agent-browser executor runs in this process — the host
         // tree, the window, and the CDP session share the Electron main
         // loop (design §2). Construction is lazy: no window exists until
-        // the first browser_open, and the one-shot partition token is
-        // minted then (§5.2).
-        hostCtx.provide(
-          'desktopAgentBrowser',
-          new DesktopAgentBrowserSession({
-            createWindowHost: options => new DesktopAgentBrowserWindowHost(options),
-            mintPartitionToken: () => `dsh-agent-browser-${randomUUID()}`,
-            ...(electronLogger === undefined ? {} : {
-              logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
-            }),
+        // the first browser_open, and the partition token is resolved then
+        // (§5.2: a one-shot token, or the persisted UUID when the user
+        // enabled login persistence and the policy allows it).
+        const agentBrowserSession = new DesktopAgentBrowserSession({
+          createWindowHost: options => new DesktopAgentBrowserWindowHost(options),
+          mintPartitionToken: () => `dsh-agent-browser-${randomUUID()}`,
+          login: {
+            store: new AgentBrowserLoginFileStore(
+              join(app.getPath('userData'), 'agent-browser', 'login-state.json'),
+            ),
+            mintUuid: () => randomUUID(),
+            wipePersistedPartition: async (partition) => {
+              await clearAgentBrowserPersistedPartition(session, app.getPath('userData'), partition)
+            },
+          },
+          ...(electronLogger === undefined ? {} : {
+            logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
           }),
-        )
+        })
+        hostCtx.provide('desktopAgentBrowser', agentBrowserSession)
         // Field-aware manifest verification for the locked market catalog
         // (the market's `desktopCompanyManifestVerifier` capability): the
         // catalog provider's scan and the signed-manifest install whitelist
@@ -1315,6 +1324,19 @@ async function start(): Promise<void> {
             return projectSsoSession(session.email, session.source)
           },
           prepareProfileRollback,
+          // §5.2/B3: the persist-login settings group rides the same
+          // controller seam as every other Desktop preference. `allowed` is
+          // the policy gate (hidden group + refused POSTs when false).
+          ...(policy.agentBrowser.enabled
+            ? {
+              agentBrowserLogin: {
+                allowed: policy.agentBrowser.allowPersistLogin,
+                read: () => agentBrowserSession.describeLogin(),
+                setPersistLogin: (enabled: boolean) => agentBrowserSession.setPersistLogin(enabled),
+                clearLoginState: () => agentBrowserSession.clearLoginState(),
+              },
+            }
+            : {}),
         }))
         provideCmdline(hostCtx, {
           args: ['--host', '127.0.0.1', '--port', String(prepared.port)],

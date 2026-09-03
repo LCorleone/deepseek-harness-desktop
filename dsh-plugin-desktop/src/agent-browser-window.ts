@@ -15,6 +15,8 @@
  */
 
 import { BrowserWindow, ipcMain } from 'electron'
+import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import {
@@ -42,6 +44,39 @@ const AGENT_BROWSER_HEIGHT = 760
 const AGENT_BROWSER_MIN_WIDTH = 720
 const AGENT_BROWSER_MIN_HEIGHT = 540
 const GUEST_ATTACH_TIMEOUT_MS = 30_000
+
+/**
+ * The on-disk Chromium partition directory of one persist partition token
+ * (`<userData>/Partitions/<name>`), or '' for a one-shot token (one-shot
+ * partitions are in-memory and have no directory, §5.2).
+ */
+export function agentBrowserPartitionDirectory(userDataPath: string, partition: string): string {
+  if (!partition.startsWith('persist:')) return ''
+  return join(userDataPath, 'Partitions', partition.slice('persist:'.length))
+}
+
+/** Electron session surface the login wipe consumes. */
+export interface AgentBrowserElectronSessions {
+  fromPartition(partition: string): { clearStorageData(): Promise<void> }
+}
+
+/**
+ * Wipe one persist partition's login state (§5.2 “clear login state”):
+ * `clearStorageData()` first (cookies, localStorage, service workers,
+ * IndexedDB — through Chromium's own teardown), then remove the partition
+ * directory for anything the storage API leaves behind. Callers must have
+ * closed the browser window already — deleting a live profile directory is
+ * unreliable on Windows (file locks) and leaves service-worker residue.
+ */
+export async function clearAgentBrowserPersistedPartition(
+  sessions: AgentBrowserElectronSessions,
+  userDataPath: string,
+  partition: string,
+): Promise<void> {
+  await sessions.fromPartition(partition).clearStorageData()
+  const directory = agentBrowserPartitionDirectory(userDataPath, partition)
+  if (directory !== '') rmSync(directory, { recursive: true, force: true })
+}
 
 /** Options of {@link DesktopAgentBrowserWindowHost}. */
 export interface AgentBrowserWindowHostOptions {

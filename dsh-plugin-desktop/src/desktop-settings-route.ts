@@ -6,6 +6,7 @@ import type { DesktopMarketProvider } from './desktop-market.ts'
 import type DesktopSettingsController from './desktop-settings-controller.ts'
 import type { DesktopSettingsPostResponse } from './desktop-settings-controller.ts'
 import type {
+  DesktopAgentBrowserPersistRequest,
   DesktopMarketSelectRequest,
   DesktopProfileCreateRequest,
   DesktopProfileDeleteRequest,
@@ -146,6 +147,11 @@ function isMarketProvider(value: unknown): value is DesktopMarketProvider {
 function parseMarketRequest(value: unknown): DesktopMarketSelectRequest | undefined {
   if (!isExactRecord(value, 'provider') || !isMarketProvider(value.provider)) return undefined
   return { provider: value.provider }
+}
+
+function parseAgentBrowserPersistRequest(value: unknown): DesktopAgentBrowserPersistRequest | undefined {
+  if (!isExactRecord(value, 'enabled') || typeof value.enabled !== 'boolean') return undefined
+  return { enabled: value.enabled }
 }
 
 function isEmptyRequest(value: unknown): boolean {
@@ -415,6 +421,64 @@ export async function handleDesktopProfileRollbackRequest(
   } catch (cause) {
     reportError('prepare last-known-good Profile restore', cause)
     finishJson(res, 409, error('last-known-good Profile could not be restored'))
+  }
+}
+
+/**
+ * Toggle agent-browser login persistence (§5.2, B3). The policy gate is the
+ * API-refused half of the double protection: a composition whose policy
+ * denies `allowPersistLogin` never even shows the toggle, and this endpoint
+ * refuses with 403 regardless of what the renderer sends.
+ */
+export async function handleDesktopAgentBrowserPersistRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  expectedOrigin: string,
+  controller: DesktopSettingsController,
+  reportError: (operation: string, cause: unknown) => void = () => {},
+): Promise<void> {
+  if (req.method !== 'POST') return finishJson(res, 405, error('method not allowed'), 'POST')
+  if (!isSameOriginLoopbackRequest(req, expectedOrigin, true)) {
+    return finishJson(res, 403, error('forbidden'))
+  }
+  if (!controller.agentBrowserLoginAllowed()) {
+    return finishJson(res, 403, error('agent browser login persistence is not allowed'))
+  }
+  const value = await parsePostBody(req, res)
+  if (value === INVALID_BODY) return
+  const request = parseAgentBrowserPersistRequest(value)
+  if (request === undefined) return finishJson(res, 400, error('invalid agent browser persist request'))
+  try {
+    finishJson(res, 200, await controller.setAgentBrowserPersistLogin(request.enabled))
+  } catch (cause) {
+    reportError('set agent browser persist login', cause)
+    finishJson(res, 500, error('agent browser login persistence could not be saved'))
+  }
+}
+
+/** Clear the agent browser's persisted login state (§5.2, policy-gated). */
+export async function handleDesktopAgentBrowserLoginClearRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  expectedOrigin: string,
+  controller: DesktopSettingsController,
+  reportError: (operation: string, cause: unknown) => void = () => {},
+): Promise<void> {
+  if (req.method !== 'POST') return finishJson(res, 405, error('method not allowed'), 'POST')
+  if (!isSameOriginLoopbackRequest(req, expectedOrigin, true)) {
+    return finishJson(res, 403, error('forbidden'))
+  }
+  if (!controller.agentBrowserLoginAllowed()) {
+    return finishJson(res, 403, error('agent browser login persistence is not allowed'))
+  }
+  const value = await parsePostBody(req, res)
+  if (value === INVALID_BODY) return
+  if (!isEmptyRequest(value)) return finishJson(res, 400, error('invalid agent browser login clear request'))
+  try {
+    finishJson(res, 200, await controller.clearAgentBrowserLogin())
+  } catch (cause) {
+    reportError('clear agent browser login state', cause)
+    finishJson(res, 500, error('agent browser login state could not be cleared'))
   }
 }
 

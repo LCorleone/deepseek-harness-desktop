@@ -27,7 +27,9 @@
 import type {
   AgentBrowserActionResult,
   AgentBrowserClickRequest,
+  AgentBrowserEventFrame,
   AgentBrowserLiveState,
+  AgentBrowserLoginView,
   AgentBrowserMouseButton,
   AgentBrowserOverlayState,
   AgentBrowserPageInfo,
@@ -43,6 +45,15 @@ import type {
   AgentBrowserWaitRequest,
   DesktopAgentBrowser,
 } from './agent-browser-contract.ts'
+import {
+  AGENT_BROWSER_PERSIST_PARTITION_PREFIX,
+  agentBrowserPersistPartition,
+  isAgentBrowserUuid,
+  nextAgentBrowserLoginForToggle,
+  rotatedAgentBrowserLogin,
+  type AgentBrowserLoginDocument,
+  type AgentBrowserLoginStore,
+} from './agent-browser-partition.ts'
 import {
   AgentBrowserCdpClient,
   AgentBrowserCdpError,
@@ -428,6 +439,17 @@ export interface AgentBrowserSessionOptions {
   readonly createWindowHost: AgentBrowserWindowHostFactory
   /** Mints one-shot partition tokens (`dsh-agent-browser-<uuid>`; §5.2). */
   readonly mintPartitionToken: () => string
+  /**
+   * Login-persistence seam (§5.2, B3): the Desktop-owned login document, the
+   * persist-UUID mint, and the launcher's storage wipe. Absent keeps the
+   * one-shot-only behavior (tests, smokes, pre-B3 compositions).
+   */
+  readonly login?: {
+    readonly store: AgentBrowserLoginStore
+    readonly mintUuid: () => string
+    /** Releases and deletes one persist partition's storage (Electron side). */
+    readonly wipePersistedPartition?: (partition: string) => Promise<void> | void
+  }
   /** Clock used for waits (injectable for tests). */
   readonly now?: () => number
   /** Quiet window required by `until: "settle"` (injectable for tests). */
@@ -445,6 +467,11 @@ export interface AgentBrowserSessionOptions {
 export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private readonly createWindowHost: AgentBrowserWindowHostFactory
   private readonly mintPartitionToken: () => string
+  private readonly login: {
+    readonly store: AgentBrowserLoginStore
+    readonly mintUuid: () => string
+    readonly wipePersistedPartition?: (partition: string) => Promise<void> | void
+  } | undefined
   private readonly now: () => number
   private readonly settleQuietMs: number
   private readonly pollMs: number
@@ -469,10 +496,15 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private isolatedWorld: { frameId: string, executionContextId: number } | undefined
   private mutex: Promise<unknown> = Promise.resolve()
   private readonly unsubscribers: Array<() => void> = []
+  /** Loopback frame subscribers (the SSE route; frames carry phase, B3). */
+  private readonly frameListeners = new Set<(frame: AgentBrowserEventFrame) => void>()
+  /** Whether a coalesced `stale` frame is still pending (§2: no per-mutation flood). */
+  private staleFramePending = false
 
   constructor(options: AgentBrowserSessionOptions) {
     this.createWindowHost = options.createWindowHost
     this.mintPartitionToken = options.mintPartitionToken
+    this.login = options.login
     this.now = options.now ?? (() => Date.now())
     this.settleQuietMs = options.settleQuietMs ?? AGENT_BROWSER_SETTLE_QUIET_MS
     this.pollMs = options.pollMs ?? SETTLE_POLL_MS
@@ -496,7 +528,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private async ensureStarted(signal: AbortSignal | undefined): Promise<void> {
     signal?.throwIfAborted()
     if (this.client !== undefined && this.windowHost !== undefined && !this.windowHost.isClosed()) return
-    this.partition = this.mintPartitionToken()
+    this.partition = this.resolvePartition()
     const host = this.createWindowHost({
       partition: this.partition,
       onViewModelState: () => { this.pushViewModel() },
@@ -555,6 +587,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       this.cachedSnapshot = undefined
       this.isolatedWorld = undefined
       this.pushViewModel()
+      this.broadcastFrame({ kind: 'navigation', url: this.url, generation: this.counter.current })
     }))
     this.unsubscribers.push(client.on('Page.navigatedWithinDocument', params => {
       // Only the MAIN frame's same-document navigation is a boundary; an
@@ -564,11 +597,13 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       this.counter.noteMainFrameNavigation()
       this.cachedSnapshot = undefined
       this.pushViewModel()
+      this.broadcastFrame({ kind: 'navigation', url: this.url, generation: this.counter.current })
     }))
     // Mutations only mark dirty: no generation churn on animated SPAs.
     const markDirty = (): void => {
       this.counter.markDirty()
       this.cachedSnapshot = undefined
+      this.broadcastStaleFrame()
     }
     for (const event of [
       'DOM.setChildNodes',
@@ -592,6 +627,40 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       ...(this.claimReason === undefined || this.phase !== 'claimed' ? {} : { actionDescription: this.claimReason }),
       ...(actionDescription === undefined || this.phase === 'claimed' ? {} : { actionDescription }),
     })
+    // The loopback observation rides the SAME push (B2 leftover closure):
+    // claim/release and every boundary surface the phase in one place.
+    this.broadcastFrame({
+      kind: 'state',
+      url: this.url,
+      title: this.title,
+      phase: this.phase,
+      generation: this.counter.current,
+    })
+  }
+
+  /** Broadcast one frame to loopback subscribers (never throws into callers). */
+  private broadcastFrame(frame: AgentBrowserEventFrame): void {
+    if (frame.kind !== 'stale') this.staleFramePending = false
+    for (const listener of this.frameListeners) {
+      try {
+        listener(frame)
+      } catch {
+        // A broken subscriber never disturbs the surface or other subscribers.
+      }
+    }
+  }
+
+  /** Coalesced mutation signal: one stale frame until the next real boundary. */
+  private broadcastStaleFrame(): void {
+    if (this.staleFramePending) return
+    this.staleFramePending = true
+    this.broadcastFrame({ kind: 'stale', generation: this.counter.current })
+  }
+
+  /** Subscribe to surface frames; returns the unsubscribe function (§2, B3). */
+  subscribe(listener: (frame: AgentBrowserEventFrame) => void): () => void {
+    this.frameListeners.add(listener)
+    return () => { this.frameListeners.delete(listener) }
   }
 
   private refreshPageIdentity(): void {
@@ -811,6 +880,87 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.isolatedWorld = undefined
     this.phase = this.windowHost !== undefined && !this.windowHost.isClosed() ? 'observing' : 'idle'
     this.pushViewModel()
+  }
+
+  // ── Login persistence (design §5.2, B3) ────────────────────────────────
+
+  /** The persist partition the current document selects, when any. */
+  private persistPartitionOf(document: AgentBrowserLoginDocument): string | undefined {
+    return isAgentBrowserUuid(document.persistUuid)
+      ? agentBrowserPersistPartition(document.persistUuid)
+      : undefined
+  }
+
+  /** Resolve the partition for the next window creation (§5.2): persist UUID when enabled, one-shot otherwise. */
+  private resolvePartition(): string {
+    if (this.login !== undefined) {
+      const document = this.login.store.read()
+      if (document.persistLogin) {
+        const partition = this.persistPartitionOf(document)
+        if (partition !== undefined) return partition
+      }
+    }
+    return this.mintPartitionToken()
+  }
+
+  private requireLogin(): NonNullable<AgentBrowserSessionOptions['login']> {
+    if (this.login === undefined) {
+      throw new Error('dsh-plugin-desktop: login persistence is not configured on this composition (the desktop launcher binds the login document store)')
+    }
+    return this.login
+  }
+
+  private loginViewOf(document: AgentBrowserLoginDocument): AgentBrowserLoginView {
+    const partition = this.persistPartitionOf(document)
+    return {
+      persistLogin: document.persistLogin,
+      persisted: partition !== undefined,
+      windowOnPersistPartition: partition !== undefined
+        && this.partition.startsWith(AGENT_BROWSER_PERSIST_PARTITION_PREFIX)
+        && this.partition === partition,
+    }
+  }
+
+  /** Login-persistence projection for the settings surface (§5.2). */
+  describeLogin(): AgentBrowserLoginView {
+    return this.loginViewOf(this.login?.store.read() ?? { version: 1, persistLogin: false })
+  }
+
+  /**
+   * Toggle login persistence. The UUID is minted ONCE at the first enable;
+   * a partition is only settable before the guest's first navigation, so the
+   * change applies at the next window creation — exactly what the
+   * restart-applied toggle promises (§5.2).
+   */
+  async setPersistLogin(enabled: boolean): Promise<AgentBrowserLoginView> {
+    return await this.runExclusive(async () => {
+      const login = this.requireLogin()
+      const next = nextAgentBrowserLoginForToggle(login.store.read(), enabled, login.mintUuid)
+      await login.store.write(next)
+      return this.loginViewOf(next)
+    })
+  }
+
+  /**
+   * Clear login state (§5.2): close the window first (Windows file locks and
+   * service-worker/IndexedDB residue make deleting a live profile directory
+   * unreliable), wipe the persist partition's storage and directory, then
+   * rotate a fresh UUID into the login document so the next window creation
+   * starts from an empty partition even if directory removal missed residue.
+   */
+  async clearLoginState(): Promise<AgentBrowserLoginView> {
+    return await this.runExclusive(async () => {
+      const login = this.requireLogin()
+      const current = login.store.read()
+      await this.closeLocked()
+      const partition = this.persistPartitionOf(current)
+      if (partition !== undefined && login.wipePersistedPartition !== undefined) {
+        await login.wipePersistedPartition(partition)
+      }
+      const next = rotatedAgentBrowserLogin(current, login.mintUuid)
+      await login.store.write(next)
+      return this.loginViewOf(next)
+    })
   }
 
   /** Compose one caller signal with the agent epoch (claim aborts). */
@@ -1271,6 +1421,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.isolatedWorld = undefined
     this.claimReason = undefined
     this.overlay = undefined
+    this.staleFramePending = false
     this.agentEpoch = new AbortController()
     const host = this.windowHost
     this.windowHost = undefined
@@ -1279,6 +1430,9 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.title = ''
     this.cachedSnapshot = undefined
     host?.close()
+    // The loopback observation learns the surface closed through the same
+    // push path (the window host is already gone, so only the frame fires).
+    this.pushViewModel()
     return Promise.resolve()
   }
 }

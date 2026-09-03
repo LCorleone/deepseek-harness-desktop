@@ -43,7 +43,7 @@ export type DesktopSettingsSectionProps =
   & InjectFace<DesktopSettingsSectionInjected>
 
 type Translate = DesktopSettingsSectionProps['t']
-type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'notification'
+type BusyOperation = 'load' | 'create-profile' | 'select-profile' | 'delete-profile' | 'select-market' | 'mode' | 'notification' | 'agent-browser'
 type RestartState = 'none' | 'restarting' | 'required'
 
 function useScope<T>(scope: SettingsScope<T>) {
@@ -167,6 +167,7 @@ export interface DesktopSettingsSectionVisibility {
   readonly profile: boolean
   readonly market: boolean
   readonly presentation: boolean
+  readonly agentBrowser: boolean
 }
 
 /**
@@ -176,13 +177,20 @@ export interface DesktopSettingsSectionVisibility {
  * Market, and the compatibility shell, so those choice groups disappear and
  * only notifications stay; the launcher keeps serving the unchanged data for
  * unlocked (development) builds, and an unread view keeps every group until
- * the policy flag arrives.
+ * the policy flag arrives. The agent-browser login group differs on purpose:
+ * it stays hidden until the view PROVES it allowed (§5.2 unreachable-when-
+ * denied), because unlike the lock flag its availability is per-feature.
  */
 export function desktopSettingsSectionVisibility(
   view: DesktopSettingsView | undefined,
 ): DesktopSettingsSectionVisibility {
   const locked = view?.locked === true
-  return { profile: !locked, market: !locked, presentation: !locked }
+  return {
+    profile: !locked,
+    market: !locked,
+    presentation: !locked,
+    agentBrowser: view?.agentBrowser?.allowed === true,
+  }
 }
 
 const COMMUNITY_MARKET_URL = 'https://github.com/anywhere-labs/deepseek-harness-desktop/tree/master/dsh-community-market'
@@ -317,6 +325,26 @@ export function DesktopSettingsSection({
 
   const setNotification = (field: keyof DesktopNotificationSettings, checked: boolean): void => {
     void run('notification', async () => { await notificationSettings.set(field, checked) })
+  }
+
+  const setAgentBrowserPersist = (checked: boolean): void => {
+    void run('agent-browser', async () => {
+      const login = await api.setAgentBrowserPersistLogin(checked)
+      setView(current => current === undefined || current.agentBrowser === undefined ? current : {
+        ...current,
+        agentBrowser: { ...current.agentBrowser, ...login, allowed: true },
+      })
+    })
+  }
+
+  const clearAgentBrowserLogin = (): void => {
+    void run('agent-browser', async () => {
+      const login = await api.clearAgentBrowserLogin()
+      setView(current => current === undefined || current.agentBrowser === undefined ? current : {
+        ...current,
+        agentBrowser: { ...current.agentBrowser, ...login, allowed: true },
+      })
+    })
   }
 
   return (
@@ -483,6 +511,32 @@ export function DesktopSettingsSection({
             status={mode === 'advanced' ? t('selected') : undefined}
           />
         </div>
+      </section>
+      )}
+
+      {sections.agentBrowser && view?.agentBrowser !== undefined && (
+      <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-agent-browser-title">
+        <div>
+          <h3 id="dsh-desktop-agent-browser-title">{t('agentBrowserTitle')}</h3>
+          <p className="dshDesktopSettingsGroupIntro">{t('agentBrowserIntro')}</p>
+        </div>
+        <p className="dshDesktopSettingsNotice">{t('agentBrowserNotice')}</p>
+        <ToggleRow
+          label={t('agentBrowserPersistLogin')}
+          checked={view.agentBrowser.persistLogin}
+          disabled={busy !== undefined}
+          onChange={setAgentBrowserPersist}
+        />
+        {view.agentBrowser.persisted && (
+          <button
+            type="button"
+            className="dshDesktopSettingsButton dshDesktopSettingsButtonSecondary"
+            disabled={busy !== undefined}
+            onClick={clearAgentBrowserLogin}
+          >
+            {busy === 'agent-browser' ? t('clearingLogin') : t('agentBrowserClearLogin')}
+          </button>
+        )}
       </section>
       )}
 

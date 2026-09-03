@@ -56,6 +56,12 @@ export const zh = {
   turnFailure: '用户回合需要处理',
   jobCompletion: '后台任务完成',
   jobFailure: '后台任务需要处理',
+  agentBrowserTitle: '浏览器登录态',
+  agentBrowserIntro: '选择内嵌浏览器窗口是否在重启后保留网站登录状态。默认每次打开都使用全新的一次性分区。',
+  agentBrowserPersistLogin: '保留浏览器登录状态',
+  agentBrowserNotice: '改动在浏览器窗口下次打开时生效（分区只能在首次导航前设置）。',
+  agentBrowserClearLogin: '清除登录状态',
+  clearingLogin: '正在清除…',
 } as const
 
 export type DesktopSettingsLocaleKey = keyof typeof zh
@@ -116,4 +122,10 @@ export const en: Record<DesktopSettingsLocaleKey, string> = {
   turnFailure: 'User turn needs attention',
   jobCompletion: 'Background job completed',
   jobFailure: 'Background job needs attention',
+  agentBrowserTitle: 'Browser login state',
+  agentBrowserIntro: 'Choose whether the embedded browser window keeps website logins across restarts. The default is a fresh one-shot partition for every window.',
+  agentBrowserPersistLogin: 'Keep browser login state',
+  agentBrowserNotice: 'Changes take effect the next time the browser window opens (a partition can only be set before its first navigation).',
+  agentBrowserClearLogin: 'Clear login state',
+  clearingLogin: 'Clearing…',
 }

@@ -135,6 +135,44 @@ export interface AgentBrowserWaitOutcome {
   readonly waited: number
 }
 
+/** Full surface snapshot streamed as a `state` frame (§2, B3). */
+export interface AgentBrowserStateFrame {
+  readonly kind: 'state'
+  readonly url: string
+  readonly title: string
+  readonly phase: AgentBrowserPhase
+  readonly generation: number
+}
+
+/** Main-frame navigation boundary streamed to loopback observers (§2, B3). */
+export interface AgentBrowserNavigationFrame {
+  readonly kind: 'navigation'
+  readonly url: string
+  readonly generation: number
+}
+
+/** The observed state was invalidated (mutation); URL/generation unchanged (§2, B3). */
+export interface AgentBrowserStaleFrame {
+  readonly kind: 'stale'
+  readonly generation: number
+}
+
+/** One SSE frame of `/_dsh/desktop/agent-browser/events` (renderer-safe: no partition token). */
+export type AgentBrowserEventFrame =
+  | AgentBrowserStateFrame
+  | AgentBrowserNavigationFrame
+  | AgentBrowserStaleFrame
+
+/** Renderer-safe login-persistence projection (§5.2, B3). */
+export interface AgentBrowserLoginView {
+  /** Whether login persistence is enabled (applies at the next window creation). */
+  readonly persistLogin: boolean
+  /** Whether a persist UUID (and therefore a persist partition) exists. */
+  readonly persisted: boolean
+  /** Whether the live browser window, if any, currently runs on the persist partition. */
+  readonly windowOnPersistPartition: boolean
+}
+
 /** Mouse button of `browser_click` (CDP button names). */
 export type AgentBrowserMouseButton = 'left' | 'middle' | 'right'
 
@@ -214,6 +252,14 @@ export interface DesktopAgentBrowser {
   captureScreenshot(signal?: AbortSignal): Promise<AgentBrowserScreenshot>
   /** Current surface state for the dynamic prompt context. */
   describe(): AgentBrowserLiveState
+  /** Observe surface frames (state/navigation/stale, all carrying phase-relevant state); returns unsubscribe. */
+  subscribe(listener: (frame: AgentBrowserEventFrame) => void): () => void
+  /** Login-persistence projection for the settings surface (§5.2). */
+  describeLogin(): AgentBrowserLoginView
+  /** Toggle login persistence; the persist UUID is minted once at first enable (§5.2). */
+  setPersistLogin(enabled: boolean): Promise<AgentBrowserLoginView>
+  /** Clear login state: close, wipe storage + partition directory, rotate the UUID (§5.2). */
+  clearLoginState(): Promise<AgentBrowserLoginView>
   /** Tear down debugger session and window. */
   close(): Promise<void>
 }

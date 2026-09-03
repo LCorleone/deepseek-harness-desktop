@@ -7,6 +7,7 @@ import type {
 import type { DesktopProfileSummary } from './profile-manager.ts'
 import type { DesktopProfiles } from './profile-service.ts'
 import type {
+  DesktopAgentBrowserLoginResponse,
   DesktopMarketSelectResponse,
   DesktopDiagnosticsExportResponse,
   DesktopProfileCreateResponse,
@@ -14,6 +15,7 @@ import type {
   DesktopProfileDeleteResponse,
   DesktopProfileRollbackResponse,
   DesktopProfileSelectResponse,
+  DesktopSettingsAgentBrowserView,
   DesktopSettingsMarketView,
   DesktopSettingsProfileView,
   DesktopSettingsResponse,
@@ -47,6 +49,19 @@ export interface DesktopSettingsControllerBootstrap {
   readSso(): DesktopSettingsSsoView | undefined
   /** Prepare a last-known-good rollback without quiescing the Host yet. */
   prepareProfileRollback(): DesktopSettingsPostResponse<DesktopProfileRollbackResponse>
+  /**
+   * Agent-browser login persistence seam (§5.2, B3): bound by the launcher
+   * to the desktopAgentBrowser executor. Absent when the capability is not
+   * composed; `allowed: false` is the policy denial (the settings group
+   * hides and both POST endpoints refuse).
+   */
+  readonly agentBrowserLogin?: {
+    /** Whether policy allows the persist toggle at all. */
+    readonly allowed: boolean
+    read(): Omit<DesktopSettingsAgentBrowserView, 'allowed'>
+    setPersistLogin(enabled: boolean): Promise<Omit<DesktopSettingsAgentBrowserView, 'allowed'>>
+    clearLoginState(): Promise<Omit<DesktopSettingsAgentBrowserView, 'allowed'>>
+  }
 }
 
 /** A persisted response plus work that must run only after `res.end()`. */
@@ -131,6 +146,13 @@ export class DesktopSettingsController {
   /** Read a fresh, renderer-safe settings projection. */
   read(): DesktopSettingsResponse {
     const sso = this.bootstrap.readSso()
+    // The agent-browser projection disappears entirely when the seam is
+    // absent or policy denies persistence — the renderer's “unreachable”
+    // state IS the missing member (§5.2 hidden + API-refused double gate).
+    const agentBrowserLogin = this.bootstrap.agentBrowserLogin
+    const agentBrowser = agentBrowserLogin !== undefined && agentBrowserLogin.allowed
+      ? Object.freeze({ allowed: true as const, ...agentBrowserLogin.read() })
+      : undefined
     return Object.freeze({
       current: this.bootstrap.profiles.current.name,
       locked: this.bootstrap.locked,
@@ -142,6 +164,7 @@ export class DesktopSettingsController {
       ),
       market: projectMarket(this.bootstrap.readMarket(), this.effectiveMarket),
       ...(sso === undefined ? {} : { sso }),
+      ...(agentBrowser === undefined ? {} : { agentBrowser }),
     })
   }
 
@@ -211,6 +234,31 @@ export class DesktopSettingsController {
   /** Hand off a validated rollback that starts only after the HTTP response. */
   rollbackProfile(): DesktopSettingsPostResponse<DesktopProfileRollbackResponse> {
     return this.bootstrap.prepareProfileRollback()
+  }
+
+  /** Whether the agent-browser persist toggle is reachable at all (§5.2). */
+  agentBrowserLoginAllowed(): boolean {
+    return this.bootstrap.agentBrowserLogin?.allowed === true
+  }
+
+  private requireAgentBrowserLogin(): NonNullable<DesktopSettingsControllerBootstrap['agentBrowserLogin']> {
+    const seam = this.bootstrap.agentBrowserLogin
+    if (seam === undefined || !seam.allowed) {
+      throw new Error('dsh-plugin-desktop: agent browser login persistence is not allowed by policy')
+    }
+    return seam
+  }
+
+  /** Toggle agent-browser login persistence (the API-refused half of the §5.2 gate). */
+  async setAgentBrowserPersistLogin(enabled: boolean): Promise<DesktopAgentBrowserLoginResponse> {
+    const seam = this.requireAgentBrowserLogin()
+    return Object.freeze({ accepted: true as const, ...await seam.setPersistLogin(enabled) })
+  }
+
+  /** Clear the agent browser's persisted login state (§5.2 clear action). */
+  async clearAgentBrowserLogin(): Promise<DesktopAgentBrowserLoginResponse> {
+    const seam = this.requireAgentBrowserLogin()
+    return Object.freeze({ accepted: true as const, ...await seam.clearLoginState() })
   }
 }
 
