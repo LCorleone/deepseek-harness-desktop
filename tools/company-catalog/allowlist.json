@@ -8,5 +8,20 @@
     "runtime": {
       "dshRuntimeVersion": "^0.1.1-rc.2"
     }
+  },
+  {
+    "packageName": "dsh-free-search",
+    "version": "0.4.181",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://github.com/DDDMUC/dsh-free-search",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.1-rc.2"
+    },
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.company.example/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.181.tgz"
+    }
   }
 ]

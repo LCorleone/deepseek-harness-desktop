@@ -1,0 +1,63 @@
+{
+  "name": "dsh-free-search",
+  "version": "0.4.181",
+  "description": "Free web search for DeepSeek Harness, company-hardened build of upstream v0.4.18: reviewed engine chain tavily (keyed) -> exa (keyed) -> bing -> ddg, zero-key out of the box, settings-section key configuration, no self-update path (updates arrive through the company catalog channel).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./engines": "./lib/engines.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/engines.js",
+    "cordis.patch.yml"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "web-search",
+    "duckduckgo",
+    "bing",
+    "tavily",
+    "exa",
+    "search",
+    "free"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DDDMUC/dsh-free-search.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    },
+    "engines": {
+      "dsh": ">=0.1.1-rc.1"
+    }
+  }
+}

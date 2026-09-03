@@ -1,0 +1,25 @@
+# dsh-free-search — company-hardened build (upstream DDDMUC v0.4.18)
+#
+# Coexistence by minimal patch: this file inserts exactly one new plugin row
+# (web-search-free) and re-pins exactly one existing config value — the web
+# seam's searchProvider selection. The official web bundle's base row for
+# `web` carries exactly one key (searchProvider: deepseek-official, see the
+# pinned harness packages/bundle/base/cordis.patch.yml), and a patch replaces
+# the targeted row's whole `config`, so the replacement below restates that
+# single key pointed at this plugin's provider id. Nothing else in the web
+# row, the web-app bundle, or the desktop layer is touched; the official web
+# plugin keeps the seam, the web_fetch tool surface, and every other row.
+#
+# Uninstalling the plugin restores the base selection (deepseek-official).
+#
+# The provider id is "ddg" (upstream's stable id): the one provider this
+# plugin registers internally routes the whole company chain
+# (tavily -> exa -> bing -> ddg); the id is a registry key, not the engine
+# choice — the chain order is plugin policy, not configuration.
+- insert:
+    - id: web-search-free
+      name: dsh-free-search
+# Minimal selection pin (the row's only key, re-pointed):
+- id: web
+  config:
+    searchProvider: ddg
