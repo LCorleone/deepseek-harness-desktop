@@ -129,15 +129,17 @@ export function desktopMarketTarballStagingPath(profileDir: string, packageName:
  * signed manifest entry's `source.integrity` has been verified over the
  * downloaded bytes; it never crosses a CLI or Renderer boundary, so a user
  * argument can never produce one. The install boundary re-validates it from
- * scratch: exact descriptor shape, the signed sha512, and the deterministic
- * staging path for the receipt's exact package version — plus a fresh hash of
- * the staged bytes so the file cannot change between staging and install.
+ * scratch: exact descriptor shape, the descriptor's own sha512 claim, and
+ * the deterministic staging path for the receipt's exact package version —
+ * plus a fresh hash of the staged bytes so the file cannot change between
+ * staging and install (the signature binding to the signed entry happens in
+ * the install orchestration, `installCompanyMarketTarballPlugin`).
  */
 export interface DesktopControlledMarketTarball {
   readonly kind: 'market-tarball'
   /** Absolute staged path; must equal {@link desktopMarketTarballStagingPath} for the receipt. */
   readonly path: string
-  /** Signed sha512 integrity of the tarball bytes (`sha512-` + standard base64). */
+  /** sha512 integrity of the tarball bytes (`sha512-` + standard base64); the orchestration binds it to the signed entry. */
   readonly integrity: string
 }
 
@@ -247,10 +249,10 @@ export interface DesktopPluginInstallRequest {
    * `name@version` spec. The descriptor is only ever constructed in-process
    * by the Desktop market path after the signed tarball integrity verified
    * over the downloaded bytes, and it is re-validated here (exact shape, exact
-   * deterministic staging path for the receipt's package version, signed
-   * sha512 re-hashed over the staged file) — a user-supplied path can never
-   * produce one because every user-facing argument surface still audits
-   * against the npm-spec-only rules.
+   * deterministic staging path for the receipt's package version, the
+   * descriptor's own sha512 re-hashed over the staged file) — a user-supplied
+   * path can never produce one because every user-facing argument surface
+   * still audits against the npm-spec-only rules.
    */
   readonly marketTarball?: DesktopControlledMarketTarball
   readonly signal?: AbortSignal
@@ -546,13 +548,24 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
 
   /**
    * Re-validate one controlled market tarball against the receipt before any
-   * recovery transaction is opened: exact descriptor shape, signed sha512
-   * integrity shape, the deterministic staging path for this exact package
-   * version inside the active profile, a regular non-symlink staged file
-   * within the size bound, and a fresh SHA-512 over the staged bytes that
-   * must equal the signed integrity. The staged file sits in user-writable
-   * storage between the download and the install, so this closes that window:
-   * swapped or tampered bytes fail the install instead of reaching pnpm.
+   * recovery transaction is opened. This boundary enforces two properties of
+   * the descriptor itself — it is deliberately NOT a signature check:
+   *
+   * - **path confinement:** the descriptor's path must be the deterministic
+   *   staging path for the receipt's exact package version inside the active
+   *   profile, so no other file can become a `file:` install target; and
+   * - **self-integrity:** the descriptor's integrity must be a well-formed
+   *   sha512, and a fresh hash of the staged bytes must equal it, so the file
+   *   cannot change between staging and install (it sits in user-writable
+   *   storage).
+   *
+   * The integrity compared here is the descriptor's own value, not a signed
+   * one: binding it to the signed manifest entry is the orchestration
+   * layer's job — `installCompanyMarketTarballPlugin` refuses a descriptor
+   * whose integrity diverges from the signed `entry.integrity`, and
+   * `stageCompanyMarketTarball` (its only production constructor) stamps the
+   * signed `source.integrity` into the descriptor. The composition test in
+   * `company-market-tarball.spec.ts` locks that arrangement down.
    */
   private async assertControlledMarketTarball(
     tarball: DesktopControlledMarketTarball,
@@ -569,7 +582,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
       throw new Error(`${BIN_NAME}: the controlled market tarball descriptor is invalid`)
     }
     if (!isSha512Integrity(tarball.integrity)) {
-      throw new Error(`${BIN_NAME}: the controlled market tarball integrity must be the signed sha512 of the tarball`)
+      throw new Error(`${BIN_NAME}: the controlled market tarball integrity must be a well-formed sha512 (sha512- plus standard base64) — its binding to the signed entry is checked by the install orchestration`)
     }
     const expectedPath = desktopMarketTarballStagingPath(
       this.bootstrap.activeProfileDir,
@@ -587,7 +600,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
     const expected = Buffer.from(tarball.integrity.slice('sha512-'.length), 'base64')
     if (digest.byteLength !== expected.byteLength || !timingSafeEqual(digest, expected)) {
-      throw new Error(`${BIN_NAME}: the staged market tarball ${tarball.path} does not match the signed integrity — refusing the install`)
+      throw new Error(`${BIN_NAME}: the staged market tarball ${tarball.path} does not match its pinned integrity — refusing the install`)
     }
   }
 

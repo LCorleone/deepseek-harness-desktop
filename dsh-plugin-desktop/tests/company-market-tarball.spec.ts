@@ -6,9 +6,10 @@
  */
 
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { Context } from '@deepseek-ai/cordis'
 import type {
@@ -25,6 +26,7 @@ import {
   verifyCompanyManifest,
 } from 'dsh-community-market'
 import {
+  cleanCompanyMarketStagingOrphans,
   desktopCompanyEntrySource,
   findDesktopCompanyManifestPackage,
   installCompanyMarketTarballPlugin,
@@ -32,6 +34,7 @@ import {
   verifyDesktopCompanyManifest,
   type DesktopCompanyTarballInstallEntry,
 } from '../src/desktop-market.ts'
+import { readDesktopBootLockfile } from '../src/boot-verification.ts'
 import {
   apply as applyDesktopPnpm,
   desktopMarketTarballStagingName,
@@ -263,6 +266,7 @@ interface AllowlistValidation {
 
 interface AllowlistModule {
   validateAllowlistEntry(entry: unknown, at: string, options?: { companyCatalogOrigin?: string }): AllowlistValidation
+  validateCatalogOrigin(value: string): string
 }
 
 interface PipelineModule {
@@ -327,6 +331,7 @@ describe('dual-channel company manifest verification', () => {
     ['non-https url', tarballEntry({ source: { kind: 'tarball', url: `http://${CATALOG_ORIGIN.slice('https://'.length)}/packages/x.tgz`, integrity: TARBALL_INTEGRITY } }), 'https'],
     ['url with credentials', tarballEntry({ source: { kind: 'tarball', url: 'https://user@gitlab.company.example/packages/x.tgz', integrity: TARBALL_INTEGRITY } }), 'https'],
     ['url with a fragment', tarballEntry({ source: { kind: 'tarball', url: `${TARBALL_URL}#x`, integrity: TARBALL_INTEGRITY } }), 'https'],
+    ['url with an explicit port', tarballEntry({ source: { kind: 'tarball', url: 'https://gitlab.company.example:8443/packages/x.tgz', integrity: TARBALL_INTEGRITY } }), 'explicit port'],
     ['malformed integrity', tarballEntry({ source: { kind: 'tarball', url: TARBALL_URL, integrity: 'sha512-not-base64-at-all' } }), 'SHA-512'],
     ['unknown source kind', tarballEntry({ source: { kind: 'git', url: TARBALL_URL } }), "'npm' or 'tarball'"],
     ['unknown key inside source', tarballEntry({ source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY, checksum: 'x' } }), 'unknown field'],
@@ -545,6 +550,143 @@ describe('company market tarball staging', () => {
       expect(readFileSync(staged.stagedPath)).toEqual(TARBALL_BYTES)
     }
   })
+
+  it('bounds a hanging download with the whole-request timeout and cleans the staging location', async () => {
+    const root = temporaryDirectory('stage-timeout')
+    const profileDir = join(root, 'profiles', 'web')
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'company-hardened-plugin', '2.1.0')
+    // A leftover that no longer matches the signed sha512 must not survive
+    // the timeout refusal either, and no `.tmp` sibling may be left behind.
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, Buffer.from('stale bytes'))
+    const neverCompletes = (_url: string, init: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')))
+      })
+    await expect(stageCompanyMarketTarball({
+      policy: { companyCatalogOrigin: CATALOG_ORIGIN },
+      source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      profileDir,
+      request: neverCompletes,
+      timeoutMs: 25,
+    })).rejects.toThrow('exceeded the 25 ms whole-request download bound')
+    expect(existsSync(stagedPath)).toBe(false)
+    expect(readdirSync(dirname(stagedPath))).toEqual([])
+  })
+
+  it('rethrows a caller abort through the composed signal while the keepalive keeps verified staging', async () => {
+    const root = temporaryDirectory('stage-abort')
+    const profileDir = join(root, 'profiles', 'web')
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'company-hardened-plugin', '2.1.0')
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, TARBALL_BYTES)
+    const controller = new AbortController()
+    const neverCompletes = (_url: string, init: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')))
+      })
+    const pending = stageCompanyMarketTarball({
+      policy: { companyCatalogOrigin: CATALOG_ORIGIN },
+      source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      profileDir,
+      request: neverCompletes,
+      timeoutMs: 120_000,
+      signal: controller.signal,
+    })
+    controller.abort(new Error('user canceled'))
+    await expect(pending).rejects.toThrow('user canceled')
+    // The still-verified staged bytes survive the abort.
+    expect(readFileSync(stagedPath)).toEqual(TARBALL_BYTES)
+  })
+
+  it('keeps the installed, lockfile-referenced staged tarball when a re-staging attempt fails', async () => {
+    const root = temporaryDirectory('stage-keepalive')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ name: 'profile', dependencies: {} }))
+    const stageOptions = {
+      policy: { companyCatalogOrigin: CATALOG_ORIGIN },
+      source: { kind: 'tarball' as const, url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      profileDir,
+    }
+    const staged = await stageCompanyMarketTarball({ ...stageOptions, request: requestServing(TARBALL_BYTES) })
+    // What a successful install leaves behind: a profile whose lockfile
+    // resolves the plugin against the staged `file:` tarball.
+    simulateSuccessfulPnpmTarballInstall(
+      profileDir,
+      { packageName: 'company-hardened-plugin', version: '2.1.0', bundlePatch: './cordis.patch.yml' },
+      staged.stagedPath,
+    )
+    // A network failure mid re-staging must not strand that lockfile.
+    await expect(stageCompanyMarketTarball({ ...stageOptions, request: failingRequest }))
+      .rejects.toThrow('could not be downloaded')
+    expect(readFileSync(staged.stagedPath)).toEqual(TARBALL_BYTES)
+    // Freshly downloaded bytes that fail the signed sha512 keep it too: the
+    // old bytes still hash to the signed integrity, so they are exactly
+    // what a successful staging would have written.
+    await expect(stageCompanyMarketTarball({ ...stageOptions, request: requestServing(Buffer.from('tampered bytes\n')) }))
+      .rejects.toThrow('does not match the signed integrity')
+    expect(readFileSync(staged.stagedPath)).toEqual(TARBALL_BYTES)
+    // The lockfile still parses and still resolves the plugin against the
+    // staged file — the profile remains installable/repairable as-is.
+    const lockfile = readDesktopBootLockfile(profileDir)
+    expect(lockfile).toBeDefined()
+    const importer = (lockfile?.importers as Record<string, unknown> | undefined)?.['.'] as
+      { dependencies?: Record<string, { specifier?: unknown }> } | undefined
+    expect(importer?.dependencies?.['company-hardened-plugin']?.specifier).toBe(`file:${staged.stagedPath}`)
+  })
+})
+
+describe('staged tarball directory GC', () => {
+  it('keeps the lockfile-referenced version and removes only same-package orphans', async () => {
+    const root = temporaryDirectory('gc-orphans')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ name: 'profile', dependencies: {} }))
+    const staged = await stageCompanyMarketTarball({
+      policy: { companyCatalogOrigin: CATALOG_ORIGIN },
+      source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      profileDir,
+      request: requestServing(TARBALL_BYTES),
+    })
+    simulateSuccessfulPnpmTarballInstall(
+      profileDir,
+      { packageName: 'company-hardened-plugin', version: '2.1.0', bundlePatch: './cordis.patch.yml' },
+      staged.stagedPath,
+    )
+    const stagingDirectory = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY)
+    const superseded = join(stagingDirectory, 'company-hardened-plugin-2.0.0.tgz')
+    writeFileSync(superseded, Buffer.from('superseded bytes'))
+    // A different package whose staging name shares the prefix stays: its
+    // lifecycle belongs to its own lockfile reference, not this package's GC.
+    const otherPackage = join(stagingDirectory, 'company-hardened-plugin-extra-1.0.0.tgz')
+    writeFileSync(otherPackage, Buffer.from('another package entirely'))
+    const removed = await cleanCompanyMarketStagingOrphans(profileDir, 'company-hardened-plugin')
+    expect(removed).toEqual([superseded])
+    expect(existsSync(superseded)).toBe(false)
+    expect(readFileSync(staged.stagedPath)).toEqual(TARBALL_BYTES)
+    expect(existsSync(otherPackage)).toBe(true)
+  })
+
+  it('keeps everything when the lockfile does not reference the package', async () => {
+    const root = temporaryDirectory('gc-unreferenced')
+    const profileDir = join(root, 'profiles', 'web')
+    const stagingDirectory = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY)
+    mkdirSync(stagingDirectory, { recursive: true })
+    const staged = join(stagingDirectory, 'company-hardened-plugin-2.1.0.tgz')
+    writeFileSync(staged, TARBALL_BYTES)
+    const removed = await cleanCompanyMarketStagingOrphans(profileDir, 'company-hardened-plugin')
+    expect(removed).toEqual([])
+    expect(existsSync(staged)).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -609,7 +751,7 @@ describe('pnpm controlled market tarball install target', () => {
       return { kind: 'market-tarball', path: staged, integrity: TARBALL_INTEGRITY } as const
     }, 'may only install from the staged path'],
     ['staged bytes that do not match the signed integrity', async (root: string) =>
-      await stagedFixture(root, Buffer.from('swapped bytes\n')), 'does not match the signed integrity'],
+      await stagedFixture(root, Buffer.from('swapped bytes\n')), 'does not match its pinned integrity'],
     ['a descriptor with an extra field', async (root: string) => ({
       ...await stagedFixture(root),
       extra: 'nope',
@@ -618,7 +760,7 @@ describe('pnpm controlled market tarball install target', () => {
       kind: 'market-tarball',
       path: (await stagedFixture(root)).path,
       integrity: 'sha512-malformed',
-    }), 'signed sha512'],
+    }), 'well-formed sha512'],
     ['a missing staged file', async (root: string) => ({
       kind: 'market-tarball',
       path: desktopMarketTarballStagingPath(join(root, 'profiles', 'web'), 'company-hardened-plugin', '2.1.0'),
@@ -761,6 +903,11 @@ describe('company tarball install orchestration', () => {
       selectedBootstrap,
     )
     try {
+      // A superseded staged version of the same package: the successful
+      // install's GC sweep must collect it once the lockfile references
+      // exactly the installed version.
+      const superseded = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, 'company-hardened-plugin-2.0.0.tgz')
+      writeFileSync(superseded, Buffer.from('superseded bytes'))
       const result = await installCompanyMarketTarballPlugin({
         service: harness.service,
         entry: entry as DesktopCompanyTarballInstallEntry,
@@ -787,6 +934,8 @@ describe('company tarball install orchestration', () => {
       expect(profileManifest.dependencies['company-hardened-plugin']).toBe(`file:${staged.stagedPath}`)
       const recoveryState = JSON.parse(readFileSync(selectedBootstrap.installRecoveryStatePath, 'utf8')) as { phase: string }
       expect(recoveryState.phase).toBe('awaiting-restart')
+      expect(existsSync(superseded)).toBe(false)
+      expect(readFileSync(staged.stagedPath)).toEqual(TARBALL_BYTES)
     } finally {
       await harness.dispose()
     }
@@ -936,6 +1085,24 @@ describe('company tarball install orchestration', () => {
 describe('company-catalog allowlist source generation', () => {
   const origin = CATALOG_ORIGIN
 
+  it('aligns the catalog-origin grammar with the manifest schema: no explicit ports, clear reason', async () => {
+    const { validateCatalogOrigin } = await tools()
+    expect(validateCatalogOrigin(CATALOG_ORIGIN)).toBe(CATALOG_ORIGIN)
+    for (const ported of ['https://gitlab.company.example:8443', 'https://gitlab.company.example:443']) {
+      expect(() => validateCatalogOrigin(ported), ported).toThrow(/must not carry a port/)
+      try {
+        validateCatalogOrigin(ported)
+        throw new Error('expected a rejection')
+      } catch (error) {
+        // The error must explain the cross-check that makes ports
+        // unverifiable, not just state the rule.
+        expect((error as Error).message).toContain('source and repository urls')
+      }
+    }
+    expect(() => validateCatalogOrigin('http://gitlab.company.example')).toThrow(/bare https origin/)
+    expect(() => validateCatalogOrigin('https://gitlab.company.example/path')).toThrow(/bare https origin/)
+  })
+
   it('normalizes npm entries without adding a source key, explicitly or implicitly', async () => {
     const { validateAllowlistEntry } = await tools()
     const base = {
@@ -975,6 +1142,7 @@ describe('company-catalog allowlist source generation', () => {
       [{ kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY }, {}, 'requires the company catalog origin'],
       [{ kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY }, { companyCatalogOrigin: 'https://other.company.example' }, 'not the company catalog origin'],
       [{ kind: 'tarball', url: `http://${origin.slice('https://'.length)}/x.tgz`, integrity: TARBALL_INTEGRITY }, { companyCatalogOrigin: origin }, 'credential-free https'],
+      [{ kind: 'tarball', url: `${origin}:8443/x.tgz`, integrity: TARBALL_INTEGRITY }, { companyCatalogOrigin: origin }, 'explicit port'],
       [{ kind: 'tarball', url: TARBALL_URL, integrity: 'sha512-short' }, { companyCatalogOrigin: origin }, 'SHA-512'],
       [{ kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY, extra: true }, { companyCatalogOrigin: origin }, 'unknown field'],
     ] as const) {
@@ -1078,6 +1246,77 @@ describe('company-catalog allowlist source generation', () => {
     expect(market.verifyCompanyManifest(legacyText, { trustRoots }).ok).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Composition invariance: who may construct a marketTarball descriptor, and
+// where the signature binding happens. Locked as a structural source test
+// because the property is cross-module (pnpm.ts validates the descriptor's
+// own claims; desktop-market.ts constructs it and binds it to the signed
+// entry) — a runtime unit on one module cannot see the whole arrangement.
+// ---------------------------------------------------------------------------
+
+describe('composition invariance: the controlled marketTarball descriptor', () => {
+  const sourceDirectory = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
+
+  it('is constructed in exactly one production site — the staging step — which stamps the signed source integrity', () => {
+    const files = readdirSync(sourceDirectory).filter(name => name.endsWith('.ts'))
+    expect(files.length).toBeGreaterThan(0)
+    // A construction is an object literal property `kind: 'market-tarball'`;
+    // the pnpm.ts interface's `readonly kind:` declaration is the one
+    // sanctioned non-construction spelling.
+    const constructionPattern = /(?<!readonly )kind: 'market-tarball'/gu
+    const sites: string[] = []
+    for (const name of files) {
+      const text = readFileSync(join(sourceDirectory, name), 'utf8')
+      for (const _match of text.matchAll(constructionPattern)) sites.push(name)
+    }
+    expect(sites).toEqual(['desktop-market.ts'])
+    const desktopMarket = readFileSync(join(sourceDirectory, 'desktop-market.ts'), 'utf8')
+    const stagingBody = bodyOf(desktopMarket, 'export async function stageCompanyMarketTarball')
+    expect(stagingBody.match(constructionPattern)).toHaveLength(1)
+    // The single construction stamps the SIGNED tarball sha512 — not caller
+    // bytes, not a re-measured digest — so the descriptor's integrity claim
+    // is the manifest entry's `source.integrity` by construction.
+    expect(stagingBody).toContain("kind: 'market-tarball'")
+    expect(stagingBody).toContain('integrity: options.source.integrity')
+  })
+
+  it('binds the descriptor to the signed entry inside the install orchestration, before anything is spawned', () => {
+    const desktopMarket = readFileSync(join(sourceDirectory, 'desktop-market.ts'), 'utf8')
+    const orchestration = bodyOf(desktopMarket, 'export async function installCompanyMarketTarballPlugin')
+    // The binding check: descriptor integrity must equal the signed
+    // `entry.integrity`, refusing the install before the service is called.
+    expect(orchestration).toContain('request.tarball.integrity !== entry.integrity')
+    expect(orchestration).toContain('does not match the signed entry integrity')
+    const serviceCallIndex = orchestration.indexOf('request.service.installPlugin')
+    const bindingIndex = orchestration.indexOf('request.tarball.integrity !== entry.integrity')
+    expect(serviceCallIndex).toBeGreaterThan(0)
+    expect(bindingIndex).toBeGreaterThan(-1)
+    expect(bindingIndex).toBeLessThan(serviceCallIndex)
+  })
+
+  it('keeps the pnpm boundary validating the descriptor itself, never a signature', () => {
+    const pnpm = readFileSync(join(sourceDirectory, 'pnpm.ts'), 'utf8')
+    const boundary = bodyOf(pnpm, 'private async assertControlledMarketTarball')
+    // The boundary's comparisons are against the descriptor's own integrity
+    // claim and the deterministic staging path — the words that would claim
+    // signature authority at this layer must not appear in its checks.
+    expect(boundary).toContain('tarball.integrity.slice')
+    expect(boundary).toContain('desktopMarketTarballStagingPath')
+    expect(boundary).not.toContain('entry.integrity')
+    // And it constructs nothing: the only `market-tarball` literal outside
+    // desktop-market.ts is the interface declaration plus comparisons.
+    expect([...pnpm.matchAll(/(?<!readonly )kind: 'market-tarball'/gu)]).toHaveLength(0)
+  })
+})
+
+/** Slice one top-level `export … function name(…)` body out of a module's text. */
+function bodyOf(text: string, signatureStart: string): string {
+  const start = text.indexOf(signatureStart)
+  expect(start, `signature not found: ${signatureStart}`).toBeGreaterThan(-1)
+  const end = text.indexOf('\nexport ', start + 1)
+  return text.slice(start, end === -1 ? undefined : end)
+}
 
 // Keep the tool imports' structural types local to this spec; the modules
 // themselves are plain ESM without type declarations.

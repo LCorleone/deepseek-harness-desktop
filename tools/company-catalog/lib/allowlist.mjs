@@ -53,6 +53,18 @@ export function validateCatalogOrigin(value) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('the company catalog origin must be a bare https origin like https://gitlab.company.example')
   }
+  // Port alignment: the manifest schema's https URL grammar (manifest-shape.mjs
+  // and the desktop's dual-channel verifier) forbids an explicit port on
+  // `source.url`/`repository.url`, so an origin carrying one could never host
+  // a verifiable tarball entry — refuse it here, at configuration time, with
+  // the reason instead of letting every signed entry fail downstream.
+  if (/^https:\/\/[^/?#@]*:\d+$/u.test(value)) {
+    throw new Error(
+      `the company catalog origin '${value}' must not carry a port: the manifest schema's https URL grammar ` +
+      'forbids an explicit port on source and repository urls, so a ported origin can never host a verifiable ' +
+      'tarball entry — serve the catalog origin on the standard https port (443)',
+    )
+  }
   let url
   try {
     url = new URL(value)
@@ -101,7 +113,18 @@ export function validateEntrySource(source, at, options = {}) {
     return { ok: false, reason: `${at}.source.url '${source.url}' is not a valid URL` }
   }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hash !== '') {
-    return { ok: false, reason: `${at}.source.url must be a credential-free https URL without a fragment` }
+    return { ok: false, reason: `${at}.source.url must be a credential-free https URL without a fragment or an explicit port` }
+  }
+  // Port alignment with the manifest schema's https URL grammar: an explicit
+  // port (including a redundant :443) is rejected here, at review time —
+  // the signed manifest verifier refuses such urls whole, and the catalog
+  // origin itself cannot carry one (validateCatalogOrigin).
+  const authority = source.url.split('/')[2] ?? ''
+  if (/:[0-9]+$/u.test(authority)) {
+    return {
+      ok: false,
+      reason: `${at}.source.url must not carry an explicit port — the manifest schema's https URL grammar (and the desktop verifier) forbids it; serve the tarball on the standard https port (443)`,
+    }
   }
   const origin = options.companyCatalogOrigin
   if (origin === undefined) {

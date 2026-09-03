@@ -248,10 +248,21 @@ fleet → measure `treeDigest` in the reference environment → re-sign with a
 strictly higher `sequence` (the counter never rolls back, so a bad publish
 can only be superseded, never un-published) → push the manifest.
 `publish-local.mjs` enforces this mechanically: when the artifact carries a
-`treeDigest`/`approvedBuilds` the deployed manifest's same entry does not
+`treeDigest`/`approvedBuilds`/`source` the deployed manifest's same entry does not
 (the first authoritative publish), it refuses with the upgrade guidance
 below unless `--confirm-fleet-upgraded` is passed — the operator's
 assertion that the whole fleet already runs a field-aware build.
+
+**What "field-aware" means for `source` (the concrete switch).** Carrying
+the dual-channel verifier unused is not enough: a build is field-aware for
+`source` exactly when **boot verification** (`dsh-plugin-desktop/src/boot-verification.ts`,
+`verifyDesktopBootBundles`) **and the locked terminal add gate**
+(`dsh-plugin-desktop/src/cli-install-channel.ts`, `authorizeLockedPluginAdd`)
+verify through `verifyDesktopCompanyManifest` (`src/desktop-market.ts`) —
+the P7 batch-2 wiring. Before that switch both call sites ran the
+field-unaware market verifier and rejected any `source`-carrying manifest
+whole, so no `source`-carrying manifest may be published until the whole
+fleet runs builds at or beyond it.
 
 **fleet 升级顺序（发布门禁）**。这些字段对签名者是可选的，对 fleet 不是：
 任何携带 `treeDigest`/`approvedBuilds`/`source` 的清单上架前，**全部**客户端必须已运行
@@ -263,6 +274,15 @@ assertion that the whole fleet already runs a field-aware build.
 `treeDigest`/`approvedBuilds` 而 GitLab 已部署清单的同条目尚未携带（首个权威发
 布）时，不带 `--confirm-fleet-upgraded` 直接拒发并打印升级指引——该参数即操作
 者对「fleet 已全部运行认识字段的构建」的显式确认。
+
+**对 `source` 而言「认识字段的构建」的具体含义（即本次切换）**：仅仅带上双通道
+验证器而未接线不算——`source` 意义上的 field-aware 构建恰好是指 **boot 验证**
+（`dsh-plugin-desktop/src/boot-verification.ts` 的 `verifyDesktopBootBundles`）**与锁定终端
+add 门禁**（`dsh-plugin-desktop/src/cli-install-channel.ts` 的 `authorizeLockedPluginAdd`）
+均通过 `verifyDesktopCompanyManifest`（`src/desktop-market.ts`）验签的构建——即 P7
+批次 2 的接线。在该切换之前，这两个调用点跑的都是字段不感知的旧市场验证器，
+会整体拒收任何携带 `source` 的清单；因此 fleet 全员升至含该切换的构建之前，
+不得发布任何携带 `source` 的清单。
 
 Both fields fail closed at every gate: the allowlist validator refuses
 malformed values (non-hex or truncated digests, empty/duplicate/invalid

@@ -93,7 +93,7 @@ function parseEntrySource(source, at, companyCatalogOrigin) {
   if (kind !== 'tarball') throw new Error(`${at}.source.kind must be 'npm' or 'tarball'`)
   const unknown = unknownFields(source, TARBALL_SOURCE_KEYS)
   if (unknown.length > 0) throw new Error(`${at}.source has unknown field(s) ${unknown.join(', ')}`)
-  if (!isHttpsUri(source.url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment`)
+  if (!isHttpsUri(source.url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment or an explicit port`)
   if (companyCatalogOrigin === undefined) {
     throw new Error(`${at}.source is the tarball channel, which requires the company catalog origin (--catalog-origin / ${'COMPANY_CATALOG_ORIGIN'})`)
   }
@@ -186,7 +186,7 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
     {
       const repositoryUnknown = unknownFields(rawEntry.repository, REPOSITORY_KEYS)
       if (repositoryUnknown.length > 0) throw new Error(`${at}.repository has unknown field(s) ${repositoryUnknown.join(', ')}`)
-      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment`)
+      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment or an explicit port`)
       if (rawEntry.repository.subdirectory !== undefined
         && (typeof rawEntry.repository.subdirectory !== 'string'
           || rawEntry.repository.subdirectory.length < 1 || rawEntry.repository.subdirectory.length > 240

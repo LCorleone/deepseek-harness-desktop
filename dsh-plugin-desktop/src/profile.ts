@@ -838,6 +838,10 @@ function lockedProfileBootVerification(
     collectDesktopBootBundles(profileDir, desktopBootBundleNames(declaredProfileBundleNames(profileDir))),
     {
       trustRoots: policy.trustRoots,
+      // The dual-channel verifier needs the pinned origin to accept
+      // `source`-carrying entries; content-mode policies keep rejecting
+      // them whole (see DesktopBootVerificationOptions.companyCatalogOrigin).
+      companyCatalogOrigin: policy.companyCatalogOrigin,
       ...(inputs?.receipts === undefined ? {} : { receipts: inputs.receipts }),
       ...(inputs?.lastSeenSequence === undefined ? {} : { lastSeenSequence: inputs.lastSeenSequence }),
       ...(inputs?.now === undefined ? {} : { now: inputs.now }),

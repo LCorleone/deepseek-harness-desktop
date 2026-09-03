@@ -19,10 +19,13 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   writeSync,
+  type Dirent,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { validRange } from 'semver'
@@ -36,6 +39,7 @@ import {
 import { fetchUpdateChannelBytes, type UpdateChannelRequest } from './update-manifest.ts'
 import {
   desktopMarketTarballStagingPath,
+  DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
   type DesktopControlledMarketTarball,
   type DesktopPnpm,
   type DesktopPluginInstallRecovery,
@@ -318,12 +322,14 @@ export const desktopMarketStateConstants = Object.freeze({
 // ---------------------------------------------------------------------------
 // P7 dual channel: source-aware company manifest + controlled tarball path.
 //
-// The market package's `verifyCompanyManifest` remains the verifier for every
-// legacy consumer (boot verification, the locked terminal add gate, the
-// origin-mode catalog scan) and keeps rejecting unknown entry keys with
-// `additionalProperties: false` semantics. The dual channel extends exactly
-// one thing: entries may carry a signed `source` field selecting the install
-// channel —
+// `verifyDesktopCompanyManifest` below is the verifier of every production
+// consumer of the company manifest — boot verification
+// (`boot-verification.ts`), the locked terminal add gate
+// (`cli-install-channel.ts`), and the origin-mode catalog scan — and keeps
+// rejecting unknown entry keys with `additionalProperties: false`
+// semantics. Relative to the market library's `verifyCompanyManifest` it
+// extends exactly one thing: entries may carry a signed `source` field
+// selecting the install channel —
 //
 //   `source` absent or `{"kind":"npm"}`  → the public-registry channel (today's
 //                                        behavior, byte-for-byte unchanged:
@@ -339,9 +345,16 @@ export const desktopMarketStateConstants = Object.freeze({
 //                                        installs it through the pnpm boundary's
 //                                        one constructible tarball target.
 //
-// Old clients reject a `source`-carrying manifest whole (one unknown key), so
-// publishing one is gated behind a fleet upgrade exactly like the earlier
-// `treeDigest`/`approvedBuilds` fields — not this batch's concern.
+// Field-unaware clients reject a `source`-carrying manifest whole (one
+// unknown key). "Field-aware build" for the fleet publication gate (see
+// tools/company-catalog/README.md, "Fleet upgrade ordering (publication
+// gate)", and publish-local.mjs) therefore means concretely: a build in
+// which BOTH boot verification and the locked terminal add gate verify
+// through `verifyDesktopCompanyManifest` — the P7 batch-2 wiring. Carrying
+// this verifier unused (batch 1) is not enough: boot and the terminal gate
+// still rejected `source`-carrying manifests whole there. No `source`-
+// carrying manifest may be published before the whole fleet runs builds at
+// or beyond that switch.
 // ---------------------------------------------------------------------------
 
 /** The npm channel: install the exact public-registry version (the default). */
@@ -515,7 +528,7 @@ function parseEntrySource(
   if (unknown.length > 0) throw new Error(`${at}.source has unknown field(s) ${unknown.join(', ')}`)
   const url = value.url
   const integrity = value.integrity
-  if (!isHttpsUri(url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment`)
+  if (!isHttpsUri(url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment or an explicit port`)
   if (companyCatalogOrigin === null) {
     throw new Error(`${at}.source is the tarball channel, which requires an origin-mode catalog policy (companyCatalogOrigin is null)`)
   }
@@ -603,7 +616,7 @@ function parseDesktopCompanyManifestValue(
     {
       const repositoryUnknown = unknownFields(rawEntry.repository, COMPANY_REPOSITORY_KEYS)
       if (repositoryUnknown.length > 0) throw new Error(`${at}.repository has unknown field(s) ${repositoryUnknown.join(', ')}`)
-      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment`)
+      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment or an explicit port`)
       if (rawEntry.repository.subdirectory !== undefined
         && (typeof rawEntry.repository.subdirectory !== 'string'
           || rawEntry.repository.subdirectory.length < 1 || rawEntry.repository.subdirectory.length > 240
@@ -832,6 +845,7 @@ export interface DesktopCompanyTarballStageOptions {
   readonly profileDir: string
   /** Fetch-compatible boundary; defaults to `globalThis.fetch` (the Electron composition injects `net.fetch`). */
   readonly request?: UpdateChannelRequest
+  /** Whole-request bound of the download; enforced through an abort signal composed with `signal`. */
   readonly timeoutMs?: number
   readonly maxBytes?: number
   readonly signal?: AbortSignal
@@ -853,6 +867,48 @@ function removeStagedFile(path: string): void {
     // a staging file that cannot be removed cannot be installed either — the
     // install-time hash gate still refuses it; nothing else to do here
   }
+}
+
+/**
+ * Synchronously hash the currently staged file (if any) through a private
+ * descriptor opened without following symlinks, mirroring the install
+ * boundary's walk. An unreadable, symlinked, non-regular, empty, or
+ * oversized file yields undefined — the caller decides what that means.
+ */
+function sha512OfStagedFile(path: string): Buffer | undefined {
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const info = fstatSync(descriptor)
+    if (!info.isFile() || info.size <= 0 || info.size > COMPANY_TARBALL_MAX_BYTES) return undefined
+    const hash = createHash('sha512')
+    const chunk = Buffer.allocUnsafe(1024 * 1024)
+    let read: number
+    while ((read = readSync(descriptor, chunk, 0, chunk.byteLength, null)) > 0) {
+      hash.update(chunk.subarray(0, read))
+    }
+    return hash.digest()
+  } catch {
+    return undefined
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
+}
+
+/**
+ * Failure-path keepalive for the staged tarball: a failed re-staging must
+ * not strand the profile lockfile, whose `file:` dependency still resolves
+ * against the staged path of an earlier successful install. The staged file
+ * is kept only while it still hashes to the signed integrity — those bytes
+ * are exactly what a successful download would have written, so keeping
+ * them is idempotent — and removed otherwise, so nothing unverifiable is
+ * ever left behind for a later install attempt.
+ */
+function removeStagedFileUnlessIntact(stagedPath: string, integrity: string): void {
+  const expected = Buffer.from(integrity.slice('sha512-'.length), 'base64')
+  const digest = sha512OfStagedFile(stagedPath)
+  if (digest !== undefined && digest.byteLength === expected.byteLength && timingSafeEqual(digest, expected)) return
+  removeStagedFile(stagedPath)
 }
 
 /**
@@ -889,10 +945,14 @@ async function writeStagedTarballBytes(path: string, bytes: Buffer): Promise<voi
  * Download one signed tarball from the policy-pinned catalog origin, verify
  * the signed sha512 over the downloaded bytes, and stage them inside the
  * profile's controlled staging area under the deterministic name for this
- * exact package version. Any failure — transport, status, size, or an
- * integrity mismatch — refuses the install and cleans the staging location,
- * so nothing unverifiable is ever left behind for a later install attempt.
- * A successful staging overwrites an earlier one idempotently (the staged
+ * exact package version. Any failure — transport, status, size, timeout,
+ * caller abort, or an integrity mismatch — refuses the install and runs the
+ * failure-path keepalive over the staging location (see {@link
+ * removeStagedFileUnlessIntact}): a previously staged file that still hashes
+ * to the signed integrity stays (the profile lockfile's `file:` dependency
+ * keeps resolving against it), anything else is removed so nothing
+ * unverifiable is ever left behind for a later install attempt. A
+ * successful staging overwrites an earlier one idempotently (the staged
  * file is kept after installation: the profile lockfile's `file:` dependency
  * keeps resolving against it).
  */
@@ -901,7 +961,7 @@ export async function stageCompanyMarketTarball(
 ): Promise<DesktopCompanyTarballStaged> {
   const origin = options.policy.companyCatalogOrigin
   const stagedPath = desktopMarketTarballStagingPath(options.profileDir, options.packageName, options.version)
-  const clean = (): void => removeStagedFile(stagedPath)
+  const clean = (): void => removeStagedFileUnlessIntact(stagedPath, options.source.integrity)
   if (origin === null) {
     clean()
     throw new Error(`${BIN_NAME}: the tarball channel requires an origin-mode catalog policy`)
@@ -919,17 +979,40 @@ export async function stageCompanyMarketTarball(
   }
   if (!isSha512Integrity(options.source.integrity)) {
     clean()
-    throw new Error(`${BIN_NAME}: the company tarball integrity must be the signed sha512 of the tarball`) 
+    throw new Error(`${BIN_NAME}: the company tarball integrity must be the signed sha512 of the tarball`)
+  }
+  const timeoutMs = options.timeoutMs ?? COMPANY_TARBALL_FETCH_TIMEOUT_MS
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError(`${BIN_NAME}: the company tarball download timeout must be a safe positive millisecond bound`)
   }
   options.signal?.throwIfAborted()
-  const result = await fetchUpdateChannelBytes({
-    request: options.request ?? ((url, init) => globalThis.fetch(url, init)),
-    url: url.href,
-    label: 'company market plugin tarball',
-    maxBytes: options.maxBytes ?? COMPANY_TARBALL_MAX_BYTES,
-    redirect: 'error',
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  })
+  // The whole-request bound is enforced through the abort signal composed
+  // with the caller's: whichever fires first (caller cancellation or the
+  // timeout) aborts the download. The timeout timer never keeps the event
+  // loop alive (Node unrefs it internally).
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const signal = options.signal === undefined ? timeoutSignal : AbortSignal.any([options.signal, timeoutSignal])
+  let result: Awaited<ReturnType<typeof fetchUpdateChannelBytes>>
+  try {
+    result = await fetchUpdateChannelBytes({
+      request: options.request ?? ((url, init) => globalThis.fetch(url, init)),
+      url: url.href,
+      label: 'company market plugin tarball',
+      maxBytes: options.maxBytes ?? COMPANY_TARBALL_MAX_BYTES,
+      redirect: 'error',
+      signal,
+    })
+  } catch (cause) {
+    // Abort failures rethrown by the fetch boundary (caller cancellation or
+    // the timeout bound above) get the same keepalive cleanup every other
+    // failure path applies — aborting must never strand a still-valid
+    // staged file on the deletion path either.
+    clean()
+    if (!options.signal?.aborted && timeoutSignal.aborted) {
+      throw new Error(`${BIN_NAME}: the company tarball for ${options.packageName}@${options.version} exceeded the ${String(timeoutMs)} ms whole-request download bound`)
+    }
+    throw cause
+  }
   if (!result.ok) {
     clean()
     throw new Error(`${BIN_NAME}: the company tarball for ${options.packageName}@${options.version} could not be downloaded (${result.code}: ${result.reason})`)
@@ -964,6 +1047,81 @@ export async function stageCompanyMarketTarball(
     bytes: result.bytes.byteLength,
     integrity: options.source.integrity,
   }
+}
+
+/** The deterministic staged-file name prefix of one package name (`@scope/name` → `scope+name`). */
+function desktopMarketTarballStagingPrefix(packageName: string): string {
+  return packageName.replace(/^@/u, '').replace('/', '+')
+}
+
+/** Parse `<prefix>-<X.Y.Z>.tgz` staging names of exactly this package; other names (including same-prefix siblings) are rejected. */
+function parseStagedVersionForPackage(fileName: string, packageName: string): string | undefined {
+  const prefix = `${desktopMarketTarballStagingPrefix(packageName)}-`
+  if (!fileName.startsWith(prefix)) return undefined
+  const version = fileName.slice(prefix.length)
+  return /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.tgz$/u.test(version)
+    ? version.slice(0, -'.tgz'.length)
+    : undefined
+}
+
+/**
+ * Best-effort GC of superseded staged tarballs of one package: the version
+ * the profile lockfile still references through its `file:` dependency
+ * stays, every other staged file of the same package name is removed —
+ * orphaned older versions left behind by upgrades. Files of other package
+ * names are never touched (another package's staging may be in flight or
+ * belong to a different lockfile state), and nothing is removed when the
+ * lockfile is unreadable or does not reference the package: the GC is a
+ * disk-space courtesy, never an authority. Never throws.
+ */
+export async function cleanCompanyMarketStagingOrphans(
+  profileDir: string,
+  packageName: string,
+): Promise<readonly string[]> {
+  const { readDesktopBootLockfile } = await import('./boot-verification.ts')
+  const stagingDirectory = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY)
+  let entries: readonly Dirent[]
+  try {
+    entries = readdirSync(stagingDirectory, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const stagedVersions = new Map<string, string>()
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) continue
+    const version = parseStagedVersionForPackage(entry.name, packageName)
+    if (version !== undefined) stagedVersions.set(version, join(stagingDirectory, entry.name))
+  }
+  if (stagedVersions.size === 0) return []
+  const referencedVersion = referencedStagedVersion(readDesktopBootLockfile(profileDir), packageName)
+  if (referencedVersion === undefined || !stagedVersions.has(referencedVersion)) return []
+  const removed: string[] = []
+  for (const [version, path] of stagedVersions) {
+    if (version === referencedVersion) continue
+    removeStagedFile(path)
+    removed.push(path)
+  }
+  return removed
+}
+
+/** Extract the lockfile's referenced staged version of one package from its `file:` dependency specifier. */
+function referencedStagedVersion(lockfile: Record<string, unknown> | undefined, packageName: string): string | undefined {
+  if (lockfile === undefined) return undefined
+  const importers = lockfile.importers
+  const root = importers !== null && typeof importers === 'object' && !Array.isArray(importers)
+    ? (importers as Record<string, unknown>)['.']
+    : undefined
+  const dependencies = root !== null && typeof root === 'object' && !Array.isArray(root)
+    ? (root as Record<string, unknown>).dependencies
+    : undefined
+  const dependency = dependencies !== null && typeof dependencies === 'object' && !Array.isArray(dependencies)
+    ? (dependencies as Record<string, unknown>)[packageName]
+    : undefined
+  const specifier = dependency !== null && typeof dependency === 'object' && !Array.isArray(dependency)
+    ? (dependency as Record<string, unknown>).specifier
+    : undefined
+  if (typeof specifier !== 'string' || !specifier.startsWith('file:')) return undefined
+  return parseStagedVersionForPackage(basename(specifier), packageName)
 }
 
 /** One verified manifest entry as the tarball install orchestration consumes it. */
@@ -1150,6 +1308,10 @@ export async function installCompanyMarketTarballPlugin(
     }
     throw new Error(`${BIN_NAME}: the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest — the installation was rolled back and refused`)
   }
+  // Best-effort staging GC: the lockfile now references exactly this
+  // version's staged file, so superseded versions of the same package are
+  // inert. Never fails a verified install (see the function contract).
+  await cleanCompanyMarketStagingOrphans(request.profileDir, entry.packageName)
   return {
     receiptId: recovery.receiptId,
     packageName: entry.packageName,

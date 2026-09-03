@@ -4,11 +4,15 @@
  *
  * The channel replaces the P1-5 blanket denial: one `dsh plugin add
  * <package>@<exact version>` command is allowed through exactly when the
- * company catalog manifest — verified by the market signing library against
- * the policy trust roots — carries a matching, unrevoked entry. Any failed
- * step (unreadable or unfetchable manifest, bad signature, expired manifest,
+ * company catalog manifest — verified by the dual-channel verifier
+ * (`verifyDesktopCompanyManifest`) against the policy trust roots — carries
+ * a matching, unrevoked entry on the npm channel. Any failed step
+ * (unreadable or unfetchable manifest, bad signature, expired manifest,
  * absent or revoked entry, non-exact spec) is fail-closed: the command is
  * rejected with a reason and the upstream DSH CLI is never imported.
+ * Tarball-channel entries verify but are denied with market guidance: the
+ * terminal resolves through the public registry, which can never satisfy a
+ * tarball entry's signed integrity (see the deny site below).
  *
  * Acquisition modes: content-mode builds read the manifest asset embedded in
  * the application bundle synchronously (milliseconds, no network); origin-
@@ -172,9 +176,10 @@ function isAcceptedRegistryFlag(argument: string): boolean {
 }
 
 /**
- * Decide whether one locked-build terminal plugin add may proceed. The market
- * signing library is imported lazily so every CLI invocation that is not a
- * locked plugin add keeps its startup free of the market bundle.
+ * Decide whether one locked-build terminal plugin add may proceed. The
+ * dual-channel verifier (`verifyDesktopCompanyManifest`) is imported lazily
+ * through desktop-market.ts so every CLI invocation that is not a locked
+ * plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
  * @param options - the manifest asset path, origin fetch overrides, the receipts sequence floor, and test clock overrides.
@@ -234,24 +239,40 @@ export async function authorizeLockedPluginAdd(
   if (raw.length > MAX_MANIFEST_ASSET_BYTES) {
     return denied(`the company catalog manifest exceeds ${String(MAX_MANIFEST_ASSET_BYTES)} bytes`)
   }
-  const { findCompanyManifestPackage, verifyCompanyManifest } = await import('dsh-community-market')
+  const { findDesktopCompanyManifestPackage, verifyDesktopCompanyManifest } = await import('./desktop-market.ts')
   // The sequence floor rides the receipts ratchet (see module docs): a
   // rolled-back embedded asset cannot re-authorize a terminal add once a
-  // newer manifest has allowed an install on this machine.
-  const verification = verifyCompanyManifest(raw, {
+  // newer manifest has allowed an install on this machine. The dual-channel
+  // verifier keeps every `source`-free decision byte-identical to the
+  // field-unaware market verifier that ran here before the P7 wiring; it
+  // additionally recognizes a signed `source` channel per entry, which is
+  // what makes this build "field-aware" for the fleet publication gate.
+  const verification = verifyDesktopCompanyManifest(raw, {
     trustRoots: policy.trustRoots,
+    companyCatalogOrigin: policy.companyCatalogOrigin,
     ...(options.lastSeenSequence === undefined ? {} : { lastSeenSequence: options.lastSeenSequence }),
     ...(options.now === undefined ? {} : { now: options.now }),
   })
   if (!verification.ok) {
     return denied(`rejected the company catalog manifest (${verification.code}): ${verification.reason}`)
   }
-  const entry = findCompanyManifestPackage(verification.manifest, target.packageName, target.version)
+  const entry = findDesktopCompanyManifestPackage(verification.manifest, target.packageName, target.version)
   if (entry === undefined) {
     return denied(`${target.packageName}@${target.version} is not in the signed company plugin catalog. ${MARKET_GUIDANCE}`)
   }
   if (entry.revoked) {
     return denied(`${target.packageName}@${target.version} is revoked in the signed company plugin catalog. ${MARKET_GUIDANCE}`)
+  }
+  const source = entry.source ?? { kind: 'npm' as const }
+  if (source.kind === 'tarball') {
+    // The terminal `pnpm add <name>@<version>` resolves through the public
+    // registry, but a tarball-channel entry's signed integrity is the
+    // intranet tarball's sha512 — the registry path could never satisfy it
+    // (and boot verification would refuse the mismatched tree). Controlled
+    // tarball installs belong to the company market install path alone.
+    return denied(
+      `${target.packageName}@${target.version} is published on the tarball channel of the signed company plugin catalog and cannot be installed from the public registry. ${MARKET_GUIDANCE}`,
+    )
   }
   return {
     allowed: true,
