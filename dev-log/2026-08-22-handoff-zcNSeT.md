@@ -142,6 +142,12 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **上游摘取批落地**（scout 三档分拣→worker 摘 7 项→评审通过「教科书级冲突解」→**#45 用户装机全 OK**）：失败报告保留（81b62aec09 冲突解，保我方 recovery 结构+failureNote 双语段）/ 会话恢复（af54bf0dbb，localStorage 选择态，鉴权后列表门控，SSO 正交）/ 目录能力透传（6d567aefb5，与托管目录屏蔽**正交验证**：禁用行不入 catalog）/ 模型搜索批量（7cb2d9fa64，3057 行工件重建）/ 遮罩冲突（d1bbc1ce9e）/ 目录选择器跳损坏项（537d124740）/ 标题栏滚动后拖动（ec528b0835，保 AdvancedFrame 几何）+ 孤儿补丁清理（5bddd4e045）。NSIS 长路径 patch-id 验证**早已在树**。check 1450+6skip。台账（挂起待需/绝对别碰）入 plan-v2。**简报 v3**（b10672e5b2）：去隐患 10 处（ch6 残余风险整章/摘要指标/Q5Q6 理论残余句，违禁词零命中）+ 新 ch6 领导视角安全问答 8 卡（全部实装背书）。
 **tag `v0.3.0-desktop-enterprise`** 打于本日终态（#45=企业定制集大成：SSO 门禁+模型网关托管+usage 审计+CLI 钳制+上游摘取）。
 
+### 2026-09-03 全天：P7 双通道 + P8 agent-browser 双卡并进
+**P7 公司市场双通道（npm+tarball）**：开卡→批1 客户端（manifest source:{kind:'tarball',url,integrity}→受控下载 sha512→pnpm 受控目标→treeDigest 复验，+56 测试）→批2a 三消费者切双通道验证器（boot/锁定add/市场provider 注入式）+fleet 门禁定义→批2b 发布管线（pack-tarball/allowlist/manifest/GitLab 推送+catalog-artifacts 镜像/CI 接线/测试入链/e2e 入 check 链尾）。评审连环抓漏：CLI 塞 tarball 面/信任链 origin 三处绑定/**tar symlink 逃逸两轮 PoC**（绝对目标放行→多跳词法≠物理深度→最终三层防御：词法快失败+创建时 realpath 父目录断言+末层 walk 定稿）/npm→tarball 迁移路径（revoked 不播种）。**master e00902a06b 全本地未 push**。
+**P8 agent 网页操作**：Minke/cua 双调研（采 webview+CDP 路线+normalizer+错误分型+截图保留纪律；拒烧录子模块/薄弱危险确认）→设计（评审修订 P0 partition 落点等 4 项）→B1 只读闭环（37 文件已 push 50629c9f1f；冒烟实弹：UA shadow 密码明文→子树封死）→B2 动作闭环（click/type/scroll+审批 ask+claim+overlay，三轮评审修复：提交按钮含子元素 closest 分类/协议门/隔离世界）。B2 链未 push。
+**其他**：univer 遥测深挖（匿名计数可关，降级非阻断）；free-search 源定案（tavily/exa 可选→bing→ddg，key 不阻塞）；pi-web-access 调查（DDG 零 key 兜底先例）；模型 quota 中断一次（glm-5.3 503，deepseek 接续）。
+**明日入口**：P7 遗留（filename 绑定 P2/GitLab 真推送演练/free-search 收编实装）；P8 B3/B4；全部本地 commit 等用户决定 push 时机。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
