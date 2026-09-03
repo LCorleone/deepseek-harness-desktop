@@ -291,6 +291,31 @@ describe('agent-browser window host (fake environment)', () => {
     expect(host.isClosed()).toBe(true)
   })
 
+  it('fires the claim and release callbacks from the toolbar channels, sender-checked', async () => {
+    const claims: string[] = []
+    const releases: string[] = []
+    const host = new DesktopAgentBrowserWindowHost({
+      partition: 'dsh-agent-browser-token',
+      onHumanClaim: () => { claims.push('claimed') },
+      onHumanRelease: () => { releases.push('released') },
+    })
+    const guest = fakeGuest()
+    const opened = host.open()
+    const window = electron.windows[0] as unknown as FakeWindowView
+    window.webContents.emit('did-attach-webview', undefined, guest)
+    await opened
+
+    // A foreign renderer cannot claim the surface.
+    electron.ipcMain.emit('dsh-agent-browser/claim', { sender: { foreign: true } })
+    expect(claims).toEqual([])
+
+    // The window's own renderer can (the B2 claim state machine entry).
+    electron.ipcMain.emit('dsh-agent-browser/claim', { sender: window.webContents })
+    electron.ipcMain.emit('dsh-agent-browser/release', { sender: window.webContents })
+    expect(claims).toEqual(['claimed'])
+    expect(releases).toEqual(['released'])
+  })
+
   it('keeps the default session untouched while the guest rides the token partition', () => {
     // The fake registry mirrors Electron's session.fromPartition semantics:
     // only the token partition is ever requested, and the default session's

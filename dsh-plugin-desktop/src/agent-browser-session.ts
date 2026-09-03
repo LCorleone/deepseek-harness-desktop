@@ -1,6 +1,9 @@
 /**
  * Agent-browser session: window/webview lifecycle, the ref+generation
- * mechanism, snapshot construction, waits, and serialization (design §1–§4).
+ * mechanism, snapshot construction, waits, the B2 act loop (click/type/
+ * scroll over trusted Input events with audited isolated-world helpers),
+ * the claimControl state machine, transient-CDP retry, and serialization
+ * (design §1–§5).
  *
  * The revision discipline (2026-09-03 review) is implemented literally:
  *
@@ -22,11 +25,18 @@
  */
 
 import type {
+  AgentBrowserActionResult,
+  AgentBrowserClickRequest,
   AgentBrowserLiveState,
+  AgentBrowserMouseButton,
+  AgentBrowserOverlayState,
   AgentBrowserPageInfo,
   AgentBrowserPhase,
   AgentBrowserScreenshot,
+  AgentBrowserScrollDirection,
+  AgentBrowserScrollRequest,
   AgentBrowserSnapshot,
+  AgentBrowserTypeRequest,
   AgentBrowserViewModel,
   AgentBrowserViewport,
   AgentBrowserWaitOutcome,
@@ -36,6 +46,7 @@ import type {
 import {
   AgentBrowserCdpClient,
   AgentBrowserCdpError,
+  type AgentBrowserCdpBox,
   type AgentBrowserCdpNode,
   type AgentBrowserDebuggerTarget,
 } from './agent-browser-cdp.ts'
@@ -50,6 +61,13 @@ export interface AgentBrowserGuestWebContents {
   getTitle(): string
   /** Deny every guest-initiated window open (design §1). */
   setWindowOpenHandler(handler: () => { action: 'deny' }): void
+  /**
+   * Best-effort renderer keyboard focus (optional in fakes). Trusted text
+   * insertion is dropped by a guest that holds no OS-level focus — the
+   * embedder window owns the real focus — so `browser_type` hands it over
+   * before the isolated-world focus helper runs (B2 smoke finding).
+   */
+  focus?(): void
 }
 
 /** Window host surface the session consumes (implemented in agent-browser-window). */
@@ -69,6 +87,10 @@ export type AgentBrowserWindowHostFactory = (options: {
   readonly partition: string
   readonly onViewModelState: (state: AgentBrowserViewModel) => void
   readonly onWindowClosed: () => void
+  /** Toolbar claim button (§5.4): the human takes over. */
+  readonly onHumanClaim: () => void
+  /** Toolbar release button (§5.4): the human hands control back. */
+  readonly onHumanRelease: () => void
   readonly logError?: (message: string) => void
 }) => AgentBrowserWindowHost
 
@@ -88,6 +110,40 @@ export const AGENT_BROWSER_WAIT_DEFAULT_TIMEOUT_MS = 30_000
 /** Poll interval while waiting for `settle`. */
 const SETTLE_POLL_MS = 100
 
+/**
+ * Audited isolated-world helper snippets (design §3/§5.3b) — the ONLY
+ * page-side script the capability ever runs. Observation stays script-free
+ * by construction; these fixed, reviewable snippets serve the act phase:
+ * focus, select-all (for clear), scrollIntoView, scrollBy, and reading a
+ * NON-secret input's live value. The scrollBy template interpolates a
+ * validated finite integer only — never model text.
+ */
+export const AUDITED_SNIPPET_FOCUS = 'function(){ this.focus(); return document.activeElement === this; }'
+export const AUDITED_SNIPPET_FOCUS_SELECT = 'function(){ this.focus(); if (typeof this.select === "function") this.select(); return document.activeElement === this; }'
+export const AUDITED_SNIPPET_SCROLL_INTO_VIEW = 'function(){ if (typeof this.scrollIntoView === "function") this.scrollIntoView({ block: "center", inline: "nearest" }); }'
+export const AUDITED_SNIPPET_READ_VALUE = 'function(){ return (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) && this.type !== "password" ? this.value : undefined; }'
+
+/** Audited `scrollBy` snippet; only a rounded finite number is interpolated. */
+export function auditedSnippetScrollBy(deltaY: number): string {
+  if (!Number.isFinite(deltaY)) {
+    throw new Error('auditedSnippetScrollBy requires a finite pixel amount')
+  }
+  return `function(){ const before = this.scrollTop; this.scrollBy(0, ${String(Math.round(deltaY))}); return { before, after: this.scrollTop }; }`
+}
+
+/** Audited document-scroll expression over `document.scrollingElement`. */
+export function auditedExpressionDocumentScrollBy(deltaY: number): string {
+  if (!Number.isFinite(deltaY)) {
+    throw new Error('auditedExpressionDocumentScrollBy requires a finite pixel amount')
+  }
+  return `(() => { const el = document.scrollingElement; if (el === null) return { before: 0, after: 0 }; const before = el.scrollTop; el.scrollBy(0, ${String(Math.round(deltaY))}); return { before, after: el.scrollTop }; })()`
+}
+
+/** Backoff ladder for transient CDP failures: ≤3 tries, ≤600 ms slept (≤2 s budget, design §4). */
+const TRANSIENT_RETRY_DELAYS_MS = [150, 450] as const
+/** Failure text that marks a transient CDP condition worth retrying. */
+const TRANSIENT_CDP_PATTERN = /detach|busy|target closed|target went away|session not found/iu
+
 /** Sensitive `autocomplete` tokens whose values never leave the page (design §5.3). */
 const SENSITIVE_AUTOCOMPLETE_TOKENS = new Set(['current-password', 'new-password', 'one-time-code'])
 const SENSITIVE_AUTOCOMPLETE_PREFIX = 'cc-'
@@ -100,6 +156,7 @@ export type AgentBrowserErrorCode =
   | 'REF_NOT_FOUND'
   | 'OPERATOR_HAS_CONTROL'
   | 'DENIED_BY_POLICY'
+  | 'INVALID_ARGS'
   | 'WINDOW_CLOSED'
   | 'BUSY'
   | 'CDP_UNAVAILABLE'
@@ -115,6 +172,22 @@ export class AgentBrowserError extends Error {
 /** Render one CDP `backendNodeId` as the model-facing ref form `e<base36>`. */
 export function agentBrowserRef(backendNodeId: number): string {
   return `e${backendNodeId.toString(36)}`
+}
+
+/**
+ * Parse one model-facing `e<base36>` ref back to its `backendNodeId`.
+ *
+ * Anything that is not the emitted ref form fails `REF_NOT_FOUND` — the
+ * corrective text points back at `browser_snapshot`, never at coordinates.
+ */
+export function agentBrowserBackendNodeId(ref: string): number {
+  if (typeof ref !== 'string' || !/^e[0-9a-z]+$/u.test(ref)) {
+    throw new AgentBrowserError(
+      'REF_NOT_FOUND',
+      `${JSON.stringify(ref)} is not an element ref; call browser_snapshot and use one of its #e… refs (aliases element/ref_id are normalized by the tool)`,
+    )
+  }
+  return Number.parseInt(ref.slice(1), 36)
 }
 
 /** Flatten a node's `[name, value, …]` attribute pairs into a lookup. */
@@ -379,6 +452,13 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private cachedSnapshot: AgentBrowserSnapshot | undefined
   /** Main-frame identity from `Page.getFrameTree`; filters same-document events. */
   private mainFrameId: string | undefined
+  /** Claim state machine (§5.4): aborted while the operator holds control. */
+  private agentEpoch = new AbortController()
+  private claimReason: string | undefined
+  /** Overlay coordinates drawn by the window document (§5.4, zero injection). */
+  private overlay: AgentBrowserOverlayState | undefined
+  /** Isolated world of the current main-frame document (act helpers only). */
+  private isolatedWorld: { frameId: string, executionContextId: number } | undefined
   private mutex: Promise<unknown> = Promise.resolve()
   private readonly unsubscribers: Array<() => void> = []
 
@@ -413,6 +493,8 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       partition: this.partition,
       onViewModelState: () => { this.pushViewModel() },
       onWindowClosed: () => { void this.close() },
+      onHumanClaim: () => { this.claimControl('the operator pressed the claim button') },
+      onHumanRelease: () => { this.releaseControl() },
       ...(this.logError === undefined ? {} : { logError: this.logError }),
     })
     this.windowHost = host
@@ -463,6 +545,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       this.url = params.frame.url
       this.counter.noteMainFrameNavigation()
       this.cachedSnapshot = undefined
+      this.isolatedWorld = undefined
       this.pushViewModel()
     }))
     this.unsubscribers.push(client.on('Page.navigatedWithinDocument', params => {
@@ -497,7 +580,9 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       phase: this.phase,
       generation: this.counter.current,
       partition: this.partition,
-      ...(actionDescription === undefined ? {} : { actionDescription }),
+      ...(this.overlay === undefined ? {} : { overlay: this.overlay }),
+      ...(this.claimReason === undefined || this.phase !== 'claimed' ? {} : { actionDescription: this.claimReason }),
+      ...(actionDescription === undefined || this.phase === 'claimed' ? {} : { actionDescription }),
     })
   }
 
@@ -528,7 +613,9 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     signal: AbortSignal | undefined,
   ): Promise<AgentBrowserPageInfo> {
     const client = this.assertClient()
-    signal?.throwIfAborted()
+    // Navigation is agent input too: it fails fast while the operator holds
+    // control, and its in-flight waits abort on claim (§5.4).
+    const composed = this.assertNotClaimed(signal)
     const since = this.counter.current
     this.pushViewModel(`navigating to ${url}`)
     let loadFired = false
@@ -536,13 +623,14 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     try {
       await client.navigate(url)
       if (waitForLoad) {
-        await this.waitForCondition(() => loadFired, AGENT_BROWSER_WAIT_DEFAULT_TIMEOUT_MS, signal, () => {
+        await this.waitForCondition(() => loadFired, AGENT_BROWSER_WAIT_DEFAULT_TIMEOUT_MS, composed, () => {
           // Navigation completes even when the load event is late; the wait
           // is best-effort, the generation boundary is the navigate reply.
         })
       }
       this.counter.noteOperationCompletion(since)
       this.cachedSnapshot = undefined
+      this.isolatedWorld = undefined
       this.refreshPageIdentity()
       this.pushViewModel()
       return { url: this.url, title: this.title, generation: this.counter.current }
@@ -676,6 +764,415 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     })
   }
 
+  // ── Claim state machine (design §5.4) ─────────────────────────────────
+
+  /**
+   * The operator takes over: in-flight agent input aborts through the epoch
+   * signal, subsequent act tools (and navigation) fail fast, and the human's
+   * real mouse/keyboard work natively — there is nothing to intercept.
+   *
+   * Deliberately NOT mutex-serialized: a claim arriving mid-operation must
+   * act immediately, not queue behind the operation it is interrupting.
+   */
+  claimControl(reason?: string): void {
+    if (this.phase === 'claimed') {
+      if (reason !== undefined) this.claimReason = reason
+      return
+    }
+    this.phase = 'claimed'
+    this.claimReason = reason ?? 'the operator claimed control'
+    this.overlay = undefined
+    this.pushViewModel()
+    this.agentEpoch.abort(new AgentBrowserError(
+      'OPERATOR_HAS_CONTROL',
+      'the operator claimed control of the browser window while this browser operation was in flight; stop driving the browser and wait for the release',
+    ))
+  }
+
+  /**
+   * The operator hands control back: a one-shot generation boundary (the
+   * page likely changed under human input), a fresh agent epoch, and the
+   * cached snapshot invalidated so the next observe re-reads the page.
+   */
+  releaseControl(): void {
+    if (this.phase !== 'claimed') return
+    this.agentEpoch = new AbortController()
+    this.claimReason = undefined
+    this.counter.noteHumanRelease()
+    this.cachedSnapshot = undefined
+    this.isolatedWorld = undefined
+    this.phase = this.windowHost !== undefined && !this.windowHost.isClosed() ? 'observing' : 'idle'
+    this.pushViewModel()
+  }
+
+  /** Compose one caller signal with the agent epoch (claim aborts). */
+  private composeAgentSignal(signal: AbortSignal | undefined): AbortSignal | undefined {
+    if (signal === undefined) return this.agentEpoch.signal
+    return AbortSignal.any([signal, this.agentEpoch.signal])
+  }
+
+  /** Agent-driven page mutations fail fast while the operator holds control. */
+  private assertNotClaimed(signal: AbortSignal | undefined): AbortSignal | undefined {
+    if (this.phase === 'claimed') {
+      throw new AgentBrowserError(
+        'OPERATOR_HAS_CONTROL',
+        'the operator has claimed control of the browser window; act tools and navigation fail fast until the operator releases control — observe with browser_snapshot if you must, then wait',
+      )
+    }
+    const composed = this.composeAgentSignal(signal)
+    composed?.throwIfAborted()
+    return composed
+  }
+
+  /** Between-step checkpoint of one act sequence (claim or cancel mid-action). */
+  private assertActContinues(signal: AbortSignal | undefined): void {
+    signal?.throwIfAborted()
+    if (this.phase === 'claimed') {
+      throw new AgentBrowserError(
+        'OPERATOR_HAS_CONTROL',
+        'the operator claimed control mid-action; the partial input stopped — re-observe after the release',
+      )
+    }
+  }
+
+  /** Ref/generation validation shared by every act tool (design §3/§4). */
+  private checkActRequest(generation: number | undefined, ref: string): number {
+    if (generation !== undefined && generation !== this.counter.current) {
+      throw new AgentBrowserError(
+        'STALE_SNAPSHOT',
+        `the ref ${ref} was observed at generation ${String(generation)} but the page is at generation ${String(this.counter.current)}; call browser_snapshot and act on a ref from the current generation`,
+      )
+    }
+    return agentBrowserBackendNodeId(ref)
+  }
+
+  /**
+   * Run one CDP command with the transient-failure policy of §4: detach
+   * races and target-busy retry with capped backoff (≤3 tries, ≤2 s), a
+   * DevTools takeover re-attaches exactly once, everything else surfaces as
+   * a classified `CDP_UNAVAILABLE` with corrective text.
+   */
+  private async runCdp<T>(label: string, operation: (client: AgentBrowserCdpClient) => Promise<T>): Promise<T> {
+    const client = this.assertClient()
+    let attempt = 0
+    for (;;) {
+      try {
+        return await operation(client)
+      } catch (cause) {
+        const transient = cause instanceof AgentBrowserCdpError
+          && (!client.isAttached || TRANSIENT_CDP_PATTERN.test(cause.message))
+        if (!transient || attempt >= TRANSIENT_RETRY_DELAYS_MS.length) {
+          if (transient && cause instanceof AgentBrowserCdpError) {
+            // The retry budget ran out on a transient condition — classify.
+            throw new AgentBrowserError(
+              'CDP_UNAVAILABLE',
+              `${label} failed after ${String(attempt + 1)} attempts (${cause.message}); the guest debugger session may have been taken over — guest DevTools belongs to the human, so close it, then retry the action`,
+            )
+          }
+          // Non-transient failures keep their shape: callers classify them
+          // (a dead ref maps to REF_NOT_FOUND, a navigate errorText stays).
+          throw cause
+        }
+        attempt += 1
+        if (!client.isAttached) {
+          // DevTools takeover: re-attach once before the retry (design §7).
+          try {
+            client.attach()
+          } catch {
+            // The retry (or the final surface below) reports the takeover.
+          }
+        }
+        await this.sleep(TRANSIENT_RETRY_DELAYS_MS[attempt - 1]!, undefined)
+      }
+    }
+  }
+
+  /** Resolve a ref to a remote object; a dead ref fails `REF_NOT_FOUND`. */
+  private async resolveRef(backendNodeId: number, label: string, executionContextId?: number): Promise<string> {
+    try {
+      const resolved = await this.runCdp(label, client => client.resolveNode(backendNodeId, {
+        ...(executionContextId === undefined ? {} : { executionContextId }),
+      }))
+      if (typeof resolved.object.objectId !== 'string' || resolved.object.objectId.length === 0) {
+        throw new AgentBrowserError(
+          'REF_NOT_FOUND',
+          'the ref no longer resolves to a live node; call browser_snapshot and use a ref from the current generation',
+        )
+      }
+      return resolved.object.objectId
+    } catch (cause) {
+      if (cause instanceof AgentBrowserError) throw cause
+      // A backendNodeId dies with its document; the protocol rejects the resolve.
+      throw new AgentBrowserError(
+        'REF_NOT_FOUND',
+        `the ref died with its document (${cause instanceof Error ? cause.message : String(cause)}); call browser_snapshot and use a ref from the current generation`,
+      )
+    }
+  }
+
+  /** The isolated world for act-phase helpers, recreated per document. */
+  private async ensureIsolatedWorld(client: AgentBrowserCdpClient): Promise<number> {
+    let frameId = this.mainFrameId
+    if (frameId === undefined) {
+      await this.learnMainFrameId(client)
+      frameId = this.mainFrameId
+    }
+    if (frameId === undefined) {
+      throw new AgentBrowserError('CDP_UNAVAILABLE', 'the main frame identity is unknown; retry the action once the page settled')
+    }
+    if (this.isolatedWorld !== undefined && this.isolatedWorld.frameId === frameId) {
+      return this.isolatedWorld.executionContextId
+    }
+    const knownFrameId = frameId
+    const world = await this.runCdp('creating the isolated world', candidate => candidate.createIsolatedWorld(knownFrameId))
+    this.isolatedWorld = { frameId: knownFrameId, executionContextId: world.executionContextId }
+    return world.executionContextId
+  }
+
+  /** Record executor-known coordinates for the zero-injection overlay. */
+  private noteOverlay(update: {
+    readonly cursor?: { readonly x: number, readonly y: number }
+    readonly click?: { readonly x: number, readonly y: number }
+  }): void {
+    const previous = this.overlay ?? {}
+    this.overlay = {
+      ...previous,
+      ...(update.cursor === undefined ? {} : { cursor: update.cursor }),
+      ...(update.click === undefined ? {} : { click: update.click, clickedAt: this.now() }),
+    }
+    this.pushViewModel()
+  }
+
+  /** Read the box of one ref, scrolling it into view when it is off-screen. */
+  private async boxForRef(
+    client: AgentBrowserCdpClient,
+    backendNodeId: number,
+    objectId: string,
+    signal: AbortSignal | undefined,
+  ): Promise<AgentBrowserCdpBox> {
+    let box = await this.runCdp('reading the element box', candidate => candidate.getBoxModel(backendNodeId))
+    const viewport = await this.readViewport(client, signal)
+    const outside = box.x < 0 || box.y < 0 || box.x > viewport.width || box.y > viewport.height
+    if (outside) {
+      await this.runCdp('scrolling the element into view', candidate => candidate.callFunctionOn({
+        objectId,
+        functionDeclaration: AUDITED_SNIPPET_SCROLL_INTO_VIEW,
+      }))
+      this.assertActContinues(signal)
+      box = await this.runCdp('re-reading the element box', candidate => candidate.getBoxModel(backendNodeId))
+    }
+    return box
+  }
+
+  /** Dispatch one trusted click (move → press → release) at a known point. */
+  private async dispatchTrustedClick(
+    box: { readonly x: number, readonly y: number },
+    options: { readonly button: AgentBrowserMouseButton, readonly clickCount: number },
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    await this.runCdp('moving the mouse', candidate => candidate.dispatchMouseEvent({
+      type: 'mouseMoved', x: box.x, y: box.y,
+    }))
+    this.assertActContinues(signal)
+    await this.runCdp('pressing the mouse', candidate => candidate.dispatchMouseEvent({
+      type: 'mousePressed', x: box.x, y: box.y, button: options.button, clickCount: options.clickCount,
+    }))
+    await this.runCdp('releasing the mouse', candidate => candidate.dispatchMouseEvent({
+      type: 'mouseReleased', x: box.x, y: box.y, button: options.button, clickCount: options.clickCount,
+    }))
+  }
+
+  /** `browser_click` — trusted Input press/release at the box-model center. */
+  async click(request: AgentBrowserClickRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult> {
+    return await this.runExclusive(async () => {
+      const client = this.assertClient()
+      const composed = this.assertNotClaimed(signal)
+      const backendNodeId = this.checkActRequest(request.generation, request.ref)
+      const button: NonNullable<AgentBrowserMouseButton> = request.button ?? 'left'
+      const clickCount = Math.max(1, Math.min(request.clickCount ?? 1, 3))
+      this.phase = 'acting'
+      this.pushViewModel(`clicking ${request.ref}`)
+      try {
+        const objectId = await this.resolveRef(backendNodeId, 'resolving the click target')
+        this.assertActContinues(composed)
+        const box = await this.boxForRef(client, backendNodeId, objectId, composed)
+        this.noteOverlay({ cursor: { x: box.x, y: box.y }, click: { x: box.x, y: box.y } })
+        await this.dispatchTrustedClick(box, { button, clickCount }, composed)
+        return { generation: this.counter.current, performed: true }
+      } finally {
+        if (this.phase === 'acting') this.phase = 'observing'
+        // Acts change the page without necessarily emitting a subscribed
+        // mutation event (attribute edits, selection state): the next
+        // browser_snapshot must re-read the tree, never serve the cache.
+        this.counter.markDirty()
+        this.cachedSnapshot = undefined
+        this.pushViewModel()
+      }
+    })
+  }
+
+  /** `browser_type` — isolated-world focus, trusted insert, optional Enter. */
+  async type(request: AgentBrowserTypeRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult> {
+    if (typeof request.text !== 'string') {
+      throw new AgentBrowserError('INVALID_ARGS', 'browser_type requires the text to type (string)')
+    }
+    return await this.runExclusive(async () => {
+      const client = this.assertClient()
+      const composed = this.assertNotClaimed(signal)
+      const backendNodeId = this.checkActRequest(request.generation, request.ref)
+      this.phase = 'acting'
+      this.pushViewModel(`typing into ${request.ref}`)
+      try {
+        // Trusted text insertion needs the guest renderer keyboard-focused;
+        // the embedder owns the real window focus (B2 smoke finding).
+        try {
+          this.guest?.focus?.()
+        } catch {
+          // Best-effort: a guest without the method keeps the DOM focus path.
+        }
+        // Host-side password classification (§5.3c): the same classifier the
+        // snapshot walker uses, so masking and typing refusal can never drift.
+        const described = await this.runCdp('describing the type target', candidate => candidate.describeNode(backendNodeId))
+        const node = described.node
+        if (isSensitiveInputNode({
+          nodeId: 0,
+          nodeType: node.nodeType ?? 1,
+          nodeName: node.nodeName ?? 'INPUT',
+          ...(node.localName === undefined ? {} : { localName: node.localName }),
+          ...(node.attributes === undefined ? {} : { attributes: node.attributes }),
+        })) {
+          throw new AgentBrowserError(
+            'DENIED_BY_POLICY',
+            `the type target ${request.ref} is a password/secret-shaped field; credentials are never read or typed by the agent — invite the operator to type them personally via claimControl, then release`,
+          )
+        }
+        const executionContextId = await this.ensureIsolatedWorld(client)
+        const objectId = await this.resolveRef(backendNodeId, 'resolving the type target', executionContextId)
+        this.assertActContinues(composed)
+        // A human clicks into a field before typing; trusted text insertion
+        // needs exactly that — a guest render widget without OS-level focus
+        // (the embedder owns the real focus) drops `Input.insertText` (B2
+        // smoke finding). The click also gives the overlay its cursor point.
+        const box = await this.boxForRef(client, backendNodeId, objectId, composed)
+        this.noteOverlay({ cursor: { x: box.x, y: box.y }, click: { x: box.x, y: box.y } })
+        await this.dispatchTrustedClick(box, { button: 'left', clickCount: 1 }, composed)
+        this.assertActContinues(composed)
+        const focused = await this.runCdp('focusing the type target', candidate => candidate.callFunctionOn({
+          objectId,
+          functionDeclaration: request.clear === true ? AUDITED_SNIPPET_FOCUS_SELECT : AUDITED_SNIPPET_FOCUS,
+          returnByValue: true,
+        }))
+        if (focused.value !== true) {
+          throw new AgentBrowserError(
+            'REF_NOT_FOUND',
+            `the type target ${request.ref} could not be focused; it may be hidden or inert — re-observe and pick a visible field`,
+          )
+        }
+        if (request.clear === true && request.text.length === 0) {
+          // Clear-only: the select() above armed the selection; Backspace
+          // deletes it through trusted input.
+          await this.runCdp('clearing the field', candidate => candidate.dispatchKeyEvent({
+            type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
+          }))
+          await this.runCdp('clearing the field', candidate => candidate.dispatchKeyEvent({
+            type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
+          }))
+        } else if (request.text.length > 0) {
+          // IME-style insertion replaces the active selection, so `clear`
+          // needs no separate erase when text follows (§4).
+          this.assertActContinues(composed)
+          await this.runCdp('inserting text', candidate => candidate.insertText(request.text))
+        }
+        if (request.submit === true) {
+          this.assertActContinues(composed)
+          await this.runCdp('pressing Enter', candidate => candidate.dispatchKeyEvent({
+            type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13,
+          }))
+          await this.runCdp('pressing Enter', candidate => candidate.dispatchKeyEvent({
+            type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+          }))
+        }
+        return { generation: this.counter.current, performed: true }
+      } finally {
+        if (this.phase === 'acting') this.phase = 'observing'
+        // Acts change the page without necessarily emitting a subscribed
+        // mutation event (attribute edits, selection state): the next
+        // browser_snapshot must re-read the tree, never serve the cache.
+        this.counter.markDirty()
+        this.cachedSnapshot = undefined
+        this.pushViewModel()
+      }
+    })
+  }
+
+  /** `browser_scroll` — isolated-world scrollBy with a wheel fallback. */
+  async scroll(request: AgentBrowserScrollRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult> {
+    if (request.direction !== 'up' && request.direction !== 'down') {
+      throw new AgentBrowserError('INVALID_ARGS', `browser_scroll requires direction "up" or "down" (got ${JSON.stringify(request.direction)})`)
+    }
+    if (typeof request.amount !== 'number' || !Number.isFinite(request.amount) || request.amount < 0) {
+      throw new AgentBrowserError('INVALID_ARGS', `browser_scroll requires a non-negative pixel amount (got ${JSON.stringify(request.amount)})`)
+    }
+    return await this.runExclusive(async () => {
+      const client = this.assertClient()
+      const composed = this.assertNotClaimed(signal)
+      const backendNodeId = request.ref === undefined
+        ? undefined
+        : this.checkActRequest(request.generation, request.ref)
+      const direction: AgentBrowserScrollDirection = request.direction
+      const delta = direction === 'down' ? Math.round(request.amount) : -Math.round(request.amount)
+      this.phase = 'acting'
+      this.pushViewModel(request.ref === undefined
+        ? `scrolling the page ${direction}`
+        : `scrolling ${request.ref} ${direction}`)
+      try {
+        let moved = false
+        let wheelPoint: { readonly x: number, readonly y: number }
+        if (backendNodeId === undefined) {
+          // Document scroll: the audited expression runs over the scrolling
+          // element in the isolated world.
+          const executionContextId = await this.ensureIsolatedWorld(client)
+          const outcome = await this.runCdp('scrolling the document', candidate =>
+            candidate.evaluateInContext(executionContextId, auditedExpressionDocumentScrollBy(delta)))
+          const positions = outcome.value as { before?: number, after?: number } | undefined
+          moved = typeof positions?.after === 'number' && positions.after !== positions.before
+          const viewport = await this.readViewport(client, composed)
+          wheelPoint = { x: viewport.width / 2, y: viewport.height / 2 }
+        } else {
+          const objectId = await this.resolveRef(backendNodeId, 'resolving the scroll target')
+          this.assertActContinues(composed)
+          const box = await this.boxForRef(client, backendNodeId, objectId, composed)
+          wheelPoint = { x: box.x, y: box.y }
+          const outcome = await this.runCdp('scrolling the element', candidate => candidate.callFunctionOn({
+            objectId,
+            functionDeclaration: auditedSnippetScrollBy(delta),
+            returnByValue: true,
+          }))
+          const positions = outcome.value as { before?: number, after?: number } | undefined
+          moved = typeof positions?.after === 'number' && positions.after !== positions.before
+        }
+        if (!moved) {
+          // Custom scrollers swallow programmatic scrollBy; the trusted wheel
+          // event at the same point reaches their real listeners (§4).
+          this.assertActContinues(composed)
+          this.noteOverlay({ cursor: wheelPoint })
+          await this.runCdp('scrolling with the mouse wheel', candidate => candidate.dispatchMouseEvent({
+            type: 'wheel', x: wheelPoint.x, y: wheelPoint.y, deltaX: 0, deltaY: delta,
+          }))
+        }
+        return { generation: this.counter.current, performed: true }
+      } finally {
+        if (this.phase === 'acting') this.phase = 'observing'
+        // Acts change the page without necessarily emitting a subscribed
+        // mutation event (attribute edits, selection state): the next
+        // browser_snapshot must re-read the tree, never serve the cache.
+        this.counter.markDirty()
+        this.cachedSnapshot = undefined
+        this.pushViewModel()
+      }
+    })
+  }
+
   async captureScreenshot(signal?: AbortSignal): Promise<AgentBrowserScreenshot> {
     return await this.runExclusive(async () => {
       const client = this.assertClient()
@@ -723,6 +1220,10 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.client = undefined
     this.guest = undefined
     this.mainFrameId = undefined
+    this.isolatedWorld = undefined
+    this.claimReason = undefined
+    this.overlay = undefined
+    this.agentEpoch = new AbortController()
     const host = this.windowHost
     this.windowHost = undefined
     this.phase = 'idle'

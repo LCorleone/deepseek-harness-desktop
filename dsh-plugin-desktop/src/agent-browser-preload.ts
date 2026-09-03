@@ -4,8 +4,8 @@
  * Exposes exactly `onState` / `claimControl` / `releaseControl` /
  * `closeWindow` under one main-world key (design §2) — the same shape as the
  * file-path bridge in `preload.ts`, a separate file because `preload.cjs`
- * belongs to the main shell window. The claim/release channels are final
- * from day one; their state machine is consumed by the B2 claim loop.
+ * belongs to the main shell window. The claim/release channels drive the B2
+ * claim state machine in the session (§5.4).
  *
  * @module dsh-plugin-desktop/agent-browser-preload
  */
@@ -29,11 +29,11 @@ contextBridge.exposeInMainWorld(DESKTOP_AGENT_BROWSER_BRIDGE, {
     ipcRenderer.on(DESKTOP_AGENT_BROWSER_STATE_CHANNEL, listener)
     return () => { ipcRenderer.removeListener(DESKTOP_AGENT_BROWSER_STATE_CHANNEL, listener) }
   },
-  /** Toolbar: the human takes over (state machine lands in B2). */
+  /** Toolbar: the human takes over — the §5.4 claim state machine (B2). */
   claimControl(): void {
     ipcRenderer.send(DESKTOP_AGENT_BROWSER_CLAIM_CHANNEL)
   },
-  /** Toolbar: the human hands control back (state machine lands in B2). */
+  /** Toolbar: the human hands control back — generation bumps on release. */
   releaseControl(): void {
     ipcRenderer.send(DESKTOP_AGENT_BROWSER_RELEASE_CHANNEL)
   },

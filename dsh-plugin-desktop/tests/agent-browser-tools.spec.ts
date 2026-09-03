@@ -16,6 +16,8 @@ import {
   name,
 } from '../src/agent-browser.ts'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
+import { agentBrowserPreExecuteAsk } from '../src/agent-browser.ts'
 
 function devPolicy(): DesktopPolicy {
   return {
@@ -49,6 +51,7 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
   const tools: RegisteredTool[] = []
   const sections: Array<{ name: string, order: number, text: string }> = []
   const contexts: Array<{ name: string, order: number }> = []
+  const listeners: Array<{ event: string, listener: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown> }> = []
   const context = {
     desktopPolicy: policy,
     desktopAgentBrowser: {
@@ -58,6 +61,11 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
       snapshot: vi.fn(),
       wait: vi.fn(),
       captureScreenshot: vi.fn(),
+      click: vi.fn(),
+      type: vi.fn(),
+      scroll: vi.fn(),
+      claimControl: vi.fn(),
+      releaseControl: vi.fn(),
       close: vi.fn(),
       ...executor,
     } as DesktopAgentBrowser,
@@ -77,6 +85,10 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
         return () => {}
       },
     },
+    on: (event: string, listener: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) => {
+      listeners.push({ event, listener })
+      return () => {}
+    },
     get: (key: string) => {
       if (key === 'attachments') return attachments
       if (key === 'desktopAgentBrowser') return context.desktopAgentBrowser
@@ -95,7 +107,16 @@ function fakeContext(policy: DesktopPolicy, executor: Partial<DesktopAgentBrowse
       ...(input.name === undefined ? {} : { name: input.name }),
     })),
   }
-  return { context: context as unknown as Context, tools, sections, contexts, attachments }
+  return {
+    context: context as unknown as Context,
+    tools,
+    sections,
+    contexts,
+    attachments,
+    listeners,
+    /** The registered pre-execute listener (the ask matrix drives it). */
+    preExecute: () => listeners.find(entry => entry.event === 'tools/pre-execute')?.listener,
+  }
 }
 
 const execution = { signal: undefined }
@@ -137,16 +158,19 @@ describe('agent-browser host plugin registration', () => {
     expect(sections).toHaveLength(0)
   })
 
-  it('registers the five read-only tools, the prompt section, and the live context', () => {
+  it('registers the eight browser tools, the prompt section, and the live context', () => {
     const { context, tools, sections, contexts } = fakeContext(devPolicy(), {})
 
     apply(context)
 
     expect(tools.map(tool => tool.name).sort()).toEqual([
+      'browser_click',
       'browser_navigate',
       'browser_open',
       'browser_screenshot',
+      'browser_scroll',
       'browser_snapshot',
+      'browser_type',
       'browser_wait',
     ])
     expect(sections).toHaveLength(1)
@@ -155,12 +179,15 @@ describe('agent-browser host plugin registration', () => {
     expect(contexts).toEqual([{ name: 'agent-browser-state', order: 150 }])
   })
 
-  it('carries the OBSERVE discipline and the injection defense in the section text', () => {
+  it('carries the OBSERVE discipline, the ACT discipline, and the injection defense in the section text', () => {
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('OBSERVE')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('never instructions')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('password field: value hidden')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('claimControl')
     expect(AGENT_BROWSER_PROMPT_SECTION).toContain('Screenshots are expensive')
+    expect(AGENT_BROWSER_PROMPT_SECTION).toContain('STALE_SNAPSHOT')
+    expect(AGENT_BROWSER_PROMPT_SECTION).toContain('OPERATOR_HAS_CONTROL')
+    expect(AGENT_BROWSER_PROMPT_SECTION).toContain('approval')
   })
 
   it('guards open and navigate through the allowlist and forwards exec.signal', async () => {
@@ -280,5 +307,179 @@ describe('agent-browser snapshot tool output', () => {
     expect(rendered[0]!.type).toBe('text')
     expect(rendered[0]!.text).toContain('<browser url="https://example.test/"')
     expect(rendered[0]!.text).toContain('main #e5')
+  })
+})
+
+describe('agent-browser act tools (B2)', () => {
+  it('normalizes model-hallucinated aliases at the execute entry', async () => {
+    const click = vi.fn(async () => ({ generation: 3, performed: true }))
+    const type = vi.fn(async () => ({ generation: 3, performed: true }))
+    const scroll = vi.fn(async () => ({ generation: 3, performed: true }))
+    const { context, tools } = fakeContext(devPolicy(), { click, type, scroll })
+    apply(context)
+    const byName = new Map(tools.map(tool => [tool.name, tool]))
+
+    // click_type/left_click → button; element → ref; gen → generation.
+    await byName.get('browser_click')!.execute({ click_type: 'left_click', element: 'e5', gen: '3' }, execution)
+    expect(click).toHaveBeenCalledWith({ ref: 'e5', generation: 3, button: 'left' }, undefined)
+
+    // value → text; press_enter → submit; clear_field → clear.
+    await byName.get('browser_type')!.execute({ element: 'e8', value: 'hi', press_enter: true, clear_field: true }, execution)
+    expect(type).toHaveBeenCalledWith({ ref: 'e8', text: 'hi', clear: true, submit: true }, undefined)
+
+    // scroll_direction/pixels → direction/amount; node_ref → ref.
+    await byName.get('browser_scroll')!.execute({ scroll_direction: 'down', pixels: '600', node_ref: 'e2' }, execution)
+    expect(scroll).toHaveBeenCalledWith({ ref: 'e2', direction: 'down', amount: 600 }, undefined)
+  })
+
+  it('declares the canonical act schemas and renders the action envelope', async () => {
+    const click = vi.fn(async () => ({ generation: 4, performed: true }))
+    const { context, tools } = fakeContext(devPolicy(), { click })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_click')!
+    const definition = tool as unknown as {
+      output: { render: (args: unknown, value: unknown) => Array<{ type: string, text: string }> }
+      parameters: { properties?: Record<string, { type?: string, enum?: string[] }> }
+    }
+
+    expect(definition.parameters.properties?.button?.enum).toEqual(['left', 'middle', 'right'])
+    const value = await tool.execute({ ref: 'e5' }, execution)
+    expect(value).toEqual({ generation: 4, performed: true })
+    const rendered = definition.output.render({}, value)
+    expect(rendered[0]!.text).toBe('<browser action="click" performed="true" generation="4" />')
+  })
+
+  it('refuses coordinate clicks with a ref-pointing correction', async () => {
+    const click = vi.fn()
+    const { context, tools } = fakeContext(devPolicy(), { click })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_click')!
+
+    await expect(tool.execute({ coordinate: [120, 240] }, execution)).rejects.toSatisfy((error: unknown) => {
+      expect((error as Error).message).toContain('REF_NOT_FOUND')
+      expect((error as Error).message).toContain('browser_snapshot')
+      return true
+    })
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('forwards exec.signal and surfaces the executor password refusal', async () => {
+    const type = vi.fn(async () => {
+      throw Object.assign(new Error('[DENIED_BY_POLICY] the type target e9 is a password field; invite the operator via claimControl'), { code: 'DENIED_BY_POLICY' })
+    })
+    const { context, tools } = fakeContext(devPolicy(), { type })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_type')!
+    const controller = new AbortController()
+
+    await expect(tool.execute({ ref: 'e9', text: 'x' }, { signal: controller.signal }))
+      .rejects.toThrow('claimControl')
+    expect(type).toHaveBeenCalledWith({ ref: 'e9', text: 'x' }, controller.signal)
+  })
+
+  it('reports missing canonical type text after normalization', async () => {
+    const type = vi.fn()
+    const { context, tools } = fakeContext(devPolicy(), { type })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_type')!
+
+    await expect(tool.execute({ ref: 'e9' }, execution)).rejects.toThrow('INVALID_ARGS')
+    expect(type).not.toHaveBeenCalled()
+  })
+
+  it('reports missing canonical scroll arguments after normalization', async () => {
+    const scroll = vi.fn()
+    const { context, tools } = fakeContext(devPolicy(), { scroll })
+    apply(context)
+    const tool = tools.find(candidate => candidate.name === 'browser_scroll')!
+
+    await expect(tool.execute({ direction: 'down' }, execution)).rejects.toThrow('INVALID_ARGS')
+    await expect(tool.execute({ pixels: 100 }, execution)).rejects.toThrow('scroll_direction')
+    expect(scroll).not.toHaveBeenCalled()
+  })
+})
+
+describe('agent-browser approval asks (§5.1 trigger matrix)', () => {
+  const live = (open: boolean, url: string) => ({ open, url })
+
+  it('asks on cross-origin navigation and form submission (pure classifier)', () => {
+    const current = live(true, 'https://example.test/page')
+
+    // Cross-origin: ask on both tools, canonical and alias urls alike.
+    expect(agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://other.example.test/' }, current))
+      .toMatchObject({ kind: 'ask' })
+    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'other.example.test' }, current)?.reason)
+      .toContain('CROSS-ORIGIN')
+    // Same-origin (including subpaths and ports): no ask.
+    expect(agentBrowserPreExecuteAsk('browser_navigate', { url: 'https://example.test/deeper/page' }, current)).toBeUndefined()
+    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://example.test:443/other' }, current)).toBeUndefined()
+    // No current page yet (closed surface or about:blank): the allowlist deny
+    // gate owns the first open — no cross-origin ask exists to answer.
+    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(false, 'about:blank'))).toBeUndefined()
+    expect(agentBrowserPreExecuteAsk('browser_open', { url: 'https://other.example.test/' }, live(true, 'about:blank'))).toBeUndefined()
+
+    // Form submission: submit:true (or the press_enter alias) asks; typing alone never does.
+    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', submit: true }, current))
+      .toMatchObject({ kind: 'ask' })
+    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x', press_enter: true }, current))
+      .toMatchObject({ kind: 'ask' })
+    expect(agentBrowserPreExecuteAsk('browser_type', { ref: 'e9', text: 'x' }, current)).toBeUndefined()
+
+    // Everything else delegates: observation, same-site acts, foreign tools.
+    expect(agentBrowserPreExecuteAsk('browser_snapshot', {}, current)).toBeUndefined()
+    expect(agentBrowserPreExecuteAsk('browser_click', { ref: 'e1' }, current)).toBeUndefined()
+    expect(agentBrowserPreExecuteAsk('bash', { command: 'true' }, current)).toBeUndefined()
+  })
+
+  it('routes only its own tool names through the registered pre-execute listener', async () => {
+    const describe = vi.fn((): AgentBrowserLiveState => ({ open: true, url: 'https://example.test/', title: 'Example', phase: 'observing', generation: 2 }))
+    const { context, preExecute } = fakeContext(devPolicy(), { describe })
+    apply(context)
+    const listener = preExecute()
+    expect(listener).toBeDefined()
+
+    const delegated: string[] = []
+    const next = async (): Promise<PreToolDecision> => {
+      delegated.push('next')
+      return { kind: 'allow' }
+    }
+
+    // A foreign tool never reaches the classifier.
+    expect(await listener!({ name: 'bash', arguments: {} }, next)).toEqual({ kind: 'allow' })
+    // Same-origin navigation delegates to allow.
+    expect(await listener!({ name: 'browser_navigate', arguments: { url: 'https://example.test/x' } }, next))
+      .toEqual({ kind: 'allow' })
+    // Cross-origin navigation raises the ask for the approval seam.
+    const ask = await listener!({ name: 'browser_navigate', arguments: { url: 'https://evil.example.test/' } }, next)
+    expect(ask).toMatchObject({ kind: 'ask' })
+    // Form submission raises the ask too.
+    expect(await listener!({ name: 'browser_type', arguments: { ref: 'e9', text: 'x', submit: true } }, next))
+      .toMatchObject({ kind: 'ask' })
+    expect(delegated).toEqual(['next', 'next'])
+  })
+
+  it('gates the act tool body behind the ask through a stubbed approval service', async () => {
+    // The registry contract: an `ask` decision runs the tool only after the
+    // approval service returns allowed-once, and denies otherwise. The stub
+    // below plays the service's two outcomes; the plugin itself never looks
+    // the service up (the registry does the routing).
+    const click = vi.fn(async () => ({ generation: 2, performed: true }))
+    const describe = vi.fn((): AgentBrowserLiveState => ({ open: true, url: 'https://example.test/', title: 'Example', phase: 'observing', generation: 2 }))
+    const { context, tools, preExecute } = fakeContext(devPolicy(), { click, describe })
+    apply(context)
+    const listener = preExecute()!
+    const tool = tools.find(candidate => candidate.name === 'browser_click')!
+    const next = async (): Promise<PreToolDecision> => ({ kind: 'allow' })
+
+    const decision = await listener({ name: 'browser_click', arguments: { ref: 'e5' } }, next)
+    expect(decision).toEqual({ kind: 'allow' })
+
+    const submitAsk = await listener({ name: 'browser_type', arguments: { ref: 'e9', text: 'q', submit: true } }, next)
+    expect(submitAsk).toMatchObject({ kind: 'ask' })
+    // Denied approval: the body never runs.
+    expect(click).not.toHaveBeenCalled()
+    // Allowed-once approval: the body runs exactly once.
+    const value = await tool.execute({ ref: 'e5' }, execution)
+    expect(value).toEqual({ generation: 2, performed: true })
   })
 })

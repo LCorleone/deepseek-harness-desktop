@@ -28,7 +28,7 @@ export const DESKTOP_AGENT_BROWSER_EVENTS_PATH = '/_dsh/desktop/agent-browser/ev
 /** Main→window channel carrying serialized view-model snapshots. */
 export const DESKTOP_AGENT_BROWSER_STATE_CHANNEL = 'dsh-agent-browser/state'
 
-/** Window→main channel signalling the human claimed control (consumed in B2). */
+/** Window→main channel signalling the human claimed control (§5.4, B2). */
 export const DESKTOP_AGENT_BROWSER_CLAIM_CHANNEL = 'dsh-agent-browser/claim'
 
 /** Window→main channel signalling the human released control (consumed in B2). */
@@ -60,6 +60,8 @@ export interface AgentBrowserViewModel {
   readonly generation: number
   /** Guest partition token the `<webview>` element must be mounted with. */
   readonly partition: string
+  /** Executor-known overlay coordinates (cursor dot, click highlight). */
+  readonly overlay?: AgentBrowserOverlayState
   /** Human-readable description of the in-flight action, when any. */
   readonly actionDescription?: string
 }
@@ -68,6 +70,24 @@ export interface AgentBrowserViewModel {
 export interface AgentBrowserViewport {
   readonly width: number
   readonly height: number
+}
+
+/** One host-known point in guest-viewport CSS pixels (design §5.4). */
+export interface AgentBrowserOverlayPoint {
+  readonly x: number
+  readonly y: number
+}
+
+/**
+ * Overlay state pushed to the window document: the executor's known
+ * coordinates (getBoxModel centers, last dispatched mouse point). The
+ * native overlay layer draws from these — zero page CSS injection anywhere.
+ */
+export interface AgentBrowserOverlayState {
+  readonly cursor?: AgentBrowserOverlayPoint
+  readonly click?: AgentBrowserOverlayPoint
+  /** Epoch milliseconds of the click highlight; the overlay fades it. */
+  readonly clickedAt?: number
 }
 
 /** Result of `browser_snapshot` (the OBSERVE primitive, design §3–4). */
@@ -115,6 +135,43 @@ export interface AgentBrowserWaitOutcome {
   readonly waited: number
 }
 
+/** Mouse button of `browser_click` (CDP button names). */
+export type AgentBrowserMouseButton = 'left' | 'middle' | 'right'
+
+/** Arguments of `browser_click` (design §4). */
+export interface AgentBrowserClickRequest {
+  readonly ref: string
+  readonly generation?: number
+  readonly button?: AgentBrowserMouseButton
+  readonly clickCount?: number
+}
+
+/** Arguments of `browser_type` (design §4). */
+export interface AgentBrowserTypeRequest {
+  readonly ref: string
+  readonly text: string
+  readonly generation?: number
+  readonly clear?: boolean
+  readonly submit?: boolean
+}
+
+/** Scroll direction of `browser_scroll` (design §4). */
+export type AgentBrowserScrollDirection = 'up' | 'down'
+
+/** Arguments of `browser_scroll` (design §4). */
+export interface AgentBrowserScrollRequest {
+  readonly ref?: string
+  readonly direction: AgentBrowserScrollDirection
+  readonly amount: number
+  readonly generation?: number
+}
+
+/** Shared result of every act tool. */
+export interface AgentBrowserActionResult {
+  readonly generation: number
+  readonly performed: boolean
+}
+
 /** Captured screenshot bytes before attachment persistence (design §2). */
 export interface AgentBrowserScreenshot {
   /** JPEG bytes (quality 60, width downscaled to ≤1280 at capture time). */
@@ -137,6 +194,16 @@ export interface DesktopAgentBrowser {
   snapshot(generation: number | undefined, signal?: AbortSignal): Promise<AgentBrowserSnapshot>
   /** Wait for a dwell time or a lifecycle condition. */
   wait(request: AgentBrowserWaitRequest, signal?: AbortSignal): Promise<AgentBrowserWaitOutcome>
+  /** Click the box-model center of one ref via trusted Input events. */
+  click(request: AgentBrowserClickRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult>
+  /** Focus a ref and insert text; password targets hard-fail (§5.3c). */
+  type(request: AgentBrowserTypeRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult>
+  /** Scroll one ref (or the document) by `amount` px; wheel fallback. */
+  scroll(request: AgentBrowserScrollRequest, signal?: AbortSignal): Promise<AgentBrowserActionResult>
+  /** Human takes over: aborts in-flight agent input, act tools fail fast (§5.4). */
+  claimControl(reason?: string): void
+  /** Human hands control back: generation bump (the page likely changed). */
+  releaseControl(): void
   /** Capture the viewport as JPEG bytes (persistence happens plugin-side). */
   captureScreenshot(signal?: AbortSignal): Promise<AgentBrowserScreenshot>
   /** Current surface state for the dynamic prompt context. */
@@ -149,9 +216,9 @@ export interface DesktopAgentBrowser {
 export interface AgentBrowserBridge {
   /** Subscribe to pushed view models; returns an unsubscribe function. */
   onState(callback: (state: AgentBrowserViewModel) => void): () => void
-  /** Ask the operator to take over (state machine lands in B2). */
+  /** Ask the operator to take over (the §5.4 claim state machine, B2). */
   claimControl(): void
-  /** Return control to the agent (state machine lands in B2). */
+  /** Return control to the agent (generation bumps on release, B2). */
   releaseControl(): void
   /** Close the browser window from the toolbar. */
   closeWindow(): void

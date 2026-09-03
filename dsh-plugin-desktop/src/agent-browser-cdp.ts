@@ -2,10 +2,12 @@
  * Typed minimal CDP client over `webContents.debugger` (design §3).
  *
  * Four domains are in scope for the capability overall — DOM, Runtime, Input,
- * Page — but this module implements ONLY the commands the current batch uses
- * (B1 read-only loop: DOM.enable/getDocument, Page lifecycle/navigate/screenshot).
- * Runtime isolated-world helpers and Input dispatch arrive with the act loop
- * (B2) as new typed methods on the same client.
+ * Page — with every command the shipped batches use: the B1 read-only loop
+ * (DOM.enable/getDocument, Page lifecycle/navigate/screenshot) plus the B2
+ * act loop (DOM.resolveNode/describeNode/getBoxModel, Input mouse/key/insert,
+ * Runtime.callFunctionOn/evaluate inside the isolated world, which is used
+ * ONLY for the audited act-phase helper snippets — observation stays
+ * script-free by construction).
  *
  * The client never talks to a websocket: `webContents.debugger` is the
  * transport, so the structural target interface below is exactly the Electron
@@ -84,6 +86,81 @@ export interface AgentBrowserCdpFrameTreeResult {
     readonly frame: AgentBrowserCdpFrame
     readonly childFrames?: readonly unknown[]
   }
+}
+
+/** Remote object reference of `DOM.resolveNode` / `Runtime.evaluate`. */
+export interface AgentBrowserCdpRemoteObject {
+  readonly type?: string
+  readonly subtype?: string
+  readonly className?: string
+  readonly objectId?: string
+  readonly value?: unknown
+  readonly description?: string
+}
+
+/** `DOM.resolveNode` result. */
+export interface AgentBrowserCdpResolveNodeResult {
+  readonly object: AgentBrowserCdpRemoteObject
+}
+
+/** Structural `DOM.describeNode` node slice the classifier consumes. */
+export interface AgentBrowserCdpDescribedNode {
+  readonly nodeName?: string
+  readonly localName?: string
+  readonly nodeType?: number
+  readonly attributes?: readonly string[]
+}
+
+/** `DOM.describeNode` result. */
+export interface AgentBrowserCdpDescribeNodeResult {
+  readonly node: AgentBrowserCdpDescribedNode
+}
+
+/** Viewport-space box of one node: `x`/`y` is the CONTENT-QUAD CENTER. */
+export interface AgentBrowserCdpBox {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** Options of {@link AgentBrowserCdpClient.dispatchMouseEvent}. */
+export interface AgentBrowserDispatchMouseOptions {
+  readonly type: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'wheel'
+  readonly x: number
+  readonly y: number
+  readonly button?: 'left' | 'middle' | 'right'
+  readonly clickCount?: number
+  readonly deltaX?: number
+  readonly deltaY?: number
+}
+
+/** Options of {@link AgentBrowserCdpClient.dispatchKeyEvent}. */
+export interface AgentBrowserDispatchKeyOptions {
+  readonly type: 'keyDown' | 'keyUp' | 'char' | 'rawKeyDown'
+  readonly key?: string
+  readonly code?: string
+  readonly text?: string
+  readonly windowsVirtualKeyCode?: number
+  readonly modifiers?: number
+}
+
+/** Options of {@link AgentBrowserCdpClient.callFunctionOn}. */
+export interface AgentBrowserCallFunctionOnOptions {
+  readonly objectId: string
+  /** One of the audited snippet constants (agent-browser-session). */
+  readonly functionDeclaration: string
+  readonly returnByValue?: boolean
+}
+
+/** `Page.createIsolatedWorld` result. */
+export interface AgentBrowserCdpIsolatedWorldResult {
+  readonly executionContextId: number
+}
+
+/** `Runtime.evaluate` result slice (returnByValue payloads only). */
+export interface AgentBrowserCdpEvaluateResult {
+  readonly result: AgentBrowserCdpRemoteObject
 }
 
 /** `Page.getLayoutMetrics` sizes we consume (CSS pixels). */
@@ -223,6 +300,11 @@ export class AgentBrowserCdpClient {
     this.attached = false
   }
 
+  /** Whether the session is currently attached (re-attach planning). */
+  get isAttached(): boolean {
+    return this.attached
+  }
+
   /** Subscribe to one typed CDP event; returns the unsubscriber. */
   on<Event extends AgentBrowserCdpEventName>(
     event: Event,
@@ -343,5 +425,115 @@ export class AgentBrowserCdpClient {
       throw new AgentBrowserCdpError('Page.captureScreenshot returned no image data', 'Page.captureScreenshot')
     }
     return result as unknown as AgentBrowserCdpScreenshotResult
+  }
+
+  /** `DOM.resolveNode` — a dead `backendNodeId` rejects; refs die with their document. */
+  async resolveNode(backendNodeId: number, options: { readonly executionContextId?: number } = {}): Promise<AgentBrowserCdpResolveNodeResult> {
+    const result = await this.send('DOM.resolveNode', {
+      backendNodeId,
+      ...(options.executionContextId === undefined ? {} : { executionContextId: options.executionContextId }),
+    })
+    if (typeof result.object !== 'object' || result.object === null) {
+      throw new AgentBrowserCdpError('DOM.resolveNode returned no remote object', 'DOM.resolveNode')
+    }
+    return result as unknown as AgentBrowserCdpResolveNodeResult
+  }
+
+  /** `DOM.describeNode` — the host-side password classification input (§5.3c). */
+  async describeNode(backendNodeId: number): Promise<AgentBrowserCdpDescribeNodeResult> {
+    const result = await this.send('DOM.describeNode', { backendNodeId })
+    if (typeof result.node !== 'object' || result.node === null) {
+      throw new AgentBrowserCdpError('DOM.describeNode returned no node', 'DOM.describeNode')
+    }
+    return result as unknown as AgentBrowserCdpDescribeNodeResult
+  }
+
+  /** `DOM.getBoxModel` reduced to the content-quad center and CSS-pixel size. */
+  async getBoxModel(backendNodeId: number): Promise<AgentBrowserCdpBox> {
+    const result = await this.send('DOM.getBoxModel', { backendNodeId })
+    const model = result.model as { content?: unknown } | undefined
+    const content = model?.content
+    if (!Array.isArray(content) || content.length !== 8 || content.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+      throw new AgentBrowserCdpError('DOM.getBoxModel returned no content quad', 'DOM.getBoxModel')
+    }
+    const [x0, y0, x1, y1, x2, y2, x3, y3] = content as [number, number, number, number, number, number, number, number]
+    const xs = [x0, x1, x2, x3]
+    const ys = [y0, y1, y2, y3]
+    return {
+      x: (x0 + x1 + x2 + x3) / 4,
+      y: (y0 + y1 + y2 + y3) / 4,
+      width: Math.max(...xs) - Math.min(...xs),
+      height: Math.max(...ys) - Math.min(...ys),
+    }
+  }
+
+  /** `Input.dispatchMouseEvent` — trusted mouse input (act phase only). */
+  async dispatchMouseEvent(options: AgentBrowserDispatchMouseOptions): Promise<void> {
+    await this.send('Input.dispatchMouseEvent', {
+      type: options.type,
+      x: options.x,
+      y: options.y,
+      ...(options.button === undefined ? {} : { button: options.button }),
+      ...(options.clickCount === undefined ? {} : { clickCount: options.clickCount }),
+      ...(options.deltaX === undefined && options.deltaY === undefined ? {} : {
+        ...(options.deltaX === undefined ? {} : { deltaX: options.deltaX }),
+        ...(options.deltaY === undefined ? {} : { deltaY: options.deltaY }),
+      }),
+    })
+  }
+
+  /** `Input.dispatchKeyEvent` — trusted keyboard input (Enter submit, Backspace clear). */
+  async dispatchKeyEvent(options: AgentBrowserDispatchKeyOptions): Promise<void> {
+    await this.send('Input.dispatchKeyEvent', {
+      type: options.type,
+      ...(options.key === undefined ? {} : { key: options.key }),
+      ...(options.code === undefined ? {} : { code: options.code }),
+      ...(options.text === undefined ? {} : { text: options.text }),
+      ...(options.windowsVirtualKeyCode === undefined ? {} : { windowsVirtualKeyCode: options.windowsVirtualKeyCode }),
+      ...(options.modifiers === undefined ? {} : { modifiers: options.modifiers }),
+    })
+  }
+
+  /** `Input.insertText` — IME-style text insertion over the active selection. */
+  async insertText(text: string): Promise<void> {
+    await this.send('Input.insertText', { text })
+  }
+
+  /** `Runtime.callFunctionOn` — audited isolated-world helpers only (§5.3b). */
+  async callFunctionOn(options: AgentBrowserCallFunctionOnOptions): Promise<AgentBrowserCdpRemoteObject> {
+    const result = await this.send('Runtime.callFunctionOn', {
+      objectId: options.objectId,
+      functionDeclaration: options.functionDeclaration,
+      ...(options.returnByValue === undefined ? {} : { returnByValue: options.returnByValue }),
+    })
+    if (typeof result.result !== 'object' || result.result === null) {
+      throw new AgentBrowserCdpError('Runtime.callFunctionOn returned no result object', 'Runtime.callFunctionOn')
+    }
+    return result.result as unknown as AgentBrowserCdpRemoteObject
+  }
+
+  /** `Page.createIsolatedWorld` on the main frame for act-phase helpers. */
+  async createIsolatedWorld(frameId: string): Promise<AgentBrowserCdpIsolatedWorldResult> {
+    const result = await this.send('Page.createIsolatedWorld', {
+      frameId,
+      worldName: 'dsh-agent-browser-act',
+    })
+    if (typeof result.executionContextId !== 'number') {
+      throw new AgentBrowserCdpError('Page.createIsolatedWorld returned no execution context', 'Page.createIsolatedWorld')
+    }
+    return result as unknown as AgentBrowserCdpIsolatedWorldResult
+  }
+
+  /** `Runtime.evaluate` in one isolated world (audited expressions only). */
+  async evaluateInContext(executionContextId: number, expression: string): Promise<AgentBrowserCdpRemoteObject> {
+    const result = await this.send('Runtime.evaluate', {
+      expression,
+      contextId: executionContextId,
+      returnByValue: true,
+    })
+    if (typeof result.result !== 'object' || result.result === null) {
+      throw new AgentBrowserCdpError('Runtime.evaluate returned no result object', 'Runtime.evaluate')
+    }
+    return result.result as unknown as AgentBrowserCdpRemoteObject
   }
 }

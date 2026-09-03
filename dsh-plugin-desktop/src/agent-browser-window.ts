@@ -49,6 +49,10 @@ export interface AgentBrowserWindowHostOptions {
   readonly partition: string
   /** Called once the window closed (user close button, OS, or programmatic). */
   readonly onWindowClosed?: () => void
+  /** Toolbar claim button (§5.4): the human takes over the surface. */
+  readonly onHumanClaim?: () => void
+  /** Toolbar release button (§5.4): the human hands control back. */
+  readonly onHumanRelease?: () => void
   /** Error log sink; renderer diagnostics land here, never secrets. */
   readonly logError?: (message: string) => void
 }
@@ -220,10 +224,13 @@ export class DesktopAgentBrowserWindowHost implements AgentBrowserWindowHost {
     }
     const claim = (event: { sender: unknown }): void => {
       if (!isOwn(event.sender)) return
-      // The claim state machine lands in B2; the channel contract is final.
+      // §5.4 entry point 1 (the window button): the session's claim state
+      // machine aborts in-flight agent input and fails act tools fast.
+      this.options.onHumanClaim?.()
     }
     const release = (event: { sender: unknown }): void => {
       if (!isOwn(event.sender)) return
+      this.options.onHumanRelease?.()
     }
     const close = (event: { sender: unknown }): void => {
       if (!isOwn(event.sender)) return

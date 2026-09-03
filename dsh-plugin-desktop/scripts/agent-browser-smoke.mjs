@@ -1,30 +1,39 @@
 #!/usr/bin/env node
 /**
  * P8 agent-browser real-composition smoke (design §6 B1 acceptance, committed
- * per the B1 review P2).
+ * per the B1 review P2; extended with the B2 act loop).
  *
  * Boots the REAL Electron this package pins and drives the real composition
  * the unit fakes can only model: `DesktopAgentBrowserWindowHost` opens a
  * sandboxed embedder, the `<webview partition>` guest attaches,
  * `webContents.debugger` carries the CDP session, and
- * `DesktopAgentBrowserSession` navigates/snapshots a local fixture page.
+ * `DesktopAgentBrowserSession` navigates/snapshots/acts on a local fixture
+ * page — the only place the real CDP behavior of the act commands
+ * (describeNode classification, isolated-world focus, Input.insertText,
+ * trusted press/release) is exercised end to end.
  *
  * Asserted end to end:
  *   1. guest session identity  — `guest.session === session.fromPartition(token)`
  *      and `!== session.defaultSession` (spike finding 2: Electron's Session
  *      exposes no `.partition` string, identity is the assertion);
  *   2. P0 default-session isolation — the userData directory listing is
- *      byte-identical before/after a full open→snapshot→close cycle (the
- *      guest's cookies/cache live in its one-shot partition, which is
- *      in-memory and never touches disk);
+ *      byte-identical before/after a full open→act→close cycle (the guest's
+ *      cookies/cache live in its one-shot in-memory partition);
  *   3. snapshot masking — password fields seal, the plain value stays, and
- *      hidden CSRF tokens never enter the model context (B1 review P3).
+ *      hidden CSRF tokens never enter the model context (B1 review P3);
+ *   4. the act loop — typing lands in the input (mirrored into an attribute
+ *      the snapshot observes), the trusted click fires the page's handler,
+ *      and page scroll moves without the wheel fallback erroring.
  *
  * Run it headless exactly like the B1 spike did:
  *   xvfb-run -a node_modules/electron/dist/electron --no-sandbox \
- *     scripts/agent-browser-smoke.mjs
+ *     --disable-gpu scripts/agent-browser-smoke.mjs
  * (`corepack yarn build` first — the script drives lib/, not src/.)
  * tests/agent-browser-composition.spec.ts runs this under DSH_XVFB=1.
+ *
+ * No top-level await anywhere: ESM top-level await deadlocks Electron's
+ * `ready` dispatch in the main process, so async bodies are handed to the
+ * loop instead.
  */
 
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
@@ -36,17 +45,26 @@ import { app, session as electronSession } from 'electron'
 import { DesktopAgentBrowserSession } from '../lib/agent-browser-session.js'
 import { DesktopAgentBrowserWindowHost } from '../lib/agent-browser-window.js'
 
-/** Login-shaped fixture the masking assertions read. */
+/**
+ * Login-plus-act fixture. The `oninput` handler mirrors the typed text into
+ * a VALUE ATTRIBUTE — the snapshot walker observes attributes, so the smoke
+ * can verify the trusted insert landed without any page-side test harness.
+ */
 const FIXTURE_HTML = `<!doctype html>
-<html><head><title>Smoke Fixture</title></head><body>
+<html><head><title>Smoke Fixture</title></head><body style="margin:0">
 <h1>Company sign-in</h1>
 <form method="get" action="./">
   <input type="hidden" name="csrf" value="csrf-secret-token-smoke">
-  <input type="text" name="user" value="alice@example.test" autocomplete="username">
+  <input type="text" name="user" id="user-input" value="alice@example.test" autocomplete="username"
+         oninput="mirror.setAttribute('value', this.value)">
+  <input type="text" id="mirror" name="mirror" value="">
   <input type="text" name="user_password" value="should-never-project">
   <input type="password" name="pass" value="hunter2-smoke" autocomplete="current-password">
-  <button type="submit">Sign in</button>
+  <button type="button" id="act-btn" onclick="document.getElementById('act-out').textContent='clicked-ok'">Act target</button>
+  <p id="act-out">idle</p>
 </form>
+<div id="tall" style="height:4000px; background:linear-gradient(#222,#888)">tall content</div>
+<p id="footer">footer marker</p>
 </body></html>
 `
 
@@ -67,6 +85,16 @@ async function step(name, run) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+/** Extract the `#e…` ref of the first tree line matching a marker. */
+function refFor(tree, marker) {
+  for (const line of tree.split('\n')) {
+    if (!line.includes(marker)) continue
+    const match = /#(e[0-9a-z]+)/u.exec(line)
+    if (match !== null) return match[1]
+  }
+  throw new Error(`no snapshot ref found for ${marker}`)
 }
 
 async function main() {
@@ -114,7 +142,7 @@ async function main() {
     // listing delta around the REAL cycle measures exactly what the GUEST's
     // browsing adds to the default session (the P0 leak surface), not the
     // profile skeleton itself. The guest's own storage lives in its one-shot
-    // partition (in-memory; step 2 pins the identity).
+    // partition (in-memory; the identity step pins it).
     await session_.open('about:blank', { waitForLoad: true })
     await session_.close()
     await settle(1_500)
@@ -143,7 +171,50 @@ async function main() {
       assert(!snapshot.tree.includes('should-never-project'), 'the secret-shaped name input leaked')
       assert(!snapshot.tree.includes('csrf-secret-token-smoke'), 'the hidden CSRF token leaked')
       assert(snapshot.tree.includes('alice@example.test'), 'the plain input value is missing')
-      assert(snapshot.tree.includes('Sign in'), 'the submit button is missing')
+    })
+
+    await step('types into the plain input through trusted input', async () => {
+      const snapshot = await session_.snapshot(undefined)
+      const ref = refFor(snapshot.tree, 'id="user-input"')
+      const outcome = await session_.type({ ref, text: 'smoke@example.test', clear: true, generation: snapshot.generation })
+      assert(outcome.performed === true, 'browser_type did not report performed')
+      // The page mirrors the live value into an attribute the walker sees.
+      const after = await session_.snapshot(undefined)
+      assert(after.tree.includes('smoke@example.test'), 'the typed text is not observable in the snapshot')
+    })
+
+    await step('refuses to type into the password field with the claimControl pointer', async () => {
+      const snapshot = await session_.snapshot(undefined)
+      const ref = refFor(snapshot.tree, 'name="pass"')
+      try {
+        await session_.type({ ref, text: 'never-typed' })
+        throw new Error('typing into a password field unexpectedly succeeded')
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        assert(message.includes('DENIED_BY_POLICY'), `expected the policy refusal, got: ${message}`)
+        assert(message.includes('claimControl'), 'the refusal does not point at claimControl')
+      }
+    })
+
+    await step('clicks the button with trusted press/release and observes the effect', async () => {
+      const snapshot = await session_.snapshot(undefined)
+      const ref = refFor(snapshot.tree, 'id="act-btn"')
+      const outcome = await session_.click({ ref, generation: snapshot.generation })
+      assert(outcome.performed === true, 'browser_click did not report performed')
+      await settle(300)
+      const after = await session_.snapshot(undefined)
+      assert(after.tree.includes('clicked-ok'), "the page's click handler did not run")
+    })
+
+    await step('scrolls the page down through the isolated world', async () => {
+      const outcome = await session_.scroll({ direction: 'down', amount: 800 })
+      assert(outcome.performed === true, 'browser_scroll did not report performed')
+      // The footer marker must still be observable after the scroll, and a
+      // ref-based click forces scrollIntoView when the target left the view.
+      const snapshot = await session_.snapshot(undefined)
+      const ref = refFor(snapshot.tree, 'id="act-btn"')
+      const clicked = await session_.click({ ref, generation: snapshot.generation })
+      assert(clicked.performed === true, 'the post-scroll click failed')
     })
 
     await step('default session storage gains zero entries across the cycle', async () => {
@@ -172,9 +243,7 @@ async function main() {
 }
 
 /**
- * NO top-level await: ESM top-level await deadlocks Electron's `ready`
- * dispatch in the main process (the await blocks the very message pump that
- * fires `ready`), so the entry hands the async body to the loop instead.
+ * NO top-level await (see the header): hand the async body to the loop.
  */
 main().catch(cause => {
   process.stdout.write(
