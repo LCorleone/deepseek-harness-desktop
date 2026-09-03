@@ -1130,14 +1130,36 @@ async function start(): Promise<void> {
             ),
             mintUuid: () => randomUUID(),
             wipePersistedPartition: async (partition) => {
-              await clearAgentBrowserPersistedPartition(session, app.getPath('userData'), partition)
+              await clearAgentBrowserPersistedPartition(
+                session,
+                app.getPath('userData'),
+                partition,
+                electronLogger === undefined
+                  ? undefined
+                  : message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+              )
             },
+            // §5.2 double gate: the policy flag rides the executor itself, so
+            // a persist partition stops mounting the moment the policy flips
+            // — not just when the settings UI happens to be closed.
+            policyAllowsPersist: policy.agentBrowser.allowPersistLogin,
           },
           ...(electronLogger === undefined ? {} : {
             logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
           }),
         })
         hostCtx.provide('desktopAgentBrowser', agentBrowserSession)
+        if (!policy.agentBrowser.allowPersistLogin) {
+          // §5.2 enforcement (B3 review): a policy flip to false must not
+          // leave the previously persisted login partition on disk either —
+          // the executor falls back to one-shot partitions for every window,
+          // and this one-shot wipe resets the login document so the residue
+          // is cleared instead of silently remaining. A failed wipe throws
+          // before the reset, so the next launch retries it.
+          void agentBrowserSession.enforceLoginPersistencePolicy().catch(cause => {
+            electronLogger?.error(`${BIN_NAME}: the agent-browser login-policy residue wipe failed (retrying on the next launch): ${cause instanceof Error ? cause.message : String(cause)}`)
+          })
+        }
         // Field-aware manifest verification for the locked market catalog
         // (the market's `desktopCompanyManifestVerifier` capability): the
         // catalog provider's scan and the signed-manifest install whitelist

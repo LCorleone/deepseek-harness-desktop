@@ -138,6 +138,8 @@ export interface AgentBrowserWaitOutcome {
 /** Full surface snapshot streamed as a `state` frame (§2, B3). */
 export interface AgentBrowserStateFrame {
   readonly kind: 'state'
+  /** Whether a live window host exists — false is how observers learn the surface closed (B3 review P2). */
+  readonly open: boolean
   readonly url: string
   readonly title: string
   readonly phase: AgentBrowserPhase
@@ -260,6 +262,12 @@ export interface DesktopAgentBrowser {
   setPersistLogin(enabled: boolean): Promise<AgentBrowserLoginView>
   /** Clear login state: close, wipe storage + partition directory, rotate the UUID (§5.2). */
   clearLoginState(): Promise<AgentBrowserLoginView>
+  /**
+   * Enforce the persist-login policy over residual state (§5.2, B3 review):
+   * when the policy denies persistence but the login document still carries
+   * a persist UUID, wipe that partition once and rotate the UUID.
+   */
+  enforceLoginPersistencePolicy(): Promise<void>
   /** Tear down debugger session and window. */
   close(): Promise<void>
 }

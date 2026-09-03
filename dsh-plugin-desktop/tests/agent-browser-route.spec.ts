@@ -186,6 +186,21 @@ describe('agent-browser claim/release routes (§5.4 entries)', () => {
     expect(notJson.statusCode).toBe(400)
   })
 
+  it('refuses a claim against a closed surface with 409 (B3 review P1)', async () => {
+    const claimControl = vi.fn()
+    const executor = fakeExecutor({ claimControl, describe: () => liveState({ open: false, phase: 'idle' }) })
+    const res = jsonResponse()
+    await handleAgentBrowserClaimRequest(
+      request('POST', { body: JSON.stringify({ reason: 'ghost banner click' }) }),
+      res,
+      ORIGIN,
+      executor,
+    )
+    expect(res.statusCode).toBe(409)
+    expect(res.body).toEqual({ error: 'the browser window is not open' })
+    expect(claimControl).not.toHaveBeenCalled()
+  })
+
   it('releases through the executor and reports the bumped generation', () => {
     const releaseControl = vi.fn()
     const executor = fakeExecutor({ releaseControl, describe: () => liveState({ phase: 'observing', generation: 5 }) })
@@ -247,6 +262,7 @@ describe('agent-browser SSE events route', () => {
     expect(decode((res as unknown as { chunks: string[] }).chunks[0]!)).toEqual({ retry: 3000 })
     expect(decode((res as unknown as { chunks: string[] }).chunks[1]!)).toEqual({
       kind: 'state',
+      open: true,
       url: 'https://example.test/page',
       title: 'Example',
       phase: 'observing',
@@ -259,12 +275,13 @@ describe('agent-browser SSE events route', () => {
     // A pushed state frame (the claim transition) lands on the wire with the
     // phase — the B2 leftover closure (§6 B3).
     for (const listener of listeners) {
-      listener({ kind: 'state', url: 'https://example.test/page', title: 'Example', phase: 'claimed', generation: 4 })
+      listener({ kind: 'state', open: true, url: 'https://example.test/page', title: 'Example', phase: 'claimed', generation: 4 })
     }
     const chunks = (res as unknown as { chunks: string[] }).chunks
     expect(chunks).toHaveLength(3)
     expect(decode(chunks[2]!)).toEqual({
       kind: 'state',
+      open: true,
       url: 'https://example.test/page',
       title: 'Example',
       phase: 'claimed',

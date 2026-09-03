@@ -47,6 +47,7 @@ import type {
 } from './agent-browser-contract.ts'
 import {
   AGENT_BROWSER_PERSIST_PARTITION_PREFIX,
+  DEFAULT_AGENT_BROWSER_LOGIN,
   agentBrowserPersistPartition,
   isAgentBrowserUuid,
   nextAgentBrowserLoginForToggle,
@@ -449,6 +450,14 @@ export interface AgentBrowserSessionOptions {
     readonly mintUuid: () => string
     /** Releases and deletes one persist partition's storage (Electron side). */
     readonly wipePersistedPartition?: (partition: string) => Promise<void> | void
+    /**
+     * Policy gate over login persistence (`agentBrowser.allowPersistLogin`,
+     * §5.2): when false, `resolvePartition` falls back to one-shot tokens so
+     * a persist partition never mounts again, `setPersistLogin(true)` is
+     * refused, and `enforceLoginPersistencePolicy` wipes residue from the
+     * enabled era. Absent means unconstrained (tests, pre-B3 compositions).
+     */
+    readonly policyAllowsPersist?: boolean
   }
   /** Clock used for waits (injectable for tests). */
   readonly now?: () => number
@@ -467,11 +476,7 @@ export interface AgentBrowserSessionOptions {
 export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private readonly createWindowHost: AgentBrowserWindowHostFactory
   private readonly mintPartitionToken: () => string
-  private readonly login: {
-    readonly store: AgentBrowserLoginStore
-    readonly mintUuid: () => string
-    readonly wipePersistedPartition?: (partition: string) => Promise<void> | void
-  } | undefined
+  private readonly login: AgentBrowserSessionOptions['login'] | undefined
   private readonly now: () => number
   private readonly settleQuietMs: number
   private readonly pollMs: number
@@ -551,7 +556,12 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       await client.domEnable()
       await this.learnMainFrameId(client)
       this.registerGuestEvents(client)
-      this.phase = 'observing'
+      // A claim that landed while the window was opening (the toolbar button
+      // is armed by the first pushed view model) must survive the start: an
+      // unconditional overwrite would strand the epoch aborted with phase
+      // 'observing', and every act tool would fail OPERATOR_HAS_CONTROL with
+      // no release path (B3 review P1).
+      if (this.phase !== 'claimed') this.phase = 'observing'
     } catch (cause) {
       // A half-started surface never lingers: reset before the error escapes.
       await this.closeLocked()
@@ -628,9 +638,13 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       ...(actionDescription === undefined || this.phase === 'claimed' ? {} : { actionDescription }),
     })
     // The loopback observation rides the SAME push (B2 leftover closure):
-    // claim/release and every boundary surface the phase in one place.
+    // claim/release and every boundary surface the phase in one place, and
+    // the frame carries the surface's liveness so the banner can retire —
+    // `closeLocked`'s final push folds to `open:false` and the ghost banner
+    // with its live take-over button goes away (B3 review P2).
     this.broadcastFrame({
       kind: 'state',
+      open: this.windowHost !== undefined && !this.windowHost.isClosed(),
       url: this.url,
       title: this.title,
       phase: this.phase,
@@ -852,8 +866,20 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
    * act immediately, not queue behind the operation it is interrupting.
    */
   claimControl(reason?: string): void {
+    // A claim against no live surface has nothing to take over and would
+    // leave no release path (the window is gone, the banner hides); the
+    // loopback route rejects it with 409, and the remaining entries — the
+    // window button, the model tool — cannot outlive a closed window either
+    // (B3 review P1). During `ensureStarted` the host already exists, so a
+    // claim racing the opening window still lands — exactly the §5.4 race.
+    if (this.windowHost === undefined || this.windowHost.isClosed()) return
     if (this.phase === 'claimed') {
-      if (reason !== undefined) this.claimReason = reason
+      // A repeat claim refreshes the reason the window toolbar shows (B3
+      // review P3) — no re-abort churn, no double generation boundary.
+      if (reason !== undefined && reason !== this.claimReason) {
+        this.claimReason = reason
+        this.pushViewModel()
+      }
       return
     }
     this.phase = 'claimed'
@@ -872,7 +898,10 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
    * cached snapshot invalidated so the next observe re-reads the page.
    */
   releaseControl(): void {
-    if (this.phase !== 'claimed') return
+    // Epoch-driven (B3 review P1): any claim that aborted the agent epoch is
+    // releasable even if an interleaving path clobbered the phase — a fresh
+    // epoch must stay reachable, or act tools dead-end on OPERATOR_HAS_CONTROL.
+    if (this.phase !== 'claimed' && !this.agentEpoch.signal.aborted) return
     this.agentEpoch = new AbortController()
     this.claimReason = undefined
     this.counter.noteHumanRelease()
@@ -891,9 +920,9 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       : undefined
   }
 
-  /** Resolve the partition for the next window creation (§5.2): persist UUID when enabled, one-shot otherwise. */
+  /** Resolve the partition for the next window creation (§5.2): the persist UUID when the user enabled it AND the policy allows persistence; a one-shot token otherwise (the policy denial must outrank the document, or a true→false flip would keep mounting live logins). */
   private resolvePartition(): string {
-    if (this.login !== undefined) {
+    if (this.login !== undefined && this.login.policyAllowsPersist !== false) {
       const document = this.login.store.read()
       if (document.persistLogin) {
         const partition = this.persistPartitionOf(document)
@@ -935,6 +964,12 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   async setPersistLogin(enabled: boolean): Promise<AgentBrowserLoginView> {
     return await this.runExclusive(async () => {
       const login = this.requireLogin()
+      if (enabled && login.policyAllowsPersist === false) {
+        throw new AgentBrowserError(
+          'DENIED_BY_POLICY',
+          'login persistence is denied by policy; the persist partition never mounts, so the toggle cannot be enabled',
+        )
+      }
       const next = nextAgentBrowserLoginForToggle(login.store.read(), enabled, login.mintUuid)
       await login.store.write(next)
       return this.loginViewOf(next)
@@ -960,6 +995,31 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       const next = rotatedAgentBrowserLogin(current, login.mintUuid)
       await login.store.write(next)
       return this.loginViewOf(next)
+    })
+  }
+
+  /**
+   * Enforce the persist-login policy over residual state (§5.2, B3 review
+   * P1): when the policy denies persistence but the login document still
+   * carries a persist UUID (a true→false flip on a machine that had
+   * persistence enabled), wipe that partition once and reset the document to
+   * the one-shot default — the residue is cleared instead of silently
+   * remaining on disk, and the reset is what makes the enforcement converge
+   * (a lingering UUID would re-arm it every launch). Mount-time enforcement
+   * (the one-shot fallback in `resolvePartition`) covers every new window.
+   * A failed wipe throws BEFORE the document changes, so the next launch
+   * retries it against the same partition.
+   */
+  async enforceLoginPersistencePolicy(): Promise<void> {
+    return await this.runExclusive(async () => {
+      const login = this.login
+      if (login === undefined || login.policyAllowsPersist !== false) return
+      const current = login.store.read()
+      const partition = this.persistPartitionOf(current)
+      if (partition === undefined) return
+      await this.closeLocked()
+      if (login.wipePersistedPartition !== undefined) await login.wipePersistedPartition(partition)
+      await login.store.write(DEFAULT_AGENT_BROWSER_LOGIN)
     })
   }
 
@@ -1431,7 +1491,8 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.cachedSnapshot = undefined
     host?.close()
     // The loopback observation learns the surface closed through the same
-    // push path (the window host is already gone, so only the frame fires).
+    // push path: the window host is already gone, so only the frame fires —
+    // and it carries open:false, which retires the banner (B3 review P2).
     this.pushViewModel()
     return Promise.resolve()
   }

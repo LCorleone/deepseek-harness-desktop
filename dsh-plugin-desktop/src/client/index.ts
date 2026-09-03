@@ -37,6 +37,7 @@ export {
   parseAgentBrowserFrame,
   parseAgentBrowserSurfaceState,
   projectAgentBrowserToolCard,
+  startAgentBrowserBannerFeed,
 } from './agent-browser-ui.tsx'
 export type {
   AgentBrowserBannerInjected,

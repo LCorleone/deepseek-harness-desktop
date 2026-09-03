@@ -135,6 +135,10 @@ export function parseAgentBrowserFrame(value: unknown): AgentBrowserEventFrame {
   if (value.kind === 'state') {
     return Object.freeze({
       kind: 'state',
+      // Liveness of the surface: false retires the banner. Absent defaults
+      // to open — the only producer (the host) always sends it, and an older
+      // frame must never hide a live surface (B3 review P2).
+      open: typeof value.open === 'boolean' ? value.open : true,
       url: typeof value.url === 'string' ? value.url : '',
       title: typeof value.title === 'string' ? value.title : '',
       phase: isPhase(value.phase) ? value.phase : 'idle',
@@ -255,8 +259,11 @@ export function foldAgentBrowserFrame(
   frame: AgentBrowserEventFrame,
 ): AgentBrowserSurfaceState | undefined {
   if (frame.kind === 'state') {
+    // The frame carries the surface's liveness (B3 review P2): the
+    // close-time push folds to open:false and the banner — including its
+    // take-over button — goes away instead of haunting the conversation.
     return {
-      open: true,
+      open: frame.open,
       url: frame.url,
       title: frame.title,
       phase: frame.phase,
@@ -342,6 +349,45 @@ export type AgentBrowserBannerProps =
   & InjectFace<AgentBrowserBannerInjected>
 
 /**
+ * Imperative feed behind the banner (extracted so the lifecycle itself is
+ * testable): read the loopback state once, then follow the SSE stream.
+ *
+ * The EventSource opens ONLY after the state read succeeded — a composition
+ * whose policy disables the agent browser never registers the routes, so
+ * connecting first would poll a 404 forever in every client tab (B3 review
+ * P2). A failed read leaves the feed silent; a successful read opens the
+ * stream even for a closed surface, so a window opened later streams its
+ * first state frame and the banner lights up.
+ */
+export function startAgentBrowserBannerFeed(options: {
+  readonly api: Pick<AgentBrowserSurfaceApi, 'readState'>
+  readonly connect: AgentBrowserFrameConnection
+  readonly onState: (state: AgentBrowserSurfaceState) => void
+}): () => void {
+  let active = true
+  let disconnect: (() => void) | undefined
+  let current: AgentBrowserSurfaceState | undefined
+  void options.api.readState().then(value => {
+    if (!active) return
+    if (value.open) {
+      current = value
+      options.onState(value)
+    }
+    disconnect = options.connect(frame => {
+      if (!active) return
+      current = foldAgentBrowserFrame(current, frame)
+      if (current !== undefined) options.onState(current)
+    })
+  }).catch(() => {
+    // The surface is unreachable in this composition — stay dark (no stream).
+  })
+  return () => {
+    active = false
+    disconnect?.()
+  }
+}
+
+/**
  * Slot-registered banner (§5.4 entry 2): reads the loopback state once, then
  * follows the SSE stream; the take-over/release buttons POST the loopback
  * routes and drive the SAME claim state machine as the window toolbar button
@@ -351,20 +397,10 @@ export function AgentBrowserBanner({ api, connect, t }: AgentBrowserBannerProps)
   const [state, setState] = useState<AgentBrowserSurfaceState | undefined>()
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    let active = true
-    void api.readState().then(value => {
-      if (active && value.open) setState(value)
-    }).catch(() => {})
-    const disconnect = connect(frame => {
-      if (!active) return
-      setState(current => foldAgentBrowserFrame(current, frame))
-    })
-    return () => {
-      active = false
-      disconnect()
-    }
-  }, [api, connect])
+  useEffect(
+    () => startAgentBrowserBannerFeed({ api, connect, onState: setState }),
+    [api, connect],
+  )
 
   const act = (invoke: () => Promise<void>): void => {
     if (busy) return
@@ -425,10 +461,14 @@ function snapshotDetail(text: string | undefined, t: Translate): string | undefi
   return `${String(lines)} lines${text.includes('[snapshot truncated') ? t('truncated') : ''}`
 }
 
-/** Extract the screenshot dimensions line from the tool envelope. */
+/** The host renderer's dedicated screenshot line inside the envelope. Anchored to the full line, so page text carrying the literal "image/jpeg" mid-tree can never be mistaken for a screenshot (B3 review P3). */
+const SCREENSHOT_LINE_PATTERN = /^image\/jpeg image, (\d+)x(\d+) px, \d+ bytes$/mu
+
+/** Extract the screenshot dimensions from the envelope's dedicated line. */
 function screenshotDetail(text: string | undefined): string | undefined {
   if (text === undefined) return undefined
-  return /(\d+)x(\d+) px/u.exec(text)?.[0]
+  const match = SCREENSHOT_LINE_PATTERN.exec(text)
+  return match === null ? undefined : `${match[1]}x${match[2]} px`
 }
 
 /**
@@ -457,9 +497,7 @@ export function projectAgentBrowserToolCard(block: ToolCallBlock, t: Translate):
   const attributes = envelopeAttributes(text)
   const detail = block.isError
     ? undefined
-    : text?.includes('image/jpeg') === true
-      ? screenshotDetail(text)
-      : snapshotDetail(text, t)
+    : screenshotDetail(text) ?? snapshotDetail(text, t)
   return {
     running: false,
     failed: block.isError,

@@ -26,7 +26,7 @@ import {
   handleAgentBrowserClaimRequest,
   handleAgentBrowserReleaseRequest,
 } from '../src/agent-browser-route.ts'
-import { createHarness, fakeGuest, fakeGuestDebugger } from './agent-browser-harness.ts'
+import { createHarness, fakeGuest, fakeGuestDebugger, lastFactoryOptions } from './agent-browser-harness.ts'
 
 const ORIGIN = 'http://127.0.0.1:43120'
 
@@ -175,11 +175,92 @@ describe('agent-browser three-entry claim convergence (§5.4, B3)', () => {
     apply(context)
     const claimTool = tools.find(tool => tool.name === 'browser_claim_control')!
 
+    // A claim needs a live surface (a closed-surface claim is a no-op, and
+    // the loopback route refuses it with 409 — B3 review P1).
+    await session.open('https://example.test/', { waitForLoad: false })
     await claimTool.execute({ reason: '  ' }, { signal: undefined })
     expect(session.describe().phase).toBe('claimed')
     // A second claim while claimed only updates the reason — no re-abort churn.
     await claimTool.execute({ reason: 'second' }, { signal: undefined })
     expect(session.describe().phase).toBe('claimed')
+  })
+
+  it('survives a claim racing the window opening: phase stays claimed, release recovers, tools unblock (B3 review P1)', async () => {
+    // The toolbar button is armed by the first pushed view model, so a claim
+    // can land while `ensureStarted` is still between that push and its
+    // final phase assignment — fire it from inside the guest attach, which
+    // runs exactly inside that window.
+    const debugger_ = fakeGuestDebugger()
+    const { session, hosts } = createHarness({
+      attachGuest: () => {
+        lastFactoryOptions()?.onHumanClaim()
+        return fakeGuest(debugger_.target)
+      },
+    })
+
+    // The claim aborts the in-flight open's navigation (§5.4 semantics: a
+    // claim interrupts agent work), but the window itself finishes starting.
+    await expect(session.open('https://example.test/', { waitForLoad: false }))
+      .rejects.toSatisfy((error: unknown) => {
+        expect((error as AgentBrowserError).code).toBe('OPERATOR_HAS_CONTROL')
+        return true
+      })
+    expect(session.describe()).toMatchObject({ open: true, phase: 'claimed' })
+
+    // While claimed, every act tool fails fast.
+    await expect(session.navigate('https://example.test/next')).rejects.toSatisfy((error: unknown) => {
+      expect((error as AgentBrowserError).code).toBe('OPERATOR_HAS_CONTROL')
+      return true
+    })
+
+    // The release is reachable (no stranded aborted epoch) and the very next
+    // agent action works — the pre-fix terminal state failed here forever.
+    session.releaseControl()
+    expect(session.describe()).toMatchObject({ open: true, phase: 'observing' })
+    await expect(session.open('https://example.test/next', { waitForLoad: false })).resolves.toMatchObject({
+      url: 'https://example.test/',
+      generation: expect.any(Number),
+    })
+    // The window toolbar saw the claim (actionDescription rides the claimed
+    // view models) — and never a post-start overwrite back to observing.
+    expect(hosts[0]!.states.some(state => state.phase === 'claimed' && state.actionDescription !== undefined)).toBe(true)
+  })
+
+  it('ignores claims against a closed surface and refuses the banner POST with 409 (B3 review P1)', async () => {
+    const { session, hosts } = createHarness({ attachGuest: () => fakeGuest(fakeGuestDebugger().target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+    hosts[0]!.emitClosed()
+    await session.close()
+    expect(session.describe()).toMatchObject({ open: false, phase: 'idle' })
+
+    // The state machine ignores the claim (nothing to take over, no release
+    // path would ever come), and the loopback route refuses it with 409 —
+    // a ghost banner click can no longer strand the surface.
+    session.claimControl('the operator pressed a stale button')
+    expect(session.describe().phase).toBe('idle')
+    const res = jsonResponse()
+    await handleAgentBrowserClaimRequest(
+      postRequest(JSON.stringify({ reason: 'ghost banner' })),
+      res,
+      ORIGIN,
+      session,
+    )
+    expect(res.statusCodeOf()).toBe(409)
+    expect(res.body()).toEqual({ error: 'the browser window is not open' })
+    expect(session.describe().phase).toBe('idle')
+  })
+
+  it('refreshes the window toolbar reason on a repeat claim while claimed (B3 review P3)', async () => {
+    const { session, hosts } = createHarness({ attachGuest: () => fakeGuest(fakeGuestDebugger().target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+    session.claimControl('first reason')
+    session.claimControl('second reason')
+    expect(session.describe().phase).toBe('claimed')
+    const claimedStates = hosts[0]!.states.filter(state => state.phase === 'claimed')
+    expect(claimedStates.at(-1)!.actionDescription).toBe('second reason')
+    // The agent epoch aborted exactly once — no re-abort churn on repeats.
+    session.releaseControl()
+    expect(session.describe()).toMatchObject({ phase: 'observing' })
   })
 
   it('the plugin registers the four loopback banner routes once webServer is live', () => {

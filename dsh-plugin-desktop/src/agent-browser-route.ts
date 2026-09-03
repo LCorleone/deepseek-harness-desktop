@@ -151,6 +151,13 @@ export async function handleAgentBrowserClaimRequest(
   if (!isSameOriginLoopbackRequest(req, expectedOrigin, true)) {
     return finishJson(res, 403, { error: 'forbidden' })
   }
+  // A claim only means something against a live surface: a straggler POST
+  // against a closed window (the banner retires on the open:false state
+  // frame, but a click can race it) must not strand the state machine with
+  // an aborted epoch and no operator to release it (B3 review P1).
+  if (!executor.describe().open) {
+    return finishJson(res, 409, { error: 'the browser window is not open' })
+  }
   let reason: string | undefined
   try {
     const body = await readJson(req) as Record<string, unknown>
@@ -216,6 +223,7 @@ export function handleAgentBrowserEventsRequest(
   if (live.open) {
     res.write(encodeAgentBrowserFrame({
       kind: 'state',
+      open: live.open,
       url: live.url,
       title: live.title,
       phase: live.phase,

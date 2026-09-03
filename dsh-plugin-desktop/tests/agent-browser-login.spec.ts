@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { AgentBrowserLoginDocument } from '../src/agent-browser-partition.ts'
+import type { AgentBrowserEventFrame } from '../src/agent-browser-contract.ts'
 import { agentBrowserPersistPartition } from '../src/agent-browser-partition.ts'
 import { createHarness, fakeGuest, fakeGuestDebugger } from './agent-browser-harness.ts'
 
@@ -37,6 +38,7 @@ function loginStore(initial: AgentBrowserLoginDocument = { version: 1, persistLo
 
 function loginHarness(store: ReturnType<typeof loginStore>, options: {
   wipe?: (partition: string) => Promise<void>
+  policyAllowsPersist?: boolean
 } = {}) {
   return createHarness({
     attachGuest: () => fakeGuest(fakeGuestDebugger().target),
@@ -44,6 +46,7 @@ function loginHarness(store: ReturnType<typeof loginStore>, options: {
       store,
       mintUuid: store.mintUuid,
       wipePersistedPartition: options.wipe ?? store.wipePersistedPartition,
+      ...(options.policyAllowsPersist === undefined ? {} : { policyAllowsPersist: options.policyAllowsPersist }),
     },
   })
 }
@@ -119,6 +122,85 @@ describe('agent-browser login persistence (§5.2, B3)', () => {
     })
   })
 
+  it('enforces the policy gate at mount time: a denial falls back to one-shot partitions (B3 review P1)', async () => {
+    // A true→false policy flip on a machine that had persistence enabled:
+    // the document still prefers persistence, but the persist partition must
+    // never mount again — no accumulating logins against the policy.
+    const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+    const { session, tokens } = loginHarness(store, { policyAllowsPersist: false })
+
+    await session.open('https://example.test/', { waitForLoad: false })
+    expect(tokens[0]).toMatch(/^dsh-agent-browser-test-\d+$/u)
+    expect(tokens[0]!.startsWith('persist:')).toBe(false)
+    expect(session.describeLogin().windowOnPersistPartition).toBe(false)
+
+    // Every subsequent window creation stays one-shot; the document is untouched.
+    await session.close()
+    await session.open('https://example.test/', { waitForLoad: false })
+    expect(tokens.at(-1)).toMatch(/^dsh-agent-browser-test-\d+$/u)
+    expect(store.state.document).toEqual({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+  })
+
+  it('refuses enabling persistence under a policy denial, but keeps clearing reachable', async () => {
+    const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+    const { session } = loginHarness(store, { policyAllowsPersist: false })
+
+    await expect(session.setPersistLogin(true)).rejects.toSatisfy((error: unknown) => {
+      expect((error as { code?: string }).code).toBe('DENIED_BY_POLICY')
+      return true
+    })
+    // Disabling stays allowed (it is the policy's own direction).
+    await expect(session.setPersistLogin(false)).resolves.toMatchObject({ persistLogin: false })
+
+    // The residue clear remains executable under the denial — the wipe and
+    // the UUID rotation are exactly what retires the leftover partition.
+    await expect(session.clearLoginState()).resolves.toMatchObject({ persistLogin: false, persisted: true })
+    expect(store.wiped).toEqual([agentBrowserPersistPartition(UUID_2)])
+    expect(store.state.document.persistUuid).toBe(UUID_1)
+  })
+
+  it('wipes residual persisted login once and resets the document when the policy denies it', async () => {
+    const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+    const { session } = loginHarness(store, { policyAllowsPersist: false })
+
+    await session.enforceLoginPersistencePolicy()
+    expect(store.wiped).toEqual([agentBrowserPersistPartition(UUID_2)])
+    // The document resets to the one-shot default — no UUID lingers to
+    // re-arm the enforcement, and the denied toggle never had a live user
+    // preference to preserve.
+    expect(store.state.document).toEqual({ version: 1, persistLogin: false })
+    expect(session.describeLogin()).toEqual({
+      persistLogin: false,
+      persisted: false,
+      windowOnPersistPartition: false,
+    })
+
+    // Converged: a second enforcement neither wipes nor writes.
+    await session.enforceLoginPersistencePolicy()
+    expect(store.wiped).toHaveLength(1)
+  })
+
+  it('leaves the login document alone when the policy allows persistence', async () => {
+    const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+    const { session } = loginHarness(store, { policyAllowsPersist: true })
+    await session.enforceLoginPersistencePolicy()
+    expect(store.wiped).toEqual([])
+    expect(store.state.document).toEqual({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+  })
+
+  it('retries a failed residue wipe on the next enforcement (no reset past a failure)', async () => {
+    const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+    const { session } = loginHarness(store, {
+      policyAllowsPersist: false,
+      wipe: async () => { throw new Error('partition locked') },
+    })
+
+    await expect(session.enforceLoginPersistencePolicy()).rejects.toThrow('partition locked')
+    // The document still references the un-wiped partition — the next launch
+    // (or retry) finds and wipes it instead of orphaning it behind a reset.
+    expect(store.state.document).toEqual({ version: 1, persistLogin: true, persistUuid: UUID_2 })
+  })
+
   it('clears login state: close first, wipe storage, rotate the UUID, sync the document', async () => {
     const store = loginStore({ version: 1, persistLogin: true, persistUuid: UUID_2 })
     const wipeOrdering: Array<{ partition: string, windowsClosedAtWipe: number }> = []
@@ -128,7 +210,7 @@ describe('agent-browser login persistence (§5.2, B3)', () => {
         await store.wipePersistedPartition(partition)
       },
     })
-    const frames: Array<{ kind: string }> = []
+    const frames: AgentBrowserEventFrame[] = []
     const unsubscribe = session.subscribe(frame => { frames.push(frame) })
 
     await session.open('https://example.test/', { waitForLoad: false })
@@ -144,8 +226,13 @@ describe('agent-browser login persistence (§5.2, B3)', () => {
     expect(store.mints).toEqual([UUID_1])
     expect(store.state.document).toEqual({ version: 1, persistLogin: true, persistUuid: UUID_1 })
     expect(session.describe().open).toBe(false)
-    // The loopback observation learned the surface closed through a frame.
-    expect(frames.some(frame => frame.kind === 'state')).toBe(true)
+    // The loopback observation learned the surface closed through a frame —
+    // and the close-time state frame CARRIES open:false, which is what lets
+    // the banner retire instead of haunting the conversation (B3 review P2:
+    // this exact assertion used to be the gap the ghost banner slipped through).
+    const stateFrames = frames.filter(frame => frame.kind === 'state')
+    expect(stateFrames.length).toBeGreaterThan(0)
+    expect(stateFrames.at(-1)).toMatchObject({ kind: 'state', open: false, phase: 'idle' })
 
     // The next window creation starts from the rotated, empty partition.
     await session.open('https://example.test/', { waitForLoad: false })

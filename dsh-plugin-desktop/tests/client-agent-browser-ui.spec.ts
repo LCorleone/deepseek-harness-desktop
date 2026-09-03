@@ -20,6 +20,7 @@ import {
   parseAgentBrowserFrame,
   parseAgentBrowserSurfaceState,
   projectAgentBrowserToolCard,
+  startAgentBrowserBannerFeed,
   en,
   zh,
   type AgentBrowserSurfaceState,
@@ -141,10 +142,10 @@ describe('agent-browser SSE connection and frame folding', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
-  it('folds frames into the banner state', () => {
+  it('folds frames into the banner state, including the close-time retirement (B3 review P2)', () => {
     const base = { ...OPEN_STATE }
     const claimed = foldAgentBrowserFrame(base, {
-      kind: 'state', url: 'https://docs.example.test/guide/login', title: 'Guide', phase: 'claimed', generation: 7,
+      kind: 'state', open: true, url: 'https://docs.example.test/guide/login', title: 'Guide', phase: 'claimed', generation: 7,
     })
     expect(claimed).toEqual({ ...base, phase: 'claimed' })
 
@@ -155,10 +156,79 @@ describe('agent-browser SSE connection and frame folding', () => {
     expect(foldAgentBrowserFrame(navigated, { kind: 'stale', generation: 8 })).toBe(navigated)
     // A state frame opens a banner that had no state yet.
     const fresh = foldAgentBrowserFrame(undefined, {
-      kind: 'state', url: 'https://a.test/', title: 'A', phase: 'observing', generation: 1,
+      kind: 'state', open: true, url: 'https://a.test/', title: 'A', phase: 'observing', generation: 1,
     })
     expect(fresh).toEqual({ open: true, url: 'https://a.test/', title: 'A', phase: 'observing', generation: 1 })
+    // The close-time state frame folds to open:false — the banner (and its
+    // take-over button) retires instead of haunting the conversation.
+    const closed = foldAgentBrowserFrame(fresh, {
+      kind: 'state', open: false, url: 'about:blank', title: '', phase: 'idle', generation: 1,
+    })
+    expect(closed).toMatchObject({ open: false, phase: 'idle' })
+    // A closed banner renders nothing (AgentBrowserBannerView guards on open).
+    expect(renderToStaticMarkup(createElement(AgentBrowserBannerView, {
+      state: closed,
+      busy: false,
+      onClaim: () => {},
+      onRelease: () => {},
+      t,
+    }))).toBe('')
+    // Reopening streams a fresh open:true state frame and the banner returns.
+    expect(foldAgentBrowserFrame(closed, {
+      kind: 'state', open: true, url: 'https://b.test/', title: 'B', phase: 'observing', generation: 2,
+    })).toMatchObject({ open: true, url: 'https://b.test/' })
     expect(() => parseAgentBrowserFrame({ kind: 'wat' })).toThrow('invalid agent browser frame')
+  })
+
+  it('parses the state frame liveness, defaulting a missing open to true', () => {
+    expect(parseAgentBrowserFrame({ kind: 'state', open: false, url: '', title: '', phase: 'idle', generation: 0 }))
+      .toMatchObject({ kind: 'state', open: false })
+    expect(parseAgentBrowserFrame({ kind: 'state', url: '', title: '', phase: 'claimed', generation: 3 }))
+      .toMatchObject({ kind: 'state', open: true })
+  })
+
+  it('opens the stream only after a successful state read, and stays dark when the routes are absent (B3 review P2)', async () => {
+    // A policy-disabled composition answers 404: no EventSource may open —
+    // connecting first would poll the missing route forever in every tab.
+    const failing = vi.fn(async () => { throw new Error('agent browser request failed (404)') })
+    const neverConnect = vi.fn()
+    let disposeFailing: (() => void) | undefined
+    {
+      const stop = startAgentBrowserBannerFeed({
+        api: { readState: failing },
+        connect: neverConnect,
+        onState: () => { throw new Error('no state may surface') },
+      })
+      disposeFailing = stop
+    }
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+    expect(neverConnect).not.toHaveBeenCalled()
+    disposeFailing?.()
+
+    // A successful read mounts the stream even for a closed surface, so a
+    // window opened later streams its first state frame and lights the banner.
+    let frameSink: ((frame: Parameters<typeof foldAgentBrowserFrame>[1]) => void) | undefined
+    const disconnect = vi.fn()
+    const states: Array<AgentBrowserSurfaceState | undefined> = []
+    const stop = startAgentBrowserBannerFeed({
+      api: { readState: async () => ({ ...OPEN_STATE, open: false, phase: 'idle' }) },
+      connect: onFrame => {
+        frameSink = onFrame
+        return disconnect
+      },
+      onState: state => { states.push(state) },
+    })
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+    expect(frameSink).toBeTypeOf('function')
+    expect(states).toEqual([]) // closed initial read stays dark
+    frameSink!({ kind: 'state', open: true, url: 'https://a.test/', title: 'A', phase: 'observing', generation: 1 })
+    frameSink!({ kind: 'state', open: false, url: 'about:blank', title: '', phase: 'idle', generation: 1 })
+    expect(states).toEqual([
+      { open: true, url: 'https://a.test/', title: 'A', phase: 'observing', generation: 1 },
+      { open: false, url: 'about:blank', title: '', phase: 'idle', generation: 1 },
+    ])
+    stop()
+    expect(disconnect).toHaveBeenCalledOnce()
   })
 })
 
@@ -316,6 +386,34 @@ describe('agent-browser tool cards', () => {
       subCalls: [],
     } as unknown as ToolCallBlock, t)
     expect(shot.detail).toBe('1280x400 px')
+
+    // A snapshot tree that merely CONTAINS the literal (an img src, a text
+    // node with dimensions) is a snapshot, never a screenshot (B3 review P3).
+    const deceptive = projectAgentBrowserToolCard({
+      kind: 'tool-result',
+      seq: 7,
+      time: 0,
+      callId: 'call-7',
+      call: { name: 'browser_snapshot', argsRaw: '{}' },
+      callTime: null,
+      content: [{
+        type: 'text',
+        text: [
+          '<browser url="https://docs.example.test/" generation="9">',
+          'html',
+          '  body',
+          '  img #e5s src="data:image/jpeg;base64,AAAA 640x480 px preview"',
+          '  p #e6s upload image/jpeg 1280x400 px to continue',
+          '</browser>',
+        ].join('\n'),
+      }],
+      isError: false,
+      callView: null,
+      resultView: null,
+      subCalls: [],
+    } as unknown as ToolCallBlock, t)
+    expect(deceptive.detail).toBe('4 lines')
+    expect(deceptive.generation).toBe(9)
 
     const failed = projectAgentBrowserToolCard({
       kind: 'tool-result',

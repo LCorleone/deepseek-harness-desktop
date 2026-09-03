@@ -67,15 +67,27 @@ export interface AgentBrowserElectronSessions {
  * directory for anything the storage API leaves behind. Callers must have
  * closed the browser window already — deleting a live profile directory is
  * unreliable on Windows (file locks) and leaves service-worker residue.
+ *
+ * A directory removal that still fails after the storage wipe is tolerated
+ * (and reported through `logError`): every credential is already gone — only
+ * an inert directory shell can remain — and failing the whole clear here
+ * would strand the UUID rotation that guarantees the next mount starts
+ * fresh (B3 review P3). A `clearStorageData` failure still throws.
  */
 export async function clearAgentBrowserPersistedPartition(
   sessions: AgentBrowserElectronSessions,
   userDataPath: string,
   partition: string,
+  logError?: (message: string) => void,
 ): Promise<void> {
   await sessions.fromPartition(partition).clearStorageData()
   const directory = agentBrowserPartitionDirectory(userDataPath, partition)
-  if (directory !== '') rmSync(directory, { recursive: true, force: true })
+  if (directory === '') return
+  try {
+    rmSync(directory, { recursive: true, force: true })
+  } catch (cause) {
+    logError?.(`dsh-plugin-desktop: the agent-browser partition directory survived the login clear (inert residue; the UUID rotation retires it): ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
 }
 
 /** Options of {@link DesktopAgentBrowserWindowHost}. */
