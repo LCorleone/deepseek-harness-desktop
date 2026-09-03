@@ -270,6 +270,11 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **设计**：manifest 条目加 `source:{kind:'npm'(默认省略)|{kind:'tarball',url,integrity(sha512)}}`；tarball 宿主=内网 GitLab julu/dsh-desktop-config `packages/<name>-<version>.tgz`（员工机必达、签名权威通道同域、发布流沿用 publish-local+sequence；GitHub catalog-artifacts 可选镜像）。客户端：desktop-market 下载→sha512 校验→pnpm add 本地 tarball（**仅市场管线下发可过，CLI 塞任意 tarball 仍拒**——红线测试）→装后 treeDigest 复验照走。**fleet 门禁**：旧客户端一个未知键拒收整个 manifest，新键上线复用 treeDigest 那次的 --confirm-fleet-upgraded 模式（全员 #46+）。
 **批次**：①schema+客户端安装路径+测试 ②发布管线（vendor fork 源+CI 打包+GitLab 推送+镜像，先用测试插件打通）③e2e+fleet 门+评审+#46 构建。量级 2-4 天。red line：不动子模块、不动 dsh-community-market（真实安装路径全在 dsh-plugin-desktop+tools/company-catalog）。
 
+## P8 · Agent 网页操作能力（agent-browser）—— 开卡 2026-09-03
+**用户拍板**：要实现 agent 可操作网页。调研背书（scout-minke）：同门 Minke 验证了「Electron 内嵌 webview + webContents.debugger 手写 CDP」路线可行（免装外部浏览器/免下载 Chromium/登录态可控）。**我们不照搬**：Minke 把插件烧进 vendored 子模块（踩我们红线）且 4838 行手写 CDP；我们走动态 host 插件 + 最小 CDP 面（快照/隔离求值/真实输入/截图四域，目标 <1000 行）。
+**安全要求（设计红线）**：①危险动作（导航/表单提交/下载）走现有审批门 ②一次性 partition token 隔离+登录态持久化需显式开 ③密码框/凭据对 agent 不可读 ④人机协作：claimControl 随时接管+可视化光标 ⑤URL 策略可配（公司代理/域名白名单）。全部实现在 dsh-plugin-desktop（不动子模块）。
+**状态**：设计阶段进行中（Plan agent），设计评审通过后分批实装（预计 1-2 周）。
+
 ## 兼容模式红线汇总
 
 | 卡 | 触碰 |
