@@ -91,6 +91,8 @@ const SETTLE_POLL_MS = 100
 /** Sensitive `autocomplete` tokens whose values never leave the page (design §5.3). */
 const SENSITIVE_AUTOCOMPLETE_TOKENS = new Set(['current-password', 'new-password', 'one-time-code'])
 const SENSITIVE_AUTOCOMPLETE_PREFIX = 'cc-'
+/** Secret-shaped `name`/`id` substrings (B1 review P2: heuristic addition). */
+const SENSITIVE_NAME_PATTERN = /(?:password|passwd|pwd)/u
 
 /** Error classification of the agent-browser surface (design §4 taxonomy). */
 export type AgentBrowserErrorCode =
@@ -134,9 +136,20 @@ export function isSensitiveInputNode(node: AgentBrowserCdpNode): boolean {
   const attributes = agentBrowserNodeAttributes(node)
   const type = (attributes.type ?? 'text').toLowerCase()
   if (type === 'password') return true
-  const autocomplete = (attributes.autocomplete ?? '').toLowerCase().trim()
-  if (SENSITIVE_AUTOCOMPLETE_TOKENS.has(autocomplete)) return true
-  if (autocomplete.startsWith(SENSITIVE_AUTOCOMPLETE_PREFIX)) return true
+  // B1 review P2: pages that omit autocomplete still name their secret
+  // fields honestly — `name`/`id` carrying password|passwd|pwd marks the
+  // input secret-shaped even when the type is plain text. Masking extra
+  // fields is the safe direction; a false positive only hides a value.
+  const name = (attributes.name ?? '').toLowerCase()
+  const id = (attributes.id ?? '').toLowerCase()
+  if (SENSITIVE_NAME_PATTERN.test(name) || SENSITIVE_NAME_PATTERN.test(id)) return true
+  // Multi-token autocomplete values ("tel current-password") match by
+  // token, not as a whole — the autofill detail tokens ride alongside the
+  // sensitive section token.
+  for (const token of (attributes.autocomplete ?? '').toLowerCase().trim().split(/\s+/u)) {
+    if (SENSITIVE_AUTOCOMPLETE_TOKENS.has(token)) return true
+    if (token.startsWith(SENSITIVE_AUTOCOMPLETE_PREFIX)) return true
+  }
   return false
 }
 
@@ -205,7 +218,12 @@ function describeAttributes(node: AgentBrowserCdpNode, attributes: Record<string
     return parts.join(' ')
   }
   if (tag === 'input' && attributes.value !== undefined && attributes.value.length > 0) {
-    parts.push(`value="${collapseText(attributes.value).slice(0, 120)}"`)
+    // Hidden inputs carry CSRF/session tokens that must never enter the
+    // model context (B1 review P3): the value attribute is projected for
+    // VISIBLE inputs only, and hidden inputs declare their own type.
+    if ((attributes.type ?? 'text').toLowerCase() !== 'hidden') {
+      parts.push(`value="${collapseText(attributes.value).slice(0, 120)}"`)
+    }
   }
   return parts.join(' ')
 }
@@ -359,6 +377,8 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private url = 'about:blank'
   private title = ''
   private cachedSnapshot: AgentBrowserSnapshot | undefined
+  /** Main-frame identity from `Page.getFrameTree`; filters same-document events. */
+  private mainFrameId: string | undefined
   private mutex: Promise<unknown> = Promise.resolve()
   private readonly unsubscribers: Array<() => void> = []
 
@@ -407,6 +427,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       await client.pageEnable()
       await client.setLifecycleEventsEnabled(true)
       await client.domEnable()
+      await this.learnMainFrameId(client)
       this.registerGuestEvents(client)
       this.phase = 'observing'
     } catch (cause) {
@@ -416,17 +437,39 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     }
   }
 
+  /**
+   * Learn the main-frame identity once per start (B1 review P2).
+   *
+   * `Page.navigatedWithinDocument` fires for IFRAMES too, and an iframe's
+   * pushState is not a main-frame boundary — the unconditional bump turned
+   * every iframe history tweak into a false `STALE_SNAPSHOT`. The identity
+   * self-heals on the next main-frame `frameNavigated` when the tree read
+   * fails.
+   */
+  private async learnMainFrameId(client: AgentBrowserCdpClient): Promise<void> {
+    try {
+      const id = (await client.getFrameTree()).frameTree.frame.id
+      if (typeof id === 'string' && id.length > 0) this.mainFrameId = id
+    } catch {
+      // Without the identity the same-document filter stays permissive.
+    }
+  }
+
   private registerGuestEvents(client: AgentBrowserCdpClient): void {
     // Main-frame navigation is the only generation bump source (rev §3).
     this.unsubscribers.push(client.on('Page.frameNavigated', params => {
       if (params.frame.parentId !== undefined) return
+      this.mainFrameId = params.frame.id
       this.url = params.frame.url
       this.counter.noteMainFrameNavigation()
       this.cachedSnapshot = undefined
       this.pushViewModel()
     }))
     this.unsubscribers.push(client.on('Page.navigatedWithinDocument', params => {
-      void params
+      // Only the MAIN frame's same-document navigation is a boundary; an
+      // iframe pushState must not churn the generation (B1 review P2).
+      if (this.mainFrameId !== undefined && params.frameId !== this.mainFrameId) return
+      this.url = params.url
       this.counter.noteMainFrameNavigation()
       this.cachedSnapshot = undefined
       this.pushViewModel()
@@ -521,9 +564,13 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
           `the snapshot was observed at generation ${String(generation)} but the page is at generation ${String(this.counter.current)}; call browser_snapshot again and use only the new refs`,
         )
       }
-      this.counter.consumeDirty()
+      // B1 review P3: the dirty flag is read BEFORE trusting the cache. A
+      // mutation that landed while the previous build was in flight left the
+      // cached tree stale at an unchanged generation — consuming the flag
+      // and then returning that cache served exactly that stale tree.
+      const dirty = this.counter.consumeDirty()
       const cached = this.cachedSnapshot
-      if (cached !== undefined && cached.generation === this.counter.current) return cached
+      if (!dirty && cached !== undefined && cached.generation === this.counter.current) return cached
       const viewport = await this.readViewport(client, signal)
       // Budget overrun triggers a shallow re-fetch (§3): the truncation
       // marker caps output text, not the native→V8 conversion cost.
@@ -675,6 +722,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     }
     this.client = undefined
     this.guest = undefined
+    this.mainFrameId = undefined
     const host = this.windowHost
     this.windowHost = undefined
     this.phase = 'idle'

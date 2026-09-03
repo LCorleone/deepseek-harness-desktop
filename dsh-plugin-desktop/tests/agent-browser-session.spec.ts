@@ -195,13 +195,61 @@ describe('agent-browser session', () => {
       partition: tokens[0],
       generation: 1,
     })
-    // The startup command set matches the B1 CDP surface.
+    // The startup command set matches the B1 CDP surface plus the main-frame
+    // identity read (B1 review P2).
     expect(debugger_.commands.map(command => command.method)).toEqual([
       'Page.enable',
       'Page.setLifecycleEventsEnabled',
       'DOM.enable',
+      'Page.getFrameTree',
       'Page.navigate',
     ])
+  })
+
+  it('ignores an iframe pushState and bumps only on the main frame', async () => {
+    const debugger_ = fakeGuestDebugger({
+      'Page.getFrameTree': { frameTree: { frame: { id: 'main-frame' } } },
+    })
+    const { session, hosts } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+    expect(session.describe().generation).toBe(1)
+
+    // An iframe's same-document navigation is NOT a main-frame boundary:
+    // the generation must not churn (B1 review P2).
+    debugger_.emit('Page.navigatedWithinDocument', {
+      frameId: 'child-frame-1',
+      url: 'https://embed.example.test/#step-2',
+    })
+    expect(session.describe().generation).toBe(1)
+    expect(session.describe().url).toBe('https://example.test/')
+
+    // The main frame's pushState still is one.
+    debugger_.emit('Page.navigatedWithinDocument', {
+      frameId: 'main-frame',
+      url: 'https://example.test/#section-2',
+    })
+    const state = session.describe()
+    expect(state.generation).toBe(2)
+    // The pushed view model carries the same-document URL; describe() re-reads
+    // the fake guest's static identity instead, so assert on the push.
+    expect(hosts[0]!.states.at(-1)).toMatchObject({ url: 'https://example.test/#section-2', generation: 2 })
+  })
+
+  it('self-heals the main-frame identity from frameNavigated events', async () => {
+    // getFrameTree returns nothing usable: the filter stays permissive until
+    // the first parentless frameNavigated teaches the identity.
+    const debugger_ = fakeGuestDebugger({ 'Page.getFrameTree': {} })
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    debugger_.emit('Page.navigatedWithinDocument', { frameId: 'unknown-frame', url: 'https://example.test/#x' })
+    expect(session.describe().generation).toBe(2)
+
+    debugger_.emit('Page.frameNavigated', { frame: { id: 'learned-main', url: 'https://example.test/next' } })
+    debugger_.emit('Page.navigatedWithinDocument', { frameId: 'unknown-frame', url: 'https://example.test/#y' })
+    expect(session.describe().generation).toBe(3)
+    debugger_.emit('Page.navigatedWithinDocument', { frameId: 'learned-main', url: 'https://example.test/#z' })
+    expect(session.describe().generation).toBe(4)
   })
 
   it('bumps again on navigation but never on DOM mutation', async () => {
@@ -268,6 +316,49 @@ describe('agent-browser session', () => {
     expect(debugger_.commands.filter(command => command.method === 'DOM.getDocument')).toHaveLength(1)
 
     debugger_.emit('DOM.setChildNodes', { parentId: 1, nodes: [] })
+    await session.snapshot(undefined)
+    expect(debugger_.commands.filter(command => command.method === 'DOM.getDocument')).toHaveLength(2)
+  })
+
+  it('refetches when a mutation lands while a snapshot build is in flight', async () => {
+    // B1 review P3: the mutation races the getDocument round trip. The
+    // event handler clears the cached snapshot, but the build that was in
+    // flight then caches a tree computed before the mutation — consuming the
+    // dirty flag and trusting that cache served the stale tree afterwards.
+    const debugger_ = fakeGuestDebugger({ 'DOM.getDocument': documentResponse(3) })
+    const scriptedSend = debugger_.target.sendCommand.bind(debugger_.target)
+    let holdFirstFetch: Promise<void> | undefined
+    let releaseHold: (() => void) | undefined
+    let firstFetchInFlight = false
+    debugger_.target.sendCommand = async (method: string, params?: unknown) => {
+      if (method === 'DOM.getDocument' && holdFirstFetch !== undefined) {
+        firstFetchInFlight = true
+        const held = holdFirstFetch
+        holdFirstFetch = undefined
+        await held
+        debugger_.commands.push({ method, ...(params === undefined ? {} : { params }) })
+        return documentResponse(3)
+      }
+      return await scriptedSend(method, params)
+    }
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    holdFirstFetch = new Promise<void>(resolve => { releaseHold = resolve })
+    const firstSnapshot = session.snapshot(undefined)
+    // Pump until the fetch itself is in flight — only then is a mutation a
+    // mid-build race rather than a pre-build one.
+    while (!firstFetchInFlight) await Promise.resolve()
+    // The mutation lands AFTER the fetch started but BEFORE the build cached.
+    debugger_.emit('DOM.childNodeInserted', { parentNodeId: 1, previousNodeId: 0, node: { nodeId: 9 } })
+    const release = releaseHold
+    releaseHold = undefined
+    release?.()
+    await firstSnapshot
+    expect(debugger_.commands.filter(command => command.method === 'DOM.getDocument')).toHaveLength(1)
+
+    // The stale in-flight cache must NOT be served: the dirty flag that was
+    // set mid-build forces the refetch.
     await session.snapshot(undefined)
     expect(debugger_.commands.filter(command => command.method === 'DOM.getDocument')).toHaveLength(2)
   })

@@ -62,6 +62,38 @@ function loginDocument(): AgentBrowserCdpNode {
             backendNodeId: 105,
             attributes: ['type', 'TEXT', 'autocomplete', 'NEW-PASSWORD', 'value', 'next-secret'],
           }),
+          node({
+            nodeId: 14,
+            localName: 'input',
+            backendNodeId: 110,
+            // Multi-token autocomplete (B1 review P2): the sensitive section
+            // token rides alongside an autofill detail token.
+            attributes: ['type', 'tel', 'autocomplete', 'tel current-password', 'value', 'p@ss'],
+          }),
+          node({
+            nodeId: 15,
+            localName: 'input',
+            backendNodeId: 111,
+            // Secret-shaped name with a plain-text type and no autocomplete.
+            attributes: ['type', 'text', 'name', 'user_password', 'value', 'name-leak'],
+          }),
+          node({
+            nodeId: 16,
+            localName: 'input',
+            backendNodeId: 112,
+            // Secret-shaped id under the pwd abbreviation.
+            attributes: ['type', 'text', 'id', 'login-passwd', 'value', 'id-leak'],
+          }),
+          node({
+            nodeId: 17,
+            localName: 'input',
+            backendNodeId: 113,
+            // Hidden CSRF token (B1 review P3): never enters the context.
+            attributes: ['type', 'hidden', 'name', 'csrf', 'value', 'csrf-secret-token-123'],
+          }),
+          node({ nodeId: 18, localName: 'input', backendNodeId: 114, attributes: [
+            'type', 'hidden', 'name', 'session', 'value', 'sess-xyz',
+          ] }),
           node({ nodeId: 11, localName: 'button', backendNodeId: 106, children: [
             node({ nodeId: 12, nodeType: 3, nodeName: '#text', nodeValue: 'Sign in' }),
           ] }),
@@ -107,6 +139,25 @@ describe('agent-browser snapshot builder', () => {
     expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['autocomplete', 'cc-csc'] }))).toBe(true)
     expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['autocomplete', 'email'] }))).toBe(false)
     expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'text'] }))).toBe(false)
+
+    // B1 review P2 heuristics: secret-shaped name/id substrings and
+    // multi-token autocomplete values.
+    expect(tree).not.toContain('name-leak')
+    expect(tree).not.toContain('id-leak')
+    expect(tree).not.toContain('p@ss')
+    expect(tree).toContain('input #e33 name="user_password" type="text" [password field: value hidden]')
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'text', 'name', 'x-passwd-y'] }))).toBe(true)
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'text', 'id', 'PWD'] }))).toBe(true)
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'text', 'name', 'uploads'] }))).toBe(false)
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'tel', 'autocomplete', 'tel current-password'] }))).toBe(true)
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'text', 'autocomplete', 'one-time-code tel'] }))).toBe(true)
+    expect(isSensitiveInputNode(node({ nodeId: 1, localName: 'input', attributes: ['type', 'tel', 'autocomplete', 'tel national'] }))).toBe(false)
+
+    // Hidden inputs (B1 review P3): the CSRF/session token values never
+    // enter the model context; the declared type stays observable.
+    expect(tree).toContain('input #e35 name="csrf" type="hidden"')
+    expect(tree).not.toContain('csrf-secret-token-123')
+    expect(tree).not.toContain('sess-xyz')
   })
 
   it('flattens flat attribute pairs for lookup', () => {

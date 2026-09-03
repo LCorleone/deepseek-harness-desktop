@@ -78,6 +78,14 @@ export interface AgentBrowserCdpNavigateResult {
   readonly errorText?: string
 }
 
+/** `Page.getFrameTree` result (only the main frame identity matters to us). */
+export interface AgentBrowserCdpFrameTreeResult {
+  readonly frameTree: {
+    readonly frame: AgentBrowserCdpFrame
+    readonly childFrames?: readonly unknown[]
+  }
+}
+
 /** `Page.getLayoutMetrics` sizes we consume (CSS pixels). */
 export interface AgentBrowserCdpLayoutMetrics {
   readonly cssVisualViewport: {
@@ -293,6 +301,20 @@ export class AgentBrowserCdpClient {
   /** `Page.setLifecycleEventsEnabled` — gates `loadEventFired` delivery. */
   async setLifecycleEventsEnabled(enabled: boolean): Promise<void> {
     await this.send('Page.setLifecycleEventsEnabled', { enabled })
+  }
+
+  /**
+   * `Page.getFrameTree` — the main-frame identity used to filter
+   * same-document navigation events down to main-frame boundaries (B1
+   * review P2: an iframe's pushState is not a generation boundary).
+   */
+  async getFrameTree(): Promise<AgentBrowserCdpFrameTreeResult> {
+    const result = await this.send('Page.getFrameTree')
+    const frame = (result.frameTree as { frame?: unknown } | undefined)?.frame
+    if (typeof frame !== 'object' || frame === null) {
+      throw new AgentBrowserCdpError('Page.getFrameTree returned no frame tree', 'Page.getFrameTree')
+    }
+    return result as unknown as AgentBrowserCdpFrameTreeResult
   }
 
   /** `Page.getLayoutMetrics` for the CSS visual viewport. */
