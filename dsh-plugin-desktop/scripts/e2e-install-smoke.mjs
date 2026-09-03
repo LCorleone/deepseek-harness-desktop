@@ -8,10 +8,12 @@
  *
  *   a. artifact structure — bundled Node command, in-ASAR policy (locked),
  *      signed company catalog manifest verified by the packaged market lib;
- *   b. CLI policy chain — the bundled Node runs `desktop-cli.js` with the
- *      six-variable `DSH_DESKTOP_POLICY_*` hand-off (sentinel trust roots);
- *      `--version` must answer, and a locked `plugin add` outside the signed
- *      catalog must fail closed without touching the network;
+ *   b. CLI policy chain — the packaged policy emitter and parser must
+ *      round-trip first (b0, the launcher hand-off truth pair), then the
+ *      bundled Node runs `desktop-cli.js` with that launcher-shaped
+ *      `DSH_DESKTOP_POLICY_*` hand-off (sentinel trust roots); `--version`
+ *      must answer, and a locked `plugin add` outside the signed catalog
+ *      must fail closed without touching the network;
  *   c. real install — a temporary `DSH_HOME` profile (upstream template),
  *      `ensureProfilePnpmBuildApproval` through the compiled packaged lib,
  *      then a real `plugin add ms@2.1.3` through pnpm against the npm
@@ -162,6 +164,22 @@ function packagedLibChunk(prefix) {
     throw new Error(`the packaged lib tree has no ${prefix}*.js chunk`)
   }
   return join(artifact.unpackedRoot, 'lib', candidate)
+}
+
+/**
+ * Path of the packaged desktop-policy module. Builds emit either a plain
+ * `desktop-policy.js` or a hash-suffixed shared chunk
+ * (`desktop-policy-<hash>.js`), so accept both spellings.
+ */
+function packagedDesktopPolicyModulePath() {
+  const libDir = join(artifact.unpackedRoot, 'lib')
+  const candidate = readdirSync(libDir)
+    .filter(entry => /^desktop-policy(?:-.*)?\.js$/u.test(entry))
+    .sort((left, right) => left.length - right.length)[0]
+  if (candidate === undefined) {
+    throw new Error('the packaged lib tree has no desktop-policy module')
+  }
+  return join(libDir, candidate)
 }
 
 /** Build a sanitized child environment (no ambient DSH/runner overrides). */
@@ -335,59 +353,134 @@ let policy = undefined
 // ---------------------------------------------------------------------------
 
 /**
- * Sentinel policy hand-off: strictly parseable values whose trust roots are
+ * The launcher-shaped policy hand-off: exactly what the packaged emitter
+ * produces for the artifact's own embedded policy. Every CLI child below
+ * rides a copy of it (with per-step value overrides), so the smoke can never
+ * construct a hand-off shape the packaged parser rejects — the exact
+ * regression CI run 33754841079 caught (a hand-written six-entry copy beside
+ * the seven-entry parser of P8 B1).
+ */
+let launcherPolicyHandoff = undefined
+
+{
+  // b0 truth pair, no mocks: the packaged emitter's output must decode
+  // through the packaged parser and re-emit byte-identically. This pins the
+  // two sides the real install path composes (the launcher's
+  // desktopPolicyEnvironmentEntries -> the CLI child's
+  // desktopPolicyFromEnvironment) using the shipped code on both ends.
+  try {
+    if (policy === undefined) throw new Error('the in-ASAR desktop policy was not readable (see a3)')
+    const packagedPolicyModule = await import(pathToFileURL(packagedDesktopPolicyModulePath()).href)
+    const parsePackagedPolicy = exportedFunctionFromNamespace(packagedPolicyModule, 'parseDesktopPolicy')
+    const emitPackagedPolicyEnvironment = exportedFunctionFromNamespace(packagedPolicyModule, 'desktopPolicyEnvironmentEntries')
+    const decodePackagedPolicyEnvironment = exportedFunctionFromNamespace(packagedPolicyModule, 'desktopPolicyFromEnvironment')
+    const emitted = emitPackagedPolicyEnvironment(parsePackagedPolicy(policy))
+    // desktopPolicyFromEnvironment consumes (deletes) the entries it decodes.
+    const reemitted = emitPackagedPolicyEnvironment(decodePackagedPolicyEnvironment({ ...emitted }))
+    if (JSON.stringify(reemitted) !== JSON.stringify(emitted)) {
+      throw new Error(`the hand-off does not round-trip: ${JSON.stringify(emitted)} -> ${JSON.stringify(reemitted)}`)
+    }
+    launcherPolicyHandoff = emitted
+    pass('b0', `packaged policy emitter round-trips through the packaged parser (${String(Object.keys(emitted).length)} hand-off entries)`)
+  } catch (cause) {
+    fail('b0', `the packaged policy environment hand-off is not self-consistent: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+}
+
+/** Resolve one canonical hand-off name inside the packaged emitter's output. */
+function handoffEntry(handoff, canonicalName) {
+  const key = Object.keys(handoff).find(name => name.toUpperCase() === canonicalName)
+  if (key === undefined) {
+    throw new Error(`the packaged policy hand-off no longer carries ${canonicalName}; update this smoke`)
+  }
+  return key
+}
+
+/**
+ * Sentinel policy hand-off: the launcher-shaped entries with trust roots
  * deliberately NOT the artifact's real roots, so any verification against
  * them must fail closed. The manifest URL points at the shipped content-mode
  * asset so the locked gate reads a real file and refuses it on trust.
  */
 function sentinelPolicyEnvironment() {
+  if (launcherPolicyHandoff === undefined) throw new Error('no launcher-shaped policy hand-off (see b0)')
   return {
-    DSH_DESKTOP_POLICY_LOCKED: '1',
-    DSH_DESKTOP_POLICY_MANAGED_MODELS: '1',
-    DSH_DESKTOP_POLICY_REQUIRE_SSO: '1',
-    DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '-',
-    DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
-    DSH_DESKTOP_POLICY_TRUST_ROOTS: `e2e-smoke-key-1:${'a'.repeat(64)}`,
+    ...launcherPolicyHandoff,
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_LOCKED')]: '1',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_CATALOG_ORIGIN')]: '-',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_MANIFEST_URL')]: 'company-market/catalog-manifest.json',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_TRUST_ROOTS')]: `e2e-smoke-key-1:${'a'.repeat(64)}`,
+  }
+}
+
+/**
+ * The launcher-shaped hand-off with the unlocked posture the real install
+ * needs (locked/managed/SSO off, no trust roots, content-mode manifest).
+ */
+function unlockedPolicyEnvironment() {
+  if (launcherPolicyHandoff === undefined) throw new Error('no launcher-shaped policy hand-off (see b0)')
+  return {
+    ...launcherPolicyHandoff,
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_LOCKED')]: '0',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_MANAGED_MODELS')]: '0',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_REQUIRE_SSO')]: '0',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_CATALOG_ORIGIN')]: '-',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_MANIFEST_URL')]: 'company-market/catalog-manifest.json',
+    [handoffEntry(launcherPolicyHandoff, 'DSH_DESKTOP_POLICY_TRUST_ROOTS')]: '-',
   }
 }
 
 {
-  const env = childEnvironment()
-  Object.assign(env, sentinelPolicyEnvironment())
-  const probe = runTimed(bundledNode, ['--expose-internals', desktopCli, '--version'], {
-    timeoutMs: CLI_SMOKE_TIMEOUT_MS,
-    env,
-    cwd: tmpdir(),
-  })
-  let dshVersion = undefined
-  try {
-    dshVersion = JSON.parse(extractArchiveFile('node_modules/@deepseek-ai/dsh/package.json').toString('utf8')).version
-  } catch {
-    dshVersion = undefined
-  }
-  if (probe.status === 0 && dshVersion !== undefined && probe.stdout.trim() === dshVersion) {
-    pass('b1', `desktop-cli --version answered ${dshVersion} under the bundled Node with the six DSH_DESKTOP_POLICY_* sentinel variables present`)
+  if (launcherPolicyHandoff === undefined) {
+    fail('b1', 'no launcher-shaped policy hand-off (see b0)')
   } else {
-    fail('b1', `desktop-cli --version with the sentinel policy hand-off returned status ${String(probe.status)} stdout ${JSON.stringify(probe.stdout.trim())} stderr ${JSON.stringify(probe.stderr.trim().slice(0, 400))}`)
+    const sentinel = sentinelPolicyEnvironment()
+    const env = childEnvironment()
+    Object.assign(env, sentinel)
+    const probe = runTimed(bundledNode, ['--expose-internals', desktopCli, '--version'], {
+      timeoutMs: CLI_SMOKE_TIMEOUT_MS,
+      env,
+      cwd: tmpdir(),
+    })
+    let dshVersion = undefined
+    try {
+      dshVersion = JSON.parse(extractArchiveFile('node_modules/@deepseek-ai/dsh/package.json').toString('utf8')).version
+    } catch {
+      dshVersion = undefined
+    }
+    if (probe.status === 0 && dshVersion !== undefined && probe.stdout.trim() === dshVersion) {
+      pass('b1', `desktop-cli --version answered ${dshVersion} under the bundled Node with the ${String(Object.keys(sentinel).length)}-entry DSH_DESKTOP_POLICY_* sentinel hand-off present`)
+    } else {
+      fail('b1', `desktop-cli --version with the sentinel policy hand-off returned status ${String(probe.status)} stdout ${JSON.stringify(probe.stdout.trim())} stderr ${JSON.stringify(probe.stderr.trim().slice(0, 400))}`)
+    }
   }
 }
 
 {
-  // Locked gate, offline and deterministic: the sentinel trust roots do not
-  // match the shipped manifest's signing key, so `plugin add` must be denied
-  // before the upstream CLI (or any network) is touched.
-  const env = childEnvironment()
-  Object.assign(env, sentinelPolicyEnvironment(), { DSH_DESKTOP_DEFAULT_PROFILE: 'smoke' })
-  const probe = runTimed(bundledNode, ['--expose-internals', desktopCli, 'plugin', 'add', `${FIXTURE_PACKAGE}@${FIXTURE_VERSION}`], {
-    timeoutMs: CLI_SMOKE_TIMEOUT_MS,
-    env,
-    cwd: tmpdir(),
-  })
-  const denied = probe.status !== 0 && /dsh-desktop:/u.test(probe.stderr)
-  if (denied) {
-    pass('b2', `locked plugin add of ${FIXTURE_PACKAGE}@${FIXTURE_VERSION} failed closed (exit ${String(probe.status)}): ${probe.stderr.trim().split('\n')[0]?.slice(0, 160)}`)
+  if (launcherPolicyHandoff === undefined) {
+    fail('b2', 'no launcher-shaped policy hand-off (see b0)')
   } else {
-    fail('b2', `locked plugin add with sentinel trust roots must be denied with a nonzero exit and a dsh-desktop reason; got status ${String(probe.status)} stderr ${JSON.stringify(probe.stderr.slice(0, 400))}`)
+    // Locked gate, offline and deterministic: the sentinel trust roots do not
+    // match the shipped manifest's signing key, so `plugin add` must be denied
+    // before the upstream CLI (or any network) is touched. A hand-off the CLI
+    // child cannot parse also exits 1 with a `dsh-desktop:`-prefixed line (the
+    // bootstrap's top-level catch), so that startup failure must NOT satisfy
+    // this denial assertion — it would mask exactly the hand-off regression
+    // this smoke exists to catch.
+    const env = childEnvironment()
+    Object.assign(env, sentinelPolicyEnvironment(), { DSH_DESKTOP_DEFAULT_PROFILE: 'smoke' })
+    const probe = runTimed(bundledNode, ['--expose-internals', desktopCli, 'plugin', 'add', `${FIXTURE_PACKAGE}@${FIXTURE_VERSION}`], {
+      timeoutMs: CLI_SMOKE_TIMEOUT_MS,
+      env,
+      cwd: tmpdir(),
+    })
+    const denied = probe.status !== 0 && /dsh-desktop:/u.test(probe.stderr)
+      && !/failed to start packaged dsh/u.test(probe.stderr)
+    if (denied) {
+      pass('b2', `locked plugin add of ${FIXTURE_PACKAGE}@${FIXTURE_VERSION} failed closed (exit ${String(probe.status)}): ${probe.stderr.trim().split('\n')[0]?.slice(0, 160)}`)
+    } else {
+      fail('b2', `locked plugin add with sentinel trust roots must be denied with a nonzero exit and a dsh-desktop reason; got status ${String(probe.status)} stderr ${JSON.stringify(probe.stderr.slice(0, 400))}`)
+    }
   }
 }
 
@@ -427,12 +520,10 @@ try {
     Object.assign(installEnv, {
       DSH_HOME: smokeHome,
       DSH_DESKTOP_DEFAULT_PROFILE: installProfileName,
-      DSH_DESKTOP_POLICY_LOCKED: '0',
-      DSH_DESKTOP_POLICY_MANAGED_MODELS: '0',
-      DSH_DESKTOP_POLICY_REQUIRE_SSO: '0',
-      DSH_DESKTOP_POLICY_CATALOG_ORIGIN: '-',
-      DSH_DESKTOP_POLICY_MANIFEST_URL: 'company-market/catalog-manifest.json',
-      DSH_DESKTOP_POLICY_TRUST_ROOTS: '-',
+      // The launcher-shaped policy hand-off (unlocked posture) instead of a
+      // hand-written key list: the emitted entries always match what the
+      // packaged CLI parser consumes, whatever future keys join the hand-off.
+      ...unlockedPolicyEnvironment(),
       DSH_DESKTOP_INSTALL_RECOVERY_STATE_PATH: join(smokeHome, 'plugin-install-recovery', 'state.json'),
     })
     runtimeEnvironment.installDesktopPnpmRuntime({

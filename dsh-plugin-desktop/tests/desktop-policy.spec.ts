@@ -469,6 +469,26 @@ describe('desktop policy environment hand-off', () => {
     expect(desktopPolicyEnvironmentEntries(policy)[DESKTOP_POLICY_ENVIRONMENT.agentBrowser]).toBe('1')
   })
 
+  it('round-trips both shipped policy assets through the real emitter and parser', () => {
+    // The truth pair the packaged install path composes (main.ts's
+    // desktopPolicyEnvironmentEntries -> the CLI child's
+    // desktopPolicyFromEnvironment): whatever a shipped asset says, the
+    // emitter's output must decode through the parser and re-emit
+    // byte-identically. A policy key the hand-off cannot carry fails here,
+    // in `yarn check`, instead of inside a packaged CLI child on CI.
+    for (const asset of ['desktop-policy.dev.json', 'desktop-policy.release.json']) {
+      const policy = parseDesktopPolicy(
+        JSON.parse(readFileSync(new URL(`../src/policy/${asset}`, import.meta.url), 'utf8')) as unknown,
+      )
+      const entries = desktopPolicyEnvironmentEntries(policy)
+
+      expect(Object.keys(entries).sort()).toEqual([...Object.values(DESKTOP_POLICY_ENVIRONMENT)].sort())
+      expect(desktopPolicyEnvironmentEntries(
+        desktopPolicyFromEnvironment({ ...entries }, devModuleUrl)!,
+      )).toEqual(entries)
+    }
+  })
+
   it('decodes case-insensitive keys and rejects conflicting duplicates', () => {
     const entries = desktopPolicyEnvironmentEntries(parseDesktopPolicy(companyPolicy()))
     const cased: NodeJS.ProcessEnv = {
