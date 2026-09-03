@@ -1,0 +1,16 @@
+{
+  "name": "fixture-hello",
+  "version": "1.0.0",
+  "description": "Minimal tarball-channel fixture plugin for the company-catalog e2e (pack → allowlist → build → verify).",
+  "license": "MIT",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

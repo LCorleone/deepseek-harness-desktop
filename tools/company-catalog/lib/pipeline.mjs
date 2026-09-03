@@ -274,6 +274,12 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
         // sha512 is signed as the entry integrity — the exact value the
         // desktop's profile lockfile pins for a `file:` install — and the
         // repository identity must be an explicit allowlist override.
+        if (tarballSource.integrity === undefined) {
+          throw new Error(
+            `${entryKey(entry)} carries the pack-artifact source form (path) with no resolved integrity — ` +
+            'resolveTarballArtifacts must run before assembly (the CLI build path does; direct pipeline callers must too)',
+          )
+        }
         integrity = tarballSource.integrity
         rawRepository = entry.repository !== undefined ? { url: entry.repository } : undefined
         if (rawRepository === undefined) {

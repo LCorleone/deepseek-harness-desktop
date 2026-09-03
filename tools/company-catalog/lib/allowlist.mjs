@@ -9,7 +9,9 @@
  * with the same semantics the market verifier enforces on the manifest.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 /** npm package name grammar accepted by the manifest schema. */
 export const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
@@ -23,13 +25,15 @@ const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
 const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
 const SOURCE_KINDS = ['npm', 'tarball']
-const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'url']
+const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'path', 'url']
 const NPM_SOURCE_FIELDS = ['kind']
 
 /** Lowercase hex SHA-256 shape of an expected installed-tree digest. */
 export const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
 /** Upper bound of one entry's signed build-approval list; mirrors the manifest schema. */
 const MAX_APPROVED_BUILDS = 128
+/** Hard byte bound of one hosted tarball artifact; mirrors lib/tarball.mjs. */
+export const TARBALL_MAX_BYTES = 128 * 1024 * 1024
 
 /** Standard-base64 SHA-512 integrity (64-byte digest), the value the manifest schema pins. */
 export function isSha512Integrity(value) {
@@ -81,9 +85,14 @@ export function validateCatalogOrigin(value) {
  * Validate and normalize one entry's `source` channel selection. `undefined`
  * and `{kind:'npm'}` both normalize to the npm channel with no `source` key —
  * existing allowlist entries keep their exact reviewed shape. A tarball
- * source must be exactly `{kind:'tarball', url, integrity}` with an https url
- * on the configured catalog origin and the sha512 of the tarball file
- * itself; npm entries must not carry a url.
+ * source is `{kind:'tarball', url, integrity}` (the reviewed-integrity form,
+ * signed as-is) or `{kind:'tarball', url, path}` (the pack-artifact form: the
+ * pipeline computes the sha512 from the packed file at build time, exactly
+ * like it fetches the npm channel's integrity from the registry — never
+ * trusting a local reviewed value); carrying both `path` and `integrity` is
+ * refused so there is never a second place the truth could diverge. The url
+ * must be an https url on the configured catalog origin in both forms; npm
+ * entries must not carry a url.
  */
 export function validateEntrySource(source, at, options = {}) {
   if (source === undefined) return { kind: 'npm' }
@@ -101,9 +110,26 @@ export function validateEntrySource(source, at, options = {}) {
   }
   const unknown = Object.keys(source).filter((key) => !TARBALL_SOURCE_FIELDS.includes(key))
   if (unknown.length > 0) return { ok: false, reason: `${at}.source has unknown field(s) ${unknown.join(', ')}` }
-  for (const field of ['url', 'integrity']) {
+  for (const field of ['url']) {
     if (typeof source[field] !== 'string' || source[field].length === 0) {
       return { ok: false, reason: `${at}.source.${field} is required for the tarball channel` }
+    }
+  }
+  const hasIntegrity = source.integrity !== undefined
+  const hasPath = source.path !== undefined
+  if (hasIntegrity && hasPath) {
+    return {
+      ok: false,
+      reason: `${at}.source carries both path and integrity — the pack-artifact form computes the integrity from the packed file at build time (run pack-tarball), the reviewed form pins it inline; exactly one place may hold the truth`,
+    }
+  }
+  if (!hasIntegrity && !hasPath) {
+    return { ok: false, reason: `${at}.source requires either path (the pack-tarball artifact) or integrity (the reviewed sha512)` }
+  }
+  if (hasPath && (typeof source.path !== 'string' || !isSafePackArtifactPath(source.path))) {
+    return {
+      ok: false,
+      reason: `${at}.source.path must be the pack-tarball artifact as a repository-relative POSIX path ending in .tgz (no absolute paths, dot segments, or backslashes)`,
     }
   }
   let url
@@ -136,10 +162,27 @@ export function validateEntrySource(source, at, options = {}) {
   if (url.origin !== origin) {
     return { ok: false, reason: `${at}.source.url origin ${url.origin} is not the company catalog origin ${origin}` }
   }
-  if (!isSha512Integrity(source.integrity)) {
+  if (hasIntegrity && !isSha512Integrity(source.integrity)) {
     return { ok: false, reason: `${at}.source.integrity must be the base64 SHA-512 digest of the tarball file (sha512-…)` }
   }
-  return { kind: 'tarball', url: source.url, integrity: source.integrity }
+  return hasPath
+    ? { kind: 'tarball', url: source.url, path: source.path }
+    : { kind: 'tarball', url: source.url, integrity: source.integrity }
+}
+
+/**
+ * Repository-relative POSIX path of a packed tarball artifact: the shape the
+ * allowlist `source.path` form accepts (resolved against the repository root
+ * by resolveTarballArtifacts, so the reviewed value stays portable across
+ * machines and CI checkouts). Mirrors the bundlePatch safety grammar plus the
+ * .tgz suffix of the hosting layout.
+ */
+function isSafePackArtifactPath(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) return false
+  if (BUNDLE_PATCH_FORBIDDEN.test(value) || value.includes('\\')) return false
+  if (!value.endsWith('.tgz')) return false
+  return !value.startsWith('/')
+    && value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes(':'))
 }
 
 /** npm dependency name of an approved build, schema-shaped: the grammar plus the 214-character bound. */
@@ -422,13 +465,31 @@ export function loadAllowlist(path, options = {}) {
   }
   const entries = []
   const seen = new Set()
+  // One package name never straddles both install channels (P7 2b): a name
+  // served over the npm channel and the tarball channel at the same time would
+  // let the caller pick the channel per version, and the desktop's per-row
+  // install-time resolution has no single answer for which artifact a profile
+  // should pin. The rule is enforced here, at the allowlist boundary, where the
+  // whole reviewed set is in view — the same place the duplicate-by-version
+  // refusal lives.
+  const channelByName = new Map()
   for (const [index, entry] of parsed.entries()) {
     const result = validateAllowlistEntry(entry, `entry[${index}]`, options)
     if (!result.ok) throw new Error(`allowlist ${path}: ${result.reason}`)
     const identity = entryKey(result.value)
     if (seen.has(identity)) throw new Error(`allowlist ${path}: duplicate entry ${identity}`)
     seen.add(identity)
-    entries.push(result.value)
+    const value = result.value
+    const channel = value.source !== undefined && value.source.kind === 'tarball' ? 'tarball' : 'npm'
+    const existingChannel = channelByName.get(value.packageName)
+    if (existingChannel !== undefined && existingChannel !== channel) {
+      throw new Error(
+        `allowlist ${path}: ${value.packageName} appears on both the npm and the tarball channel ` +
+        '(one package name must never straddle two install channels) — pick one channel per name',
+      )
+    }
+    channelByName.set(value.packageName, channel)
+    entries.push(value)
   }
   return entries
 }
@@ -436,6 +497,64 @@ export function loadAllowlist(path, options = {}) {
 /** Persist entries back to the allowlist file in the reviewed shape. */
 export function saveAllowlist(path, entries) {
   writeFileSync(path, `${JSON.stringify(entries, null, 2)}\n`, 'utf8')
+}
+
+/**
+ * Resolve the pack-artifact (`source.path`) form of every tarball-channel
+ * entry into the signable `{kind, url, integrity}` shape: the sha512 is
+ * computed from the packed file's actual bytes at build time — the same
+ * never-trust-a-local-value discipline the npm channel applies to the
+ * registry dist — and the url's last path segment must equal the artifact's
+ * filename, because publish-local derives the hosted repo path
+ * (`packages/<filename>`) from that url. Reviewed-integrity entries pass
+ * through untouched. Returns `{ entries, resolved, passthrough }`; every
+ * failure names the entry and the fix.
+ */
+export function resolveTarballArtifacts(entries, { repoRoot }) {
+  const resolved = []
+  const passthrough = []
+  const updated = entries.map((entry) => {
+    if (entry.source?.kind !== 'tarball') return entry
+    if (entry.source.integrity !== undefined) {
+      passthrough.push(entryKey(entry))
+      return entry
+    }
+    const artifactPath = resolve(repoRoot, ...entry.source.path.split('/'))
+    let stat
+    try {
+      stat = statSync(artifactPath)
+    } catch (error) {
+      throw new Error(
+        `${entryKey(entry)} pins source.path ${entry.source.path} but ${artifactPath} is not readable (${error.code ?? error.message}) — ` +
+        'run pack-tarball to produce the artifact before building (the path form resolves the integrity from the packed file)',
+      )
+    }
+    if (!stat.isFile()) throw new Error(`${entryKey(entry)} source.path ${entry.source.path} is not a file`)
+    if (stat.size > TARBALL_MAX_BYTES) {
+      throw new Error(`${entryKey(entry)} source.path ${entry.source.path} is ${String(stat.size)} bytes, over the ${String(TARBALL_MAX_BYTES)}-byte bound`)
+    }
+    const bytes = readFileSync(artifactPath)
+    const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`
+    const filename = entry.source.path.split('/').pop()
+    const urlBasename = entry.source.url.split('/').pop()
+    if (urlBasename !== filename) {
+      throw new Error(
+        `${entryKey(entry)} source.url ends with '${urlBasename}' but the packed artifact is '${filename}' — ` +
+        'the hosting layout pins the url basename to the artifact filename (publish-local pushes packages/<filename> and derives the path from the url)',
+      )
+    }
+    resolved.push({
+      packageName: entry.packageName,
+      version: entry.version,
+      filename,
+      path: entry.source.path,
+      url: entry.source.url,
+      integrity,
+      sizeBytes: bytes.byteLength,
+    })
+    return { ...entry, source: { kind: 'tarball', url: entry.source.url, integrity } }
+  })
+  return { entries: updated, resolved, passthrough }
 }
 
 /**

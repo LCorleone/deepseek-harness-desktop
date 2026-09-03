@@ -20,9 +20,22 @@
  * reviewed allowlist is never modified; landing a measured digest in it stays
  * a human review commit.
  *
+ * Tarball-channel entries (P7 2b) are measured through the same reference
+ * profile, but the install resolves the packed artifact instead of the
+ * registry: `pnpm add <tarball> --save-exact` is exactly the controlled
+ * `file:` install the desktop performs on the staged tarball (the profile
+ * lockfile pins the tarball file's own sha512 — the same value the signed
+ * source carries), and the installed tree is the unpacked tarball, so the
+ * digest walk sees precisely what boot verification will measure. Entries
+ * whose source pins the artifact by reviewed inline integrity alone (no
+ * local path) stay skipped loudly: without the artifact bytes there is
+ * nothing honest to measure. `--tarball <path>` measures one standalone
+ * packed artifact (the pack-tarball child call).
+ *
  * Usage:
  *   node tools/company-catalog/measure.mjs [--allowlist <path>] [--out <json>]
  *                                          [--desktop-lib <dir>] [--all]
+ *                                          [--tarball <path>]
  *                                          [--electron-target <version>]
  *                                          [--no-electron-env] [--keep]
  *
@@ -48,7 +61,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { entryKey, loadAllowlist } from './lib/allowlist.mjs'
 
@@ -65,6 +78,9 @@ const USAGE = `Usage: node tools/company-catalog/measure.mjs [options]
 Options:
   --allowlist <path>        Allowlist file (default: tools/company-catalog/allowlist.json);
                             entries without a treeDigest are measured
+  --tarball <path>          Measure exactly this packed plugin tarball (pack-tarball
+                            output) through the reference staged install; name and
+                            version come from the artifact's package/package.json
   --out <json>              Write the digest records here (the measure-and-publish
                             --digest-file input); always written, even when empty
   --desktop-lib <dir>       Compiled desktop lib tree holding the boot-verification
@@ -89,7 +105,7 @@ const fail = (message) => {
 /** Minimal hand-rolled parser: `--flag value`, `--flag=value`. */
 function parseArgs(argv) {
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'desktop-lib', 'electron-target'])
+  const valueFlags = new Set(['allowlist', 'out', 'desktop-lib', 'electron-target', 'tarball'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) throw new Error(`unexpected argument '${argument}'`)
@@ -221,7 +237,7 @@ function measureEntry({ target, profileDir, pnpm, lib, electronTarget }) {
     '--save-exact',
     '--registry',
     NPM_REGISTRY,
-    `${target.packageName}@${target.version}`,
+    ...(target.tarballPath === undefined ? [`${target.packageName}@${target.version}`] : [resolve(target.tarballPath)]),
   ], {
     encoding: 'utf8',
     shell: false,
@@ -234,7 +250,7 @@ function measureEntry({ target, profileDir, pnpm, lib, electronTarget }) {
     throw new Error(`pnpm ${pnpm.version} could not run (${probe.error.message})`)
   }
   if (probe.status !== 0) {
-    throw new Error(`pnpm add ${target.packageName}@${target.version} exited ${String(probe.status)}: ${output.trim().split('\n').slice(-5).join(' | ').slice(0, 500)}`)
+    throw new Error(`pnpm add ${target.tarballPath ?? `${target.packageName}@${target.version}`} exited ${String(probe.status)}: ${output.trim().split('\n').slice(-5).join(' | ').slice(0, 500)}`)
   }
   // The hoisted linker places the package at profile/node_modules/<name>;
   // verify the installed manifest before measuring so a resolution surprise
@@ -250,10 +266,17 @@ function measureEntry({ target, profileDir, pnpm, lib, electronTarget }) {
   }
   const digest = lib.computeDesktopBootTreeRootDigest(packageDir)
   // The profile's dependency must be pinned exactly, exactly like the
-  // desktop CLI's audited install.
+  // desktop CLI's audited install. A tarball install pins the staged file:
+  // `file:<tarball>` (the desktop's controlled install spelling) with the
+  // lockfile carrying the tarball's own sha512.
   const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
-  if (profileManifest.dependencies?.[target.packageName] !== target.version) {
-    throw new Error(`profile dependency pin for ${target.packageName} is ${JSON.stringify(profileManifest.dependencies?.[target.packageName])}, expected ${target.version}`)
+  const pin = profileManifest.dependencies?.[target.packageName]
+  if (target.tarballPath === undefined) {
+    if (pin !== target.version) {
+      throw new Error(`profile dependency pin for ${target.packageName} is ${JSON.stringify(pin)}, expected ${target.version}`)
+    }
+  } else if (typeof pin !== 'string' || !pin.startsWith('file:') || !pin.endsWith(target.tarballPath.split('/').pop())) {
+    throw new Error(`profile dependency pin for ${target.packageName} is ${JSON.stringify(pin)}, expected a file:<tarball> pin on ${target.tarballPath}`)
   }
   return digest
 }
@@ -270,20 +293,81 @@ async function main() {
     return
   }
   const allowlistPath = flags.allowlist !== undefined ? resolve(process.cwd(), flags.allowlist) : join(TOOL_DIR, 'allowlist.json')
-  const entries = loadAllowlist(allowlistPath)
-  // The npm-registry reference install cannot measure tarball-channel entries:
-  // their artifact is the intranet tarball, not a registry version, so the
-  // npm flow would measure a different tree than any desktop install. The
-  // tarball-channel measurement flow (staged download → controlled install →
-  // the same digest walk) lands with the dual-channel publishing batch; until
-  // then such entries are skipped loudly instead of measured wrongly.
-  const tarballEntries = entries.filter((entry) => entry.source !== undefined && entry.source.kind === 'tarball')
-  if (tarballEntries.length > 0) {
-    console.log(`measure: skipping ${String(tarballEntries.length)} tarball-channel entr${tarballEntries.length === 1 ? 'y' : 'ies'} (${tarballEntries.map(entryKey).join(', ')}) — the npm reference flow cannot measure them; use the tarball-channel measurement flow (dual-channel publishing batch) and review the digest into the allowlist`)
+  const electronTargetFlags = () => {
+    if (flags['no-electron-env'] === true) {
+      if (flags['electron-target'] !== undefined) throw new Error('--no-electron-env and --electron-target are mutually exclusive — the former drops the desktop runtime env, the latter pins its version')
+      return undefined
+    }
+    return flags['electron-target'] ?? resolveDesktopElectronVersion()
   }
-  const measurable = entries.filter((entry) => !(entry.source !== undefined && entry.source.kind === 'tarball'))
-  const targets = measurable.filter((entry) => flags.all === true || entry.treeDigest === undefined)
-  const skipped = measurable.filter((entry) => !targets.includes(entry))
+  // Standalone packed-artifact mode (the pack-tarball child call): measure
+  // exactly one tarball; name/version come from its package/package.json.
+  if (flags.tarball !== undefined) {
+    if (flags.allowlist !== undefined) throw new Error('--tarball measures one packed artifact — do not combine it with --allowlist')
+    const tarballPath = resolve(process.cwd(), flags.tarball)
+    const { parseTarball } = await import('./lib/tarball.mjs')
+    const entries = parseTarball(readFileSync(tarballPath), `the tarball ${flags.tarball}`)
+    const manifestEntry = entries.find((entry) => entry.path === 'package/package.json')
+    if (manifestEntry === undefined) throw new Error(`${tarballPath} carries no package/package.json — not a packed plugin tarball`)
+    let packedManifest
+    try {
+      packedManifest = JSON.parse(manifestEntry.data.toString('utf8'))
+    } catch (error) {
+      throw new Error(`${tarballPath} package/package.json is not valid JSON (${error.message})`)
+    }
+    if (typeof packedManifest.name !== 'string' || typeof packedManifest.version !== 'string') {
+      throw new Error(`${tarballPath} package/package.json carries no name/version`) 
+    }
+    const target = { packageName: packedManifest.name, version: packedManifest.version, tarballPath }
+    const pnpm = resolvePinnedPnpm()
+    const libDir = flags['desktop-lib'] !== undefined ? resolve(process.cwd(), flags['desktop-lib']) : join(REPO_ROOT, 'dsh-plugin-desktop', 'lib')
+    const bootVerification = await import(pathToFileURL(libChunk(libDir, 'boot-verification-')).href)
+    const profilePolicy = await import(pathToFileURL(libChunk(libDir, 'profile-pnpm-policy-')).href)
+    const lib = {
+      computeDesktopBootTreeRootDigest: exportedFunctionFromNamespace(bootVerification, 'computeDesktopBootTreeRootDigest'),
+      ensureProfilePnpmBuildApproval: exportedFunctionFromNamespace(profilePolicy, 'ensureProfilePnpmBuildApproval'),
+    }
+    const electronTarget = electronTargetFlags()
+    console.log(`measure: tarball ${basename(tarballPath)} (${entryKey(target)}) with pnpm ${pnpm.version} (repository pin) · ${electronTarget === undefined ? 'NO electron runtime env' : `electron runtime env (target ${electronTarget})`} · digest from ${libDir}`)
+    const root = mkdtempSync(join(tmpdir(), 'company-catalog-measure-tarball-'))
+    try {
+      const profileDir = join(root, 'profile')
+      const treeDigest = measureEntry({ target, profileDir, pnpm, lib, electronTarget })
+      console.log(`  ${entryKey(target)} (tarball ${basename(tarballPath)})`)
+      console.log(`    treeDigest: ${treeDigest}`)
+      if (flags.out !== undefined) {
+        const outPath = resolve(process.cwd(), flags.out)
+        mkdirSync(dirname(outPath), { recursive: true })
+        writeFileSync(outPath, `${JSON.stringify([{ packageName: target.packageName, version: target.version, treeDigest }], null, 2)}\n`, 'utf8')
+        console.log(`measure: 1 digest record written to ${outPath}`)
+      }
+    } finally {
+      if (flags.keep === true || process.env.DSH_MEASURE_KEEP === '1') {
+        console.log(`measure: kept the measurement root ${root}`)
+      } else {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+    return
+  }
+  const entries = loadAllowlist(allowlistPath)
+  // Tarball-channel entries are measured from their packed artifact (the
+  // controlled file: install the desktop performs); entries whose source
+  // pins only a reviewed inline integrity have no local artifact bytes and
+  // stay skipped loudly — measuring the registry version instead would pin a
+  // digest no desktop install of the intranet tarball could ever match.
+  const tarballPathEntries = entries.filter((entry) => entry.source?.kind === 'tarball' && entry.source.path !== undefined)
+  const tarballInlineEntries = entries.filter((entry) => entry.source?.kind === 'tarball' && entry.source.path === undefined)
+  if (tarballInlineEntries.length > 0) {
+    console.log(`measure: skipping ${String(tarballInlineEntries.length)} tarball-channel entr${tarballInlineEntries.length === 1 ? 'y' : 'ies'} (${tarballInlineEntries.map(entryKey).join(', ')}) — their source pins a reviewed inline integrity with no local pack artifact; point source.path at the packed .tgz (pack-tarball) to measure them`)
+  }
+  const measurable = entries.filter((entry) => entry.source === undefined || entry.source.kind === 'npm' || entry.source.path !== undefined)
+  const targets = measurable
+    .map((entry) => entry.source?.kind === 'tarball'
+      ? { ...entry, tarballPath: resolve(REPO_ROOT, ...entry.source.path.split('/')) }
+      : entry)
+    .filter((entry) => flags.all === true || entry.treeDigest === undefined)
+  const skipped = measurable.filter((entry) => !targets.some((target) => target.packageName === entry.packageName && target.version === entry.version))
   if (targets.length === 0) {
     console.log(`measure: every measurable allowlist entry already pins a treeDigest (${measurable.map(entryKey).join(', ') || 'none'}); nothing to measure${flags.all === true ? '' : ' — pass --all to re-measure'}`)
     if (flags.out !== undefined) writeFileSync(resolve(process.cwd(), flags.out), '[]\n', 'utf8')
@@ -299,16 +383,14 @@ async function main() {
   }
   // Desktop parity by default: the electron runtime env every real desktop
   // install carries (--no-electron-env opts out for pure-JS controls).
-  if (flags['no-electron-env'] === true) {
-    if (flags['electron-target'] !== undefined) throw new Error('--no-electron-env and --electron-target are mutually exclusive — the former drops the desktop runtime env, the latter pins its version')
-  }
-  const electronTarget = flags['no-electron-env'] === true
-    ? undefined
-    : flags['electron-target'] ?? resolveDesktopElectronVersion()
+  const electronTarget = electronTargetFlags()
   const runtimeNote = electronTarget === undefined
     ? 'NO electron runtime env (--no-electron-env — pure-JS control; a real desktop install pins npm_config_runtime=electron, so the digest may diverge)'
     : `electron runtime env (npm_config_runtime=electron · target ${electronTarget} · disturl ${ELECTRON_HEADERS_URL}) = desktop install parity`
-  console.log(`measure: ${String(targets.length)} target(s) with pnpm ${pnpm.version} (repository pin) · registry ${NPM_REGISTRY} · ${runtimeNote} · digest from ${libDir}`)
+  const channelNote = targets.some((target) => target.tarballPath !== undefined)
+    ? ` · tarball channel: ${String(targets.filter((target) => target.tarballPath !== undefined).length)} packed-artifact install(s) (pnpm add <tarball> --save-exact, the desktop's controlled file: install)`
+    : ''
+  console.log(`measure: ${String(targets.length)} target(s) with pnpm ${pnpm.version} (repository pin) · registry ${NPM_REGISTRY}${channelNote} · ${runtimeNote} · digest from ${libDir}`)
   const root = mkdtempSync(join(tmpdir(), 'company-catalog-measure-'))
   const records = []
   const failures = []
