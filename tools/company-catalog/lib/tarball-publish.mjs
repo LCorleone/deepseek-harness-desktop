@@ -20,6 +20,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { expectedTarballFilename } from './allowlist.mjs'
 
 /** Byte bound of one hosted tarball; mirrors lib/tarball.mjs. */
 export const TARBALL_MAX_BYTES = 128 * 1024 * 1024
@@ -97,10 +98,14 @@ function decodeTarballUrlPath(pathname, expectedPrefix, at) {
 /**
  * Plan every tarball-channel push the manifest demands: for each signed
  * `source:{kind:'tarball'}` entry, locate `packages/<filename>` in the
- * acquired artifact directory, verify its bytes hash to the signed
- * `source.integrity` (fail closed with both values printed on mismatch), and
- * return the push records. Duplicate hosted filenames across entries are
- * rejected (two entries may not share one artifact address).
+ * acquired artifact directory, verify the hosted filename is the npm pack
+ * spelling of the entry's name@version (the signed url and the bytes it
+ * addresses must be this entry's own artifact — a filename belonging to
+ * another name or version is a mis-filed manifest, never an alternative
+ * address), verify its bytes hash to the signed `source.integrity` (fail
+ * closed with both values printed on mismatch), and return the push
+ * records. Duplicate hosted filenames across entries are rejected (two
+ * entries may not share one artifact address).
  */
 export function planTarballPushes({ manifest, artifactDir, origin, project, branch }) {
   const packages = Array.isArray(manifest?.packages) ? manifest.packages : []
@@ -114,6 +119,14 @@ export function planTarballPushes({ manifest, artifactDir, origin, project, bran
       throw new Error(`${at} carries a tarball source without url/integrity — the artifact does not describe a signable entry`)
     }
     const { filePath, filename } = parseTarballSourceUrl(url, { origin, project, branch, at })
+    const expected = expectedTarballFilename(entry.packageName, entry.version)
+    if (filename !== expected) {
+      throw new Error(
+        `${at} must host '${expected}' (the name@version pack spelling) but its url claims '${filename}' — ` +
+        'the signed url and the artifact it addresses would mis-file this entry under another name or version; ' +
+        'fix the allowlist entry (or the manifest) so the url addresses this entry’s own artifact',
+      )
+    }
     const previous = seenFilenames.get(filename)
     if (previous !== undefined) {
       throw new Error(`${at} wants to host ${filename}, already claimed by ${previous} — one artifact address serves exactly one entry`)

@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
-import { PACKAGE_NAME_PATTERN, STABLE_VERSION_PATTERN } from './allowlist.mjs'
+import { PACKAGE_NAME_PATTERN, STABLE_VERSION_PATTERN, expectedTarballFilename } from './allowlist.mjs'
 
 export const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 // lib/ → company-catalog/ → tools/ → repository root (the base the
@@ -54,11 +54,6 @@ const GZIP_LEVEL = 9
 /** Standard-base64 SHA-512 integrity of exact bytes — the value the manifest signs. */
 export function sha512IntegrityOf(bytes) {
   return `sha512-${createHash('sha512').update(bytes).digest('base64')}`
-}
-
-/** npm's pack filename spelling: `@scope/name` → `scope-name-<version>.tgz`. */
-export function expectedTarballFilename(packageName, version) {
-  return `${packageName.replace(/^@/u, '').replace(/\//gu, '-')}-${version}.tgz`
 }
 
 /** Parse an exact `<name>@<stable version>` pack spec (the pipeline never packs ranges). */

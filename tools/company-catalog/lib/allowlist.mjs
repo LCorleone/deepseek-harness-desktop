@@ -19,6 +19,19 @@ export const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-
 export const MAX_PACKAGE_NAME_LENGTH = 214
 /** Exact stable semver — prerelease and build metadata are not signable. */
 export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
+/**
+ * npm's pack filename spelling: `@scope/name` flattens to
+ * `scope-name-<version>.tgz`. The tarball channel's hosting contract pins
+ * every artifact to exactly this basename — pack names it, the allowlist
+ * `source.path`/`source.url` must spell it, and publish-local pushes
+ * `packages/<filename>` — so an entry's name@version alone determines the
+ * one artifact address it may claim. Shared by lib/tarball.mjs (packing),
+ * resolveTarballArtifacts (assembly), and lib/tarball-publish.mjs (pushing).
+ */
+export function expectedTarballFilename(packageName, version) {
+  return `${packageName.replace(/^@/u, '').replace(/\//gu, '-')}-${version}.tgz`
+}
+
 /** Characters the schema forbids inside bundlePatch (controls and bidi marks). */
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
@@ -512,20 +525,41 @@ export function saveAllowlist(path, entries) {
  * entry into the signable `{kind, url, integrity}` shape: the sha512 is
  * computed from the packed file's actual bytes at build time — the same
  * never-trust-a-local-value discipline the npm channel applies to the
- * registry dist — and the url's last path segment must equal the artifact's
- * filename, because publish-local derives the hosted repo path
- * (`packages/<filename>`) from that url. Reviewed-integrity entries pass
- * through untouched. Returns `{ entries, resolved, passthrough }`; every
- * failure names the entry and the fix.
+ * registry dist — the artifact filename must be the npm pack spelling of
+ * the entry's name@version (a tarball filed under another name or version
+ * is a mis-filed artifact, never an alternative address), and the url's
+ * last path segment must equal that filename, because publish-local
+ * derives the hosted repo path (`packages/<filename>`) from that url.
+ * Reviewed-integrity entries pass through untouched after the same
+ * name@version binding is checked on their url basename (the hosted
+ * filename is the only artifact identity that form carries). Returns
+ * `{ entries, resolved, passthrough }`; every failure names the entry
+ * and the fix.
  */
 export function resolveTarballArtifacts(entries, { repoRoot }) {
   const resolved = []
   const passthrough = []
   const updated = entries.map((entry) => {
     if (entry.source?.kind !== 'tarball') return entry
+    const expected = expectedTarballFilename(entry.packageName, entry.version)
     if (entry.source.integrity !== undefined) {
+      const urlBasename = entry.source.url.split('/').pop()
+      if (urlBasename !== expected) {
+        throw new Error(
+          `${entryKey(entry)} source.url must host '${expected}' (the name@version pack spelling) but ends with '${urlBasename}' — ` +
+          'the tarball channel serves each entry exactly packages/<name>-<version>.tgz; a url naming another artifact would serve this entry another package’s bytes',
+        )
+      }
       passthrough.push(entryKey(entry))
       return entry
+    }
+    const filename = entry.source.path.split('/').pop()
+    if (filename !== expected) {
+      throw new Error(
+        `${entryKey(entry)} source.path must end in '${expected}' (the name@version pack spelling) but is '${filename}' — ` +
+        'pack the artifact for this exact name and version (pack-tarball names it) or fix the entry; ' +
+        'a tarball filed under another name or version is a mis-filed artifact, not an alternative address',
+      )
     }
     const artifactPath = resolve(repoRoot, ...entry.source.path.split('/'))
     let stat
@@ -543,7 +577,6 @@ export function resolveTarballArtifacts(entries, { repoRoot }) {
     }
     const bytes = readFileSync(artifactPath)
     const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`
-    const filename = entry.source.path.split('/').pop()
     const urlBasename = entry.source.url.split('/').pop()
     if (urlBasename !== filename) {
       throw new Error(

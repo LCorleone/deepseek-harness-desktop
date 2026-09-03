@@ -132,19 +132,22 @@ test('planTarballPushes fails closed on missing, mismatched, or ambiguous artifa
     mkdirSync(join(dir, 'packages'), { recursive: true })
     writeFileSync(join(dir, 'packages', filename), bytes)
 
-    // Missing artifact.
-    const missing = { packages: [entry({ source: { kind: 'tarball', url: rawUrl('missing-1.0.0.tgz'), integrity } })] }
+    // Missing artifact (an entry whose name@version owns the absent address).
+    const missing = { packages: [entry({ packageName: 'missing', version: '1.0.0', source: { kind: 'tarball', url: rawUrl('missing-1.0.0.tgz'), integrity } })] }
     assert.throws(() => planTarballPushes({ manifest: missing, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }), /missing from the artifact/u)
 
     // Bytes that do not hash to the signed integrity.
     const mismatched = { packages: [entry({ source: { kind: 'tarball', url: rawUrl(filename), integrity: sha512IntegrityOf(Buffer.from('other bytes\n')) } })] }
     assert.throws(() => planTarballPushes({ manifest: mismatched, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }), /hashes to/u)
 
-    // Two entries claiming one hosted address.
+    // Two entries claiming one hosted address. With every filename bound to
+    // its entry's name@version, the remaining collision is npm's pack
+    // flattening: '@company/hardened-plugin' packs as the same basename the
+    // plain 'company-hardened-plugin' name owns.
     const duplicate = {
       packages: [
         entry({ source: { kind: 'tarball', url: rawUrl(filename), integrity } }),
-        entry({ packageName: 'other-plugin', version: '3.0.0', source: { kind: 'tarball', url: rawUrl(filename), integrity } }),
+        entry({ packageName: '@company/hardened-plugin', version: '2.1.0', source: { kind: 'tarball', url: rawUrl(filename), integrity } }),
       ],
     }
     assert.throws(() => planTarballPushes({ manifest: duplicate, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }), /already claimed by/u)
@@ -158,8 +161,41 @@ test('planTarballPushes fails closed on missing, mismatched, or ambiguous artifa
     const fd = openSync(bigPath, 'w')
     ftruncateSync(fd, TARBALL_MAX_BYTES + 1)
     closeSync(fd)
-    const oversized = { packages: [entry({ source: { kind: 'tarball', url: rawUrl('huge-1.0.0.tgz'), integrity } })] }
+    const oversized = { packages: [entry({ packageName: 'huge', version: '1.0.0', source: { kind: 'tarball', url: rawUrl('huge-1.0.0.tgz'), integrity } })] }
     assert.throws(() => planTarballPushes({ manifest: oversized, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }), /over the .*byte bound/u)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('planTarballPushes binds every hosted filename to the entry’s name@version', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tarball-publish-bind-'))
+  try {
+    const bytes = Buffer.from('the signed artifact bytes\n')
+    const integrity = sha512IntegrityOf(bytes)
+    mkdirSync(join(dir, 'packages'), { recursive: true })
+    // Artifact bytes present and hashing to the signed integrity — the url is
+    // the only thing mis-filed (it addresses another name's artifact).
+    writeFileSync(join(dir, 'packages', 'other-plugin-9.9.9.tgz'), bytes)
+    const misfiledName = { packages: [entry({ source: { kind: 'tarball', url: rawUrl('other-plugin-9.9.9.tgz'), integrity } })] }
+    assert.throws(
+      () => planTarballPushes({ manifest: misfiledName, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }),
+      /company-hardened-plugin@2\.1\.0 must host 'company-hardened-plugin-2\.1\.0\.tgz'.*but its url claims 'other-plugin-9\.9\.9\.tgz'/u,
+    )
+    // Version drift inside the same name is the same mis-filing.
+    const misfiledVersion = { packages: [entry({ source: { kind: 'tarball', url: rawUrl('company-hardened-plugin-2.0.9.tgz'), integrity } })] }
+    assert.throws(
+      () => planTarballPushes({ manifest: misfiledVersion, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH }),
+      /must host 'company-hardened-plugin-2\.1\.0\.tgz'.*but its url claims 'company-hardened-plugin-2\.0\.9\.tgz'/u,
+    )
+    // The well-formed shape passes — including a scoped name bound through
+    // npm's pack flattening (@scope/name → scope-name).
+    writeFileSync(join(dir, 'packages', 'scope-name-2.3.4.tgz'), bytes)
+    const scoped = { packages: [entry({ packageName: '@scope/name', version: '2.3.4', source: { kind: 'tarball', url: rawUrl('scope-name-2.3.4.tgz'), integrity } })] }
+    const pushes = planTarballPushes({ manifest: scoped, artifactDir: dir, origin: ORIGIN, project: PROJECT, branch: BRANCH })
+    assert.equal(pushes.length, 1)
+    assert.equal(pushes[0].filename, 'scope-name-2.3.4.tgz')
+    assert.equal(pushes[0].filePath, 'packages/scope-name-2.3.4.tgz')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

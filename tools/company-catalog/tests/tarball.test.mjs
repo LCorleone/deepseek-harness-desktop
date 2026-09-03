@@ -17,7 +17,6 @@ import { test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import {
   buildDeterministicTarball,
-  expectedTarballFilename,
   extractTarballEntries,
   normalizeTarballFile,
   parsePackSpec,
@@ -25,6 +24,7 @@ import {
   sha512IntegrityOf,
   stageSourceDirectory,
 } from '../lib/tarball.mjs'
+import { expectedTarballFilename } from '../lib/allowlist.mjs'
 
 /** Independent oracle: `sha512-<base64(sha512(bytes))>`. */
 const referenceIntegrity = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`

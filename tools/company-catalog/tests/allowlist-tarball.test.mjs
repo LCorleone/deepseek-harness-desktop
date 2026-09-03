@@ -176,19 +176,68 @@ test('resolveTarballArtifacts computes the signed sha512 from the packed bytes a
 test('resolveTarballArtifacts fails closed on missing artifacts and url/filename divergence', () => {
   const dir = mkdtempSync(join(tmpdir(), 'resolve-tarball-test-'))
   try {
-    const entry = (filename, urlFilename) => ({
+    const filename = 'company-hardened-plugin-2.1.0.tgz'
+    const entry = (pathFilename, urlFilename) => ({
       ...baseEntry,
-      source: { kind: 'tarball', url: tarballUrl(urlFilename), path: filename },
+      source: { kind: 'tarball', url: tarballUrl(urlFilename), path: pathFilename },
     })
-    assert.throws(() => resolveTarballArtifacts([entry('missing.tgz', 'missing.tgz')], { repoRoot: dir }), /run pack-tarball/u)
-    writeFileSync(join(dir, 'a-1.0.0.tgz'), Buffer.from('bytes'))
-    assert.throws(() => resolveTarballArtifacts([entry('a-1.0.0.tgz', 'different-1.0.0.tgz')], { repoRoot: dir }), /url ends with 'different-1\.0\.0\.tgz' but the packed artifact is 'a-1\.0\.0\.tgz'/u)
+    assert.throws(() => resolveTarballArtifacts([entry(filename, filename)], { repoRoot: dir }), /run pack-tarball/u)
+    writeFileSync(join(dir, filename), Buffer.from('bytes'))
+    assert.throws(() => resolveTarballArtifacts([entry(filename, 'different-1.0.0.tgz')], { repoRoot: dir }), /url ends with 'different-1\.0\.0\.tgz' but the packed artifact is 'company-hardened-plugin-2\.1\.0\.tgz'/u)
     // The reviewed inline-integrity form passes through untouched.
-    const inline = { ...baseEntry, source: { kind: 'tarball', url: tarballUrl('a-1.0.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' } }
+    const inline = { ...baseEntry, source: { kind: 'tarball', url: tarballUrl(filename), integrity: 'sha512-' + 'A'.repeat(86) + '==' } }
     const { entries, resolved, passthrough } = resolveTarballArtifacts([inline], { repoRoot: dir })
     assert.equal(resolved.length, 0)
     assert.deepEqual(passthrough, [entryKey(inline)])
     assert.equal(entries[0].source.integrity, 'sha512-' + 'A'.repeat(86) + '==')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('resolveTarballArtifacts binds every tarball artifact filename and url to the entry’s name@version', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'resolve-tarball-bind-'))
+  try {
+    // A path form filed under ANOTHER name — url agreeing with the file — is
+    // a mis-filed artifact, not an alternative address (same-name-different-
+    // bytes / swapped-package review attacks both need this refusal).
+    writeFileSync(join(dir, 'other-plugin-9.9.9.tgz'), Buffer.from('some other package’s bytes'))
+    const misfiledName = {
+      ...baseEntry,
+      source: { kind: 'tarball', url: tarballUrl('other-plugin-9.9.9.tgz'), path: 'other-plugin-9.9.9.tgz' },
+    }
+    assert.throws(
+      () => resolveTarballArtifacts([misfiledName], { repoRoot: dir }),
+      /company-hardened-plugin@2\.1\.0 source\.path must end in 'company-hardened-plugin-2\.1\.0\.tgz'.*but is 'other-plugin-9\.9\.9\.tgz'/u,
+    )
+    // Version drift inside the same name is the same mis-filing.
+    const misfiledVersion = {
+      ...baseEntry,
+      source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.0.9.tgz'), path: 'company-hardened-plugin-2.0.9.tgz' },
+    }
+    assert.throws(
+      () => resolveTarballArtifacts([misfiledVersion], { repoRoot: dir }),
+      /source\.path must end in 'company-hardened-plugin-2\.1\.0\.tgz'.*but is 'company-hardened-plugin-2\.0\.9\.tgz'/u,
+    )
+    // The reviewed inline-integrity form is bound through its url basename.
+    const misfiledInline = { ...baseEntry, source: { kind: 'tarball', url: tarballUrl('stolen-name-1.0.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' } }
+    assert.throws(
+      () => resolveTarballArtifacts([misfiledInline], { repoRoot: dir }),
+      /company-hardened-plugin@2\.1\.0 source\.url must host 'company-hardened-plugin-2\.1\.0\.tgz'.*but ends with 'stolen-name-1\.0\.0\.tgz'/u,
+    )
+    // The well-formed shape passes — including a scoped name, whose binding
+    // runs through npm's pack flattening (@scope/name → scope-name).
+    const scopedBytes = Buffer.from('scoped artifact bytes')
+    writeFileSync(join(dir, 'company-hardened-plugin-3.0.0.tgz'), scopedBytes)
+    const scoped = {
+      ...baseEntry,
+      packageName: '@company/hardened-plugin',
+      version: '3.0.0',
+      source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-3.0.0.tgz'), path: 'company-hardened-plugin-3.0.0.tgz' },
+    }
+    const { resolved, entries } = resolveTarballArtifacts([scoped], { repoRoot: dir })
+    assert.deepEqual(resolved.map((record) => record.filename), ['company-hardened-plugin-3.0.0.tgz'])
+    assert.equal(entries[0].source.integrity, sha512IntegrityOf(scopedBytes))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
