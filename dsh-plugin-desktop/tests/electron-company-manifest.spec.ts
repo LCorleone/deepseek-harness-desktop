@@ -23,6 +23,7 @@ const keyId = 'company-catalog-2026.01'
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
 
 const originPolicy = parseDesktopPolicy({
+  agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
   allowHomePatch: false,
   allowManualPluginAdd: false,
   companyCatalogOrigin: 'https://market.company.example',
@@ -179,6 +180,7 @@ describe('electron main-process manifest boundary', () => {
 describe('origin-mode market catalog scan over the injected Chromium boundary', () => {
   const gitlabOrigin = 'https://gitlab.company.example'
   const gitlabPolicy = parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: gitlabOrigin,

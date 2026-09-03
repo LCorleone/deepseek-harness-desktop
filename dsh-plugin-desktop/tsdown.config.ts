@@ -35,6 +35,9 @@ export default defineConfig([
       'desktop-policy': 'src/desktop-policy.ts',
       'model-gateway': 'src/model-gateway.ts',
       'model-gateway-blob': 'src/model-gateway-blob.ts',
+      'agent-browser': 'src/agent-browser.ts',
+      'agent-browser-session': 'src/agent-browser-session.ts',
+      'agent-browser-window': 'src/agent-browser-window.ts',
       main: 'src/main.ts',
     },
     outDir: 'lib',
@@ -94,7 +97,7 @@ export default defineConfig([
   },
   {
     name: `${PACKAGE_NAME}/preload`,
-    entry: { preload: 'src/preload.ts' },
+    entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts' },
     outDir: 'lib',
     format: 'cjs',
     platform: 'node',
@@ -105,7 +108,7 @@ export default defineConfig([
     sourcemap: true,
     external: ['electron'],
     outputOptions: {
-      entryFileNames: 'preload.cjs',
+      entryFileNames: '[name].cjs',
     },
   },
 ])

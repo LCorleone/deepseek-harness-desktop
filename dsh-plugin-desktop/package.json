@@ -83,6 +83,10 @@
       "types": "./lib/types/updates.d.ts",
       "default": "./lib/updates.js"
     },
+    "./agent-browser": {
+      "types": "./lib/types/agent-browser.d.ts",
+      "default": "./lib/agent-browser.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -95,6 +99,7 @@
     "docs/**",
     "lib/**/*.js",
     "lib/**/*.map",
+    "lib/**/*.cjs",
     "lib/policy/*.json",
     "lib/company-market/*.json",
     "lib/cli-lock/*.yml",

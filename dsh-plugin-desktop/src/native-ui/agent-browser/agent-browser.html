@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Deliberately two deltas from the sso-gate CSP:
+      - `style-src` allows inline styles: Chromium's guestview internals set
+        inline sizing styles on the <webview> element itself, and blocking
+        them breaks guest layout. Styles are not an execution surface here —
+        every script still loads from 'self'.
+      - no `frame-ancestors`: it is ignored when delivered via <meta>, so it
+        only produced a renderer-console warning on every load.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>DSH Agent Browser</title>
+  </head>
+  <body><div id="root"></div><script type="module" src="./main.tsx"></script></body>
+</html>

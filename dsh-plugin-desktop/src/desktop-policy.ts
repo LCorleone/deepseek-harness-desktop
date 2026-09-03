@@ -20,6 +20,66 @@ export interface DesktopPolicyTrustRoot {
   readonly fingerprint: string
 }
 
+/**
+ * The embedded agent-browser capability policy (P8 design §5.5).
+ *
+ * The locked posture ships dark — `enabled: false`, empty allowlist, no
+ * login persistence — until company config lands; the dev posture ships
+ * enabled with the wildcard allowlist so the read-only loop is exercisable
+ * locally.
+ */
+export interface DesktopPolicyAgentBrowser {
+  /** Whether the agent-browser host plugin registers its tool surface at all. */
+  readonly enabled: boolean
+  /** Allowed main-frame navigation origins; `"*"` admits everything. */
+  readonly allowOrigins: readonly string[]
+  /** Whether the persist-login toggle can ever be offered (restart-applied). */
+  readonly allowPersistLogin: boolean
+}
+
+/** Whether one allowlist entry is the wildcard or a bare https origin. */
+function isAgentBrowserOriginEntry(value: unknown): value is string {
+  if (value === '*') return true
+  if (typeof value !== 'string') return false
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  return url.protocol === 'https:' && url.username === '' && url.password === ''
+    && (url.pathname === '' || url.pathname === '/') && url.search === '' && url.hash === ''
+}
+
+/** Parse the strict `agentBrowser` policy document member. */
+function parseAgentBrowser(value: unknown): DesktopPolicyAgentBrowser {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidPolicy('agentBrowser must be an object')
+  }
+  const object = value as Record<string, unknown>
+  const keys = Object.keys(object).sort()
+  if (keys.length !== 3 || keys[0] !== 'allowOrigins' || keys[1] !== 'allowPersistLogin' || keys[2] !== 'enabled') {
+    throw invalidPolicy('agentBrowser has unexpected fields')
+  }
+  if (typeof object.enabled !== 'boolean') throw invalidPolicy('agentBrowser.enabled must be a boolean')
+  if (typeof object.allowPersistLogin !== 'boolean') {
+    throw invalidPolicy('agentBrowser.allowPersistLogin must be a boolean')
+  }
+  if (!Array.isArray(object.allowOrigins)) throw invalidPolicy('agentBrowser.allowOrigins must be an array')
+  const allowOrigins: string[] = []
+  for (const entry of object.allowOrigins) {
+    if (!isAgentBrowserOriginEntry(entry)) {
+      throw invalidPolicy('agentBrowser.allowOrigins entries must be "*" or bare https origins')
+    }
+    if (!allowOrigins.includes(entry)) allowOrigins.push(entry)
+  }
+  return Object.freeze({
+    enabled: object.enabled,
+    allowOrigins: Object.freeze(allowOrigins),
+    allowPersistLogin: object.allowPersistLogin,
+  })
+}
+
 /** Immutable company policy embedded into the application at build time. */
 export interface DesktopPolicy {
   /** Whether this build enforces the company policy. */
@@ -59,6 +119,8 @@ export interface DesktopPolicy {
    * and the CLI policy environment hand-off carries no entry for it.
    */
   readonly usageReport: boolean
+  /** Embedded agent-browser capability policy (P8; dark on locked builds). */
+  readonly agentBrowser: DesktopPolicyAgentBrowser
 }
 
 function invalidPolicy(message: string): Error {
@@ -155,10 +217,10 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   const object = value as Record<string, unknown>
   const keys = Object.keys(object).sort()
-  if (keys.length !== 9 || keys[0] !== 'allowHomePatch' || keys[1] !== 'allowManualPluginAdd'
-    || keys[2] !== 'companyCatalogOrigin' || keys[3] !== 'companyManifestUrl'
-    || keys[4] !== 'locked' || keys[5] !== 'managedModels' || keys[6] !== 'requireSso'
-    || keys[7] !== 'trustRoots' || keys[8] !== 'usageReport') {
+  if (keys.length !== 10 || keys[0] !== 'agentBrowser' || keys[1] !== 'allowHomePatch'
+    || keys[2] !== 'allowManualPluginAdd' || keys[3] !== 'companyCatalogOrigin'
+    || keys[4] !== 'companyManifestUrl' || keys[5] !== 'locked' || keys[6] !== 'managedModels'
+    || keys[7] !== 'requireSso' || keys[8] !== 'trustRoots' || keys[9] !== 'usageReport') {
     throw invalidPolicy('unexpected fields')
   }
   if (typeof object.locked !== 'boolean') throw invalidPolicy('locked must be a boolean')
@@ -185,6 +247,7 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
     allowManualPluginAdd: false,
     trustRoots: parseTrustRoots(object.trustRoots),
     usageReport: object.usageReport,
+    agentBrowser: parseAgentBrowser(object.agentBrowser),
   })
 }
 
@@ -259,15 +322,16 @@ export const desktopPolicyConstants = Object.freeze({
  * `app.asar`, and the physical `app.asar.unpacked` policy copy is
  * user-writable, so the CLI must not re-read it).
  *
- * Format: six case-insensitive environment keys carrying a JSON-free
+ * Format: seven case-insensitive environment keys carrying a JSON-free
  * encoding of the policy — `1`/`0` for `locked`, `1`/`0` for `managedModels`,
  * `1`/`0` for `requireSso`, the bare https origin or an empty string for
- * content mode, the manifest URL verbatim, and comma-separated
+ * content mode, the manifest URL verbatim, comma-separated
  * `keyId:fingerprint` trust-root pairs (both components are constrained to
  * alphabets without commas, colons inside keyIds, or any quoting characters,
- * so the values stay safe inside generated POSIX and batch shims). The
- * decoding side re-parses through the strict policy parser, so any tampered
- * or malformed hand-off fails closed.
+ * so the values stay safe inside generated POSIX and batch shims), and
+ * `1`/`0` for the agent-browser `enabled` flag (P8). The decoding side
+ * re-parses through the strict policy parser, so any tampered or malformed
+ * hand-off fails closed.
  *
  * Advisory positioning: the parent that sets these variables is trusted, so an
  * actor who can rewrite the physical `desktop-cli.js` under
@@ -284,6 +348,7 @@ export const DESKTOP_POLICY_ENVIRONMENT = Object.freeze({
   catalogOrigin: 'DSH_DESKTOP_POLICY_CATALOG_ORIGIN',
   manifestUrl: 'DSH_DESKTOP_POLICY_MANIFEST_URL',
   trustRoots: 'DSH_DESKTOP_POLICY_TRUST_ROOTS',
+  agentBrowser: 'DSH_DESKTOP_POLICY_AGENT_BROWSER',
 })
 
 /** Decode one `keyId:fingerprint` trust-root pair of the environment hand-off. */
@@ -319,6 +384,7 @@ export function desktopPolicyEnvironmentEntries(
       : policy.trustRoots
         .map(trustRoot => `${trustRoot.keyId}:${trustRoot.fingerprint}`)
         .join(','),
+    [DESKTOP_POLICY_ENVIRONMENT.agentBrowser]: policy.agentBrowser.enabled ? '1' : '0',
   }
 }
 
@@ -340,9 +406,9 @@ function takeEnvironmentValue(environment: NodeJS.ProcessEnv, name: string): str
 /**
  * Consume the launcher-injected policy hand-off and decode it strictly.
  *
- * The six hand-off keys are removed from the environment so the upstream CLI
- * and its children never inherit Desktop-owned policy markers. Behavior by
- * layout:
+ * The seven hand-off keys are removed from the environment so the upstream
+ * CLI and its children never inherit Desktop-owned policy markers. Behavior
+ * by layout:
  *
  * - hand-off present — decoded and strictly re-parsed; any malformed value
  *   throws (fail closed, never a silent downgrade);
@@ -365,7 +431,8 @@ export function desktopPolicyFromEnvironment(
   const catalogOrigin = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.catalogOrigin)
   const manifestUrl = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.manifestUrl)
   const trustRoots = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.trustRoots)
-  const present = [locked, managedModels, requireSso, catalogOrigin, manifestUrl, trustRoots]
+  const agentBrowser = takeEnvironmentValue(environment, DESKTOP_POLICY_ENVIRONMENT.agentBrowser)
+  const present = [locked, managedModels, requireSso, catalogOrigin, manifestUrl, trustRoots, agentBrowser]
     .filter(value => value !== undefined)
   if (present.length === 0) {
     if (isPackagedApplicationPath(fileURLToPath(new URL(moduleUrl)))) {
@@ -376,13 +443,23 @@ export function desktopPolicyFromEnvironment(
     }
     return undefined
   }
-  if (present.length !== 6) {
-    throw invalidPolicy('the policy environment hand-off must carry all six entries')
+  if (present.length !== 7) {
+    throw invalidPolicy('the policy environment hand-off must carry all seven entries')
   }
   const trustRootPairs = trustRoots === ENVIRONMENT_ABSENT
     ? []
     : trustRoots!.split(',')
   return parseDesktopPolicy({
+    agentBrowser: {
+      // The CLI child hosts no browser surface (the guest and its CDP
+      // session live only in the Electron main process), so the allowlist
+      // and the persist-login flag never cross the hand-off: the key is
+      // reconstructed in its inert form while the `enabled` flag
+      // round-trips for parity with the Electron-side posture.
+      enabled: agentBrowser === '1',
+      allowOrigins: [],
+      allowPersistLogin: false,
+    },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: catalogOrigin === ENVIRONMENT_ABSENT ? null : catalogOrigin,
@@ -394,7 +471,7 @@ export function desktopPolicyFromEnvironment(
     // `usageReport` has no hand-off entry: the reporter runs only inside the
     // Electron main process (which reads the asset directly), and the CLI
     // child has no consumer. The reconstruction pins false so the strict
-    // parser accepts the six-entry document while every CLI-side policy
+    // parser accepts the seven-entry document while every CLI-side policy
     // consumer keeps byte-identical behavior.
     usageReport: false,
   })

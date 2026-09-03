@@ -48,6 +48,7 @@ afterEach(() => {
 
 function unlockedPolicy(): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
@@ -62,6 +63,7 @@ function unlockedPolicy(): DesktopPolicy {
 
 function lockedPolicy(): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: 'https://market.company.example',

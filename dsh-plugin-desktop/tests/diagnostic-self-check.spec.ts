@@ -219,6 +219,7 @@ describe('policy self-measurement', () => {
     const dir = temporaryDirectory('dsh-self-check-policy-')
     const asset = join(dir, 'desktop-policy.json')
     const body = JSON.stringify({
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
       allowHomePatch: false,
       allowManualPluginAdd: false,
       companyCatalogOrigin: null,
@@ -259,6 +260,7 @@ describe('sso self-check section', () => {
     const dir = temporaryDirectory('dsh-self-check-sso-')
     const asset = join(dir, 'desktop-policy.json')
     writeFileSync(asset, JSON.stringify({
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
       allowHomePatch: false,
       allowManualPluginAdd: false,
       companyCatalogOrigin: null,

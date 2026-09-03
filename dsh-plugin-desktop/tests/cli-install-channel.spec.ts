@@ -24,6 +24,7 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519')
 
 function lockedCatalogPolicy(overrides: Record<string, unknown> = {}): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,

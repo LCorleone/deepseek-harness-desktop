@@ -39,6 +39,7 @@ afterEach(() => {
 
 function policy(locked: boolean, managedModels: boolean): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,

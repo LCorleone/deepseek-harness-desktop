@@ -38,6 +38,7 @@ import { packagedDependencyPath, unpackedAsarPath } from '../src/packaged-runtim
 /** Build one policy fixture with the same schema as the embedded asset. */
 function desktopPolicy(locked: boolean): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
@@ -60,6 +61,7 @@ const catalogTrustRoots = [{
 /** Locked policy whose trust roots match the catalog signing key fixture. */
 function companyLockedPolicy(): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
@@ -75,6 +77,7 @@ function companyLockedPolicy(): DesktopPolicy {
 /** Locked origin-mode policy whose trust roots match the catalog key fixture. */
 function companyLockedOriginPolicy(): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: 'https://market.company.example',
@@ -957,7 +960,7 @@ describe('packaged dsh bootstrap policy hand-off', () => {
     expect(() => desktopPolicyFromEnvironment(
       { DSH_DESKTOP_POLICY_LOCKED: '1' },
       packagedModuleUrl,
-    )).toThrow('must carry all six entries')
+    )).toThrow('must carry all seven entries')
   })
 })
 

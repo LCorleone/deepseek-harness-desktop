@@ -1,4 +1,9 @@
 {
+  "agentBrowser": {
+    "allowOrigins": ["*"],
+    "allowPersistLogin": false,
+    "enabled": true
+  },
   "allowHomePatch": false,
   "allowManualPluginAdd": false,
   "companyCatalogOrigin": null,

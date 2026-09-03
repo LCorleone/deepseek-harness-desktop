@@ -120,6 +120,10 @@ describe('published package surface', () => {
       types: './lib/types/updates.d.ts',
       default: './lib/updates.js',
     })
+    expect(manifest.exports).toHaveProperty('./agent-browser', {
+      types: './lib/types/agent-browser.d.ts',
+      default: './lib/agent-browser.js',
+    })
     expect(manifest.exports).toHaveProperty('./notifications', {
       types: './lib/types/notifications.d.ts',
       default: './lib/notifications.js',
@@ -467,8 +471,9 @@ describe('published package surface', () => {
     expect(config).toContain("diagnostics: 'src/diagnostics.ts'")
     expect(config).toContain("notifications: 'src/notifications.ts'")
     expect(config).toContain("'diagnostic-export-worker': 'src/diagnostic-export-worker.ts'")
-    expect(config).toContain("entry: { preload: 'src/preload.ts' }")
-    expect(config).toContain("entryFileNames: 'preload.cjs'")
+    expect(config).toContain("entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts' }")
+    expect(config).toContain("entryFileNames: '[name].cjs'")
+    expect(config).toContain("'agent-browser': 'src/agent-browser.ts'")
     expect(config).toContain("terminal: 'src/terminal.ts'")
     expect(config).toContain("'update-download': 'src/update-download.ts'")
     expect(config).toContain("updates: 'src/updates.ts'")

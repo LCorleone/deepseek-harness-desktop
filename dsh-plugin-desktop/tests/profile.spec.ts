@@ -38,6 +38,7 @@ const homes: string[] = []
 /** Build a strict policy fixture through the real parser, locked or not. */
 function injectedDesktopPolicy(locked: boolean, managedModels = false): DesktopPolicy {
   return parseDesktopPolicy({
+    agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: null,
@@ -1658,6 +1659,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
   /** Locked content-mode policy fixture pinned to the test signing key. */
   function bootPolicy(locked: boolean): DesktopPolicy {
     return parseDesktopPolicy({
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
       allowHomePatch: false,
       allowManualPluginAdd: false,
       companyCatalogOrigin: null,

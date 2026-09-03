@@ -813,6 +813,7 @@ describe('pnpm policy environment hand-off', () => {
     allowManualPluginAdd: false,
     trustRoots: [{ keyId: 'k1', fingerprint: 'a'.repeat(64) }],
     usageReport: false,
+    agentBrowser: { enabled: false, allowOrigins: [], allowPersistLogin: false },
   }
 
   it('forwards the bootstrap policy hand-off into spawned install children', async () => {

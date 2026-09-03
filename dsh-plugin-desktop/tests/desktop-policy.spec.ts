@@ -32,6 +32,11 @@ afterEach(() => {
 
 function companyPolicy(): Record<string, unknown> {
   return {
+    agentBrowser: {
+      allowOrigins: [],
+      allowPersistLogin: false,
+      enabled: false,
+    },
     allowHomePatch: false,
     allowManualPluginAdd: false,
     companyCatalogOrigin: 'https://market.company.example',
@@ -64,10 +69,57 @@ describe('desktop policy schema parsing', () => {
         { keyId: 'company-2026-b', fingerprint: '0123456789abcdef'.repeat(4) },
       ],
       usageReport: false,
+      agentBrowser: { enabled: false, allowOrigins: [], allowPersistLogin: false },
     })
     expect(policy.trustRoots).toHaveLength(2)
     expect(Object.isFrozen(policy)).toBe(true)
     expect(Object.isFrozen(policy.trustRoots)).toBe(true)
+    expect(Object.isFrozen(policy.agentBrowser)).toBe(true)
+    expect(Object.isFrozen(policy.agentBrowser.allowOrigins)).toBe(true)
+  })
+
+  it('accepts an agent-browser policy with the wildcard and bare origins', () => {
+    const policy = parseDesktopPolicy({
+      ...companyPolicy(),
+      agentBrowser: {
+        allowOrigins: ['*', 'https://docs.company.example'],
+        allowPersistLogin: true,
+        enabled: true,
+      },
+    })
+
+    expect(policy.agentBrowser).toEqual({
+      enabled: true,
+      allowOrigins: ['*', 'https://docs.company.example'],
+      allowPersistLogin: true,
+    })
+  })
+
+  it.each([
+    ['agent browser as text', { agentBrowser: 'disabled' }, 'agentBrowser must be an object'],
+    ['agent browser with an extra field', {
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false, headless: true },
+    }, 'agentBrowser has unexpected fields'],
+    ['agent browser enabled as text', {
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: 'false' },
+    }, 'agentBrowser.enabled must be a boolean'],
+    ['agent browser persist as number', {
+      agentBrowser: { allowOrigins: [], allowPersistLogin: 0, enabled: false },
+    }, 'agentBrowser.allowPersistLogin must be a boolean'],
+    ['agent browser origins as an object', {
+      agentBrowser: { allowOrigins: {}, allowPersistLogin: false, enabled: false },
+    }, 'agentBrowser.allowOrigins must be an array'],
+    ['agent browser origin with a path', {
+      agentBrowser: { allowOrigins: ['https://market.company.example/catalog'], allowPersistLogin: false, enabled: false },
+    }, 'agentBrowser.allowOrigins entries must be "*" or bare https origins'],
+    ['agent browser http origin', {
+      agentBrowser: { allowOrigins: ['http://market.company.example'], allowPersistLogin: false, enabled: false },
+    }, 'agentBrowser.allowOrigins entries must be "*" or bare https origins'],
+    ['agent browser origin as number', {
+      agentBrowser: { allowOrigins: [1], allowPersistLogin: false, enabled: false },
+    }, 'agentBrowser.allowOrigins entries must be "*" or bare https origins'],
+  ])('rejects %s', (_label, patch, message) => {
+    expect(() => parseDesktopPolicy({ ...companyPolicy(), ...patch })).toThrow(message)
   })
 
   it('normalizes the catalog origin and manifest URL', () => {
@@ -85,6 +137,7 @@ describe('desktop policy schema parsing', () => {
 
   it('accepts an unlocked catalog-as-content policy', () => {
     const policy = parseDesktopPolicy({
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
       allowHomePatch: false,
       allowManualPluginAdd: false,
       companyCatalogOrigin: null,
@@ -117,6 +170,7 @@ describe('desktop policy schema parsing', () => {
   })
 
   it.each([
+    'agentBrowser',
     'allowHomePatch',
     'allowManualPluginAdd',
     'companyCatalogOrigin',
@@ -341,7 +395,7 @@ describe('desktop policy environment hand-off', () => {
   )).href
   const devModuleUrl = pathToFileURL(join('/workspace', 'dsh-plugin-desktop', 'lib', 'desktop-cli.js')).href
 
-  it('round-trips a locked content-mode policy through the six entries', () => {
+  it('round-trips a locked content-mode policy through the seven entries', () => {
     const policy = parseDesktopPolicy({
       ...companyPolicy(),
       companyCatalogOrigin: null,
@@ -377,7 +431,7 @@ describe('desktop policy environment hand-off', () => {
 
   it('pins the main-process-only usage-report flag to false in the hand-off', () => {
     // The reporter runs only inside the Electron main process, which reads
-    // the policy asset directly; the CLI hand-off carries no seventh entry,
+    // the policy asset directly; the CLI hand-off carries no entry for it,
     // so a usage-reporting release policy reconstructs with the flag inert.
     const policy = parseDesktopPolicy({ ...companyPolicy(), usageReport: true })
 
@@ -387,7 +441,32 @@ describe('desktop policy environment hand-off', () => {
     )
 
     expect(decoded).toEqual({ ...policy, usageReport: false })
-    expect(Object.keys(DESKTOP_POLICY_ENVIRONMENT)).toHaveLength(6)
+    expect(Object.keys(DESKTOP_POLICY_ENVIRONMENT)).toHaveLength(7)
+  })
+
+  it('reconstructs the agent-browser key in its inert CLI form', () => {
+    // The browser surface lives only in the Electron main process, so the
+    // wildcard allowlist and the persist-login flag never cross the hand-off:
+    // the enabled flag round-trips while the sub-policy reconstructs inert.
+    const policy = parseDesktopPolicy({
+      ...companyPolicy(),
+      agentBrowser: {
+        allowOrigins: ['*'],
+        allowPersistLogin: true,
+        enabled: true,
+      },
+    })
+
+    const decoded = desktopPolicyFromEnvironment(
+      desktopPolicyEnvironmentEntries(policy),
+      devModuleUrl,
+    )
+
+    expect(decoded).toEqual({
+      ...policy,
+      agentBrowser: { enabled: true, allowOrigins: [], allowPersistLogin: false },
+    })
+    expect(desktopPolicyEnvironmentEntries(policy)[DESKTOP_POLICY_ENVIRONMENT.agentBrowser]).toBe('1')
   })
 
   it('decodes case-insensitive keys and rejects conflicting duplicates', () => {
@@ -399,6 +478,7 @@ describe('desktop policy environment hand-off', () => {
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: entries[DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]!,
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: entries[DESKTOP_POLICY_ENVIRONMENT.manifestUrl]!,
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: entries[DESKTOP_POLICY_ENVIRONMENT.trustRoots]!,
+      [DESKTOP_POLICY_ENVIRONMENT.agentBrowser]: entries[DESKTOP_POLICY_ENVIRONMENT.agentBrowser]!,
     }
 
     expect(desktopPolicyFromEnvironment(cased, devModuleUrl)?.locked).toBe(true)
@@ -423,9 +503,17 @@ describe('desktop policy environment hand-off', () => {
 
   it.each([
     ['a partial hand-off', { [DESKTOP_POLICY_ENVIRONMENT.locked]: '1' }],
-    ['a partial hand-off missing only the sso flag', {
+    ['a partial hand-off missing the sso and agent-browser flags', {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
       [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
+      [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
+      [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
+      [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
+    }],
+    ['a partial hand-off missing only the agent-browser flag', {
+      [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
+      [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
+      [DESKTOP_POLICY_ENVIRONMENT.requireSso]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
@@ -434,6 +522,7 @@ describe('desktop policy environment hand-off', () => {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: 'yes',
       [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.requireSso]: '0',
+      [DESKTOP_POLICY_ENVIRONMENT.agentBrowser]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
@@ -442,6 +531,7 @@ describe('desktop policy environment hand-off', () => {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
       [DESKTOP_POLICY_ENVIRONMENT.managedModels]: 'managed',
       [DESKTOP_POLICY_ENVIRONMENT.requireSso]: '0',
+      [DESKTOP_POLICY_ENVIRONMENT.agentBrowser]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',
@@ -450,6 +540,7 @@ describe('desktop policy environment hand-off', () => {
       [DESKTOP_POLICY_ENVIRONMENT.locked]: '1',
       [DESKTOP_POLICY_ENVIRONMENT.managedModels]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.requireSso]: 'sso',
+      [DESKTOP_POLICY_ENVIRONMENT.agentBrowser]: '0',
       [DESKTOP_POLICY_ENVIRONMENT.catalogOrigin]: '',
       [DESKTOP_POLICY_ENVIRONMENT.manifestUrl]: 'company-market/catalog-manifest.json',
       [DESKTOP_POLICY_ENVIRONMENT.trustRoots]: '',

@@ -27,7 +27,7 @@ const contentModePolicy: DesktopPolicy = {
     fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   }],
   usageReport: false,
-}
+  agentBrowser: { enabled: false, allowOrigins: [], allowPersistLogin: false },}
 
 /** Unlocked origin-mode counterpart: no roots pinned, so the trust-root hand-off encodes the absent sentinel too. */
 const originModePolicy: DesktopPolicy = {
@@ -40,7 +40,7 @@ const originModePolicy: DesktopPolicy = {
   allowManualPluginAdd: false,
   trustRoots: [],
   usageReport: false,
-}
+  agentBrowser: { enabled: false, allowOrigins: [], allowPersistLogin: false },}
 
 const temporaryDirectories: string[] = []
 
@@ -259,6 +259,7 @@ describe('desktop terminal environment', () => {
       "DSH_DESKTOP_POLICY_TRUST_ROOTS='company-2026-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
     )
     expect(macShim).toContain("DSH_DESKTOP_POLICY_LOCKED='1'")
+    expect(macShim).toContain("DSH_DESKTOP_POLICY_AGENT_BROWSER='0'")
     // Content mode encodes the absent origin as the sentinel, the same value
     // production hands to every shim regardless of platform.
     expect(macShim).toContain("DSH_DESKTOP_POLICY_CATALOG_ORIGIN='-'")

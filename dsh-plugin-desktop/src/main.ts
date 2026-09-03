@@ -118,6 +118,8 @@ import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profi
 import { materializeProfile, ProfileMaterializationError } from './profile-materializer.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
+import { DesktopAgentBrowserSession } from './agent-browser-session.ts'
+import { DesktopAgentBrowserWindowHost } from './agent-browser-window.ts'
 import {
   createDesktopExitCoordinator,
   createDesktopShutdown,
@@ -1111,6 +1113,21 @@ async function start(): Promise<void> {
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
         hostCtx.provide('desktopPolicy', policy)
+        // P8: the agent-browser executor runs in this process — the host
+        // tree, the window, and the CDP session share the Electron main
+        // loop (design §2). Construction is lazy: no window exists until
+        // the first browser_open, and the one-shot partition token is
+        // minted then (§5.2).
+        hostCtx.provide(
+          'desktopAgentBrowser',
+          new DesktopAgentBrowserSession({
+            createWindowHost: options => new DesktopAgentBrowserWindowHost(options),
+            mintPartitionToken: () => `dsh-agent-browser-${randomUUID()}`,
+            ...(electronLogger === undefined ? {} : {
+              logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+            }),
+          }),
+        )
         if (policy.companyCatalogOrigin !== null) {
           // Origin-mode market catalog fetches ride the same Chromium network
           // boundary boot verification uses: the community market's portable
