@@ -49,10 +49,20 @@
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
+ *      and — when the manifest carries tarball-channel entries — commit their
+ *      artifacts to packages/<name>-<version>.tgz in the same push (the
+ *      signed source.url addresses that exact repo path). The tarball bytes
+ *      come from the same acquired artifact (its packages/ directory), must
+ *      hash to the entry's SIGNED source.integrity before anything is
+ *      pushed, and a hosted file that already exists with different bytes is
+ *      refused — a published name@version is immutable; changed content
+ *      needs a new version. Identical bytes are an idempotent no-op,
  *   6. commit (message carries sequence/fingerprint/run id) and push,
  *   7. re-read the raw URL until it serves HTTP 200 with both the pushed
  *      sequence and the exact pushed bytes (sha256(body) === the sidecar's
- *      manifestSha256; ≤ 5 minutes), then print the completion summary.
+ *      manifestSha256; ≤ 5 minutes), then re-read every pushed tarball's raw
+ *      url until it serves the exact pushed bytes (sha512 === the signed
+ *      integrity), and print the completion summary.
  *
  * Every failure is fail-closed: nothing is pushed unless the artifact is
  * present, byte-intact, signature-valid under the fleet's trust root, and
@@ -72,12 +82,13 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadMarketLibrary } from './lib/market.mjs'
 import { fetchDeployedManifest, verifyManifestText } from './lib/pipeline.mjs'
+import { planTarballPushes, readBytesWithLimit, TARBALL_MAX_BYTES, TARBALL_SPAWN_BUFFER_HEADROOM_BYTES } from './lib/tarball-publish.mjs'
 
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(TOOL_DIR, '..', '..')
@@ -121,6 +132,13 @@ Options:
                         blob storage; --run falls back to this automatically)
   --branch <name>       GitLab branch to push (default: master — the
                         production line; use a temp branch only for drills)
+  --deployed <src>      Drill/e2e only: read the deployed manifest from this
+                        file or URL instead of the GitLab raw url (requires
+                        --dry-run — a drill never pushes against an overridden
+                        ratchet source)
+  --policy <path>       Trust-root policy file the fleet check pins against
+                        (default: the desktop release policy in this repo —
+                        drills may point at a staged policy instead)
   --token <pat>         GitLab PAT (default: env GITLAB_TOKEN — preferred:
                         --token exposes the PAT in this script's argv)
   --gitlab <origin>     GitLab origin (default: ${DEFAULT_GITLAB_ORIGIN})
@@ -148,13 +166,16 @@ const fail = (message) => {
 /** 64 lowercase hex characters — fingerprints and sha256s share the shape. */
 const isHex64 = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value)
 
+/** Standard-base64 SHA-512 integrity of exact bytes (the tarball channel's binding). */
+const sha512Of = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`
+
 /** Scratch directories removed however the run ends. */
 const tempDirs = []
 
 /** Minimal hand-rolled parser: `--flag value`, `--flag=value`, no positionals. */
 function parseArgs(argv) {
   const flags = {}
-  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'from-git', 'branch', 'token', 'gitlab', 'project'])
+  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'from-git', 'branch', 'deployed', 'policy', 'token', 'gitlab', 'project'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) throw new Error(`unexpected argument '${argument}'`)
@@ -287,19 +308,20 @@ function loadMeta(metaPath) {
 }
 
 /** The desktop release policy trustRoots — what the fleet will actually accept. */
-function loadFleetTrustRoots() {
+function loadFleetTrustRoots(policyPath) {
+  const file = policyPath ?? RELEASE_POLICY_PATH
   let parsed
   try {
-    parsed = JSON.parse(readFileSync(RELEASE_POLICY_PATH, 'utf8'))
+    parsed = JSON.parse(readFileSync(file, 'utf8'))
   } catch (error) {
     throw new Error(
-      `the desktop release policy ${RELEASE_POLICY_PATH} could not be read (${error.code ?? error.message}) — ` +
+      `the trust-root policy ${file} could not be read (${error.code ?? error.message}) — ` +
       'the fleet trust root is what decides whether the artifact is publishable; refusing to guess it',
     )
   }
   const roots = parsed?.trustRoots
   if (!Array.isArray(roots) || roots.length === 0) {
-    throw new Error(`${RELEASE_POLICY_PATH} carries no trustRoots — cannot confirm the fleet would accept this artifact`)
+    throw new Error(`${file} carries no trustRoots — cannot confirm the fleet would accept this artifact`)
   }
   return roots
 }
@@ -360,6 +382,14 @@ const MIRROR_FILE_CAPS = { [MANIFEST_FILE]: MANIFEST_MAX_BYTES, [META_FILE]: 65_
 /** Headroom over a cap when a subprocess must emit the whole capped file on stdout. */
 const SPAWN_BUFFER_HEADROOM_BYTES = 64 * 1024
 
+/** Per-path byte cap of any file the git mirror may carry (run dir layout). */
+const mirrorCapFor = (path) => {
+  if (path === MANIFEST_FILE || path.endsWith(`/${MANIFEST_FILE}`)) return MIRROR_FILE_CAPS[MANIFEST_FILE]
+  if (path === META_FILE || path.endsWith(`/${META_FILE}`)) return MIRROR_FILE_CAPS[META_FILE]
+  if (path.startsWith('packages/') && path.endsWith('.tgz')) return TARBALL_MAX_BYTES
+  return undefined
+}
+
 /**
  * The most informative single line of a run() failure: the message starts
  * with the command echo (`gh … failed:`) and carries the real reason on the
@@ -405,40 +435,52 @@ function fetchArtifactsFromGitBranch(repo, runId) {
     }
     throw new Error(`${failureReason(error)} — the ${ARTIFACTS_BRANCH} git mirror of ${repositoryUrl} is unreachable (wrong --repo spelling, a private repository without credentials, or a network block)`)
   }
+  // The mirror carries the whole run directory: the signed pair plus the
+  // packed tarballs under packages/ (P7 2b). Every file is read as a raw
+  // blob (`git show`) so no local eol/smudge config can reformat it, each
+  // under its byte cap before touching disk.
+  const runPrefix = `${runId}/`
+  const listing = run('git', ['-C', branchDir, 'ls-tree', '-r', '--name-only', `HEAD:${runId}`])
+    .toString('utf8').split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+  if (!listing.includes(MANIFEST_FILE) || !listing.includes(META_FILE)) {
+    throw new Error(
+      `run ${runId} on the ${ARTIFACTS_BRANCH} branch does not carry ${MANIFEST_FILE} + ${META_FILE} at its root — ` +
+      'the mirror carries only runs of non-dry-run workflows since the mirror step existed; pass the run id of such a run, or use --artifact-dir',
+    )
+  }
   const outDir = join(branchDir, 'files')
   mkdirSync(outDir, { recursive: true })
-  for (const file of [MANIFEST_FILE, META_FILE]) {
+  for (const file of listing) {
+    const cap = mirrorCapFor(file)
+    if (cap === undefined) {
+      throw new Error(`run ${runId} on the ${ARTIFACTS_BRANCH} branch carries '${file}', which is not part of the artifact layout (catalog-manifest.json, publish-meta.json, packages/*.tgz) — refusing to replay it`)
+    }
     const blobRef = `HEAD:${runId}/${file}`
     let sizeBytes
     try {
       sizeBytes = Number.parseInt(run('git', ['-C', branchDir, 'cat-file', '-s', blobRef]).toString('utf8').trim(), 10)
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      if (detail.includes('does not exist')) {
-        throw new Error(
-          `run ${runId} has no ${file} on the ${ARTIFACTS_BRANCH} branch — the mirror carries only runs of non-dry-run workflows ` +
-          'since the mirror step existed; pass the run id of such a run, or use --artifact-dir',
-        )
-      }
-      throw error
+      throw new Error(`git cat-file -s ${blobRef} failed: ${failureReason(error)}`)
     }
-    const cap = MIRROR_FILE_CAPS[file]
     if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
       throw new Error(`git cat-file -s ${blobRef} did not report a byte size — refusing to guess`)
     }
     if (sizeBytes > cap) {
       throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch is ${String(sizeBytes)} bytes, over the ${String(cap)}-byte bound`)
     }
-    // Raw blob read (buffer, never decoded): the sha256 integrity check must
+    // Raw blob read (buffer, never decoded): the sha integrity checks must
     // see the exact committed bytes. maxBuffer must reach past the byte cap
     // checked above — spawnSync's 1 MiB default would kill a 1–2 MiB mirror
     // manifest with a misleading "git could not be executed" ENOBUFS right
     // after the size check accepted it.
-    const blob = run('git', ['-C', branchDir, 'show', blobRef], { buffer: true, maxBufferBytes: cap + SPAWN_BUFFER_HEADROOM_BYTES })
+    const headroom = file.startsWith('packages/') ? TARBALL_SPAWN_BUFFER_HEADROOM_BYTES : SPAWN_BUFFER_HEADROOM_BYTES
+    const blob = run('git', ['-C', branchDir, 'show', blobRef], { buffer: true, maxBufferBytes: cap + headroom })
     if (blob.byteLength !== sizeBytes) {
       throw new Error(`${file} on the ${ARTIFACTS_BRANCH} branch: cat-file reported ${String(sizeBytes)} bytes but the blob read ${String(blob.byteLength)} — refusing mismatched reads`)
     }
-    writeFileSync(join(outDir, file), blob)
+    const destination = join(outDir, file)
+    mkdirSync(dirname(destination), { recursive: true })
+    writeFileSync(destination, blob)
   }
   return outDir
 }
@@ -580,7 +622,7 @@ async function main() {
   console.log(`integrity: sha256 ${manifestSha256} matches ${META_FILE}; sequence ${String(meta.sequence)}, ${String(meta.entries.length)} entries described by the sidecar`)
 
   // --- 3. trust: signature must verify under the fleet's trust root ------------
-  const fleetRoots = loadFleetTrustRoots()
+  const fleetRoots = loadFleetTrustRoots(flags.policy !== undefined ? resolve(process.cwd(), flags.policy) : undefined)
   const fleetRoot = fleetRoots.find((root) => root?.keyId === meta.keyId && root?.fingerprint === meta.fingerprint)
   if (fleetRoot === undefined) {
     throw new Error(
@@ -594,7 +636,13 @@ async function main() {
   }
 
   // --- 4. ratchet: artifact must be exactly one step ahead of the deployment ----
-  const deployed = await fetchDeployedManifest(masterRawUrl)
+  // --deployed redirects the ratchet read to a local file/url (drills, e2e);
+  // a drill ratchet never authorizes a push, so it requires --dry-run.
+  const deployedSource = typeof flags.deployed === 'string' && flags.deployed.length > 0 ? flags.deployed : masterRawUrl
+  if (deployedSource !== masterRawUrl && dryRun !== true) {
+    throw new Error('--deployed is a drill/e2e override of the ratchet source and requires --dry-run — a real publish must ratchet against the manifest GitLab actually serves')
+  }
+  const deployed = await fetchDeployedManifest(deployedSource)
   if (meta.sequence !== deployed.sequence + 1) {
     throw new Error(
       `sequence ratchet failure: the artifact carries sequence ${String(meta.sequence)} but GitLab has ${String(deployed.sequence)} deployed ` +
@@ -652,16 +700,35 @@ async function main() {
     console.log(`fleet gate: --confirm-fleet-upgraded acknowledged for ${gatedEntries.join('; ')} — every client must already run a field-aware build (README publication gate)`)
   }
 
+  // --- 4c. tarball channel (P7 2b): every signed source:{kind:'tarball'} entry
+  // must have its artifact bytes in the acquired artifact, hashing to the
+  // signed source.integrity — the bytes ride the same transport the manifest
+  // did (artifact download / catalog-artifacts branch / --artifact-dir) and
+  // land in the config repo at the path the signed url addresses.
+  const tarballPushes = planTarballPushes({
+    manifest,
+    artifactDir,
+    origin: `https://${gitlabOrigin}`,
+    project,
+    branch,
+  })
+  if (tarballPushes.length > 0) {
+    console.log(`tarballs:  ${String(tarballPushes.length)} artifact(s) verified against the signed integrity — ${tarballPushes.map((push) => `${push.filePath} (${String(push.sizeBytes)} B)`).join(', ')}`)
+  }
+
   // --- 5. the push plan (dry-run stops here) ------------------------------------
-  const commitMessage = `catalog: sequence ${String(meta.sequence)} via GitHub run ${runId} (keyId ${meta.keyId}, fingerprint ${meta.fingerprint}, publish-local)`
+  const commitMessage = `catalog: sequence ${String(meta.sequence)} via GitHub run ${runId} (keyId ${meta.keyId}, fingerprint ${meta.fingerprint}, publish-local${tarballPushes.length > 0 ? `, ${String(tarballPushes.length)} tarball(s)` : ''})`
   const planLines = [
     'push plan:',
     `  target:      https://${gitlabOrigin}/${project}.git → ${branch}`,
     `  file:        ${MANIFEST_FILE} (${String(manifestBytes.byteLength)} bytes, canonical single line, sha256 ${manifestSha256})`,
     `  sequence:    ${String(deployed.sequence)} → ${String(meta.sequence)}`,
     `  commit:      ${commitMessage}`,
-    `  entries:     ${meta.entries.map((entry) => `${entry.packageName}@${entry.version}${entry.treeDigest === undefined ? '' : ` treeDigest ${entry.treeDigest.slice(0, 12)}…`}`).join(', ')}`,
+    `  entries:     ${meta.entries.map((entry) => `${entry.packageName}@${entry.version}${entry.treeDigest === undefined ? '' : ` treeDigest ${entry.treeDigest.slice(0, 12)}…`}${entry.sourceKind === 'tarball' ? ' [tarball]' : ''}`).join(', ')}`,
   ]
+  for (const push of tarballPushes) {
+    planLines.push(`  tarball:     ${push.filePath} (${String(push.sizeBytes)} bytes, ${push.integrity.slice(0, 20)}…) — ${push.packageName}@${push.version}`)
+  }
   for (const line of planLines) console.log(line)
   if (dryRun) {
     console.log('dry-run: stopped before the clone — nothing was fetched from or pushed to GitLab beyond the read-only raw manifest')
@@ -679,9 +746,33 @@ async function main() {
   try {
     const repositoryUrl = `https://${gitlabOrigin}/${project}.git`
     run('git', ['clone', '--quiet', '--depth', '1', repositoryUrl, cloneDir], { env: gitEnv, timeoutMs: 300_000 })
-    console.log(`clone: ${repositoryUrl} (branch ${branch}, depth 1)`)
+    console.log(`clone: ${repositoryUrl} (default branch → pushing to ${branch})`)
     writeFileSync(join(cloneDir, MANIFEST_FILE), manifestBytes)
     run('git', ['-C', cloneDir, 'add', MANIFEST_FILE], { env: gitEnv })
+    // Tarball channel (P7 2b): host the artifacts at the paths the signed
+    // urls address. Immutability is the contract: a file that already exists
+    // with different bytes is refused (a published name@version never
+    // changes — bump the version for changed content); identical bytes are
+    // an idempotent no-op, which is exactly what the deterministic pack
+    // (pack-tarball) guarantees for an unchanged source.
+    for (const push of tarballPushes) {
+      const hostedPath = join(cloneDir, ...push.filePath.split('/'))
+      if (existsSync(hostedPath)) {
+        const hosted = readFileSync(hostedPath)
+        if (!hosted.equals(push.bytes)) {
+          throw new Error(
+            `${push.filePath} already exists on ${branch} with different bytes (hosted ${sha512Of(hosted).slice(0, 20)}…, artifact ${push.integrity.slice(0, 20)}…) — ` +
+            `${push.packageName}@${push.version} was already published and a hosted tarball is immutable; publish changed content as a new version (fail closed; nothing was pushed)`,
+          )
+        }
+        console.log(`tarball:  ${push.filePath} already hosted with identical bytes (deterministic pack) — nothing to change`)
+        continue
+      }
+      mkdirSync(dirname(hostedPath), { recursive: true })
+      writeFileSync(hostedPath, push.bytes)
+      run('git', ['-C', cloneDir, 'add', push.filePath], { env: gitEnv })
+      console.log(`tarball:  ${push.filePath} (${String(push.sizeBytes)} bytes) staged — ${push.packageName}@${push.version}`)
+    }
     const diff = spawnSync('git', ['-C', cloneDir, 'diff', '--cached', '--quiet'], { encoding: 'utf8', env: gitEnv })
     if (diff.status === 0) {
       throw new Error(
@@ -694,7 +785,7 @@ async function main() {
     }
     run('git', ['-C', cloneDir, '-c', 'user.name=DSH catalog pipeline', '-c', 'user.email=catalog-pipeline@dsh-desktop.local', 'commit', '--quiet', '-m', commitMessage], { env: gitEnv })
     run('git', ['-C', cloneDir, 'push', 'origin', `HEAD:refs/heads/${branch}`], { env: gitEnv, timeoutMs: 300_000 })
-    console.log(`push: ${MANIFEST_FILE} at sequence ${String(meta.sequence)} → ${branch} (commit: ${commitMessage})`)
+    console.log(`push: ${MANIFEST_FILE}${tarballPushes.length > 0 ? ` + ${String(tarballPushes.length)} tarball(s)` : ''} at sequence ${String(meta.sequence)} → ${branch} (commit: ${commitMessage})`)
 
     // --- 7. re-read the raw URL until it serves the pushed bytes exactly --------
     // Sequence alone is not deployment confirmation: only sha256(body) ===
@@ -725,6 +816,44 @@ async function main() {
       console.log(`re-check: served sequence ${String(served.sequence)}, sha256 ${servedSha256.slice(0, 12)}… — waiting for sequence ${String(meta.sequence)} with sha256 ${manifestSha256.slice(0, 12)}…`)
       await new Promise((resolvePromise) => setTimeout(resolvePromise, RECHECK_INTERVAL_MS))
     }
+
+    // --- 7b. re-read every pushed tarball's raw url until it serves the exact
+    // pushed bytes: sha512(body) must equal the SIGNED source.integrity — the
+    // identical check the desktop runs over its download, so the deployment
+    // is only confirmed when a client could install right now.
+    for (const push of tarballPushes) {
+      const rawUrl = `https://${gitlabOrigin}/${project}/-/raw/${branch}/${push.filePath}`
+      const tarballDeadline = Date.now() + RECHECK_TIMEOUT_MS
+      while (true) {
+        let servedBytes
+        try {
+          const response = await fetch(`${rawUrl}?t=${String(Date.now())}`, {
+            method: 'GET',
+            cache: 'no-store',
+            redirect: 'follow',
+            signal: AbortSignal.timeout(30_000),
+          })
+          if (response.status !== 200) throw new Error(`HTTP ${String(response.status)}`)
+          servedBytes = await readBytesWithLimit(response, TARBALL_MAX_BYTES, `the tarball at ${rawUrl}`)
+        } catch (error) {
+          if (Date.now() >= tarballDeadline) {
+            throw new Error(`post-push re-check failed: ${rawUrl} did not serve the tarball within 5 minutes (last error: ${error.message})`)
+          }
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, RECHECK_INTERVAL_MS))
+          continue
+        }
+        const servedIntegrity = sha512Of(servedBytes)
+        if (servedIntegrity === push.integrity) {
+          console.log(`re-check: ${rawUrl} serves the exact pushed bytes (${servedIntegrity.slice(0, 20)}… = signed integrity) — ${push.packageName}@${push.version} installable`)
+          break
+        }
+        if (Date.now() >= tarballDeadline) {
+          throw new Error(`post-push re-check failed: ${rawUrl} serves bytes hashing to ${servedIntegrity} but the manifest signs ${push.integrity} — not the pushed tarball, within 5 minutes`)
+        }
+        console.log(`re-check: ${push.filePath} served ${servedIntegrity.slice(0, 20)}… — waiting for the pushed bytes`)
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, RECHECK_INTERVAL_MS))
+      }
+    }
   } finally {
     // tempDirs are removed by the top-level finally, however the run ends
   }
@@ -735,6 +864,9 @@ async function main() {
   console.log(`  keyId:       ${meta.keyId}`)
   console.log(`  fingerprint: ${meta.fingerprint}`)
   console.log(`  manifest:    ${String(manifestBytes.byteLength)} bytes, sha256 ${manifestSha256}`)
+  if (tarballPushes.length > 0) {
+    console.log(`  tarballs:    ${String(tarballPushes.length)} hosted — ${tarballPushes.map((push) => push.filePath).join(', ')}`)
+  }
   console.log(`  source:      GitHub run ${runId} via ${acquireChannel}${meta.gitSha === undefined ? '' : ` (commit ${meta.gitSha})`}`)
   if (branch === 'master') {
     console.log(`  follow-up:   commit the GitHub-side state bump — tools/company-catalog/state/last-sequence.json → { "lastSequence": ${String(meta.sequence)} }`)

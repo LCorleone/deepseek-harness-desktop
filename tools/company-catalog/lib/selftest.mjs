@@ -260,7 +260,11 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     const catalogOrigin = 'https://gitlab.company.example'
     const tarballBytes = Buffer.from('company-hardened-plugin selftest tarball\n', 'utf8')
     const tarballIntegrity = `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`
-    const tarballUrl = `${catalogOrigin}/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz`
+    // The url form mirrors the hosting contract this batch serves:
+    // /<project>/-/raw/master/packages/<name>-<version>.tgz (the raw-URL
+    // prefix publish-local derives for the manifest itself, and the only
+    // shape parseTarballSourceUrl accepts).
+    const tarballUrl = `${catalogOrigin}/julu/dsh-desktop-config/-/raw/master/packages/company-hardened-plugin-2.1.0.tgz`
     const tarballEntry = {
       packageName: 'company-hardened-plugin',
       version: '2.1.0',

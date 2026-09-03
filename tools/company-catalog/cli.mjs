@@ -13,6 +13,7 @@
  *   COMPANY_CATALOG_KEY_FINGERPRINT  optional pinned trust-root fingerprint
  */
 
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -26,6 +27,7 @@ import {
   loadAllowlist,
   loadTreeDigestFile,
   repositoryFromPackument,
+  resolveTarballArtifacts,
   saveAllowlist,
   validateAllowlistEntry,
   validateCatalogOrigin,
@@ -43,6 +45,13 @@ import {
   verifyManifestText,
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
+import {
+  DEFAULT_PACKAGES_DIR_RELATIVE,
+  DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE,
+  REPO_ROOT,
+  packFromNpmSpec,
+  packPluginSource,
+} from './lib/tarball.mjs'
 
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 
@@ -52,6 +61,10 @@ Commands:
   build                        Fetch dist integrity for every allowlist entry from
                                registry.npmjs.org, assemble, sign, verify, and publish
                                the manifest (sequence = persisted + 1).
+  pack-tarball                 Pack a plugin source tree (or an exact registry version
+                               plus a patch script) into the deterministic npm-compatible
+                               .tgz the tarball channel hosts, and measure its
+                               treeDigest (--no-measure skips the reference install).
   measure-and-publish          Fill measured tree digests (--digest-file) into a
                                runtime copy of the allowlist, then build (sequence
                                floor: --sequence-from or the local state file)
@@ -88,6 +101,19 @@ Options:
                          required before any entry uses the tarball channel
   --force-offline        selftest only: skip the npm registry segment
 
+pack-tarball options:
+  --source-dir <dir>     Pack this patched plugin source directory (staged copy;
+                         node_modules/.git and stale top-level *.tgz never ship)
+  --npm <name>@<version> Pack this exact public-registry version instead, applying
+                         --patch <command> inside the unpacked tree before repacking
+  --from-allowlist       Pack every allowlist entry whose source pins a path, from
+                         <sources-root>/<tarball-stem>/ (the workflow convention)
+  --sources-root <dir>   --from-allowlist source root
+                         (default: tools/company-catalog/plugin-sources)
+  --pack-out <dir>       Artifact output (default: tools/company-catalog/out/packages)
+  --no-measure           Skip the treeDigest reference install (integrity still
+                         computed; measure.mjs can measure the artifact later)
+
 Signing environment:
   COMPANY_CATALOG_SIGNING_KEY       base64 PKCS#8 DER ed25519 private key, single line;
                                     read from the environment only, never from files
@@ -104,7 +130,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) {
@@ -181,7 +207,17 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
   const effectiveAllowlistPath = allowlistPathOverride ?? allowlistPath
   const companyCatalogOrigin = resolveCatalogOrigin(flags)
   const entries = loadAllowlist(effectiveAllowlistPath, { companyCatalogOrigin })
-  const dists = await resolveDists(entries)
+  // Tarball channel, pack-artifact form: the signed sha512 comes from the
+  // packed file's actual bytes (never a reviewed local value), exactly like
+  // the npm channel's integrity comes from the registry response.
+  const artifacts = resolveTarballArtifacts(entries, { repoRoot: REPO_ROOT })
+  for (const packed of artifacts.resolved) {
+    console.log(`tarball:  ${packed.packageName}@${packed.version} → ${packed.path} (${String(packed.sizeBytes)} B) ${packed.integrity} → ${packed.url}`)
+  }
+  if (artifacts.passthrough.length > 0) {
+    console.log(`tarball:  ${artifacts.passthrough.join(', ')} carry reviewed inline integrity (no pack artifact resolved)`)
+  }
+  const dists = await resolveDists(artifacts.entries)
   const sequenceFrom = flags['sequence-from']
   const persistedSequence = readLastSequence(stateDir)
   let deployedSequence
@@ -196,7 +232,7 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
   })
   const { manifest, fingerprint } = await publishManifest({
     market,
-    entries,
+    entries: artifacts.entries,
     dists,
     sequence,
     expiresAt: expiryFromDays(integerFlag(flags, 'expires-days') ?? 90),
@@ -229,6 +265,100 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
 
 async function commandBuild(flags) {
   await publishFromAllowlist(flags)
+}
+
+/**
+ * `pack-tarball`: produce the deterministic npm-compatible .tgz for one
+ * plugin — from a patched source directory, from an exact registry version
+ * plus a patch script, or (the workflow convention) from every allowlist
+ * entry whose source pins a pack path. The record printed and written next
+ * to the artifact carries everything the allowlist entry needs: the signable
+ * repo-relative path, the sha512, and (by default) the measured treeDigest.
+ */
+async function commandPackTarball(flags) {
+  const modes = ['source-dir', 'npm', 'from-allowlist'].filter((mode) => flags[mode] !== undefined)
+  if (modes.length !== 1) {
+    throw new Error(`pack-tarball takes exactly one input mode (--source-dir <dir>, --npm <name>@<version> [--patch <command>], or --from-allowlist); got ${modes.length === 0 ? 'none' : modes.join(', ')}`)
+  }
+  const outDir = flags['pack-out'] !== undefined
+    ? resolve(process.cwd(), flags['pack-out'])
+    : resolve(REPO_ROOT, ...DEFAULT_PACKAGES_DIR_RELATIVE.split('/'))
+  const log = (line) => console.log(line)
+  let records = []
+  if (flags['source-dir'] !== undefined) {
+    records = [packPluginSource({ sourceDir: resolve(process.cwd(), flags['source-dir']), outDir, log })]
+  } else if (flags.npm !== undefined) {
+    records = [packFromNpmSpec({
+      spec: flags.npm,
+      ...(flags.patch === undefined ? {} : { patchCommand: flags.patch }),
+      outDir,
+      log,
+    })]
+  } else {
+    const sourcesRoot = flags['sources-root'] !== undefined
+      ? resolve(process.cwd(), flags['sources-root'])
+      : resolve(REPO_ROOT, ...DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE.split('/'))
+    const { allowlistPath } = defaultPaths(flags)
+    const entries = loadAllowlist(allowlistPath, { companyCatalogOrigin: resolveCatalogOrigin(flags) })
+    const packEntries = entries.filter((entry) => entry.source?.kind === 'tarball' && entry.source.path !== undefined)
+    if (packEntries.length === 0) {
+      console.log(`pack-tarball: no allowlist entry pins a source.path artifact — nothing to pack (the tarball channel's pack-artifact form is the only one that packs here)`)
+    }
+    for (const entry of packEntries) {
+      const stem = entry.source.path.split('/').pop().replace(/\.tgz$/u, '')
+      const sourceDir = resolve(sourcesRoot, stem)
+      log(`pack-tarball: ${entryKey(entry)} ← ${sourceDir} (sources-root convention)`)
+      const record = packPluginSource({ sourceDir, outDir, log })
+      if (record.packageName !== entry.packageName || record.version !== entry.version) {
+        throw new Error(
+          `the source at ${sourceDir} packed ${record.packageName}@${record.version}, but the allowlist entry is ${entryKey(entry)} — ` +
+          'the plugin-sources directory must match the entry (rename the directory or fix the allowlist)',
+        )
+      }
+      records.push(record)
+    }
+  }
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const project = flags.project ?? 'julu/dsh-desktop-config'
+  const measure = flags['no-measure'] !== true
+  for (const [index, record] of records.entries()) {
+    // treeDigest: measured through the exact reference install measure.mjs
+    // applies to tarball entries (staged pnpm install of the artifact, digest
+    // from the compiled boot-verification chunk).
+    let treeDigest
+    if (measure) {
+      const digestFile = join(tmpdir(), `company-catalog-pack-digest-${String(process.pid)}-${String(index)}.json`)
+      const probe = spawnSync(process.execPath, [
+        join(TOOL_DIR, 'measure.mjs'),
+        '--tarball', resolve(outDir, record.filename),
+        '--out', digestFile,
+      ], { encoding: 'utf8', timeout: 600_000 })
+      const probeOutput = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`.trim()
+      if (probe.status !== 0) {
+        throw new Error(`measuring ${record.filename} failed:\n${probeOutput.split('\n').slice(-6).join('\n')}\n(re-run with --no-measure to pack without a treeDigest, then measure separately)`)
+      }
+      const measured = JSON.parse(readFileSync(digestFile, 'utf8'))
+      rmSync(digestFile, { force: true })
+      treeDigest = measured[0]?.treeDigest
+      if (typeof treeDigest !== 'string' || !/^[0-9a-f]{64}$/u.test(treeDigest)) {
+        throw new Error(`measure.mjs returned no usable treeDigest for ${record.filename}`)
+      }
+    }
+    const sourceSnippet = companyCatalogOrigin === undefined || record.path.startsWith('/') ? undefined : {
+      kind: 'tarball',
+      url: flags.url ?? `${companyCatalogOrigin}/${project}/-/raw/master/packages/${record.filename}`,
+      path: record.path,
+    }
+    console.log('')
+    console.log(`packed:   ${record.packageName}@${record.version} → ${resolve(outDir, record.filename)}`)
+    console.log(`  size:        ${String(record.sizeBytes)} bytes (${String(record.fileCount)} files)`)
+    console.log(`  integrity:   ${record.integrity}`)
+    if (treeDigest !== undefined) console.log(`  treeDigest:  ${treeDigest}`)
+    if (sourceSnippet !== undefined) {
+      console.log('  allowlist source block (review into the allowlist entry):')
+      console.log(`    ${JSON.stringify(sourceSnippet)}`)
+    }
+  }
 }
 
 /**
@@ -443,6 +573,7 @@ async function main() {
   }
   try {
     if (command === 'build') await commandBuild(flags)
+    else if (command === 'pack-tarball') await commandPackTarball(flags)
     else if (command === 'measure-and-publish') await commandMeasureAndPublish(flags)
     else if (command === 'revoke') await commandRevoke(positionals, flags)
     else if (command === 'verify') await commandVerify(positionals, flags)

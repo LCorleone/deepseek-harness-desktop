@@ -2,7 +2,8 @@ name: Company catalog
 
 # Manual smoke of the signed catalog publishing pipeline (P2-6): build the
 # market signing library, then run the end-to-end selftest with an ephemeral
-# key. Nothing is published and no secrets are required.
+# key, the company-catalog unit test suite, and the tarball publish channel
+# e2e drill (P7 2b). Nothing is published and no secrets are required.
 on:
   workflow_dispatch:
 
@@ -19,6 +20,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          submodules: recursive
       - uses: actions/setup-node@v6
         with:
           node-version: 22.23.2
@@ -35,3 +37,14 @@ jobs:
         run: yarn workspace dsh-community-market build
       - name: Company catalog pipeline selftest
         run: node tools/company-catalog/cli.mjs selftest
+      # The pure offline test suite (also part of the yarn check chain via
+      # check:company-catalog) and the full tarball publish channel drill:
+      # pack → allowlist → sign → publish dry-run → dual-verifier verify.
+      # Needs the built desktop lib too (the drill cross-checks the compiled
+      # desktop verifier against the tool-signed bytes).
+      - name: Build desktop lib (boot-verification chunk)
+        run: yarn workspace dsh-plugin-desktop build
+      - name: Company catalog unit tests
+        run: yarn test:company-catalog
+      - name: Tarball publish channel e2e (offline fixture drill)
+        run: node tools/company-catalog/e2e-tarball.mjs
