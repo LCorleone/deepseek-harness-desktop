@@ -104,7 +104,10 @@ function originOf(url: string): string | undefined {
  *   current page — the allowlist deny gate already owns that case);
  * - form submission: `browser_type` with `submit` truthy (Enter-into-form),
  *   or a `browser_click` whose target resolves to a form-submit control
- *   (icon-specific button/input — the B2-review scope completion).
+ *   (icon-specific button/input, or any descendant of one — the snapshot
+ *   refs every element, and a trusted click on a submit button's inner
+ *   span/icon activates the control; the B2-review scope completion and
+ *   its residual fix).
  *
  * The returned decision is routed by the registry through the standard
  * approval seam; the plugin never touches the approval service itself.

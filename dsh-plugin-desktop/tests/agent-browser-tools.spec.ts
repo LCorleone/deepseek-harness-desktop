@@ -458,6 +458,23 @@ describe('agent-browser approval asks (§5.1 trigger matrix)', () => {
     expect(isSubmitControl).toHaveBeenCalledWith('e9')
   })
 
+  it('asks on clicking a submit control through a DESCENDANT ref (P8 B2 residual P1)', async () => {
+    const current = live(true, 'https://example.test/form')
+    // e9 is the submit button; e10 is the span/icon INSIDE it whose ref the
+    // model clicks just as naturally (the snapshot refs every element).
+    const isSubmitControl = vi.fn(async (ref: string) => ref === 'e9' || ref === 'e10')
+    const classified = { ...current, isSubmitControl }
+
+    // The child ref rides the same classifier seam and raises the same ask —
+    // a trusted click on the span activates the submit control.
+    expect((await agentBrowserPreExecuteAsk('browser_click', { ref: 'e10' }, classified))?.reason)
+      .toContain('SUBMIT')
+    expect(isSubmitControl).toHaveBeenCalledWith('e10')
+    // A child ref inside a plain button never does.
+    expect(await agentBrowserPreExecuteAsk('browser_click', { ref: 'e11' }, classified)).toBeUndefined()
+    expect(isSubmitControl).toHaveBeenCalledWith('e11')
+  })
+
   it('routes only its own tool names through the registered pre-execute listener', async () => {
     const describe = vi.fn((): AgentBrowserLiveState => ({ open: true, url: 'https://example.test/', title: 'Example', phase: 'observing', generation: 2 }))
     const { context, preExecute } = fakeContext(devPolicy(), { describe })

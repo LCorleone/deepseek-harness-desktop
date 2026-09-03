@@ -122,7 +122,14 @@ export const AUDITED_SNIPPET_FOCUS = 'function(){ this.focus(); return document.
 export const AUDITED_SNIPPET_FOCUS_SELECT = 'function(){ this.focus(); if (typeof this.select === "function") this.select(); return document.activeElement === this; }'
 export const AUDITED_SNIPPET_SCROLL_INTO_VIEW = 'function(){ if (typeof this.scrollIntoView === "function") this.scrollIntoView({ block: "center", inline: "nearest" }); }'
 export const AUDITED_SNIPPET_READ_VALUE = 'function(){ return (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) && this.type !== "password" ? this.value : undefined; }'
-export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const el = this; const tag = el && el.tagName !== undefined ? String(el.tagName).toLowerCase() : ""; if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }'
+/**
+ * Submit-control classifier (§5.1): the target is resolved UP to the nearest
+ * `button`/`input` ancestor via `closest` before the checks — the snapshot
+ * refs every element, and a trusted click on a submit control's inner
+ * span/icon activates the control itself (P8 B2-review residual P1). Form
+ * ancestors are deliberately NOT consulted: only a button/input decides.
+ */
+export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const el = this && typeof this.closest === "function" ? this.closest("button, input") : null; if (!el) return false; const tag = String(el.tagName).toLowerCase(); if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }'
 
 /** Audited `scrollBy` snippet; only a rounded finite number is interpolated. */
 export function auditedSnippetScrollBy(deltaY: number): string {
@@ -985,10 +992,13 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
 
   /**
    * Best-effort §5.1 classifier: whether one ref resolves to a form-submit
-   * control (a `<button>`/`<input type=submit|image>` inside a form). Runs
-   * the audited snippet in the isolated world and is deliberately forgiving —
-   * any failure returns false so the ask gate never blocks a normal click; a
-   * dead ref is reported by the act body instead.
+   * control (a `<button>`/`<input type=submit|image>` inside a form) or to a
+   * descendant of one — every element gets a snapshot ref, and a trusted
+   * click on a submit button's inner span/icon activates the control, so the
+   * audited snippet classifies from the ref up via `closest`. Runs the
+   * snippet in the isolated world and is deliberately forgiving — any failure
+   * returns false so the ask gate never blocks a normal click; a dead ref is
+   * reported by the act body instead.
    */
   async isSubmitControl(ref: string): Promise<boolean> {
     try {

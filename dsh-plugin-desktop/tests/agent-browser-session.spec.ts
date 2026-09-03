@@ -138,6 +138,50 @@ function fakeGuest(target: AgentBrowserDebuggerTarget, url = 'https://example.te
   }
 }
 
+/** The ref form one fake node's backendNodeId round-trips through. */
+function ref(backendNodeId: number): string {
+  return `e${backendNodeId.toString(36)}`
+}
+
+/**
+ * Minimal DOM mirror for executing the audited classifier snippet against a
+ * small element tree: tagName/type/form plus a spec-faithful `closest` that
+ * walks the ancestor chain (matching self first). `type` mirrors the HTML
+ * IDL defaults the snippet leans on — an untyped `<button>` reports
+ * type=submit, an untyped `<input>` reports text.
+ */
+interface FakeDomElement {
+  readonly tagName: string
+  readonly type?: string | undefined
+  readonly form?: object | undefined
+  readonly parent?: FakeDomElement | undefined
+  closest(selector: string): FakeDomElement | null
+}
+
+function fakeDomElement(options: {
+  tag: string
+  type?: string
+  inForm?: boolean
+  parent?: FakeDomElement
+}): FakeDomElement {
+  const el: FakeDomElement = {
+    tagName: options.tag,
+    type: options.type ?? (options.tag === 'button' ? 'submit' : options.tag === 'input' ? 'text' : undefined),
+    form: options.inForm === false ? undefined : {},
+    parent: options.parent,
+    closest(selector: string): FakeDomElement | null {
+      const tags = selector.split(',').map(part => part.trim().toLowerCase())
+      let candidate: FakeDomElement | undefined = el
+      while (candidate !== undefined) {
+        if (tags.includes(candidate.tagName.toLowerCase())) return candidate
+        candidate = candidate.parent
+      }
+      return null
+    },
+  }
+  return el
+}
+
 /** Fake window host recording pushed view models; guest attach is scripted. */
 interface FakeWindowHost extends AgentBrowserWindowHost {
   readonly states: Array<Record<string, unknown>>
@@ -839,6 +883,96 @@ describe('agent-browser act loop', () => {
     await session.open('https://example.test/', { waitForLoad: false })
 
     expect(await session.isSubmitControl('e2s')).toBe(false)
+  })
+
+  it('classifies a submit-control descendant ref by climbing to the control (P8 B2 residual P1)', async () => {
+    // <form>
+    //   <button type=submit><span>Sign in</span></button>
+    //   <button type=button><span>Cancel</span></button>
+    //   <button><span>Go</span></button>   (untyped: the IDL default type is submit)
+    //   <input type=image alt="go">
+    //   <div><span>plain</span></div>      (no control ancestor)
+    // </form>
+    const submitButton = fakeDomElement({ tag: 'button', type: 'submit' })
+    const submitSpan = fakeDomElement({ tag: 'span', parent: submitButton })
+    const plainButton = fakeDomElement({ tag: 'button', type: 'button' })
+    const plainSpan = fakeDomElement({ tag: 'span', parent: plainButton })
+    const defaultButton = fakeDomElement({ tag: 'button' })
+    const defaultSpan = fakeDomElement({ tag: 'span', parent: defaultButton })
+    const imageInput = fakeDomElement({ tag: 'input', type: 'image' })
+    const orphanSpan = fakeDomElement({ tag: 'span', parent: fakeDomElement({ tag: 'div' }) })
+    const textLike = { tagName: '#text' } // no closest: a non-Element `this`
+    const nodes = new Map<string, unknown>([
+      ['obj-201', submitButton], ['obj-202', submitSpan],
+      ['obj-203', plainButton], ['obj-204', plainSpan],
+      ['obj-205', defaultButton], ['obj-206', defaultSpan],
+      ['obj-207', imageInput], ['obj-209', orphanSpan],
+      ['obj-210', textLike],
+    ])
+    const debugger_ = fakeGuestDebugger({
+      ...ACT_RESPONSES,
+      'DOM.resolveNode': (params: { backendNodeId: number }) => ({ object: { objectId: `obj-${params.backendNodeId}` } }),
+      'Runtime.callFunctionOn': (params: { objectId: string, functionDeclaration: string }) => {
+        // Execute the audited declaration against the fake node exactly as
+        // the isolated world would — this is what pins the descendant climb.
+        expect(params.functionDeclaration).toBe(AUDITED_SNIPPET_IS_SUBMIT_CONTROL)
+        const node = nodes.get(params.objectId)
+        if (node === undefined) throw new Error(`no fake node for ${params.objectId}`)
+        const snippet = new Function(`return (${params.functionDeclaration})`)() as (this: unknown) => boolean
+        return { result: { type: 'boolean', value: snippet.call(node) } }
+      },
+    })
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    // The span/icon INSIDE the submit control classifies as submit: the
+    // trusted click lands on the child and activates the control.
+    expect(await session.isSubmitControl(ref(202))).toBe(true)
+    // The untyped-button descendant too — <button> defaults to type=submit.
+    expect(await session.isSubmitControl(ref(206))).toBe(true)
+    // Direct submit controls still classify through the same snippet.
+    expect(await session.isSubmitControl(ref(201))).toBe(true)
+    expect(await session.isSubmitControl(ref(207))).toBe(true)
+    // A non-Element `this` (a text node resolved somehow) fails open.
+    expect(await session.isSubmitControl(ref(210))).toBe(false)
+  })
+
+  it('does not classify descendants of plain controls or control-less elements', async () => {
+    const submitButton = fakeDomElement({ tag: 'button', type: 'submit' })
+    const plainButton = fakeDomElement({ tag: 'button', type: 'button' })
+    const plainSpan = fakeDomElement({ tag: 'span', parent: plainButton })
+    const resetButton = fakeDomElement({ tag: 'button', type: 'reset' })
+    const resetSpan = fakeDomElement({ tag: 'span', parent: resetButton })
+    const orphanSpan = fakeDomElement({ tag: 'span', parent: fakeDomElement({ tag: 'div' }) })
+    const formlessSubmit = fakeDomElement({ tag: 'button', type: 'submit', inForm: false })
+    const formlessSpan = fakeDomElement({ tag: 'span', parent: formlessSubmit })
+    const nodes = new Map<string, unknown>([
+      ['obj-202', fakeDomElement({ tag: 'span', parent: submitButton })],
+      ['obj-204', plainSpan], ['obj-211', resetSpan],
+      ['obj-212', orphanSpan], ['obj-213', formlessSpan],
+    ])
+    const debugger_ = fakeGuestDebugger({
+      ...ACT_RESPONSES,
+      'DOM.resolveNode': (params: { backendNodeId: number }) => ({ object: { objectId: `obj-${params.backendNodeId}` } }),
+      'Runtime.callFunctionOn': (params: { objectId: string, functionDeclaration: string }) => {
+        expect(params.functionDeclaration).toBe(AUDITED_SNIPPET_IS_SUBMIT_CONTROL)
+        const node = nodes.get(params.objectId)
+        if (node === undefined) throw new Error(`no fake node for ${params.objectId}`)
+        const snippet = new Function(`return (${params.functionDeclaration})`)() as (this: unknown) => boolean
+        return { result: { type: 'boolean', value: snippet.call(node) } }
+      },
+    })
+    const { session } = createHarness({ attachGuest: () => fakeGuest(debugger_.target) })
+    await session.open('https://example.test/', { waitForLoad: false })
+
+    // Children of non-submit controls never raise the ask.
+    expect(await session.isSubmitControl(ref(204))).toBe(false)
+    expect(await session.isSubmitControl(ref(211))).toBe(false)
+    // A span with no button/input ancestor does not either.
+    expect(await session.isSubmitControl(ref(212))).toBe(false)
+    // Nor descendants of a submit button outside any form — the click
+    // cannot submit anything the page recognizes.
+    expect(await session.isSubmitControl(ref(213))).toBe(false)
   })
 
   it('falls back to the wheel at the element center when scrollBy did not move', async () => {
