@@ -1,3 +1,4 @@
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import {
   existsSync,
   lstatSync,
@@ -14,13 +15,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  canonicalJsonText,
+  createCompanyManifestSignature,
+  ed25519PublicKeyFingerprint,
+} from 'dsh-community-market'
+import {
   MarketProviderLockError,
   assertDesktopMarketStatePath,
+  desktopCompanyEntrySource,
   desktopMarketStatePath,
+  findDesktopCompanyManifestPackage,
   parseDesktopMarketState,
   readDesktopMarketState,
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
+  verifyDesktopCompanyManifest,
   writeDesktopMarketSelection,
 } from '../src/desktop-market.ts'
 import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
@@ -64,6 +73,79 @@ function lockedPolicy(): DesktopPolicy {
     usageReport: false,
   })
 }
+
+describe('company manifest entry source channel (P7)', () => {
+  const keyId = 'company-catalog-source-spec'
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const trustRoots = [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }]
+  const origin = 'https://market.company.example'
+  const tarballBytes = Buffer.from('source spec tarball\n')
+  const tarballIntegrity = `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`
+
+  function manifestWith(entry: Record<string, unknown>): string {
+    const unsigned = {
+      manifestVersion: '1.0.0',
+      sequence: 10,
+      expiresAt: '2030-01-01T00:00:00Z',
+      packages: [{
+        packageName: 'company-plugin',
+        version: '1.0.0',
+        integrity: tarballIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        repository: { url: 'https://github.com/example/company-plugin' },
+        revoked: false,
+        runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+        ...entry,
+      }],
+    }
+    const signature = createCompanyManifestSignature(
+      unsigned as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+      privateKey,
+      keyId,
+    )
+    return canonicalJsonText({ ...unsigned, signature })
+  }
+
+  it('treats an absent source as the npm channel and parses a pinned tarball source', () => {
+    const npm = verifyDesktopCompanyManifest(manifestWith({}), { trustRoots, companyCatalogOrigin: origin })
+    expect(npm.ok).toBe(true)
+    if (!npm.ok) return
+    expect(desktopCompanyEntrySource(findDesktopCompanyManifestPackage(npm.manifest, 'company-plugin', '1.0.0')!))
+      .toEqual({ kind: 'npm' })
+    const url = `${origin}/packages/company-plugin-1.0.0.tgz`
+    const tarball = verifyDesktopCompanyManifest(
+      manifestWith({ source: { kind: 'tarball', url, integrity: tarballIntegrity } }),
+      { trustRoots, companyCatalogOrigin: origin },
+    )
+    expect(tarball.ok).toBe(true)
+    if (!tarball.ok) return
+    expect(desktopCompanyEntrySource(findDesktopCompanyManifestPackage(tarball.manifest, 'company-plugin', '1.0.0')!))
+      .toEqual({ kind: 'tarball', url, integrity: tarballIntegrity })
+  })
+
+  it.each([
+    ['a url on another origin', { source: { kind: 'tarball', url: 'https://evil.example/x.tgz', integrity: tarballIntegrity } }, 'must stay inside the pinned catalog origin'],
+    ['a url on an npm entry', { source: { kind: 'npm', url: `${origin}/x.tgz` } }, 'must not carry url'],
+    ['an unknown source key', { source: { kind: 'tarball', url: `${origin}/x.tgz`, integrity: tarballIntegrity, extra: 1 } }, 'unknown field'],
+    ['an unknown entry key', { distribution: 'x' }, 'unknown field'],
+    ['a malformed source integrity', { source: { kind: 'tarball', url: `${origin}/x.tgz`, integrity: 'sha512-short' } }, 'SHA-512'],
+  ])('rejects the whole manifest for %s', (_label, entry, fragment) => {
+    const verification = verifyDesktopCompanyManifest(manifestWith(entry), { trustRoots, companyCatalogOrigin: origin })
+    expect(verification).toMatchObject({ ok: false, code: 'invalid-manifest' })
+    if (verification.ok) return
+    expect(verification.reason).toContain(fragment)
+  })
+
+  it('rejects a tarball source when the policy pins no catalog origin', () => {
+    const verification = verifyDesktopCompanyManifest(
+      manifestWith({ source: { kind: 'tarball', url: `${origin}/x.tgz`, integrity: tarballIntegrity } }),
+      { trustRoots, companyCatalogOrigin: null },
+    )
+    expect(verification).toMatchObject({ ok: false, code: 'invalid-manifest' })
+    if (verification.ok) return
+    expect(verification.reason).toContain('origin-mode catalog policy')
+  })
+})
 
 describe('Desktop Market state path and parser', () => {
   it('uses one machine-level state path and rejects ambiguous paths', () => {

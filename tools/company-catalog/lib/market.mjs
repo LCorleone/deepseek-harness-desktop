@@ -21,7 +21,6 @@ const REQUIRED_EXPORTS = [
 
 /** Built workspace entry, used when the root linker has not exposed the package. */
 const WORKSPACE_ENTRY = new URL('../../../dsh-community-market/lib/index.js', import.meta.url)
-
 const isModuleNotFound = (error) =>
   error instanceof Error && (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND')
 
@@ -51,4 +50,26 @@ export async function loadMarketLibrary() {
     throw new Error(`dsh-community-market does not export ${missing.join(', ')}; rebuild the market workspace`)
   }
   return market
+}
+
+/**
+ * The node-semver `validRange` checker, resolved from the market workspace's
+ * own dependency tree (the tool itself is dependency-free; the semver grammar
+ * belongs to the market contract, so its checker is borrowed from there).
+ * The manifest-shape mirror needs it to validate runtime ranges exactly the
+ * way the market verifier does.
+ */
+export async function loadSemverRangeChecker() {
+  const { createRequire } = await import('node:module')
+  const require = createRequire(WORKSPACE_ENTRY)
+  try {
+    const semver = require('semver')
+    if (typeof semver.validRange !== 'function') throw new Error('semver.validRange is unavailable')
+    return semver.validRange
+  } catch (error) {
+    throw new Error(
+      `the node-semver checker could not be resolved from the market workspace (${error.message}) — ` +
+      "run 'corepack yarn install' and build the market workspace first",
+    )
+  }
 }

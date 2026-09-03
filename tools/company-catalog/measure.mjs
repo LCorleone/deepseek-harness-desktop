@@ -271,10 +271,21 @@ async function main() {
   }
   const allowlistPath = flags.allowlist !== undefined ? resolve(process.cwd(), flags.allowlist) : join(TOOL_DIR, 'allowlist.json')
   const entries = loadAllowlist(allowlistPath)
-  const targets = entries.filter((entry) => flags.all === true || entry.treeDigest === undefined)
-  const skipped = entries.filter((entry) => !targets.includes(entry))
+  // The npm-registry reference install cannot measure tarball-channel entries:
+  // their artifact is the intranet tarball, not a registry version, so the
+  // npm flow would measure a different tree than any desktop install. The
+  // tarball-channel measurement flow (staged download → controlled install →
+  // the same digest walk) lands with the dual-channel publishing batch; until
+  // then such entries are skipped loudly instead of measured wrongly.
+  const tarballEntries = entries.filter((entry) => entry.source !== undefined && entry.source.kind === 'tarball')
+  if (tarballEntries.length > 0) {
+    console.log(`measure: skipping ${String(tarballEntries.length)} tarball-channel entr${tarballEntries.length === 1 ? 'y' : 'ies'} (${tarballEntries.map(entryKey).join(', ')}) — the npm reference flow cannot measure them; use the tarball-channel measurement flow (dual-channel publishing batch) and review the digest into the allowlist`)
+  }
+  const measurable = entries.filter((entry) => !(entry.source !== undefined && entry.source.kind === 'tarball'))
+  const targets = measurable.filter((entry) => flags.all === true || entry.treeDigest === undefined)
+  const skipped = measurable.filter((entry) => !targets.includes(entry))
   if (targets.length === 0) {
-    console.log(`measure: every allowlist entry already pins a treeDigest (${entries.map(entryKey).join(', ')}); nothing to measure${flags.all === true ? '' : ' — pass --all to re-measure'}`)
+    console.log(`measure: every measurable allowlist entry already pins a treeDigest (${measurable.map(entryKey).join(', ') || 'none'}); nothing to measure${flags.all === true ? '' : ' — pass --all to re-measure'}`)
     if (flags.out !== undefined) writeFileSync(resolve(process.cwd(), flags.out), '[]\n', 'utf8')
     return
   }

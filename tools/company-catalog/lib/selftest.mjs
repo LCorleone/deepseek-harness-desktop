@@ -100,7 +100,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
 
     // Segment: build → sign → round-trip verify → write; bytes on disk must
     // be the canonical serialization verification re-derives.
-    const first = publishManifest({
+    const first = await publishManifest({
       market,
       entries,
       dists,
@@ -211,7 +211,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       dists: new Map([[entryKey(authorityEntry), authorityDist]]),
     })
     const authoritySigned = signUnsignedManifest(market, authorityUnsigned, privateKey, keyId)
-    const authorityVerified = verifyManifestText(market, authoritySigned.text, { ...trustRoot, lastSeenSequence: 90 })
+    const authorityVerified = await verifyManifestText(market, authoritySigned.text, { ...trustRoot, lastSeenSequence: 90 })
     assert(authorityVerified.ok, `an entry carrying treeDigest + approvedBuilds must sign and verify (${why(authorityVerified)})`)
     const signedAuthorityEntry = authorityVerified.manifest.packages[0]
     assert(
@@ -248,6 +248,118 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     ok(
       'authority-fields',
       'treeDigest + approvedBuilds pass through allowlist → assembly → signature verbatim; entries without them stay unchanged; malformed values (shape, duplicates, and the 214-character name bound) are refused at load time',
+    )
+
+    // Segment: the dual channel (P7). Allowlist entries may select their
+    // install channel through `source`: absent or {kind:'npm'} keeps the npm
+    // channel with no signed key, {kind:'tarball', url, integrity} signs the
+    // intranet tarball channel. The url must stay on the configured catalog
+    // origin, npm entries must not carry a url, and the market verifier —
+    // which every field-unaware client embeds — rejects a source-carrying
+    // manifest whole, which is exactly the fleet-upgrade publication gate.
+    const catalogOrigin = 'https://gitlab.company.example'
+    const tarballBytes = Buffer.from('company-hardened-plugin selftest tarball\n', 'utf8')
+    const tarballIntegrity = `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`
+    const tarballUrl = `${catalogOrigin}/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz`
+    const tarballEntry = {
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      bundlePatch: './cordis.patch.yml',
+      repository: 'https://github.com/example/company-hardened-plugin',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      treeDigest: 'd'.repeat(64),
+      source: { kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity },
+    }
+    const tarballResult = validateAllowlistEntry(tarballEntry, 'entry[0]', { companyCatalogOrigin: catalogOrigin })
+    assert(tarballResult.ok, `a valid tarball source must validate (${tarballResult.ok === true ? '' : tarballResult.reason})`)
+    assert(
+      JSON.stringify(tarballResult.value.source) === JSON.stringify({ kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity }),
+      'the normalized tarball source must carry exactly kind, url, and integrity',
+    )
+    const npmExplicit = validateAllowlistEntry({ ...tarballEntry, source: { kind: 'npm' } }, 'entry[0]', {})
+    assert(npmExplicit.ok && npmExplicit.value.source === undefined, 'an explicit {kind:\'npm\'} source normalizes to no signed source key')
+    for (const [source, hint, options] of [
+      [{ kind: 'npm', url: tarballUrl }, 'must not carry url', {}],
+      [{ kind: 'tarball' }, 'url is required', {}],
+      [{ kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity }, 'requires the company catalog origin'],
+      [{ kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity }, 'not the company catalog origin', { companyCatalogOrigin: 'https://other.company.example' }],
+      [{ kind: 'tarball', url: `http://${catalogOrigin.slice('https://'.length)}/x.tgz`, integrity: tarballIntegrity }, 'credential-free https URL', { companyCatalogOrigin: catalogOrigin }],
+      [{ kind: 'tarball', url: tarballUrl, integrity: 'sha512-short' }, 'base64 SHA-512', { companyCatalogOrigin: catalogOrigin }],
+      [{ kind: 'git' }, "'npm' or 'tarball'", {}],
+      [{ kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity, extra: 1 }, 'unknown field', { companyCatalogOrigin: catalogOrigin }],
+    ]) {
+      const result = validateAllowlistEntry({ ...tarballEntry, source }, 'entry[0]', options ?? {})
+      assert(
+        result.ok === false && result.reason.includes(hint),
+        `the allowlist accepted a malformed source ${JSON.stringify(source)}: ${result.ok === true ? 'accepted' : result.reason}`,
+      )
+    }
+    // Assembly: a tarball entry signs its own sha512 as the entry integrity
+    // and requires an explicit repository override; npm entries keep their
+    // exact previous shape (no source key is ever added for them).
+    const tarballUnsigned = assembleUnsignedManifest({
+      market,
+      sequence: 92,
+      expiresAt: new Date(Date.now() + DAY_MS),
+      entries: [tarballEntry, authorityEntry],
+      dists: new Map([[entryKey(authorityEntry), authorityDist]]),
+    })
+    const signedTarballEntry = tarballUnsigned.packages.find((entry) => entry.packageName === tarballEntry.packageName)
+    const signedNpmEntry = tarballUnsigned.packages.find((entry) => entry.packageName === authorityEntry.packageName)
+    assert(
+      signedTarballEntry !== undefined
+        && signedTarballEntry.integrity === tarballIntegrity
+        && JSON.stringify(signedTarballEntry.source) === JSON.stringify({ kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity })
+        && signedTarballEntry.treeDigest === tarballEntry.treeDigest,
+      'assembly must sign the tarball sha512 as the entry integrity and carry the source verbatim',
+    )
+    assert(
+      signedNpmEntry !== undefined && signedNpmEntry.source === undefined,
+      'npm-channel entries in a dual-channel manifest must not gain a source key',
+    )
+    let noRepository = false
+    try {
+      assembleUnsignedManifest({
+        market,
+        sequence: 92,
+        expiresAt: new Date(Date.now() + DAY_MS),
+        entries: [{ ...tarballEntry, repository: undefined }],
+        dists: new Map(),
+      })
+    } catch (error) {
+      noRepository = error instanceof Error && error.message.includes('tarball channel') && error.message.includes('repository')
+    }
+    assert(noRepository, 'assembly accepted a tarball entry without a repository override')
+    // Round trip: the extended verifier accepts the signed dual-channel
+    // manifest; the market verifier alone rejects it whole (the fleet gate);
+    // a source-free manifest still verifies with both.
+    const tarballSigned = signUnsignedManifest(market, tarballUnsigned, privateKey, keyId)
+    const tarballVerified = await verifyManifestText(market, tarballSigned.text, {
+      ...trustRoot,
+      lastSeenSequence: 91,
+      companyCatalogOrigin: catalogOrigin,
+    })
+    assert(tarballVerified.ok, `the dual-channel manifest must verify with the extended verifier (${why(tarballVerified)})`)
+    const marketAlone = market.verifyCompanyManifest(tarballSigned.text, { trustRoots: [trustRoot], lastSeenSequence: 91 })
+    assert(
+      !marketAlone.ok && marketAlone.code === 'invalid-manifest',
+      `the market verifier must reject a source-carrying manifest whole (fleet gate), got ${why(marketAlone)}`,
+    )
+    const wrongOriginVerified = await verifyManifestText(market, tarballSigned.text, {
+      ...trustRoot,
+      lastSeenSequence: 91,
+      companyCatalogOrigin: 'https://other.company.example',
+    })
+    assert(
+      !wrongOriginVerified.ok && wrongOriginVerified.code === 'invalid-manifest' && wrongOriginVerified.reason.includes('not the company catalog origin'),
+      `a tarball source outside the verification origin must be rejected (${why(wrongOriginVerified)})`,
+    )
+    const legacyStillVerified = await verifyManifestText(market, authoritySigned.text, { ...trustRoot, lastSeenSequence: 90 })
+    assert(legacyStillVerified.ok, `a source-free manifest must still verify through both verifiers (${why(legacyStillVerified)})`)
+    ok(
+      'tarball-source',
+      'source: npm default (no key) / {kind:tarball,url,integrity} validated (origin-pinned, npm-no-url, sha512-shaped); assembly signs the tarball sha512 and requires a repository override; dual-channel manifests verify with the extended verifier only — the market verifier rejects them whole (fleet gate)',
     )
 
     // Segment: measured tree digests fill a runtime copy of the allowlist —
@@ -381,7 +493,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     )
 
     // Segment: the sequence floor — strictly lower is stale, equal replays.
-    const second = publishManifest({
+    const second = await publishManifest({
       market,
       entries,
       dists,
@@ -394,11 +506,11 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       outPath,
       stateDir,
     })
-    const secondVerified = verifyManifestText(market, second.text, { ...trustRoot, lastSeenSequence: 1 })
+    const secondVerified = await verifyManifestText(market, second.text, { ...trustRoot, lastSeenSequence: 1 })
     assert(secondVerified.ok, `reissued manifest must verify above sequence 1 (${why(secondVerified)})`)
-    const replay = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 1 })
+    const replay = await verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 1 })
     assert(replay.ok, `an equal floor must replay the same-sequence manifest (${why(replay)})`)
-    const stale = verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 2 })
+    const stale = await verifyManifestText(market, first.text, { ...trustRoot, lastSeenSequence: 2 })
     assert(!stale.ok && stale.code === 'stale-sequence', `a lower sequence must be rejected as stale-sequence (${why(stale)})`)
     ok('sequence', 'reissue 1→2 verifies; the sequence-1 manifest replays against floor 1 and is rejected as stale-sequence against floor 2')
 
@@ -474,7 +586,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
 
     // Segment: revocation reissue — flag flips, entry stays signed and readable.
     const { entries: revokedEntries, matches } = applyRevocation(entries, entries[0].packageName)
-    const third = publishManifest({
+    const third = await publishManifest({
       market,
       entries: revokedEntries,
       dists,
@@ -489,7 +601,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
     })
     const revokedEntry = market.findCompanyManifestPackage(third.manifest, entries[0].packageName, entries[0].version)
     assert(revokedEntry !== undefined && revokedEntry.revoked === true, 'revoked entry missing or not flagged in the reissued manifest')
-    const thirdVerified = verifyManifestText(market, third.text, { ...trustRoot, lastSeenSequence: 2 })
+    const thirdVerified = await verifyManifestText(market, third.text, { ...trustRoot, lastSeenSequence: 2 })
     assert(thirdVerified.ok, `revocation reissue must still verify (${why(thirdVerified)})`)
     ok('revoke', `${matches.join(', ')} reissued with revoked:true at sequence 3; the entry stays verifiable and readable`)
 
@@ -502,9 +614,9 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       dists,
     })
     const expired = signUnsignedManifest(market, expiredUnsigned, privateKey, keyId)
-    const expiredNow = verifyManifestText(market, expired.text, { ...trustRoot, lastSeenSequence: 3 })
+    const expiredNow = await verifyManifestText(market, expired.text, { ...trustRoot, lastSeenSequence: 3 })
     assert(!expiredNow.ok && expiredNow.code === 'expired', `past expiresAt must be rejected as expired (${why(expiredNow)})`)
-    const beforeExpiry = verifyManifestText(market, expired.text, {
+    const beforeExpiry = await verifyManifestText(market, expired.text, {
       ...trustRoot,
       lastSeenSequence: 3,
       now: () => Date.now() - 2 * HOUR_MS,

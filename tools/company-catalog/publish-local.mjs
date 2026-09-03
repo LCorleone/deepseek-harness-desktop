@@ -26,13 +26,13 @@
  *      sequence + 1 (both values printed on mismatch — no skipping, no
  *      replaying, no double push), plus the fleet-upgrade gate: when an
  *      artifact entry carries an optional authority field (treeDigest /
- *      approvedBuilds) the deployed manifest's same entry does not, this is
- *      the first authoritative publish — clients built before the field
- *      existed verify with additionalProperties:false and would reject the
- *      ENTIRE manifest (the whole catalog goes dark on them), so publishing
- *      requires the explicit --confirm-fleet-upgraded acknowledgement that
- *      every client already runs a field-aware build (README "Fleet upgrade
- *      ordering (publication gate)"),
+ *      approvedBuilds) or a tarball `source` the deployed manifest's same
+ *      entry does not, this is the first authoritative publish — clients
+ *      built before the field existed verify with additionalProperties:false
+ *      and would reject the ENTIRE manifest (the whole catalog goes dark on
+ *      them), so publishing requires the explicit --confirm-fleet-upgraded
+ *      acknowledgement that every client already runs a field-aware build
+ *      (README "Fleet upgrade ordering (publication gate)"),
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
@@ -559,6 +559,10 @@ async function main() {
     if ((signed.treeDigest ?? undefined) !== entry.treeDigest) {
       throw new Error(`${META_FILE} treeDigest for ${entry.packageName}@${entry.version} does not match the signed manifest entry`)
     }
+    const signedSourceKind = signed.source === undefined ? undefined : signed.source.kind
+    if (signedSourceKind !== (entry.sourceKind ?? undefined)) {
+      throw new Error(`${META_FILE} sourceKind for ${entry.packageName}@${entry.version} does not match the signed manifest entry's channel`)
+    }
   }
   console.log(`integrity: sha256 ${manifestSha256} matches ${META_FILE}; sequence ${String(meta.sequence)}, ${String(meta.entries.length)} entries described by the sidecar`)
 
@@ -588,7 +592,12 @@ async function main() {
     )
   }
   const market = await loadMarketLibrary()
-  const verification = verifyManifestText(market, manifestText, { fingerprint: meta.fingerprint, keyId: meta.keyId, lastSeenSequence: deployed.sequence })
+  const verification = await verifyManifestText(market, manifestText, {
+    fingerprint: meta.fingerprint,
+    keyId: meta.keyId,
+    lastSeenSequence: deployed.sequence,
+    companyCatalogOrigin: `https://${gitlabOrigin}`,
+  })
   if (!verification.ok) {
     throw new Error(`signature verification failed (${verification.code}): ${verification.reason}`)
   }
@@ -606,7 +615,7 @@ async function main() {
   // gate)" / 「fleet 升级顺序（发布门禁）」 in tools/company-catalog/README.md.
   const deployedPackages = Array.isArray(deployed.manifest.packages) ? deployed.manifest.packages : []
   const gatedEntries = packages.flatMap((signed) => {
-    const newly = ['treeDigest', 'approvedBuilds'].filter((field) => signed[field] !== undefined)
+    const newly = ['source', 'treeDigest', 'approvedBuilds'].filter((field) => signed[field] !== undefined)
     if (newly.length === 0) return []
     const current = deployedPackages.find((candidate) => candidate?.packageName === signed.packageName && candidate?.version === signed.version)
     const firsts = current === undefined ? newly : newly.filter((field) => current[field] === undefined)
@@ -619,7 +628,7 @@ async function main() {
       'Older clients verify with additionalProperties:false and reject the ENTIRE manifest on a single unknown key: pushing now ' +
       'blacks out the whole catalog on every machine not yet upgraded to a field-aware build. ' +
       'The publication order is fixed (tools/company-catalog/README.md, "Fleet upgrade ordering (publication gate)" / 「fleet 升级顺序（发布门禁）」): ' +
-      '(1) upgrade the whole fleet to builds that know treeDigest/approvedBuilds, (2) only then publish. ' +
+      '(1) upgrade the whole fleet to builds that know source/treeDigest/approvedBuilds, (2) only then publish. ' +
       'Re-run with --confirm-fleet-upgraded once every client is upgraded to acknowledge the gate.',
     )
     return

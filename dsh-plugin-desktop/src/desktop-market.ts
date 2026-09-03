@@ -2,8 +2,15 @@
  * Machine-level Desktop Market provider selection and fail-safe state.
  * The effective provider is derived from the embedded desktop policy, never
  * from the user-writable request file alone.
+ *
+ * This module also owns the P7 dual-channel company-manifest surface: the
+ * source-aware strict manifest verifier (`source: npm | tarball`), the
+ * controlled tarball download/staging step, and the tarball install
+ * orchestration that re-verifies the installed tree against the signed
+ * `treeDigest`. See the dual-channel section below.
  */
 
+import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify as cryptoVerify } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
@@ -13,9 +20,26 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
 } from 'node:fs'
-import { isAbsolute, basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { validRange } from 'semver'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
+import {
+  canonicalJsonText,
+  ed25519PublicKeyFingerprint,
+  type CompanyManifestTrustRoot,
+  type CompanyManifestVerificationCode,
+} from 'dsh-community-market'
+import { fetchUpdateChannelBytes, type UpdateChannelRequest } from './update-manifest.ts'
+import {
+  desktopMarketTarballStagingPath,
+  type DesktopControlledMarketTarball,
+  type DesktopPnpm,
+  type DesktopPluginInstallRecovery,
+} from './pnpm.ts'
 import { readDesktopPolicy, type DesktopPolicy } from './desktop-policy.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
@@ -290,3 +314,846 @@ export const desktopMarketStateConstants = Object.freeze({
   stateDirectoryMode: STATE_DIRECTORY_MODE,
   stateFileMode: STATE_FILE_MODE,
 })
+
+// ---------------------------------------------------------------------------
+// P7 dual channel: source-aware company manifest + controlled tarball path.
+//
+// The market package's `verifyCompanyManifest` remains the verifier for every
+// legacy consumer (boot verification, the locked terminal add gate, the
+// origin-mode catalog scan) and keeps rejecting unknown entry keys with
+// `additionalProperties: false` semantics. The dual channel extends exactly
+// one thing: entries may carry a signed `source` field selecting the install
+// channel —
+//
+//   `source` absent or `{"kind":"npm"}`  → the public-registry channel (today's
+//                                        behavior, byte-for-byte unchanged:
+//                                        a manifest without `source` verifies
+//                                        identically here and in the market
+//                                        library)
+//   `{"kind":"tarball","url":…,"integrity":…}` → the intranet-GitLab channel:
+//                                        the client downloads the tarball from
+//                                        the policy-pinned catalog origin,
+//                                        verifies the signed sha512 over the
+//                                        downloaded bytes, stages it inside the
+//                                        profile's controlled staging area, and
+//                                        installs it through the pnpm boundary's
+//                                        one constructible tarball target.
+//
+// Old clients reject a `source`-carrying manifest whole (one unknown key), so
+// publishing one is gated behind a fleet upgrade exactly like the earlier
+// `treeDigest`/`approvedBuilds` fields — not this batch's concern.
+// ---------------------------------------------------------------------------
+
+/** The npm channel: install the exact public-registry version (the default). */
+export interface DesktopCompanyEntrySourceNpm {
+  readonly kind: 'npm'
+}
+
+/**
+ * The tarball channel: install the package from the intranet-hosted tarball.
+ * `url` must live on the deployment policy's `companyCatalogOrigin` and
+ * `integrity` is the signed sha512 of the tarball file itself — the same
+ * value pnpm pins into the profile lockfile's `resolution.integrity` for a
+ * `file:` install, which is why the entry's top-level `integrity` must equal
+ * it (enforced below).
+ */
+export interface DesktopCompanyEntrySourceTarball {
+  readonly kind: 'tarball'
+  readonly url: string
+  readonly integrity: string
+}
+
+/** Signed install-channel selection of one manifest entry. */
+export type DesktopCompanyEntrySource = DesktopCompanyEntrySourceNpm | DesktopCompanyEntrySourceTarball
+
+/** Runtime compatibility ranges of one signed entry. */
+export interface DesktopCompanyManifestRuntimeRanges {
+  readonly dshRuntimeVersion: string
+  readonly cordisRuntimeVersion?: string
+  readonly nodeRuntimeVersion?: string
+}
+
+/** Repository identity of one signed entry. */
+export interface DesktopCompanyManifestRepository {
+  readonly url: string
+  readonly subdirectory?: string
+}
+
+/** One entry of a source-aware company manifest. */
+export interface DesktopCompanyManifestPackage {
+  readonly packageName: string
+  readonly version: string
+  readonly integrity: string
+  readonly bundlePatch: string
+  readonly repository: DesktopCompanyManifestRepository
+  readonly revoked: boolean
+  readonly runtime: DesktopCompanyManifestRuntimeRanges
+  readonly treeDigest?: string
+  readonly approvedBuilds?: readonly string[]
+  readonly source?: DesktopCompanyEntrySource
+}
+
+/** A company manifest whose entries may carry the signed `source` channel. */
+export interface DesktopCompanyManifest {
+  readonly manifestVersion: '1.0.0'
+  readonly sequence: number
+  readonly expiresAt: string
+  readonly packages: readonly DesktopCompanyManifestPackage[]
+  readonly signature: {
+    readonly keyId: string
+    readonly publicKey: string
+    readonly value: string
+  }
+}
+
+/** Options of {@link verifyDesktopCompanyManifest}. */
+export interface DesktopCompanyManifestVerificationOptions {
+  /** Policy-pinned signing keys; a manifest signed by any listed key verifies. */
+  readonly trustRoots: readonly CompanyManifestTrustRoot[]
+  /**
+   * Origin every tarball `source.url` must live on. `null` (content-mode
+   * policies) rejects every tarball entry: without a pinned origin there is
+   * no host the desktop would download a plugin tarball from.
+   */
+  readonly companyCatalogOrigin: string | null
+  /** Anti-rollback floor; an equal sequence replays, a lower one is stale. */
+  readonly lastSeenSequence?: number
+  /** Clock deciding manifest expiry; defaults to `Date.now`. */
+  readonly now?: () => number
+}
+
+/** Result of verifying company manifest bytes with the dual-channel schema. */
+export type DesktopCompanyManifestVerification =
+  | {
+    readonly ok: true
+    readonly manifest: DesktopCompanyManifest
+    readonly keyId: string
+    readonly fingerprint: string
+    readonly verifiedAt: number
+  }
+  | {
+    readonly ok: false
+    readonly code: CompanyManifestVerificationCode
+    readonly reason: string
+  }
+
+const COMPANY_MANIFEST_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature'] as const
+const COMPANY_ENTRY_REQUIRED_KEYS = ['bundlePatch', 'integrity', 'packageName', 'repository', 'revoked', 'runtime', 'version'] as const
+const COMPANY_ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'source', 'treeDigest'] as const
+const COMPANY_SIGNATURE_KEYS = ['keyId', 'publicKey', 'value'] as const
+const COMPANY_RUNTIME_KEYS = ['cordisRuntimeVersion', 'dshRuntimeVersion', 'nodeRuntimeVersion'] as const
+const COMPANY_REPOSITORY_KEYS = ['subdirectory', 'url'] as const
+const COMPANY_NPM_SOURCE_KEYS = ['kind'] as const
+const COMPANY_TARBALL_SOURCE_KEYS = ['integrity', 'kind', 'url'] as const
+const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
+const EXACT_STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
+const SHA512_INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]{86}==$/u
+const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
+const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9+/]{43}=$/u
+const SIGNATURE_VALUE_PATTERN = /^[A-Za-z0-9+/]{86}==$/u
+const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
+const REPOSITORY_SUBDIRECTORY_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\]+$/u
+const MAX_PACKAGES = 10_000
+const MAX_PACKAGE_NAME_LENGTH = 214
+const MAX_APPROVED_BUILDS = 128
+const MAX_TARBALL_URL_LENGTH = 2048
+const MAX_SEQUENCE = 9_007_199_254_740_991
+
+const unknownFields = (value: Record<string, unknown>, allowed: readonly string[]): readonly string[] =>
+  Object.keys(value).filter(key => !allowed.includes(key))
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/** Standard-base64 sha512 shape with a decodable 64-byte digest, mirroring the market verifier. */
+function isSha512Integrity(value: unknown): value is string {
+  if (typeof value !== 'string' || !SHA512_INTEGRITY_PATTERN.test(value)) return false
+  const encoded = value.slice('sha512-'.length)
+  const digest = Buffer.from(encoded, 'base64')
+  return digest.byteLength === 64 && digest.toString('base64') === encoded
+}
+
+/** Safe relative in-package path, mirroring the market verifier's guard. */
+function isSafeBundlePatchPath(value: string): boolean {
+  if (value.includes('\\') || BUNDLE_PATCH_FORBIDDEN.test(value) || value.length === 0 || value.length > 512) return false
+  const path = value.startsWith('./') ? value.slice(2) : value
+  return path.length > 0
+    && !path.startsWith('/')
+    && path.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes(':'))
+}
+
+/** The schema's https URI grammar: https, credential-free, standard-port host spelling, no fragment. */
+function isHttpsUri(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_TARBALL_URL_LENGTH) return false
+  if (!/^https:\/\/(?![^/?#]*@)(?![^/?#]*:)[^#]+$/u.test(value)) return false
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** Validate and parse one entry's `source` channel selection (strict: unknown keys reject the manifest). */
+function parseEntrySource(
+  value: unknown,
+  at: string,
+  companyCatalogOrigin: string | null,
+): DesktopCompanyEntrySource {
+  if (value === undefined) return { kind: 'npm' }
+  if (!isPlainObject(value)) throw new Error(`${at}.source must be an object`)
+  const kind = value.kind
+  if (kind === 'npm') {
+    const unknown = unknownFields(value, COMPANY_NPM_SOURCE_KEYS)
+    if (unknown.length > 0) {
+      throw new Error(`${at}.source is the npm channel and must not carry ${unknown.join(', ')}`)
+    }
+    return { kind: 'npm' }
+  }
+  if (kind !== 'tarball') throw new Error(`${at}.source.kind must be 'npm' or 'tarball'`)
+  const unknown = unknownFields(value, COMPANY_TARBALL_SOURCE_KEYS)
+  if (unknown.length > 0) throw new Error(`${at}.source has unknown field(s) ${unknown.join(', ')}`)
+  const url = value.url
+  const integrity = value.integrity
+  if (!isHttpsUri(url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment`)
+  if (companyCatalogOrigin === null) {
+    throw new Error(`${at}.source is the tarball channel, which requires an origin-mode catalog policy (companyCatalogOrigin is null)`)
+  }
+  let origin: string
+  try {
+    origin = new URL(url).origin
+  } catch {
+    throw new Error(`${at}.source.url is not a parseable URL`)
+  }
+  if (origin !== companyCatalogOrigin) {
+    throw new Error(`${at}.source.url must stay inside the pinned catalog origin ${companyCatalogOrigin} (got ${origin})`)
+  }
+  if (!isSha512Integrity(integrity)) {
+    throw new Error(`${at}.source.integrity must be the base64 SHA-512 digest of the tarball file`)
+  }
+  return { kind: 'tarball', url, integrity }
+}
+
+/** Validate one parsed manifest value against the dual-channel schema mirror and normalize it. */
+function parseDesktopCompanyManifestValue(
+  value: unknown,
+  companyCatalogOrigin: string | null,
+): DesktopCompanyManifest {
+  if (!isPlainObject(value)) throw new Error('the company manifest must be a JSON object')
+  {
+    const unknown = unknownFields(value, COMPANY_MANIFEST_KEYS)
+    if (unknown.length > 0) throw new Error(`the company manifest has unknown field(s) ${unknown.join(', ')}`)
+    for (const key of COMPANY_MANIFEST_KEYS) {
+      if (!(key in value)) throw new Error(`the company manifest is missing ${key}`)
+    }
+  }
+  if (value.manifestVersion !== '1.0.0') throw new Error('the company manifest version must be 1.0.0')
+  if (!Number.isSafeInteger(value.sequence) || (value.sequence as number) < 1 || (value.sequence as number) > MAX_SEQUENCE) {
+    throw new Error('the company manifest sequence must be a safe positive integer')
+  }
+  if (typeof value.expiresAt !== 'string' || value.expiresAt.length < 20 || value.expiresAt.length > 64
+    || Number.isNaN(Date.parse(value.expiresAt))) {
+    throw new Error('the company manifest expiresAt must be an RFC 3339 timestamp')
+  }
+  if (!Array.isArray(value.packages) || value.packages.length > MAX_PACKAGES) {
+    throw new Error(`the company manifest packages must be an array of at most ${String(MAX_PACKAGES)} entries`)
+  }
+  if (!isPlainObject(value.signature)) throw new Error('the company manifest signature must be an object')
+  {
+    const unknown = unknownFields(value.signature, COMPANY_SIGNATURE_KEYS)
+    if (unknown.length > 0) throw new Error(`the company manifest signature has unknown field(s) ${unknown.join(', ')}`)
+    for (const key of COMPANY_SIGNATURE_KEYS) {
+      if (!(key in value.signature)) throw new Error(`the company manifest signature is missing ${key}`)
+    }
+    if (typeof value.signature.keyId !== 'string' || !KEY_ID_PATTERN.test(value.signature.keyId)) {
+      throw new Error('the company manifest signature keyId is invalid')
+    }
+    if (typeof value.signature.publicKey !== 'string' || !PUBLIC_KEY_PATTERN.test(value.signature.publicKey)) {
+      throw new Error('the company manifest signature publicKey must be the base64 of a raw 32-byte ed25519 key')
+    }
+    if (typeof value.signature.value !== 'string' || !SIGNATURE_VALUE_PATTERN.test(value.signature.value)) {
+      throw new Error('the company manifest signature value must be the base64 of a 64-byte ed25519 signature')
+    }
+  }
+  const seen = new Set<string>()
+  const packages: DesktopCompanyManifestPackage[] = []
+  for (const [index, rawEntry] of value.packages.entries()) {
+    const at = `packages[${String(index)}]`
+    if (!isPlainObject(rawEntry)) throw new Error(`${at} must be an object`)
+    const unknown = unknownFields(rawEntry, [...COMPANY_ENTRY_REQUIRED_KEYS, ...COMPANY_ENTRY_OPTIONAL_KEYS])
+    if (unknown.length > 0) throw new Error(`${at} has unknown field(s) ${unknown.join(', ')} — the whole manifest is rejected`)
+    for (const key of COMPANY_ENTRY_REQUIRED_KEYS) {
+      if (!(key in rawEntry)) throw new Error(`${at} is missing ${key}`)
+    }
+    if (typeof rawEntry.packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(rawEntry.packageName)
+      || rawEntry.packageName.length > MAX_PACKAGE_NAME_LENGTH) {
+      throw new Error(`${at}.packageName must be an npm package name (scoped names allowed, lowercase)`)
+    }
+    if (typeof rawEntry.version !== 'string' || !EXACT_STABLE_VERSION_PATTERN.test(rawEntry.version)) {
+      throw new Error(`${at}.version must be an exact stable semver (X.Y.Z)`)
+    }
+    if (!isSha512Integrity(rawEntry.integrity)) {
+      throw new Error(`${at}.integrity must be the base64 SHA-512 digest of the package tarball`)
+    }
+    if (typeof rawEntry.bundlePatch !== 'string' || !isSafeBundlePatchPath(rawEntry.bundlePatch)) {
+      throw new Error(`${at}.bundlePatch must be a safe relative path inside the package`)
+    }
+    if (typeof rawEntry.revoked !== 'boolean') throw new Error(`${at}.revoked must be a boolean`)
+    if (!isPlainObject(rawEntry.repository)) throw new Error(`${at}.repository must be an object`)
+    {
+      const repositoryUnknown = unknownFields(rawEntry.repository, COMPANY_REPOSITORY_KEYS)
+      if (repositoryUnknown.length > 0) throw new Error(`${at}.repository has unknown field(s) ${repositoryUnknown.join(', ')}`)
+      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment`)
+      if (rawEntry.repository.subdirectory !== undefined
+        && (typeof rawEntry.repository.subdirectory !== 'string'
+          || rawEntry.repository.subdirectory.length < 1 || rawEntry.repository.subdirectory.length > 240
+          || !REPOSITORY_SUBDIRECTORY_PATTERN.test(rawEntry.repository.subdirectory))) {
+        throw new Error(`${at}.repository.subdirectory is invalid`)
+      }
+    }
+    if (!isPlainObject(rawEntry.runtime)) throw new Error(`${at}.runtime must be an object`)
+    let dshRuntimeVersion: string | undefined
+    let cordisRuntimeVersion: string | undefined
+    let nodeRuntimeVersion: string | undefined
+    {
+      const runtimeUnknown = unknownFields(rawEntry.runtime, COMPANY_RUNTIME_KEYS)
+      if (runtimeUnknown.length > 0) throw new Error(`${at}.runtime has unknown field(s) ${runtimeUnknown.join(', ')}`)
+      for (const field of COMPANY_RUNTIME_KEYS) {
+        const range = rawEntry.runtime[field]
+        if (range === undefined) continue
+        if (typeof range !== 'string' || range.length === 0 || range.length > 256 || validRange(range) === null) {
+          throw new Error(`${at}.runtime.${field} is not a valid node-semver range`)
+        }
+        if (field === 'dshRuntimeVersion') dshRuntimeVersion = range
+        else if (field === 'cordisRuntimeVersion') cordisRuntimeVersion = range
+        else nodeRuntimeVersion = range
+      }
+      if (dshRuntimeVersion === undefined) {
+        throw new Error(`${at}.runtime.dshRuntimeVersion is required`)
+      }
+    }
+    const runtime: DesktopCompanyManifestRuntimeRanges = {
+      dshRuntimeVersion,
+      ...(cordisRuntimeVersion === undefined ? {} : { cordisRuntimeVersion }),
+      ...(nodeRuntimeVersion === undefined ? {} : { nodeRuntimeVersion }),
+    }
+    if (rawEntry.treeDigest !== undefined
+      && (typeof rawEntry.treeDigest !== 'string' || !TREE_DIGEST_PATTERN.test(rawEntry.treeDigest))) {
+      throw new Error(`${at}.treeDigest must be 64 lowercase hex characters`)
+    }
+    if (rawEntry.approvedBuilds !== undefined) {
+      if (!Array.isArray(rawEntry.approvedBuilds) || rawEntry.approvedBuilds.length < 1
+        || rawEntry.approvedBuilds.length > MAX_APPROVED_BUILDS) {
+        throw new Error(`${at}.approvedBuilds must be a non-empty array of at most ${String(MAX_APPROVED_BUILDS)} names`)
+      }
+      const builds = new Set<string>()
+      for (const name of rawEntry.approvedBuilds) {
+        if (typeof name !== 'string' || !PACKAGE_NAME_PATTERN.test(name) || name.length > MAX_PACKAGE_NAME_LENGTH) {
+          throw new Error(`${at}.approvedBuilds entries must be npm dependency names`)
+        }
+        if (builds.has(name)) throw new Error(`${at}.approvedBuilds must not repeat ${name}`)
+        builds.add(name)
+      }
+    }
+    const source = parseEntrySource(rawEntry.source, at, companyCatalogOrigin)
+    if (source.kind === 'tarball' && rawEntry.integrity !== source.integrity) {
+      throw new Error(
+        `${at} pins integrity ${String(rawEntry.integrity).slice(0, 24)}… but its tarball source pins ${source.integrity.slice(0, 24)}… — `
+          + 'a tarball-channel entry must pin the tarball file\'s own sha512, because that is the integrity the profile lockfile records for a file: install',
+      )
+    }
+    const identity = `${rawEntry.packageName}\0${rawEntry.version}`
+    if (seen.has(identity)) throw new Error(`${at} duplicates the signed entry for ${rawEntry.packageName}@${rawEntry.version}`)
+    seen.add(identity)
+    packages.push({
+      packageName: rawEntry.packageName,
+      version: rawEntry.version,
+      integrity: rawEntry.integrity,
+      bundlePatch: rawEntry.bundlePatch,
+      repository: {
+        url: rawEntry.repository.url,
+        ...(rawEntry.repository.subdirectory === undefined ? {} : { subdirectory: rawEntry.repository.subdirectory }),
+      },
+      revoked: rawEntry.revoked,
+      runtime,
+      ...(rawEntry.treeDigest === undefined ? {} : { treeDigest: rawEntry.treeDigest }),
+      ...(rawEntry.approvedBuilds === undefined ? {} : { approvedBuilds: [...rawEntry.approvedBuilds as string[]] }),
+      ...(rawEntry.source === undefined ? {} : { source }),
+    })
+  }
+  return {
+    manifestVersion: '1.0.0',
+    sequence: value.sequence as number,
+    expiresAt: value.expiresAt,
+    packages,
+    signature: {
+      keyId: value.signature.keyId as string,
+      publicKey: value.signature.publicKey as string,
+      value: value.signature.value as string,
+    },
+  }
+}
+
+/** DER SPKI prefix of a raw 32-byte ed25519 public key. */
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
+
+/** Import a raw 32-byte ed25519 public key as a verify-capable KeyObject. */
+function ed25519PublicKeyFromRaw(raw: Buffer): ReturnType<typeof createPublicKey> {
+  return createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' })
+}
+
+/**
+ * Verify company manifest bytes end to end under the dual-channel schema:
+ * canonical JSON byte equality, the strict shape above (every unknown key
+ * rejects the whole manifest — `source` is the one recognized extension),
+ * trust-root binding, the detached ed25519 signature over the canonical
+ * unsigned window, the anti-rollback sequence floor, and expiry. For
+ * manifests without `source` the decisions are byte-for-byte those of the
+ * market library's verifier; `source`-carrying manifests verify only here.
+ */
+export function verifyDesktopCompanyManifest(
+  raw: string | Uint8Array,
+  options: DesktopCompanyManifestVerificationOptions,
+): DesktopCompanyManifestVerification {
+  if (options === null || typeof options !== 'object' || !Array.isArray(options.trustRoots)) {
+    throw new TypeError(`${BIN_NAME}: company manifest verification requires trust roots`)
+  }
+  if (options.companyCatalogOrigin !== null && (
+    typeof options.companyCatalogOrigin !== 'string' || options.companyCatalogOrigin.length === 0
+  )) {
+    throw new TypeError(`${BIN_NAME}: companyCatalogOrigin must be a non-empty https origin or null`)
+  }
+  const lastSeenSequence = options.lastSeenSequence ?? 0
+  if (!Number.isSafeInteger(lastSeenSequence) || lastSeenSequence < 0) {
+    throw new TypeError(`${BIN_NAME}: lastSeenSequence must be a safe non-negative integer`)
+  }
+  const now = options.now ?? Date.now
+  const verifiedAt = now()
+  if (typeof verifiedAt !== 'number' || !Number.isFinite(verifiedAt)) {
+    throw new TypeError(`${BIN_NAME}: now must return a finite epoch millisecond timestamp`)
+  }
+  const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { ok: false, code: 'malformed-json', reason: 'company manifest is not valid JSON' }
+  }
+  let canonical: string
+  try {
+    canonical = canonicalJsonText(parsed)
+  } catch (cause) {
+    return { ok: false, code: 'non-canonical', reason: cause instanceof Error ? cause.message : String(cause) }
+  }
+  if (canonical !== text) {
+    return { ok: false, code: 'non-canonical', reason: 'company manifest bytes are not the canonical JSON serialization of their parsed value' }
+  }
+  let manifest: DesktopCompanyManifest
+  try {
+    manifest = parseDesktopCompanyManifestValue(parsed, options.companyCatalogOrigin)
+  } catch (cause) {
+    return { ok: false, code: 'invalid-manifest', reason: cause instanceof Error ? cause.message : String(cause) }
+  }
+  const root = options.trustRoots.find(candidate => candidate.keyId === manifest.signature.keyId)
+  if (root === undefined) {
+    return { ok: false, code: 'unknown-key', reason: `manifest keyId ${manifest.signature.keyId} is not in the trusted roots` }
+  }
+  const rawKey = Buffer.from(manifest.signature.publicKey, 'base64')
+  if (rawKey.byteLength !== 32) {
+    return { ok: false, code: 'key-mismatch', reason: 'the manifest signing key is not a raw 32-byte ed25519 public key' }
+  }
+  const fingerprint = ed25519PublicKeyFingerprint(rawKey)
+  if (fingerprint !== root.fingerprint) {
+    return { ok: false, code: 'key-mismatch', reason: `manifest signing key fingerprint does not match the pinned fingerprint for keyId ${root.keyId}` }
+  }
+  const unsigned = { ...(parsed as Record<string, unknown>) }
+  delete unsigned.signature
+  const signedBytes = Buffer.from(canonicalJsonText(unsigned), 'utf8')
+  const signatureBytes = Buffer.from(manifest.signature.value, 'base64')
+  if (signatureBytes.byteLength !== 64) {
+    return { ok: false, code: 'bad-signature', reason: 'the detached ed25519 signature is not 64 bytes' }
+  }
+  let signatureOk: boolean
+  try {
+    signatureOk = cryptoVerify(null, signedBytes, ed25519PublicKeyFromRaw(rawKey), signatureBytes)
+  } catch {
+    return { ok: false, code: 'bad-signature', reason: 'ed25519 signature verification failed' }
+  }
+  if (!signatureOk) {
+    return { ok: false, code: 'bad-signature', reason: 'ed25519 signature verification failed' }
+  }
+  if (manifest.sequence < lastSeenSequence) {
+    return {
+      ok: false,
+      code: 'stale-sequence',
+      reason: `manifest sequence ${String(manifest.sequence)} regressed below the last seen sequence ${String(lastSeenSequence)}`,
+    }
+  }
+  const expiresAtMs = Date.parse(manifest.expiresAt)
+  if (verifiedAt >= expiresAtMs) {
+    return { ok: false, code: 'expired', reason: `company manifest expired at ${manifest.expiresAt}` }
+  }
+  return { ok: true, manifest, keyId: root.keyId, fingerprint, verifiedAt }
+}
+
+/** Look up one exact (packageName, version) entry; revoked entries stay findable. */
+export function findDesktopCompanyManifestPackage(
+  manifest: DesktopCompanyManifest,
+  packageName: string,
+  version: string,
+): DesktopCompanyManifestPackage | undefined {
+  return manifest.packages.find(entry => entry.packageName === packageName && entry.version === version)
+}
+
+/** The signed install channel of one entry; an absent `source` is the npm channel. */
+export function desktopCompanyEntrySource(
+  entry: Pick<DesktopCompanyManifestPackage, 'source'>,
+): DesktopCompanyEntrySource {
+  return entry.source ?? { kind: 'npm' }
+}
+
+/** Default whole-request bound of one company tarball download. */
+export const COMPANY_TARBALL_FETCH_TIMEOUT_MS = 120_000
+/** Default body bound of one company tarball download. */
+export const COMPANY_TARBALL_MAX_BYTES = 512 * 1024 * 1024
+/** Staging directory mode; the staged file itself is written 0o600. */
+const STAGING_DIRECTORY_MODE = 0o700
+const STAGING_FILE_MODE = 0o600
+
+/** Options of {@link stageCompanyMarketTarball}. */
+export interface DesktopCompanyTarballStageOptions {
+  /** Deployment policy; `companyCatalogOrigin` pins the only origin a tarball may come from. */
+  readonly policy: Pick<DesktopPolicy, 'companyCatalogOrigin'>
+  /** The signed tarball source of a verified manifest entry. */
+  readonly source: DesktopCompanyEntrySourceTarball
+  readonly packageName: string
+  readonly version: string
+  /** Active profile directory; the staging area lives inside it. */
+  readonly profileDir: string
+  /** Fetch-compatible boundary; defaults to `globalThis.fetch` (the Electron composition injects `net.fetch`). */
+  readonly request?: UpdateChannelRequest
+  readonly timeoutMs?: number
+  readonly maxBytes?: number
+  readonly signal?: AbortSignal
+}
+
+/** A verified, staged company tarball ready for the controlled install target. */
+export interface DesktopCompanyTarballStaged {
+  readonly tarball: DesktopControlledMarketTarball
+  readonly stagedPath: string
+  readonly bytes: number
+  readonly integrity: string
+}
+
+/** Best-effort removal of one staged file; a missing file is fine. */
+function removeStagedFile(path: string): void {
+  try {
+    rmSync(path, { force: true })
+  } catch {
+    // a staging file that cannot be removed cannot be installed either — the
+    // install-time hash gate still refuses it; nothing else to do here
+  }
+}
+
+/**
+ * Commit the verified tarball bytes to the staged path atomically: an
+ * exclusively created random-suffix sibling (never following a planted file)
+ * receives the bytes, then one rename replaces the staged path, so readers
+ * observe either the previous or the new complete tarball. The sibling is
+ * written with a random suffix under the caller's file lock, mirroring the
+ * atomic-write discipline the text state files use.
+ */
+async function writeStagedTarballBytes(path: string, bytes: Buffer): Promise<void> {
+  const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`
+  const descriptor = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, STAGING_FILE_MODE)
+  try {
+    let offset = 0
+    while (offset < bytes.byteLength) {
+      offset += writeSync(descriptor, bytes, offset, bytes.byteLength - offset)
+    }
+  } catch (cause) {
+    closeSync(descriptor)
+    rmSync(temporary, { force: true })
+    throw cause
+  }
+  closeSync(descriptor)
+  try {
+    renameSync(temporary, path)
+  } catch (cause) {
+    rmSync(temporary, { force: true })
+    throw cause
+  }
+}
+
+/**
+ * Download one signed tarball from the policy-pinned catalog origin, verify
+ * the signed sha512 over the downloaded bytes, and stage them inside the
+ * profile's controlled staging area under the deterministic name for this
+ * exact package version. Any failure — transport, status, size, or an
+ * integrity mismatch — refuses the install and cleans the staging location,
+ * so nothing unverifiable is ever left behind for a later install attempt.
+ * A successful staging overwrites an earlier one idempotently (the staged
+ * file is kept after installation: the profile lockfile's `file:` dependency
+ * keeps resolving against it).
+ */
+export async function stageCompanyMarketTarball(
+  options: DesktopCompanyTarballStageOptions,
+): Promise<DesktopCompanyTarballStaged> {
+  const origin = options.policy.companyCatalogOrigin
+  const stagedPath = desktopMarketTarballStagingPath(options.profileDir, options.packageName, options.version)
+  const clean = (): void => removeStagedFile(stagedPath)
+  if (origin === null) {
+    clean()
+    throw new Error(`${BIN_NAME}: the tarball channel requires an origin-mode catalog policy`)
+  }
+  let url: URL
+  try {
+    url = new URL(options.source.url)
+  } catch {
+    clean()
+    throw new Error(`${BIN_NAME}: the company tarball URL ${options.source.url} is not a valid URL`)
+  }
+  if (url.protocol !== 'https:' || url.origin !== origin) {
+    clean()
+    throw new Error(`${BIN_NAME}: the company tarball URL must stay inside the pinned https catalog origin ${origin}`)
+  }
+  if (!isSha512Integrity(options.source.integrity)) {
+    clean()
+    throw new Error(`${BIN_NAME}: the company tarball integrity must be the signed sha512 of the tarball`) 
+  }
+  options.signal?.throwIfAborted()
+  const result = await fetchUpdateChannelBytes({
+    request: options.request ?? ((url, init) => globalThis.fetch(url, init)),
+    url: url.href,
+    label: 'company market plugin tarball',
+    maxBytes: options.maxBytes ?? COMPANY_TARBALL_MAX_BYTES,
+    redirect: 'error',
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  })
+  if (!result.ok) {
+    clean()
+    throw new Error(`${BIN_NAME}: the company tarball for ${options.packageName}@${options.version} could not be downloaded (${result.code}: ${result.reason})`)
+  }
+  const digest = createHash('sha512').update(result.bytes).digest()
+  const expected = Buffer.from(options.source.integrity.slice('sha512-'.length), 'base64')
+  if (digest.byteLength !== expected.byteLength || !timingSafeEqual(digest, expected)) {
+    clean()
+    throw new Error(`${BIN_NAME}: the downloaded tarball for ${options.packageName}@${options.version} does not match the signed integrity — refusing the install`)
+  }
+  const stagingDirectory = dirname(stagedPath)
+  try {
+    const info = lstatSync(stagingDirectory)
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`${BIN_NAME}: the market tarball staging directory must be a real directory`)
+    }
+    chmodSync(stagingDirectory, STAGING_DIRECTORY_MODE)
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      mkdirSync(stagingDirectory, { recursive: true, mode: STAGING_DIRECTORY_MODE })
+    } else {
+      clean()
+      throw cause
+    }
+  }
+  await withFileLock(stagedPath, async () => {
+    await writeStagedTarballBytes(stagedPath, result.bytes)
+  })
+  return {
+    tarball: { kind: 'market-tarball', path: stagedPath, integrity: options.source.integrity },
+    stagedPath,
+    bytes: result.bytes.byteLength,
+    integrity: options.source.integrity,
+  }
+}
+
+/** One verified manifest entry as the tarball install orchestration consumes it. */
+export interface DesktopCompanyTarballInstallEntry {
+  readonly packageName: string
+  readonly version: string
+  /** Signed top-level integrity; for a tarball entry this equals `source.integrity`. */
+  readonly integrity: string
+  readonly bundlePatch: string
+  readonly revoked: boolean
+  /**
+   * Signed expected root digest of the installed tree. The tarball channel is
+   * tree-anchored: an entry without it cannot be installed, because there
+   * would be no signed post-install expectation to re-verify against.
+   */
+  readonly treeDigest: string
+  readonly approvedBuilds?: readonly string[]
+}
+
+/** Request of {@link installCompanyMarketTarballPlugin}. */
+export interface DesktopCompanyTarballInstallRequest {
+  /** Market-owned package-manager boundary; the real DesktopPnpm service. */
+  readonly service: Pick<DesktopPnpm, 'installPlugin' | 'rollbackPluginInstall'>
+  /** The verified signed entry to install (from {@link verifyDesktopCompanyManifest}). */
+  readonly entry: DesktopCompanyTarballInstallEntry
+  /** Staged tarball descriptor from {@link stageCompanyMarketTarball}. */
+  readonly tarball: DesktopControlledMarketTarball
+  readonly recovery: DesktopPluginInstallRecovery
+  /** Active profile directory (installed-tree asserts and rollback checks). */
+  readonly profileDir: string
+  /** Absolute caller directory anchoring the install command. */
+  readonly invokingDir: string
+  readonly signal?: AbortSignal
+  /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
+  readonly measureTreeRootDigest?: (packageDir: string) => string
+}
+
+/** Result of one completed, re-verified tarball-channel install. */
+export interface DesktopCompanyTarballInstallResult {
+  readonly receiptId: string
+  readonly packageName: string
+  readonly version: string
+  /** Measured installed-tree root digest (equal to the signed `treeDigest`). */
+  readonly treeDigest: string
+}
+
+const messageOf = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause)
+
+function packageSegments(packageName: string): readonly string[] {
+  return packageName.startsWith('@') ? packageName.split('/') : [packageName]
+}
+
+function containedPath(parent: string, child: string): boolean {
+  const path = relative(parent, child)
+  return path === '' || (path !== '..' && !path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(path))
+}
+
+interface JsonManifest {
+  readonly name?: unknown
+  readonly version?: unknown
+  readonly dependencies?: unknown
+  readonly dsh?: unknown
+}
+
+function readJsonManifest(path: string): JsonManifest {
+  return JSON.parse(readFileSync(path, 'utf8')) as JsonManifest
+}
+
+function profileBundles(manifest: JsonManifest): readonly string[] {
+  if (manifest.dsh === null || typeof manifest.dsh !== 'object' || Array.isArray(manifest.dsh)) return []
+  const profile = (manifest.dsh as Record<string, unknown>).profile
+  if (profile === null || typeof profile !== 'object' || Array.isArray(profile)) return []
+  const bundles = (profile as Record<string, unknown>).bundles
+  return Array.isArray(bundles) && bundles.every(value => typeof value === 'string') ? bundles : []
+}
+
+/** Whether the profile manifest still references the plugin (dependency pin or declared bundle). */
+function profileReferencesPlugin(profileDir: string, packageName: string): boolean {
+  try {
+    const manifest = readJsonManifest(join(profileDir, 'package.json'))
+    const dependencies = manifest.dependencies === null || typeof manifest.dependencies !== 'object'
+      || Array.isArray(manifest.dependencies)
+      ? undefined
+      : (manifest.dependencies as Record<string, unknown>)[packageName]
+    return dependencies !== undefined || profileBundles(manifest).includes(packageName)
+  } catch {
+    return true // an unreadable profile cannot be asserted clean — treat as still referenced
+  }
+}
+
+/**
+ * Assert the installed bundle matches the signed entry: the package resolved
+ * inside the profile's node_modules, the exact name and version, and the
+ * signed in-package bundle patch present. Mirrors the market install path's
+ * post-install assert for the desktop-owned tarball channel.
+ */
+function assertCompanyTarballInstalledBundle(
+  request: Pick<DesktopCompanyTarballInstallRequest, 'entry' | 'profileDir'>,
+): string {
+  const nodeModules = resolve(request.profileDir, 'node_modules')
+  const packageDir = join(nodeModules, ...packageSegments(request.entry.packageName))
+  let resolvedPackageDir: string
+  try {
+    resolvedPackageDir = resolve(packageDir)
+    if (!containedPath(nodeModules, resolvedPackageDir)) throw new Error('the package escaped the profile')
+    const manifest = readJsonManifest(join(resolvedPackageDir, 'package.json'))
+    if (manifest.name !== request.entry.packageName || manifest.version !== request.entry.version) {
+      throw new Error(`installed ${String(manifest.name)}@${String(manifest.version)} instead of ${request.entry.packageName}@${request.entry.version}`)
+    }
+    const patchPath = resolve(resolvedPackageDir, request.entry.bundlePatch)
+    if (!containedPath(resolvedPackageDir, patchPath)) throw new Error('the bundle patch path escapes the package')
+    lstatSync(patchPath)
+  } catch (cause) {
+    throw new Error(`${BIN_NAME}: the tarball install of ${request.entry.packageName}@${request.entry.version} did not produce a valid installed bundle: ${messageOf(cause)}`)
+  }
+  return resolvedPackageDir
+}
+
+/**
+ * Run one tarball-channel company plugin install end to end:
+ *
+ * 1. refuse revoked entries and entries without a signed `treeDigest` (the
+ *    channel is tree-anchored — no signed expectation, no install);
+ * 2. install through the pnpm boundary's controlled tarball target (which
+ *    re-validates the descriptor and re-hashes the staged bytes against the
+ *    signed sha512, and rolls the profile back through the recovery WAL when
+ *    the package manager exits nonzero);
+ * 3. assert the installed bundle matches the signed entry;
+ * 4. re-verify the installed tree with the boot-verification digest walk —
+ *    the same measurement every later boot applies — against the signed
+ *    `treeDigest`; any divergence rolls the install back and refuses it.
+ */
+export async function installCompanyMarketTarballPlugin(
+  request: DesktopCompanyTarballInstallRequest,
+): Promise<DesktopCompanyTarballInstallResult> {
+  const { entry, recovery } = request
+  if (recovery.packageName !== entry.packageName || recovery.packageVersion !== entry.version) {
+    throw new Error(`${BIN_NAME}: the install receipt targets ${recovery.packageName}@${recovery.packageVersion}, but the signed entry pins ${entry.packageName}@${entry.version}`)
+  }
+  if (entry.revoked) {
+    throw new Error(`${BIN_NAME}: ${entry.packageName}@${entry.version} is revoked in the signed company catalog`)
+  }
+  if (!/^[0-9a-f]{64}$/u.test(entry.treeDigest)) {
+    throw new Error(`${BIN_NAME}: ${entry.packageName}@${entry.version} carries no signed treeDigest — the tarball channel installs only tree-anchored entries`)
+  }
+  if (request.tarball === null || typeof request.tarball !== 'object' || request.tarball.kind !== 'market-tarball') {
+    throw new Error(`${BIN_NAME}: the tarball install requires a controlled market tarball descriptor`)
+  }
+  if (request.tarball.integrity !== entry.integrity) {
+    throw new Error(`${BIN_NAME}: the staged tarball integrity does not match the signed entry integrity for ${entry.packageName}@${entry.version}`)
+  }
+  const handle = await request.service.installPlugin({
+    invokingDir: request.invokingDir,
+    recovery,
+    marketTarball: request.tarball,
+    ...(entry.approvedBuilds === undefined ? {} : { approvedBuildDependencies: [...entry.approvedBuilds] }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
+  })
+  const outcome = await handle.done
+  if (outcome.exitCode !== 0 || outcome.signal !== null) {
+    throw new Error(`${BIN_NAME}: the package manager failed installing the staged tarball for ${entry.packageName}@${entry.version} (exit ${String(outcome.exitCode)}, signal ${String(outcome.signal)}) — the recovery WAL restored the profile`)
+  }
+  request.signal?.throwIfAborted()
+  let packageDir: string
+  try {
+    packageDir = assertCompanyTarballInstalledBundle(request)
+  } catch (cause) {
+    await request.service.rollbackPluginInstall(recovery.receiptId)
+    throw new Error(`${messageOf(cause)} — the installation was rolled back`)
+  }
+  const measure = request.measureTreeRootDigest
+    ?? ((await import('./boot-verification.ts')).computeDesktopBootTreeRootDigest)
+  let measured: string
+  try {
+    measured = measure(packageDir)
+  } catch (cause) {
+    await request.service.rollbackPluginInstall(recovery.receiptId)
+    throw new Error(`${BIN_NAME}: the installed tree of ${entry.packageName} could not be measured: ${messageOf(cause)} — the installation was rolled back`)
+  }
+  if (measured !== entry.treeDigest) {
+    await request.service.rollbackPluginInstall(recovery.receiptId)
+    if (profileReferencesPlugin(request.profileDir, entry.packageName)) {
+      throw new Error(`${BIN_NAME}: the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest and the rollback left profile references behind — use the saved recovery state before another plugin change`)
+    }
+    throw new Error(`${BIN_NAME}: the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest — the installation was rolled back and refused`)
+  }
+  return {
+    receiptId: recovery.receiptId,
+    packageName: entry.packageName,
+    version: entry.version,
+    treeDigest: measured,
+  }
+}

@@ -1,7 +1,8 @@
 import { PassThrough } from 'node:stream'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type {
   SubprocessHandle,
@@ -12,6 +13,9 @@ import type {
 import { describe, expect, it, vi } from 'vitest'
 import {
   apply,
+  desktopMarketTarballStagingName,
+  desktopMarketTarballStagingPath,
+  DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
   inject,
   name,
   type DesktopPnpm,
@@ -675,6 +679,125 @@ describe('desktop pnpm Host service', () => {
     await disposing
     expect(child.waitForExit).toHaveBeenCalledOnce()
     expect(() => harness.service.run(['list'])).toThrow('generation is closed')
+  })
+})
+
+describe('pnpm controlled market tarball install target', () => {
+  it('derives the deterministic staging path and refuses ambiguous targets', () => {
+    expect(desktopMarketTarballStagingName('plugin', '1.2.3')).toBe('plugin-1.2.3.tgz')
+    expect(desktopMarketTarballStagingName('@scope/plugin', '0.9.0')).toBe('scope+plugin-0.9.0.tgz')
+    expect(desktopMarketTarballStagingPath('/profiles/web', '@scope/plugin', '0.9.0'))
+      .toBe(join('/profiles/web', DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, 'scope+plugin-0.9.0.tgz'))
+    expect(() => desktopMarketTarballStagingName('Bad Name', '1.0.0')).toThrow()
+    expect(() => desktopMarketTarballStagingName('plugin', '^1.0.0')).toThrow()
+    expect(() => desktopMarketTarballStagingPath('relative', 'plugin', '1.0.0')).toThrow()
+  })
+
+  it('installs a controlled staged tarball as the exact file: target', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-'))
+    const selectedBootstrap = bootstrap(root)
+    const stagedPath = desktopMarketTarballStagingPath(selectedBootstrap.activeProfileDir, 'company-hardened-plugin', '2.1.0')
+    const tarballBytes = Buffer.from('company-hardened-plugin tarball fixture\n')
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, tarballBytes)
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const operation = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'company-hardened-plugin',
+          packageVersion: '2.1.0',
+          receiptId: 'receipt:controlled-tarball-0001',
+        },
+        marketTarball: {
+          kind: 'market-tarball',
+          path: stagedPath,
+          integrity: `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`,
+        },
+      })
+
+      const argv = harness.spawn.mock.calls[0]?.[0].argv as string[]
+      expect(argv.at(-1)).toBe(`file:${stagedPath}`)
+      expect(argv).not.toContain('company-hardened-plugin@2.1.0')
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a tarball descriptor whose staged bytes diverge from the signed integrity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-bad-'))
+    const selectedBootstrap = bootstrap(root)
+    const stagedPath = desktopMarketTarballStagingPath(selectedBootstrap.activeProfileDir, 'company-hardened-plugin', '2.1.0')
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, Buffer.from('tampered bytes\n'))
+      const harness = await createHarness([], selectedBootstrap)
+
+      await expect(harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'company-hardened-plugin',
+          packageVersion: '2.1.0',
+          receiptId: 'receipt:controlled-tarball-bad-0001',
+        },
+        marketTarball: {
+          kind: 'market-tarball',
+          path: stagedPath,
+          integrity: `sha512-${createHash('sha512').update(Buffer.from('company-hardened-plugin tarball fixture\n')).digest('base64')}`,
+        },
+      })).rejects.toThrow('does not match the signed integrity')
+      expect(harness.spawn).not.toHaveBeenCalled()
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps every user-facing argument surface closed to tarball paths', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-redline-'))
+    const selectedBootstrap = bootstrap(root)
+    const rogue = join(root, 'rogue-plugin-1.0.0.tgz')
+    try {
+      writeFileSync(rogue, Buffer.from('rogue tarball\n'))
+      const harness = await createHarness([], selectedBootstrap)
+      const recovery = {
+        packageName: 'company-hardened-plugin',
+        packageVersion: '2.1.0',
+        receiptId: 'receipt:controlled-tarball-redline-0001',
+      }
+      expect(() => harness.service.runPlugin(['add', rogue], '/workspace')).toThrow(
+        'plugin add must use the recoverable install boundary',
+      )
+      await expect(harness.service.runPluginInstall(
+        ['add', '--save-exact', `file:${rogue}`],
+        '/workspace',
+        recovery,
+      )).rejects.toThrow('requires the exact receipt target')
+      await expect(harness.service.installPlugin({
+        pnpmOptions: ['--save-exact', rogue],
+        invokingDir: '/workspace',
+        recovery,
+      })).rejects.toThrow('install options are restricted')
+      await expect(harness.service.installPlugin({
+        pnpmOptions: ['--save-exact', `file:${rogue}`],
+        invokingDir: '/workspace',
+        recovery,
+      })).rejects.toThrow('install options are restricted')
+      expect(harness.spawn).not.toHaveBeenCalled()
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

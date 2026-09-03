@@ -21,12 +21,103 @@ export const STABLE_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'treeDigest', 'version']
+const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
+const SOURCE_KINDS = ['npm', 'tarball']
+const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'url']
+const NPM_SOURCE_FIELDS = ['kind']
 
 /** Lowercase hex SHA-256 shape of an expected installed-tree digest. */
 export const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
 /** Upper bound of one entry's signed build-approval list; mirrors the manifest schema. */
 const MAX_APPROVED_BUILDS = 128
+
+/** Standard-base64 SHA-512 integrity (64-byte digest), the value the manifest schema pins. */
+export function isSha512Integrity(value) {
+  if (typeof value !== 'string' || !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(value)) return false
+  const encoded = value.slice('sha512-'.length)
+  const digest = Buffer.from(encoded, 'base64')
+  return digest.byteLength === 64 && digest.toString('base64') === encoded
+}
+
+/**
+ * Options of {@link validateAllowlistEntry} and {@link loadAllowlist}: the
+ * bare https origin every tarball `source.url` must live on. Tarball entries
+ * are intranet-GitLab-hosted; the pipeline refuses to sign one whose url
+ * leaves the deployment's pinned catalog origin, because the desktop would
+ * refuse the whole manifest at verification (`companyCatalogOrigin`).
+ */
+export const CATALOG_ORIGIN_ENV = 'COMPANY_CATALOG_ORIGIN'
+
+/** Validate a bare https origin (the deployment policy's `companyCatalogOrigin` spelling). */
+export function validateCatalogOrigin(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('the company catalog origin must be a bare https origin like https://gitlab.company.example')
+  }
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`the company catalog origin '${value}' is not a valid URL`)
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.origin !== value) {
+    throw new Error(`the company catalog origin '${value}' must be a bare https origin (no path, credentials, or fragment)`)
+  }
+  return url.origin
+}
+
+/**
+ * Validate and normalize one entry's `source` channel selection. `undefined`
+ * and `{kind:'npm'}` both normalize to the npm channel with no `source` key —
+ * existing allowlist entries keep their exact reviewed shape. A tarball
+ * source must be exactly `{kind:'tarball', url, integrity}` with an https url
+ * on the configured catalog origin and the sha512 of the tarball file
+ * itself; npm entries must not carry a url.
+ */
+export function validateEntrySource(source, at, options = {}) {
+  if (source === undefined) return { kind: 'npm' }
+  if (!isPlainObject(source)) return { ok: false, reason: `${at}.source must be an object` }
+  const kind = source.kind
+  if (!SOURCE_KINDS.includes(kind)) {
+    return { ok: false, reason: `${at}.source.kind must be 'npm' or 'tarball' (got ${JSON.stringify(kind)})` }
+  }
+  if (kind === 'npm') {
+    const unknown = Object.keys(source).filter((key) => !NPM_SOURCE_FIELDS.includes(key))
+    if (unknown.length > 0) {
+      return { ok: false, reason: `${at}.source is the npm channel and must not carry ${unknown.join(', ')} — npm entries install from the pinned public registry` }
+    }
+    return { kind: 'npm' }
+  }
+  const unknown = Object.keys(source).filter((key) => !TARBALL_SOURCE_FIELDS.includes(key))
+  if (unknown.length > 0) return { ok: false, reason: `${at}.source has unknown field(s) ${unknown.join(', ')}` }
+  for (const field of ['url', 'integrity']) {
+    if (typeof source[field] !== 'string' || source[field].length === 0) {
+      return { ok: false, reason: `${at}.source.${field} is required for the tarball channel` }
+    }
+  }
+  let url
+  try {
+    url = new URL(source.url)
+  } catch {
+    return { ok: false, reason: `${at}.source.url '${source.url}' is not a valid URL` }
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hash !== '') {
+    return { ok: false, reason: `${at}.source.url must be a credential-free https URL without a fragment` }
+  }
+  const origin = options.companyCatalogOrigin
+  if (origin === undefined) {
+    return {
+      ok: false,
+      reason: `${at}.source is the tarball channel, which requires the company catalog origin — pass --catalog-origin or set ${CATALOG_ORIGIN_ENV}`,
+    }
+  }
+  if (url.origin !== origin) {
+    return { ok: false, reason: `${at}.source.url origin ${url.origin} is not the company catalog origin ${origin}` }
+  }
+  if (!isSha512Integrity(source.integrity)) {
+    return { ok: false, reason: `${at}.source.integrity must be the base64 SHA-512 digest of the tarball file (sha512-…)` }
+  }
+  return { kind: 'tarball', url: source.url, integrity: source.integrity }
+}
 
 /** npm dependency name of an approved build, schema-shaped: the grammar plus the 214-character bound. */
 const isValidBuildDependencyName = (name) =>
@@ -101,13 +192,18 @@ export function repositoryFromPackument(value) {
  * present; their node-semver validity is enforced later by the market
  * verifier, which owns the semver grammar. The optional `repository` override
  * pins the VCS identity to sign; when absent the build derives it from the
- * registry metadata. The optional `treeDigest` and `approvedBuilds` are
- * passthrough authority fields: the pipeline cannot derive them (the tree
- * digest depends on the installing environment's package-manager layout, so
- * it is measured in a clean reference environment and reviewed in), so they
- * are validated here and signed verbatim when — and only when — present.
+ * registry metadata (tarball-channel entries have no registry metadata, so
+ * they must carry the override — the build enforces that). The optional
+ * `treeDigest` and `approvedBuilds` are passthrough authority fields: the
+ * pipeline cannot derive them (the tree digest depends on the installing
+ * environment's package-manager layout, so it is measured in a clean
+ * reference environment and reviewed in), so they are validated here and
+ * signed verbatim when — and only when — present. The optional `source`
+ * selects the install channel (P7): absent or `{kind:'npm'}` keeps the public
+ * npm channel with no signed `source` key, `{kind:'tarball', url, integrity}`
+ * signs the intranet tarball channel.
  */
-export function validateAllowlistEntry(entry, at) {
+export function validateAllowlistEntry(entry, at, options = {}) {
   if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
   const unknown = Object.keys(entry).filter((key) => !ENTRY_FIELDS.includes(key))
   if (unknown.length > 0) return { ok: false, reason: `${at} has unknown field(s) ${unknown.join(', ')}` }
@@ -175,6 +271,8 @@ export function validateAllowlistEntry(entry, at) {
       seenBuilds.add(name)
     }
   }
+  const source = validateEntrySource(entry.source, at, options)
+  if (source.ok === false) return { ok: false, reason: source.reason }
   return {
     ok: true,
     value: {
@@ -186,6 +284,7 @@ export function validateAllowlistEntry(entry, at) {
       runtime: normalizedRuntime,
       ...(treeDigest === undefined ? {} : { treeDigest }),
       ...(approvedBuilds === undefined ? {} : { approvedBuilds }),
+      ...(source.kind === 'tarball' ? { source } : {}),
     },
   }
 }
@@ -288,7 +387,7 @@ export function applyTreeDigests(entries, digests) {
 }
 
 /** Read and validate an allowlist file into normalized entries (unique by package and version). */
-export function loadAllowlist(path) {
+export function loadAllowlist(path, options = {}) {
   let parsed
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'))
@@ -301,7 +400,7 @@ export function loadAllowlist(path) {
   const entries = []
   const seen = new Set()
   for (const [index, entry] of parsed.entries()) {
-    const result = validateAllowlistEntry(entry, `entry[${index}]`)
+    const result = validateAllowlistEntry(entry, `entry[${index}]`, options)
     if (!result.ok) throw new Error(`allowlist ${path}: ${result.reason}`)
     const identity = entryKey(result.value)
     if (seen.has(identity)) throw new Error(`allowlist ${path}: duplicate entry ${identity}`)

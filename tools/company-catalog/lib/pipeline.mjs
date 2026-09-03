@@ -10,6 +10,12 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { entryKey } from './allowlist.mjs'
 import { fingerprintOfRawPublicKey } from './keys.mjs'
+import { loadSemverRangeChecker } from './market.mjs'
+import {
+  manifestCarriesSource,
+  validateCompanyManifestShapeWithSources,
+  verifyManifestSignature,
+} from './manifest-shape.mjs'
 
 export const MANIFEST_VERSION = '1.0.0'
 export const STATE_FILE_NAME = 'last-sequence.json'
@@ -226,6 +232,16 @@ export function nextSequenceFromSources({ explicit, deployedSequence, deployedSo
  * dist values. Entries are sorted by (packageName, version) so output is
  * deterministic for reviewing and diffing.
  *
+ * Two install channels coexist (P7): npm entries (no `source`) resolve their
+ * integrity and repository identity from the official registry exactly as
+ * before; tarball entries (`source.kind === 'tarball'`) skip the registry —
+ * the intranet tarball is the artifact, so its own sha512 (reviewed in as
+ * `source.integrity`) is signed as the entry integrity, and the repository
+ * identity must come from the allowlist override because the modified
+ * package has no trustworthy public-registry metadata to derive it from.
+ * npm entries keep their exact previous signed shape: no `source` key is
+ * ever added for them.
+ *
  * Every entry's repository identity is resolved here and signed: an explicit
  * allowlist `repository` wins; otherwise the identity is derived from the
  * same registry response that produced the integrity (string or object
@@ -250,13 +266,30 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
       ? (a.version < b.version ? -1 : a.version > b.version ? 1 : 0)
       : (a.packageName < b.packageName ? -1 : 1)))
     .map((entry) => {
-      const dist = dists.get(entryKey(entry))
-      if (dist === undefined) {
-        throw new Error(`no registry dist was resolved for ${entryKey(entry)}`)
+      const tarballSource = entry.source !== undefined && entry.source.kind === 'tarball' ? entry.source : undefined
+      let integrity
+      let rawRepository
+      if (tarballSource !== undefined) {
+        // Tarball channel: the staged tarball is the artifact. Its reviewed
+        // sha512 is signed as the entry integrity — the exact value the
+        // desktop's profile lockfile pins for a `file:` install — and the
+        // repository identity must be an explicit allowlist override.
+        integrity = tarballSource.integrity
+        rawRepository = entry.repository !== undefined ? { url: entry.repository } : undefined
+        if (rawRepository === undefined) {
+          throw new Error(
+            `${entryKey(entry)} uses the tarball channel and has no repository override — ` +
+            'the intranet tarball has no public-registry metadata to derive the identity from, so the allowlist must pin repository explicitly',
+          )
+        }
+      } else {
+        const dist = dists.get(entryKey(entry))
+        if (dist === undefined) {
+          throw new Error(`no registry dist was resolved for ${entryKey(entry)}`)
+        }
+        integrity = dist.integrity
+        rawRepository = entry.repository !== undefined ? { url: entry.repository } : dist.repository
       }
-      const rawRepository = entry.repository !== undefined
-        ? { url: entry.repository }
-        : dist.repository
       if (rawRepository === undefined) {
         throw new Error(
           `${entryKey(entry)} has no resolvable repository identity: set repository in the allowlist ` +
@@ -276,7 +309,7 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
       return {
         packageName: entry.packageName,
         version: entry.version,
-        integrity: dist.integrity,
+        integrity,
         bundlePatch: entry.bundlePatch,
         repository,
         revoked: entry.revoked,
@@ -290,6 +323,11 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
         // approval list desktop merges into its workspace approvals.
         ...(entry.treeDigest === undefined ? {} : { treeDigest: entry.treeDigest }),
         ...(entry.approvedBuilds === undefined ? {} : { approvedBuilds: [...entry.approvedBuilds] }),
+        // The signed install channel (P7): only tarball entries carry it —
+        // npm entries keep the exact previous shape with no `source` key.
+        ...(tarballSource === undefined ? {} : {
+          source: { kind: 'tarball', url: tarballSource.url, integrity: tarballSource.integrity },
+        }),
       }
     })
   if (typeof expiresAt === 'string' ? Number.isNaN(Date.parse(expiresAt)) : !(expiresAt instanceof Date)) {
@@ -322,15 +360,92 @@ export function signUnsignedManifest(market, unsigned, privateKey, keyId, expect
 }
 
 /**
- * Verify manifest bytes exactly the way clients do, with the given trust
- * root, anti-rollback floor, and clock.
+ * Verify manifest bytes the way clients do, with the given trust root,
+ * anti-rollback floor, and clock — extended for the dual channel (P7):
+ *
+ * - the strict dual-channel shape mirror validates the document (every
+ *   unknown key rejects the whole manifest; `source` is the one recognized
+ *   extension, and tarball sources must stay on `companyCatalogOrigin` when
+ *   one is given);
+ * - canonical byte equality, trust-root binding, the detached ed25519
+ *   signature, the sequence floor, and expiry mirror the market verifier;
+ * - a manifest that carries no `source` anywhere must in addition verify with
+ *   the market library's own `verifyCompanyManifest` — the published bytes
+ *   stay verifiable by every field-unaware client, so the tool can never
+ *   silently ship a legacy-incompatible source-free manifest;
+ * - a manifest that carries `source` cannot verify there by design (one
+ *   unknown key rejects it whole — the fleet-upgrade publication gate), so
+ *   the dual-channel mirror is its only verifier on this side.
  */
-export function verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence = 0, now }) {
-  return market.verifyCompanyManifest(text, {
-    trustRoots: [{ keyId, fingerprint }],
-    lastSeenSequence,
-    ...(now === undefined ? {} : { now }),
-  })
+export async function verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence = 0, now, companyCatalogOrigin }) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return { ok: false, code: 'malformed-json', reason: 'manifest text is empty' }
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { ok: false, code: 'malformed-json', reason: `company manifest is not valid JSON: ${error.message}` }
+  }
+  let canonical
+  try {
+    canonical = market.canonicalJsonText(parsed)
+  } catch (error) {
+    return { ok: false, code: 'non-canonical', reason: error.message }
+  }
+  if (canonical !== text) {
+    return { ok: false, code: 'non-canonical', reason: 'company manifest bytes are not the canonical JSON serialization of their parsed value' }
+  }
+  const validRange = await loadSemverRangeChecker()
+  let manifest
+  try {
+    manifest = validateCompanyManifestShapeWithSources(parsed, {
+      ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+      validRange,
+    })
+  } catch (error) {
+    return { ok: false, code: 'invalid-manifest', reason: error.message }
+  }
+  if (manifest.signature.keyId !== keyId) {
+    return { ok: false, code: 'unknown-key', reason: `manifest keyId ${manifest.signature.keyId} is not the expected ${keyId}` }
+  }
+  const signature = verifyManifestSignature(market, parsed, manifest.signature, { keyId, fingerprint })
+  if (!signature.ok) return signature
+  if (manifest.sequence < lastSeenSequence) {
+    return {
+      ok: false,
+      code: 'stale-sequence',
+      reason: `manifest sequence ${String(manifest.sequence)} regressed below the last seen sequence ${String(lastSeenSequence)}`,
+    }
+  }
+  const verifiedAt = now === undefined ? Date.now() : now()
+  const expiresAtMs = Date.parse(manifest.expiresAt)
+  if (Number.isNaN(expiresAtMs)) {
+    return { ok: false, code: 'invalid-manifest', reason: `expiresAt ${manifest.expiresAt} is not a parseable RFC 3339 timestamp` }
+  }
+  if (verifiedAt >= expiresAtMs) {
+    return { ok: false, code: 'expired', reason: `company manifest expired at ${manifest.expiresAt}` }
+  }
+  if (!manifestCarriesSource(parsed)) {
+    const legacy = market.verifyCompanyManifest(text, {
+      trustRoots: [{ keyId, fingerprint }],
+      lastSeenSequence,
+      ...(now === undefined ? {} : { now }),
+    })
+    if (!legacy.ok) {
+      throw new Error(
+        `internal inconsistency: the dual-channel mirror accepted a source-free manifest the market verifier rejects (${legacy.code}: ${legacy.reason}) — ` +
+        'the mirrors have diverged; refuse to publish',
+      )
+    }
+  }
+  return {
+    ok: true,
+    manifest,
+    keyId,
+    fingerprint: signature.fingerprint,
+    verifiedAt,
+  }
 }
 
 /**
@@ -339,7 +454,7 @@ export function verifyManifestText(market, text, { fingerprint, keyId, lastSeenS
  * manifest and bump the persisted sequence. Throws before writing anything
  * if any step fails.
  */
-export function publishManifest({
+export async function publishManifest({
   market,
   entries,
   dists,
@@ -351,10 +466,11 @@ export function publishManifest({
   lastSeenSequence,
   outPath,
   stateDir,
+  companyCatalogOrigin,
 }) {
   const unsigned = assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists })
   const { manifest, text, fingerprint } = signUnsignedManifest(market, unsigned, privateKey, keyId, expectedFingerprint)
-  const verification = verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence })
+  const verification = await verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence, companyCatalogOrigin })
   if (!verification.ok) {
     throw new Error(`verification failed before publish (${verification.code}): ${verification.reason}`)
   }

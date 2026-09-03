@@ -58,7 +58,12 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     },
     "treeDigest": "<64 lowercase hex>",   // optional: expected installed-tree root digest (see below)
     "approvedBuilds": ["sharp"],          // optional: signed build-script approval list (see below)
-    "revoked": false                      // revocation state, set by `revoke`
+    "revoked": false,                     // revocation state, set by `revoke`
+    "source": {                           // optional: install channel (P7 dual channel) — omit for npm
+      "kind": "tarball",
+      "url": "https://gitlab…/packages/<name>-<version>.tgz",
+      "integrity": "sha512-…"            // sha512 of the tarball file itself, not the registry dist
+    }
   }
 ]
 ```
@@ -66,6 +71,53 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
 `bundlePatch` is **required and non-empty** (schema `minLength: 1`); `ms@2.1.3`
 is a live registry smoke entry, not a real plugin. See
 `allowlist.example.json` for optional runtime fields.
+
+### Install channels · 安装通道（P7 双通道）
+
+Every entry selects its install channel through `source`; the two channels
+coexist in one manifest:
+
+- **npm (the default)** — an absent `source` or `{"kind":"npm"}` installs the
+  exact public-registry version exactly as before: `build` fetches the dist
+  integrity from `registry.npmjs.org`, derives the repository identity from
+  the registry metadata, and signs **no `source` key at all** (existing
+  entries keep their byte-exact signed shape). npm entries must not carry a
+  `url` — the channel installs from the pinned registry, nowhere else.
+- **tarball** — `{"kind":"tarball","url":…,"integrity":…}` installs an
+  intranet-hosted tarball (modified/forked packages): the desktop downloads
+  the url, verifies the signed sha512 over the downloaded bytes, stages the
+  file inside the profile's controlled staging area, and installs it through
+  the package-manager boundary's one constructible tarball target. The url
+  must be https and must live on the deployment's catalog origin
+  (`--catalog-origin` / `COMPANY_CATALOG_ORIGIN` here, `companyCatalogOrigin`
+  in the desktop policy), and `integrity` is the sha512 of the tarball file
+  itself — it is signed as the entry's top-level `integrity` too, because
+  that is exactly the integrity the profile lockfile pins for a `file:`
+  install. A tarball entry has no trustworthy public-registry metadata, so
+  its `repository` must be an explicit allowlist override (the build aborts
+  without one), and the desktop installs tarball entries only when they also
+  carry a reviewed `treeDigest` (the channel is tree-anchored end to end).
+
+The signed `source` field is a schema extension the market verifier's
+`additionalProperties:false` rejects whole — publishing the first
+`source`-carrying manifest therefore rides the same fleet-upgrade gate as
+`treeDigest`/`approvedBuilds` (see below: upgrade the fleet first, then
+  publish with `--confirm-fleet-upgraded`). A `source`-free manifest stays
+  verifiable by every client: `verifyManifestText` proves it against the
+  market verifier before publishing.
+
+每个条目通过 `source` 选择安装通道，两种通道在同一份清单内并存：**npm（默认）**——
+缺省或 `{"kind":"npm"}` 时照旧从钉住的公网 registry 安装，签名条目**不含任何
+`source` 键**（存量条目字节不变；npm 条目禁止带 url）；**tarball**——改造包走内网
+GitLab 宿主的 tarball：url 必须是 https 且落在 catalog origin
+（`--catalog-origin` / `COMPANY_CATALOG_ORIGIN`，即桌面策略的 `companyCatalogOrigin`），
+`integrity` 是 tarball 文件本身的 sha512（同时作为条目顶层 `integrity` 签入，因为那正是
+profile 锁文件对 `file:` 安装钉住的完整性值）；tarball 条目必须显式给出 `repository`
+覆盖（构建缺少即中止），桌面端只安装携带已评审 `treeDigest` 的 tarball 条目（通道全程
+树锚定）。`source` 是旧客户端整体拒收的 schema 扩展——首次发布走与
+`treeDigest`/`approvedBuilds` 相同的 fleet 升级门禁（先全员升级，再
+`--confirm-fleet-upgraded` 发布）；不含 `source` 的清单仍对全部客户端可验（发布前会先
+过一遍 market 验证器证明这点）。
 
 Every signed entry must carry a **repository identity** — it is what the
 desktop install-time verifier back-links against the live npm metadata, so a
@@ -94,8 +146,8 @@ of mutating `1.0.0` in place. Optional fields are **not** an exemption:
 old clients reject them too (`additionalProperties: false` refuses any
 unknown key, required or not), so gradual enablement holds in one direction
 only — a *new* client reading an *old* manifest. The first manifest that
-carries `treeDigest`/`approvedBuilds` therefore requires a fleet already
-upgraded to field-aware clients (see the ordering gate in "Optional
+carries `treeDigest`/`approvedBuilds`/`source` therefore requires a fleet
+already upgraded to field-aware clients (see the ordering gate in "Optional
 authority fields" below).
 
 每个签名条目必须携带 **repository 身份**——桌面端安装期验证器用它与真实 npm
@@ -118,6 +170,7 @@ false` 把新字段当未知字段拒收），新验证器拒旧清单（字段�
 false` 对任何未知键一视同仁，与是否必填无关），渐进性只在「新客户端读旧清单」
 这一个方向成立。首次发布携带 `treeDigest`/`approvedBuilds` 的清单前，必须先把
 fleet 升级到认识这些字段的客户端（见下方「Optional authority fields」的顺序门禁）。
+`source`（P7 双通道的安装通道字段）遵守同一条规则。
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。
@@ -184,10 +237,10 @@ manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名�
   建批准；名字集合本身的可信度即公司签名对它的约束。没有该字段的条目仅用内
   置清单，且该清单只能扩展内置批准，绝不能收缩。
 
-**Fleet upgrade ordering (publication gate).** Both fields are optional to
-the *signer*, not to the fleet: before any manifest carrying
-`treeDigest`/`approvedBuilds` is published, **every** client must already
-run a build that knows the fields — older clients verify with
+**Fleet upgrade ordering (publication gate).** These optional fields are
+optional to the *signer*, not to the fleet: before any manifest carrying
+`treeDigest`/`approvedBuilds`/`source` is published, **every** client must
+already run a build that knows the fields — older clients verify with
 `additionalProperties: false`, so one unknown key makes them reject the
 **entire** manifest and the whole catalog goes dark on those machines (not
 just the one plugin). The publication order is therefore fixed: upgrade the
@@ -200,8 +253,8 @@ can only be superseded, never un-published) → push the manifest.
 below unless `--confirm-fleet-upgraded` is passed — the operator's
 assertion that the whole fleet already runs a field-aware build.
 
-**fleet 升级顺序（发布门禁）**。这两个字段对签名者是可选的，对 fleet 不是：
-任何携带 `treeDigest`/`approvedBuilds` 的清单上架前，**全部**客户端必须已运行
+**fleet 升级顺序（发布门禁）**。这些字段对签名者是可选的，对 fleet 不是：
+任何携带 `treeDigest`/`approvedBuilds`/`source` 的清单上架前，**全部**客户端必须已运行
 认识这些字段的构建——旧客户端以 `additionalProperties: false` 验签，一个未知
 键就会让它拒收**整份**清单，受影响机器上整个目录瘫痪（而不只是这一个插件）。
 因此发布顺序固定：先升级 fleet → 在标准参考环境实测 `treeDigest` → 以严格更

@@ -28,6 +28,8 @@ import {
   repositoryFromPackument,
   saveAllowlist,
   validateAllowlistEntry,
+  validateCatalogOrigin,
+  CATALOG_ORIGIN_ENV,
 } from './lib/allowlist.mjs'
 import { generateSigningMaterial, loadSigningKeyFromEnv } from './lib/keys.mjs'
 import { loadMarketLibrary } from './lib/market.mjs'
@@ -81,6 +83,9 @@ Options:
                          manifest (sequence, keyId, fingerprint, manifestSha256,
                          entries with measured flags; CI adds gitSha/runId)
   --expires-days <n>     expiresAt horizon in days (default: 90)
+  --catalog-origin <o>   Bare https origin every tarball source url must live on
+                         (default: the COMPANY_CATALOG_ORIGIN environment value);
+                         required before any entry uses the tarball channel
   --force-offline        selftest only: skip the npm registry segment
 
 Signing environment:
@@ -99,7 +104,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) {
@@ -138,10 +143,27 @@ function defaultPaths(flags) {
   }
 }
 
-/** Resolve registry dist for every allowlist entry; hard-fails on any error. */
+/**
+ * Resolve the company catalog origin for tarball-channel entries: the
+ * `--catalog-origin` flag wins, the COMPANY_CATALOG_ORIGIN environment value
+ * is the fallback, and `undefined` means the deployment uses the npm channel
+ * only (a tarball entry then fails validation with guidance). The value is
+ * validated as a bare https origin, mirroring the desktop policy field the
+ * desktop's verification pins (`companyCatalogOrigin`).
+ */
+function resolveCatalogOrigin(flags) {
+  const raw = flags['catalog-origin'] !== undefined ? flags['catalog-origin'] : process.env[CATALOG_ORIGIN_ENV]
+  return raw === undefined ? undefined : validateCatalogOrigin(raw)
+}
+
+/** Resolve registry dist for every npm-channel allowlist entry; hard-fails on any error. Tarball-channel entries are skipped: their signed integrity is the reviewed tarball sha512, not registry metadata. */
 async function resolveDists(entries) {
   const dists = new Map()
   for (const entry of entries) {
+    if (entry.source !== undefined && entry.source.kind === 'tarball') {
+      console.log(`tarball:  ${entryKey(entry)} → ${entry.source.url} (${entry.source.integrity}) — intranet tarball channel, no registry lookup`)
+      continue
+    }
     const dist = await fetchPackageDist(entry.packageName, entry.version)
     const repository = entry.repository ?? dist.repository?.url
       ?? 'none resolvable (set repository in the allowlist or fix the npm metadata)'
@@ -157,7 +179,8 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
   const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
   const { allowlistPath, outPath, stateDir } = defaultPaths(flags)
   const effectiveAllowlistPath = allowlistPathOverride ?? allowlistPath
-  const entries = loadAllowlist(effectiveAllowlistPath)
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const entries = loadAllowlist(effectiveAllowlistPath, { companyCatalogOrigin })
   const dists = await resolveDists(entries)
   const sequenceFrom = flags['sequence-from']
   const persistedSequence = readLastSequence(stateDir)
@@ -171,7 +194,7 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
     ...(deployedSequence === undefined ? {} : { deployedSequence, deployedSource }),
     persistedSequence,
   })
-  const { manifest, fingerprint } = publishManifest({
+  const { manifest, fingerprint } = await publishManifest({
     market,
     entries,
     dists,
@@ -183,16 +206,21 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
     lastSeenSequence: floor,
     outPath,
     stateDir,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
   })
   const revoked = manifest.packages.filter((entry) => entry.revoked).length
+  const tarballChannel = manifest.packages.filter((entry) => entry.source !== undefined).length
   console.log('published company manifest:')
   console.log(`  sequence:    ${String(manifest.sequence)} (sequence source: ${sequenceSource})`)
   console.log(`  expiresAt:   ${manifest.expiresAt}`)
-  console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked)`)
+  console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked, ${String(tarballChannel)} tarball channel)`)
   console.log(`  keyId:       ${keyId}`)
   console.log(`  fingerprint: ${fingerprint}`)
   console.log(`  manifest:    ${outPath}`)
   console.log(`  state:       ${resolve(stateDir, 'last-sequence.json')}`)
+  if (tarballChannel > 0) {
+    console.log('  fleet gate:  this manifest carries the `source` field — every client must already run a dual-channel-aware build (see publish-local --confirm-fleet-upgraded)')
+  }
   return { manifest, fingerprint, outPath, sequenceSource }
 }
 
@@ -224,6 +252,7 @@ function writePublishMeta({ metaOutPath, manifest, fingerprint, outBytes }) {
       packageName: entry.packageName,
       version: entry.version,
       ...(entry.treeDigest === undefined ? {} : { treeDigest: entry.treeDigest }),
+      ...(entry.source === undefined ? {} : { sourceKind: entry.source.kind }),
       measured: entry.treeDigest !== undefined,
     })),
     generatedAt: new Date().toISOString(),
@@ -237,8 +266,9 @@ async function commandMeasureAndPublish(flags) {
   const digestFilePath = flags['digest-file']
   if (digestFilePath === undefined) throw new Error('measure-and-publish requires --digest-file <path> (the measure script output)')
   const { allowlistPath } = defaultPaths(flags)
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
   const digests = loadTreeDigestFile(resolve(process.cwd(), digestFilePath))
-  const entries = loadAllowlist(allowlistPath)
+  const entries = loadAllowlist(allowlistPath, { companyCatalogOrigin })
   const { entries: filledEntries, filled, unchanged, missing } = applyTreeDigests(entries, digests)
   const runtimeDir = mkdtempSync(join(tmpdir(), 'company-catalog-measure-publish-'))
   let result
@@ -257,7 +287,11 @@ async function commandMeasureAndPublish(flags) {
       throw new Error(`manifest ${result.outPath} carries no readable signature.keyId after publish`)
     }
     const fingerprint = market.ed25519PublicKeyFingerprint(Buffer.from(signature.publicKey ?? '', 'base64'))
-    const verification = verifyManifestText(market, text, { fingerprint, keyId: signature.keyId })
+    const verification = await verifyManifestText(market, text, {
+      fingerprint,
+      keyId: signature.keyId,
+      ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    })
     if (!verification.ok) {
       throw new Error(`re-verification of the written manifest failed (${verification.code}): ${verification.reason}`)
     }
@@ -282,7 +316,7 @@ async function commandRevoke(positionals, flags) {
   if (positionals.length !== 1) throw new Error("revoke takes exactly one argument: <package>[@<version>]")
   const spec = positionals[0]
   const { allowlistPath } = defaultPaths(flags)
-  const entries = loadAllowlist(allowlistPath)
+  const entries = loadAllowlist(allowlistPath, { companyCatalogOrigin: resolveCatalogOrigin(flags) })
   const { entries: updated, matches } = applyRevocation(entries, spec)
   saveAllowlist(allowlistPath, updated)
   console.log(`allowlist: ${matches.join(', ')} marked revoked:true (entry kept; revocation is a state, not a deletion)`)
@@ -327,7 +361,11 @@ async function commandVerify(positionals, flags) {
   // artifact verifies its integrity (canonical bytes, schema, trust root,
   // signature, expiry) and is told how its sequence relates to the state.
   const persistedSequence = readLastSequence(stateDir)
-  const verification = verifyManifestText(market, text, { fingerprint, keyId: signature.keyId })
+  const verification = await verifyManifestText(market, text, {
+    fingerprint,
+    keyId: signature.keyId,
+    companyCatalogOrigin: resolveCatalogOrigin(flags),
+  })
   if (!verification.ok) {
     throw new Error(`verification failed (${verification.code}): ${verification.reason}`)
   }
@@ -341,7 +379,18 @@ async function commandVerify(positionals, flags) {
   console.log(`  fingerprint: ${verification.fingerprint}`)
   console.log(`  sequence:    ${String(verification.manifest.sequence)} (${sequenceRelation})`)
   console.log(`  expiresAt:   ${verification.manifest.expiresAt}`)
-  console.log(`  packages:    ${String(verification.manifest.packages.length)} (${String(verification.manifest.packages.filter((e) => e.revoked).length)} revoked)`)
+  const channelSummary = verification.manifest.packages.reduce(
+    (counts, entry) => {
+      const kind = entry.source === undefined ? 'npm' : entry.source.kind
+      counts[kind] = (counts[kind] ?? 0) + 1
+      return counts
+    },
+    {},
+  )
+  console.log(`  packages:    ${String(verification.manifest.packages.length)} (${String(verification.manifest.packages.filter((e) => e.revoked).length)} revoked; channels: ${Object.entries(channelSummary).map(([kind, count]) => `${kind} ${String(count)}`).join(', ')})`)
+  if ((channelSummary.tarball ?? 0) > 0) {
+    console.log('  note:        this manifest carries `source` entries — field-unaware clients reject it whole (fleet-upgrade publication gate)')
+  }
 }
 
 async function commandKeygen() {
