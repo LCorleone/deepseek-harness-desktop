@@ -265,6 +265,11 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 ---
 
+## P7 · 公司市场双通道（npm + tarball）—— 开卡 2026-09-03
+**用户拍板**：公网 npm 与 tarball 通道并存——不改动的公网包（如 better-sidebar）继续直装 npm；改造包（如 hardened free-search）走 tarball。此后插件内容/清单/签名/分发全自有内网，npm 从必需依赖降为可选源。
+**设计**：manifest 条目加 `source:{kind:'npm'(默认省略)|{kind:'tarball',url,integrity(sha512)}}`；tarball 宿主=内网 GitLab julu/dsh-desktop-config `packages/<name>-<version>.tgz`（员工机必达、签名权威通道同域、发布流沿用 publish-local+sequence；GitHub catalog-artifacts 可选镜像）。客户端：desktop-market 下载→sha512 校验→pnpm add 本地 tarball（**仅市场管线下发可过，CLI 塞任意 tarball 仍拒**——红线测试）→装后 treeDigest 复验照走。**fleet 门禁**：旧客户端一个未知键拒收整个 manifest，新键上线复用 treeDigest 那次的 --confirm-fleet-upgraded 模式（全员 #46+）。
+**批次**：①schema+客户端安装路径+测试 ②发布管线（vendor fork 源+CI 打包+GitLab 推送+镜像，先用测试插件打通）③e2e+fleet 门+评审+#46 构建。量级 2-4 天。red line：不动子模块、不动 dsh-community-market（真实安装路径全在 dsh-plugin-desktop+tools/company-catalog）。
+
 ## 兼容模式红线汇总
 
 | 卡 | 触碰 |
