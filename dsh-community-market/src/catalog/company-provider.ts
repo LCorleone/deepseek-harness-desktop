@@ -58,7 +58,9 @@ import {
   type CompanyManifestPackage,
   type CompanyManifestRuntimeRanges,
   type CompanyManifestTrustRoot,
+  type CompanyManifestVerification,
   type CompanyManifestVerificationCode,
+  type VerifyCompanyManifestOptions,
 } from '../signing/index.js'
 import { isCompanyManifestKeyId, normalizeCompanyManifestTrustRoots } from '../signing/keys.js'
 import type { MarketCompanyManifestRecord, MarketSettingsMutatingScope } from './source-store.js'
@@ -139,6 +141,25 @@ export interface CompanyManifestSequenceStore {
 /** Host-injected manifest bytes for content mode; may be async. */
 export type CompanyManifestContentProvider = () => string | Uint8Array | Promise<string | Uint8Array>
 
+/**
+ * Manifest verification over the provider's raw bytes, as an injectable
+ * override of the market library's field-unaware `verifyCompanyManifest`.
+ * The embedding Host injects a field-aware verifier when its manifests may
+ * carry entry fields beyond the market schema — Desktop's signed `source`
+ * install channel — so the catalog scan keeps verifying those manifests
+ * instead of rejecting them whole over one unknown key. Contract for
+ * injected verifiers: `source`-free manifests decide exactly like
+ * `verifyCompanyManifest` (same trust outcome, same failure codes), any
+ * recognized extension fields are verified under the same fail-closed
+ * rules, and a verified manifest carries the market-known projection of
+ * every entry — the provider reads only those fields; extension fields
+ * ride through `findSignedPackage` untouched.
+ */
+export type CompanyManifestVerifier = (
+  raw: string | Uint8Array,
+  options: VerifyCompanyManifestOptions,
+) => CompanyManifestVerification
+
 export interface CompanyCatalogProviderOptions {
   /** Origin mode: credential-free HTTPS URL of the signed manifest on team static hosting. */
   readonly companyManifestUrl?: string
@@ -150,6 +171,13 @@ export interface CompanyCatalogProviderOptions {
   readonly sequenceStore?: CompanyManifestSequenceStore
   /** Clock injection, defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Injectable manifest verification (see {@link CompanyManifestVerifier});
+   * defaults to the market library's field-unaware `verifyCompanyManifest`,
+   * so standalone deployments and Hosts that do not inject stay byte-for-
+   * byte on the library verifier.
+   */
+  readonly manifestVerifier?: CompanyManifestVerifier
   /**
    * Host logger for the loud same-sequence digest-mismatch warning on the
    * self-heal path in `scanCatalog` (see the module security note); the
@@ -448,6 +476,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   private readonly trustRoots: readonly CompanyManifestTrustRoot[]
   private readonly sequenceStore: CompanyManifestSequenceStore | undefined
   private readonly now: () => number
+  private readonly verifyManifest: CompanyManifestVerifier
   private readonly logger: Pick<Context['logger'], 'warn'> | undefined
   private scan: CompanyCatalogScan | undefined
 
@@ -463,6 +492,9 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     if (hasContent && typeof options.manifestContentProvider !== 'function') {
       throw new TypeError('manifestContentProvider must be a function')
     }
+    if (options.manifestVerifier !== undefined && typeof options.manifestVerifier !== 'function') {
+      throw new TypeError('manifestVerifier must be a function')
+    }
     const trustRoots = normalizeCompanyManifestTrustRoots(options.trustRoots)
     if (trustRoots.length === 0) {
       throw new TypeError('company catalog provider requires at least one pinned trust root')
@@ -473,6 +505,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     this.trustRoots = trustRoots
     this.sequenceStore = options.sequenceStore
     this.now = options.now ?? Date.now
+    this.verifyManifest = options.manifestVerifier ?? verifyCompanyManifest
     this.logger = options.logger
   }
 
@@ -508,7 +541,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     // hard-rejecting on it once bricked the catalog with no recovery path.
     // It warns loudly instead, and the save below refreshes the record with
     // the just-verified digest; the rollback floor above stays hard.
-    const verification = verifyCompanyManifest(loaded.raw, {
+    const verification = this.verifyManifest(loaded.raw, {
       trustRoots: this.trustRoots,
       ...(this.mode === 'origin' && previous !== undefined
         ? { lastSeenSequence: previous.sequence }

@@ -13,7 +13,9 @@ import {
   CompanyCatalogUntrustedError,
   createCompanyCatalogProvider,
   SettingsCompanyManifestSequenceStore,
+  type CompanyCatalogProviderOptions,
   type CompanyManifestSequenceStore,
+  type CompanyManifestVerifier,
 } from '../src/catalog/company-provider.js'
 import {
   MemoryCatalogSourceStore,
@@ -28,6 +30,8 @@ import {
   canonicalJsonText,
   createCompanyManifestSignature,
   ed25519PublicKeyFingerprint,
+  verifyCompanyManifest,
+  type CompanyManifestPackage,
   type CompanyManifestTrustRoot,
 } from '../src/signing/index.js'
 
@@ -119,6 +123,7 @@ function contentProviderScan(
   text: () => string,
   sequenceStore: CompanyManifestSequenceStore = memorySequenceStore(),
   logger?: Pick<Context['logger'], 'warn'>,
+  manifestVerifier?: CompanyCatalogProviderOptions['manifestVerifier'],
 ) {
   const provider = createCompanyCatalogProvider({
     manifestContentProvider: contentProvider(text),
@@ -126,6 +131,7 @@ function contentProviderScan(
     sequenceStore,
     now: () => verifiedAt,
     ...(logger === undefined ? {} : { logger }),
+    ...(manifestVerifier === undefined ? {} : { manifestVerifier }),
   })
   return { provider, sequenceStore, context: contentContext() }
 }
@@ -946,5 +952,125 @@ describe('settings-backed company manifest sequence store', () => {
     const { provider, context } = contentProviderScan(() => signedText(), sequenceStore)
 
     await expect(provider.scanCatalog!({}, context)).rejects.toThrow(/anti-rollback state is invalid/u)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Manifest verifier injection: a Host whose manifests carry entry fields
+// beyond the market schema (Desktop's P7 signed `source` install channel)
+// injects its field-aware verifier; the provider must keep every other
+// behavior — anti-rollback, replay, fail-closed propagation — keyed only on
+// what the injected verifier reports. The real dual-channel verifier is
+// exercised in the desktop workspace against this provider; here the stubs
+// pin the provider-side contract.
+// ---------------------------------------------------------------------------
+
+describe('company catalog provider manifest verifier injection (field-aware hosts)', () => {
+  /** A manifest whose entry carries a field the market schema does not know. */
+  const sourceCarryingManifest = unsignedManifest({
+    packages: [packageEntry({ source: { kind: 'npm' } })],
+  })
+
+  /**
+   * Field-aware plumbing double: verifies the manifest's market-known
+   * projection (the same document with the `source` extension stripped)
+   * through the real market verifier — same key, same signature chain — and
+   * grafts the extension back onto the verified manifest. It proves the
+   * provider-side contract (the provider consumes the verified projection
+   * and transports the extension untouched) without duplicating the
+   * dual-channel verifier's ed25519 code; the real field-aware verifier is
+   * exercised in the desktop workspace against this same provider.
+   */
+  const fieldAwareVerifier: CompanyManifestVerifier = (raw, options) => {
+    const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+    const parsed = JSON.parse(text) as { packages?: Array<Record<string, unknown>>; signature?: unknown }
+    const packages = Array.isArray(parsed.packages) ? parsed.packages : []
+    const sources = packages.map(entry => entry.source)
+    const { signature: _wireSignature, ...document } = parsed
+    const projection = {
+      ...document,
+      packages: packages.map(({ source: _source, ...rest }) => rest),
+    }
+    const signature = createCompanyManifestSignature(asUnsigned(projection), privateKey, keyId)
+    const market = verifyCompanyManifest(canonicalJsonText({ ...projection, signature }), options)
+    if (!market.ok) return market
+    const extended = market.manifest.packages.map((entry, index) => (
+      sources[index] === undefined ? entry : { ...entry, source: sources[index] } as CompanyManifestPackage
+    ))
+    return { ...market, manifest: { ...market.manifest, packages: extended } }
+  }
+
+  it('rejects a manifest with schema-unknown entry fields whole with the default verifier', async () => {
+    // The default is byte-for-byte the market library verifier: one unknown
+    // entry key rejects the entire manifest, catalog and install authority
+    // stay empty, and the whole scan fails closed (the fleet-upgrade gate
+    // every field-unaware deployment still lives behind).
+    const { provider, context } = contentProviderScan(() => signedText(sourceCarryingManifest))
+    const error = await untrusted(provider.scanCatalog!({}, context))
+    expect(error.code).toBe('invalid-manifest')
+    expect(error.message).toContain('company catalog is not trusted (invalid-manifest)')
+    expect(provider.verifiedPackages()).toEqual([])
+    expect(provider.verification()).toBeUndefined()
+  })
+
+  it('catalogs a source-carrying manifest through an injected field-aware verifier', async () => {
+    const { provider, context } = contentProviderScan(
+      () => signedText(sourceCarryingManifest),
+      memorySequenceStore(),
+      undefined,
+      fieldAwareVerifier,
+    )
+    const snapshots = await provider.scanCatalog!({}, context)
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
+      .toEqual(['npm:dsh-plugin-safe@1.2.3'])
+    expect(provider.verifiedPackages()).toEqual([
+      expect.objectContaining({ packageName: 'dsh-plugin-safe', version: '1.2.3' }),
+    ])
+    // The extension field rides through the signed-package query untouched:
+    // the provider consumes only the market-known projection of each entry.
+    const signed = provider.findSignedPackage('dsh-plugin-safe', '1.2.3')
+    expect((signed as { readonly source?: unknown }).source).toEqual({ kind: 'npm' })
+    expect(provider.verification()).toMatchObject({ mode: 'content', sequence: 42, keyId })
+  })
+
+  it('forwards the exact bytes, trust roots, and clock to the injected verifier', async () => {
+    const text = signedText()
+    const manifestVerifier = vi.fn((raw: string | Uint8Array, options: Parameters<CompanyManifestVerifier>[1]) =>
+      verifyCompanyManifest(raw, options))
+    const injected = contentProviderScan(() => text, memorySequenceStore(), undefined, manifestVerifier)
+    await injected.provider.scanCatalog!({}, injected.context)
+    expect(manifestVerifier).toHaveBeenCalledTimes(1)
+    const call = manifestVerifier.mock.calls[0]!
+    expect(call[0]).toBe(text)
+    expect(call[1].trustRoots).toEqual(trustRoots)
+    expect(call[1].lastSeenSequence).toBeUndefined()
+    expect(typeof call[1].now === 'function' && call[1].now()).toBe(verifiedAt)
+    // Same scan outcome as the default provider over the same bytes.
+    const plain = contentProviderScan(() => text)
+    await plain.provider.scanCatalog!({}, plain.context)
+    expect(injected.provider.verification()).toEqual(plain.provider.verification())
+    expect(injected.provider.verifiedPackages()).toEqual(plain.provider.verifiedPackages())
+  })
+
+  it('carries an injected verifier rejection into the untrusted scan code', async () => {
+    const manifestVerifier = vi.fn(() => ({ ok: false as const, code: 'expired' as const, reason: 'injected rejection' }))
+    const { provider, context } = contentProviderScan(
+      () => signedText(),
+      memorySequenceStore(),
+      undefined,
+      manifestVerifier,
+    )
+    const error = await untrusted(provider.scanCatalog!({}, context))
+    expect(error.code).toBe('expired')
+    expect(error.message).toContain('injected rejection')
+    expect(provider.verification()).toBeUndefined()
+  })
+
+  it('rejects a non-function manifest verifier at construction', () => {
+    expect(() => createCompanyCatalogProvider({
+      manifestContentProvider: () => signedText(),
+      trustRoots,
+      manifestVerifier: 'not a function' as unknown as CompanyManifestVerifier,
+    })).toThrow(TypeError)
   })
 })

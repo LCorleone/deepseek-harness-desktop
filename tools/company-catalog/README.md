@@ -256,13 +256,20 @@ assertion that the whole fleet already runs a field-aware build.
 **What "field-aware" means for `source` (the concrete switch).** Carrying
 the dual-channel verifier unused is not enough: a build is field-aware for
 `source` exactly when **boot verification** (`dsh-plugin-desktop/src/boot-verification.ts`,
-`verifyDesktopBootBundles`) **and the locked terminal add gate**
-(`dsh-plugin-desktop/src/cli-install-channel.ts`, `authorizeLockedPluginAdd`)
-verify through `verifyDesktopCompanyManifest` (`src/desktop-market.ts`) —
-the P7 batch-2 wiring. Before that switch both call sites ran the
-field-unaware market verifier and rejected any `source`-carrying manifest
-whole, so no `source`-carrying manifest may be published until the whole
-fleet runs builds at or beyond it.
+`verifyDesktopBootBundles`), **the locked terminal add gate**
+(`dsh-plugin-desktop/src/cli-install-channel.ts`, `authorizeLockedPluginAdd`),
+**and the locked market catalog provider** (`dsh-community-market`'s
+`CompanyCatalogProvider`, which feeds the market UI's catalog rows and the
+signed-manifest install whitelist) all verify through
+`verifyDesktopCompanyManifest` (`src/desktop-market.ts`) — the P7 batch-2
+wiring plus the catalog-provider injection (the desktop host injects the
+verifier through the `desktopCompanyManifestVerifier` capability; without
+it the provider runs the field-unaware market verifier and a
+`source`-carrying manifest blacks out the market catalog scan even though
+boot and the terminal gate stay up). Before that switch all three call
+sites rejected `source`-carrying manifests whole, so no `source`-carrying
+manifest may be published until the whole fleet runs builds at or beyond
+it.
 
 **fleet 升级顺序（发布门禁）**。这些字段对签名者是可选的，对 fleet 不是：
 任何携带 `treeDigest`/`approvedBuilds`/`source` 的清单上架前，**全部**客户端必须已运行
@@ -277,12 +284,16 @@ fleet runs builds at or beyond it.
 
 **对 `source` 而言「认识字段的构建」的具体含义（即本次切换）**：仅仅带上双通道
 验证器而未接线不算——`source` 意义上的 field-aware 构建恰好是指 **boot 验证**
-（`dsh-plugin-desktop/src/boot-verification.ts` 的 `verifyDesktopBootBundles`）**与锁定终端
-add 门禁**（`dsh-plugin-desktop/src/cli-install-channel.ts` 的 `authorizeLockedPluginAdd`）
-均通过 `verifyDesktopCompanyManifest`（`src/desktop-market.ts`）验签的构建——即 P7
-批次 2 的接线。在该切换之前，这两个调用点跑的都是字段不感知的旧市场验证器，
-会整体拒收任何携带 `source` 的清单；因此 fleet 全员升至含该切换的构建之前，
-不得发布任何携带 `source` 的清单。
+（`dsh-plugin-desktop/src/boot-verification.ts` 的 `verifyDesktopBootBundles`）、
+**锁定终端 add 门禁**（`dsh-plugin-desktop/src/cli-install-channel.ts` 的
+`authorizeLockedPluginAdd`）**与锁定市场目录 provider**（`dsh-community-market` 的
+`CompanyCatalogProvider`，它供给市场 UI 的目录行与签名清单安装白名单）三处均通过
+`verifyDesktopCompanyManifest`（`src/desktop-market.ts`）验签的构建——即 P7
+批次 2 的接线加上目录 provider 的验证器注入（桌面 host 经
+`desktopCompanyManifestVerifier` capability 注入；缺注入时 provider 跑字段不感知
+的旧市场验证器，此时即便 boot 与终端门禁存活，携带 `source` 的清单仍会把市场
+目录扫描整册打黑）。在该切换之前，这三处都会整体拒收任何携带 `source` 的清单；
+因此 fleet 全员升至含该切换的构建之前，不得发布任何携带 `source` 的清单。
 
 Both fields fail closed at every gate: the allowlist validator refuses
 malformed values (non-hex or truncated digests, empty/duplicate/invalid

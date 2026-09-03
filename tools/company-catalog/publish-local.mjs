@@ -34,14 +34,18 @@
  *      acknowledgement that every client already runs a field-aware build
  *      (README "Fleet upgrade ordering (publication gate)").
  *      "Field-aware" is concrete, per field: for `source` it means a build
- *      whose boot verification (dsh-plugin-desktop/src/boot-verification.ts)
- *      AND locked terminal add gate (src/cli-install-channel.ts) verify
+ *      whose boot verification (dsh-plugin-desktop/src/boot-verification.ts),
+ *      locked terminal add gate (src/cli-install-channel.ts), AND locked
+ *      market catalog provider (the community-market CompanyCatalogProvider,
+ *      fed the verifier through the desktop host's injection) all verify
  *      through the dual-channel verifier `verifyDesktopCompanyManifest`
- *      (src/desktop-market.ts) — the P7 batch-2 wiring. A build that merely
- *      carries the verifier unused still rejects `source`-carrying manifests
- *      at boot, so it is NOT field-aware; no `source`-carrying manifest may
- *      be published before the whole fleet runs builds at or beyond that
- *      switch.
+ *      (src/desktop-market.ts) — the P7 batch-2 wiring plus the catalog-
+ *      provider injection. A build that merely carries the verifier unused
+ *      still rejects `source`-carrying manifests at boot, and one without
+ *      the provider injection keeps the market catalog scan field-unaware
+ *      (the market UI's catalog would go dark even with boot alive), so it
+ *      is NOT field-aware; no `source`-carrying manifest may be published
+ *      before the whole fleet runs builds at or beyond that switch.
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
@@ -636,7 +640,8 @@ async function main() {
       `the deployed manifest at ${masterRawUrl} does not carry those fields on the same entries. ` +
       'Older clients verify with additionalProperties:false and reject the ENTIRE manifest on a single unknown key: pushing now ' +
       'blacks out the whole catalog on every machine not yet upgraded to a field-aware build ' +
-      '(for `source`: one whose boot verification AND locked terminal add gate verify through verifyDesktopCompanyManifest). ' +
+      '(for `source`: one whose boot verification, locked terminal add gate, AND market catalog provider — the injected verifier — ' +
+      'all verify through verifyDesktopCompanyManifest). ' +
       'The publication order is fixed (tools/company-catalog/README.md, "Fleet upgrade ordering (publication gate)" / 「fleet 升级顺序（发布门禁）」): ' +
       '(1) upgrade the whole fleet to builds that know source/treeDigest/approvedBuilds, (2) only then publish. ' +
       'Re-run with --confirm-fleet-upgraded once every client is upgraded to acknowledge the gate.',

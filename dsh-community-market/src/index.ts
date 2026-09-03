@@ -28,6 +28,7 @@ import {
   SettingsCompanyManifestSequenceStore,
   type CompanyCatalogProvider,
   type CompanyManifestContentProvider,
+  type CompanyManifestVerifier,
 } from './catalog/company-provider.js'
 import type { CatalogAdapter, CatalogHttpClient, LocalSourceRecord } from './contracts/types.js'
 import { DSHFIND_ADAPTER_ID, DSHFIND_KEY, DSHFIND_PROVIDER_ID } from './adapters/dshfind.js'
@@ -187,6 +188,16 @@ export interface CommunityMarketCompanyCatalogOptions {
    * routes collapse to a coarse `catalog-unavailable`.
    */
   readonly logger?: Pick<Context['logger'], 'error' | 'warn'>
+  /**
+   * Injectable manifest verification for the catalog provider (the
+   * provider's `manifestVerifier` option). The Host injects its field-aware
+   * verifier here — Desktop delivers it through the
+   * `desktopCompanyManifestVerifier` context capability — so manifests whose
+   * entries carry fields beyond the market schema (the signed `source`
+   * install channel) verify in the catalog scan too; without it the provider
+   * keeps the market's field-unaware verifier byte for byte.
+   */
+  readonly manifestVerifier?: CompanyManifestVerifier
 }
 
 /** One-line scan failure identity: the cause's `code` when it carries one, else its constructor name. */
@@ -255,6 +266,7 @@ export function createCommunityMarketCompanyCatalog(
     sequenceStore: new SettingsCompanyManifestSequenceStore(scope),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.manifestVerifier === undefined ? {} : { manifestVerifier: options.manifestVerifier }),
   })
   const installTargetAuthority = createSignedManifestInstallTargetAuthority(
     provider,
@@ -314,6 +326,14 @@ export function apply(ctx: Context): void {
   // policy origin pinned. A missing capability keeps the portable restricted
   // client — standalone deployments included.
   const companyCatalogHttp = ctx.get('desktopCompanyCatalogHttp') as CatalogHttpClient | undefined
+  // Field-aware manifest verification injection (see
+  // `CommunityMarketCompanyCatalogOptions.manifestVerifier`): the Electron
+  // Desktop host provides `desktopCompanyManifestVerifier`, a wrapper over
+  // its dual-channel verifier, so locked catalog scans recognize the signed
+  // `source` install channel instead of rejecting those manifests whole
+  // over one unknown key. A missing capability keeps the portable
+  // field-unaware verifier — standalone deployments included.
+  const companyManifestVerifier = ctx.get('desktopCompanyManifestVerifier') as CompanyManifestVerifier | undefined
   const locked = policy?.locked === true
   // L2 wiring: a locked deployment with pinned trust roots serves the signed
   // company catalog end to end. A locked policy without trust roots cannot
@@ -323,6 +343,7 @@ export function apply(ctx: Context): void {
   const companyCatalog = locked && policy !== undefined && policy.trustRoots.length > 0
     ? createCommunityMarketCompanyCatalog(policy, scope, {
       ...(companyCatalogHttp === undefined ? {} : { originHttpClient: companyCatalogHttp }),
+      ...(companyManifestVerifier === undefined ? {} : { manifestVerifier: companyManifestVerifier }),
       logger: ctx.logger,
     })
     : undefined
@@ -418,6 +439,7 @@ export {
   type CompanyCatalogVerification,
   type CompanyManifestContentProvider,
   type CompanyManifestSequenceStore,
+  type CompanyManifestVerifier,
 } from './catalog/company-provider.js'
 export type { MarketCompanyManifestRecord } from './catalog/source-store.js'
 export { createSignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'

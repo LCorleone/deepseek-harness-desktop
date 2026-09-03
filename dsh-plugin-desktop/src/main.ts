@@ -68,6 +68,7 @@ import { DesktopActionsService } from './desktop-actions.ts'
 import { clearDesktopProfilePluginState, DesktopPluginsService } from './desktop-plugins.ts'
 import {
   desktopMarketSnapshotWithEffective,
+  desktopCompanyManifestVerifierForMarket,
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
@@ -1111,6 +1112,17 @@ async function start(): Promise<void> {
         hostCtx.provide('desktopRuntime', runtime)
         hostCtx.provide('desktopPnpmBootstrap', desktopPnpmBootstrap)
         hostCtx.provide('desktopPolicy', policy)
+        // Field-aware manifest verification for the locked market catalog
+        // (the market's `desktopCompanyManifestVerifier` capability): the
+        // catalog provider's scan and the signed-manifest install whitelist
+        // derived from it verify through the same dual-channel verifier as
+        // boot and the locked terminal add — a `source`-carrying manifest
+        // lights up the market UI's catalog instead of being rejected whole
+        // by the field-unaware default verifier.
+        hostCtx.provide(
+          'desktopCompanyManifestVerifier',
+          desktopCompanyManifestVerifierForMarket(policy),
+        )
         if (policy.companyCatalogOrigin !== null) {
           // Origin-mode market catalog fetches ride the same Chromium network
           // boundary boot verification uses: the community market's portable

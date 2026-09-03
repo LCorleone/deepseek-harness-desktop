@@ -34,6 +34,7 @@ import {
   canonicalJsonText,
   ed25519PublicKeyFingerprint,
   type CompanyManifestTrustRoot,
+  type CompanyManifestVerification,
   type CompanyManifestVerificationCode,
 } from 'dsh-community-market'
 import { fetchUpdateChannelBytes, type UpdateChannelRequest } from './update-manifest.ts'
@@ -325,11 +326,17 @@ export const desktopMarketStateConstants = Object.freeze({
 // `verifyDesktopCompanyManifest` below is the verifier of every production
 // consumer of the company manifest — boot verification
 // (`boot-verification.ts`), the locked terminal add gate
-// (`cli-install-channel.ts`), and the origin-mode catalog scan — and keeps
-// rejecting unknown entry keys with `additionalProperties: false`
-// semantics. Relative to the market library's `verifyCompanyManifest` it
-// extends exactly one thing: entries may carry a signed `source` field
-// selecting the install channel —
+// (`cli-install-channel.ts`), and the locked market catalog scan. The market
+// plugin's catalog provider verifies through this verifier only when the
+// Desktop host injects it: `desktopCompanyManifestVerifierForMarket` below
+// is that injection, delivered through the `desktopCompanyManifestVerifier`
+// context capability (main.ts) into the provider's `manifestVerifier`
+// override; a market deployment without the injection keeps the field-
+// unaware market verifier, which rejects a `source`-carrying manifest whole.
+// The verifier keeps rejecting unknown entry keys with
+// `additionalProperties: false` semantics. Relative to the market library's
+// `verifyCompanyManifest` it extends exactly one thing: entries may carry a
+// signed `source` field selecting the install channel —
 //
 //   `source` absent or `{"kind":"npm"}`  → the public-registry channel (today's
 //                                        behavior, byte-for-byte unchanged:
@@ -349,10 +356,13 @@ export const desktopMarketStateConstants = Object.freeze({
 // unknown key). "Field-aware build" for the fleet publication gate (see
 // tools/company-catalog/README.md, "Fleet upgrade ordering (publication
 // gate)", and publish-local.mjs) therefore means concretely: a build in
-// which BOTH boot verification and the locked terminal add gate verify
-// through `verifyDesktopCompanyManifest` — the P7 batch-2 wiring. Carrying
-// this verifier unused (batch 1) is not enough: boot and the terminal gate
-// still rejected `source`-carrying manifests whole there. No `source`-
+// which boot verification, the locked terminal add gate, AND the locked
+// market catalog provider (through the injected verifier) all verify
+// through `verifyDesktopCompanyManifest` — the P7 batch-2 wiring plus the
+// catalog-provider injection. Carrying this verifier unused (batch 1) is
+// not enough: boot and the terminal gate still rejected `source`-carrying
+// manifests whole there, and a build without the provider injection keeps
+// the market UI's catalog scan field-unaware to this day. No `source`-
 // carrying manifest may be published before the whole fleet runs builds at
 // or beyond that switch.
 // ---------------------------------------------------------------------------
@@ -479,6 +489,68 @@ const unknownFields = (value: Record<string, unknown>, allowed: readonly string[
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
 
+// ---------------------------------------------------------------------------
+// `expiresAt` format mirror of the market verifier.
+//
+// The market library validates `expiresAt` through ajv-formats' full
+// `date-time` format — the operative definition of the schema's "RFC 3339"
+// note — not through V8's lenient `Date.parse`, which additionally accepts
+// spellings like RFC-1123 (`Wed, 01 Jan 2030 00:00:00 GMT`, 20-64 chars,
+// parseable) that the format rejects: without this mirror the dual-channel
+// verifier was strictly wider than the market verifier exactly there. The
+// port below is faithful to ajv-formats 3.0.1 full mode so a `source`-free
+// manifest decides identically here and in the market library: exactly one
+// `t`/`T` or whitespace separator (yes, the format admits a space — the
+// schema's minLength 20 plus the shared `Date.parse` NaN check carry the
+// rest), calendar-valid date, mandatory time zone, RFC 3339 leap seconds
+// admitted. The `Date.parse` NaN check stays in both verifiers — each
+// rejects a format-valid but unparseable timestamp (a leap second) as
+// `invalid-manifest`.
+// ---------------------------------------------------------------------------
+
+const MARKET_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u
+const MARKET_DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const
+const MARKET_TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)(z|([+-])(\d{2})(?::?(\d{2}))?)?$/iu
+
+const isLeapYear = (year: number): boolean => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+
+/** Calendar-valid `YYYY-MM-DD` (ajv-formats full `date`). */
+function isMarketDate(text: string): boolean {
+  const matches = MARKET_DATE_PATTERN.exec(text)
+  if (matches === null) return false
+  const year = Number(matches[1])
+  const month = Number(matches[2])
+  const day = Number(matches[3])
+  return month >= 1 && month <= 12
+    && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : MARKET_DAYS_IN_MONTH[month]!)
+}
+
+/** `HH:MM:SS[.fraction]` with a mandatory time zone and RFC 3339 leap seconds (ajv-formats full `time`, strict zone). */
+function isMarketStrictTime(text: string): boolean {
+  const matches = MARKET_TIME_PATTERN.exec(text)
+  if (matches === null) return false
+  const hour = Number(matches[1])
+  const minute = Number(matches[2])
+  const second = Number(matches[3])
+  const zone = matches[4]
+  const sign = matches[5] === '-' ? -1 : 1
+  const zoneHours = Number(matches[6] ?? 0)
+  const zoneMinutes = Number(matches[7] ?? 0)
+  if (zoneHours > 23 || zoneMinutes > 59 || zone === undefined) return false
+  if (hour <= 23 && minute <= 59 && second < 60) return true
+  // Leap second: only the final minute of a UTC day may run to `:60`.
+  const utcMinute = minute - zoneMinutes * sign
+  const utcHour = hour - zoneHours * sign - (utcMinute < 0 ? 1 : 0)
+  return (utcHour === 23 || utcHour === -1) && (utcMinute === 59 || utcMinute === -1) && second < 61
+}
+
+/** Faithful port of ajv-formats' full `date-time` — the market verifier's `expiresAt` format gate. */
+function isMarketDateTimeFormat(text: string): boolean {
+  const parts = text.split(/t|\s/iu)
+  if (parts.length !== 2) return false
+  return isMarketDate(parts[0]!) && isMarketStrictTime(parts[1]!)
+}
+
 /** Standard-base64 sha512 shape with a decodable 64-byte digest, mirroring the market verifier. */
 function isSha512Integrity(value: unknown): value is string {
   if (typeof value !== 'string' || !SHA512_INTEGRITY_PATTERN.test(value)) return false
@@ -565,6 +637,7 @@ function parseDesktopCompanyManifestValue(
     throw new Error('the company manifest sequence must be a safe positive integer')
   }
   if (typeof value.expiresAt !== 'string' || value.expiresAt.length < 20 || value.expiresAt.length > 64
+    || !isMarketDateTimeFormat(value.expiresAt)
     || Number.isNaN(Date.parse(value.expiresAt))) {
     throw new Error('the company manifest expiresAt must be an RFC 3339 timestamp')
   }
@@ -761,6 +834,13 @@ export function verifyDesktopCompanyManifest(
   if (canonical !== text) {
     return { ok: false, code: 'non-canonical', reason: 'company manifest bytes are not the canonical JSON serialization of their parsed value' }
   }
+  // Non-object JSON (an array, a number, a bare string) rejects with the
+  // market verifier's `malformed-json` code — the same decision AND code is
+  // the pinned compatibility surface, and the market verifier reports this
+  // class at its parse step, not its shape step.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, code: 'malformed-json', reason: 'company manifest must be a JSON object' }
+  }
   let manifest: DesktopCompanyManifest
   try {
     manifest = parseDesktopCompanyManifestValue(parsed, options.companyCatalogOrigin)
@@ -809,6 +889,48 @@ export function verifyDesktopCompanyManifest(
   return { ok: true, manifest, keyId: root.keyId, fingerprint, verifiedAt }
 }
 
+/**
+ * Structural mirror of the market catalog provider's injectable manifest
+ * verifier (`CompanyManifestVerifier` in
+ * `dsh-community-market/src/catalog/company-provider.ts`): same raw bytes,
+ * same trust roots / anti-rollback floor / clock the provider passes, and a
+ * verification result whose verified manifest carries the market-known
+ * projection of every entry (plus the `source` channel, which the provider
+ * transports untouched for `findSignedPackage`).
+ */
+export type DesktopCompanyManifestVerifierForMarket = (
+  raw: string | Uint8Array,
+  options: {
+    readonly trustRoots: readonly CompanyManifestTrustRoot[]
+    readonly lastSeenSequence?: number
+    readonly now?: () => number
+  },
+) => CompanyManifestVerification
+
+/**
+ * The market catalog provider's manifest verifier as injected by the
+ * Desktop host (the `desktopCompanyManifestVerifier` context capability,
+ * provided in main.ts): every locked market catalog scan — the browsing
+ * rows and the signed-manifest install whitelist derived from the same
+ * provider — verifies through the same dual-channel verifier as boot
+ * verification and the locked terminal add gate. A `source`-carrying
+ * manifest therefore lights up the market UI's catalog instead of being
+ * rejected whole over one unknown key, while `source`-free manifests keep
+ * the market verifier's decisions byte for byte (the origin pin for
+ * tarball entries comes from the same policy projection the market
+ * receives).
+ */
+export function desktopCompanyManifestVerifierForMarket(
+  policy: Pick<DesktopPolicy, 'companyCatalogOrigin'>,
+): DesktopCompanyManifestVerifierForMarket {
+  return (raw, options) => verifyDesktopCompanyManifest(raw, {
+    trustRoots: options.trustRoots,
+    companyCatalogOrigin: policy.companyCatalogOrigin,
+    ...(options.lastSeenSequence === undefined ? {} : { lastSeenSequence: options.lastSeenSequence }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  })
+}
+
 /** Look up one exact (packageName, version) entry; revoked entries stay findable. */
 export function findDesktopCompanyManifestPackage(
   manifest: DesktopCompanyManifest,
@@ -827,6 +949,14 @@ export function desktopCompanyEntrySource(
 
 /** Default whole-request bound of one company tarball download. */
 export const COMPANY_TARBALL_FETCH_TIMEOUT_MS = 120_000
+/**
+ * `AbortSignal.timeout` caps at the 32-bit signed integer range: a larger
+ * millisecond value does not throw there but fires after ~1 ms with a
+ * `TimeoutOverflowWarning`, aborting the download with a misleading
+ * "exceeded N ms" error. The bound is enforced here with a clear TypeError
+ * instead.
+ */
+const MAX_TARBALL_TIMEOUT_MS = 2_147_483_647
 /** Default body bound of one company tarball download. */
 export const COMPANY_TARBALL_MAX_BYTES = 512 * 1024 * 1024
 /** Staging directory mode; the staged file itself is written 0o600. */
@@ -849,6 +979,14 @@ export interface DesktopCompanyTarballStageOptions {
   readonly timeoutMs?: number
   readonly maxBytes?: number
   readonly signal?: AbortSignal
+  /**
+   * Diagnostic sink for the keepalive decision that keeps an unreadable
+   * staged file (a transient read failure — see {@link
+   * removeStagedFileUnlessIntact}); defaults to silence. Never a behavior
+   * gate: the install boundary re-hashes the staged bytes fail-closed
+   * regardless.
+   */
+  readonly warn?: (message: string) => void
 }
 
 /** A verified, staged company tarball ready for the controlled install target. */
@@ -872,8 +1010,13 @@ function removeStagedFile(path: string): void {
 /**
  * Synchronously hash the currently staged file (if any) through a private
  * descriptor opened without following symlinks, mirroring the install
- * boundary's walk. An unreadable, symlinked, non-regular, empty, or
- * oversized file yields undefined — the caller decides what that means.
+ * boundary's walk. An absent path (ENOENT) or a planted symlink (O_NOFOLLOW
+ * turns it into ELOOP), a non-regular, empty, or oversized file yields
+ * undefined — not intact, the caller removes it. Any other open/read
+ * failure (EACCES, EMFILE, antivirus locks, I/O errors) **throws**: those
+ * are potentially transient, and whether the staged bytes are intact is
+ * unknown, not false — the caller keeps the file and warns instead of
+ * deleting bytes a lockfile may still reference.
  */
 function sha512OfStagedFile(path: string): Buffer | undefined {
   let descriptor: number | undefined
@@ -888,8 +1031,12 @@ function sha512OfStagedFile(path: string): Buffer | undefined {
       hash.update(chunk.subarray(0, read))
     }
     return hash.digest()
-  } catch {
-    return undefined
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code
+    // An absent staged file or a planted symlink is "not intact", not a
+    // read failure: there are no verifiable bytes to keep.
+    if (code === 'ENOENT' || code === 'ELOOP') return undefined
+    throw cause
   } finally {
     if (descriptor !== undefined) closeSync(descriptor)
   }
@@ -902,11 +1049,31 @@ function sha512OfStagedFile(path: string): Buffer | undefined {
  * is kept only while it still hashes to the signed integrity — those bytes
  * are exactly what a successful download would have written, so keeping
  * them is idempotent — and removed otherwise, so nothing unverifiable is
- * ever left behind for a later install attempt.
+ * ever left behind for a later install attempt. The one exception is a
+ * transient read failure (see {@link sha512OfStagedFile}): a staged file
+ * that cannot be read is kept unverified with a warning, because deleting
+ * bytes a lockfile may still reference over a possibly momentary error is
+ * exactly the stranding this keepalive exists to prevent.
  */
-function removeStagedFileUnlessIntact(stagedPath: string, integrity: string): void {
+function removeStagedFileUnlessIntact(
+  stagedPath: string,
+  integrity: string,
+  warn?: (message: string) => void,
+): void {
   const expected = Buffer.from(integrity.slice('sha512-'.length), 'base64')
-  const digest = sha512OfStagedFile(stagedPath)
+  let digest: Buffer | undefined
+  try {
+    digest = sha512OfStagedFile(stagedPath)
+  } catch (cause) {
+    // A transient read failure (EACCES, EMFILE, antivirus locks, …) keeps
+    // the staged file: deleting a lockfile-referenced tarball over a
+    // possibly momentary error is exactly the stranding this keepalive
+    // exists to prevent. The file is never treated as verified — the
+    // install boundary re-hashes it and refuses a mismatch — and the
+    // warning makes the unreadable staging loud for the operator.
+    warn?.(`${BIN_NAME}: the staged company tarball ${stagedPath} could not be read for the keepalive check (${messageOf(cause)}); keeping it unverified — a later install still refuses it unless it hashes to the signed integrity`)
+    return
+  }
   if (digest !== undefined && digest.byteLength === expected.byteLength && timingSafeEqual(digest, expected)) return
   removeStagedFile(stagedPath)
 }
@@ -951,17 +1118,18 @@ async function writeStagedTarballBytes(path: string, bytes: Buffer): Promise<voi
  * removeStagedFileUnlessIntact}): a previously staged file that still hashes
  * to the signed integrity stays (the profile lockfile's `file:` dependency
  * keeps resolving against it), anything else is removed so nothing
- * unverifiable is ever left behind for a later install attempt. A
- * successful staging overwrites an earlier one idempotently (the staged
- * file is kept after installation: the profile lockfile's `file:` dependency
- * keeps resolving against it).
+ * unverifiable is ever left behind for a later install attempt — except a
+ * staged file that cannot be read at all, which stays with a warning
+ * (`options.warn`). A successful staging overwrites an earlier one
+ * idempotently (the staged file is kept after installation: the profile
+ * lockfile's `file:` dependency keeps resolving against it).
  */
 export async function stageCompanyMarketTarball(
   options: DesktopCompanyTarballStageOptions,
 ): Promise<DesktopCompanyTarballStaged> {
   const origin = options.policy.companyCatalogOrigin
   const stagedPath = desktopMarketTarballStagingPath(options.profileDir, options.packageName, options.version)
-  const clean = (): void => removeStagedFileUnlessIntact(stagedPath, options.source.integrity)
+  const clean = (): void => removeStagedFileUnlessIntact(stagedPath, options.source.integrity, options.warn)
   if (origin === null) {
     clean()
     throw new Error(`${BIN_NAME}: the tarball channel requires an origin-mode catalog policy`)
@@ -982,8 +1150,11 @@ export async function stageCompanyMarketTarball(
     throw new Error(`${BIN_NAME}: the company tarball integrity must be the signed sha512 of the tarball`)
   }
   const timeoutMs = options.timeoutMs ?? COMPANY_TARBALL_FETCH_TIMEOUT_MS
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new TypeError(`${BIN_NAME}: the company tarball download timeout must be a safe positive millisecond bound`)
+  // Argument validation failure before any fetch: no keepalive cleanup —
+  // nothing of this attempt touched the staging location yet (the keepalive
+  // preserves an earlier intact staged file either way).
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TARBALL_TIMEOUT_MS) {
+    throw new TypeError(`${BIN_NAME}: the company tarball download timeout must be a safe positive millisecond bound of at most ${String(MAX_TARBALL_TIMEOUT_MS)} (AbortSignal.timeout overflows the 32-bit timer range beyond it)`)
   }
   options.signal?.throwIfAborted()
   // The whole-request bound is enforced through the abort signal composed
@@ -1073,6 +1244,17 @@ function parseStagedVersionForPackage(fileName: string, packageName: string): st
  * belong to a different lockfile state), and nothing is removed when the
  * lockfile is unreadable or does not reference the package: the GC is a
  * disk-space courtesy, never an authority. Never throws.
+ *
+ * Concurrency: each removal takes the staged file's own file lock — the
+ * same lock `stageCompanyMarketTarball` holds while writing those exact
+ * bytes — so the GC never deletes a same-version file mid-write. Concurrent
+ * installs of **two different versions of the same package** are still not
+ * serialized end to end: the lock is per path, not per package, so the
+ * earlier install's GC (reading a lockfile that does not yet reference the
+ * later version) can still remove the later version's fully staged file;
+ * the loser fails closed at the install boundary's hash gate and must
+ * re-run the install. Same-package concurrent installs are therefore a
+ * documented availability limitation, not a correctness risk.
  */
 export async function cleanCompanyMarketStagingOrphans(
   profileDir: string,
@@ -1098,7 +1280,11 @@ export async function cleanCompanyMarketStagingOrphans(
   const removed: string[] = []
   for (const [version, path] of stagedVersions) {
     if (version === referencedVersion) continue
-    removeStagedFile(path)
+    // Same-path lock as the staging writer (see the concurrency note): the
+    // removal cannot interleave with a concurrent write of this exact file.
+    await withFileLock(path, async () => {
+      removeStagedFile(path)
+    })
     removed.push(path)
   }
   return removed

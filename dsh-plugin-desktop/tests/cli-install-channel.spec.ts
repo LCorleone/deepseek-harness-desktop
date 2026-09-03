@@ -627,6 +627,66 @@ describe('locked plugin-add authorization', () => {
     if (!nonCanonical.allowed) expect(nonCanonical.reason).toContain('non-canonical')
   })
 
+  it('decides manifest-level corpus cases exactly like the field-unaware market verifier', async () => {
+    // Document-level decisions the entry corpus cannot reach (P7 2a
+    // review): non-object JSON, unknown/missing top-level keys, signature
+    // shape, bad `expiresAt` spellings, and the packages bound. The
+    // bad-expiresAt cases pin the ajv-formats `date-time` mirror of the
+    // desktop verifier; the space-separated spelling is ACCEPTED by both
+    // verifiers (ajv's full date-time splits on t/T or whitespace, V8
+    // parses it), so the equivalence is locked in both directions.
+    const policy = lockedCatalogPolicy()
+    const signedDocument = (document: Record<string, unknown>): string => canonicalJsonText({
+      ...document,
+      signature: createCompanyManifestSignature(asUnsigned(document), privateKey, keyId),
+    })
+    const unsignedDocument = (): Record<string, unknown> => ({
+      manifestVersion: '1.0.0',
+      sequence: 42,
+      expiresAt: '2030-01-01T00:00:00Z',
+      packages: [catalogEntry()],
+    })
+    const signatureBlock = createCompanyManifestSignature(
+      asUnsigned(unsignedDocument()), privateKey, keyId,
+    ) as unknown as Record<string, unknown>
+    const corpus: readonly [string, string][] = [
+      ['non-object JSON (array)', canonicalJsonText([])],
+      ['non-object JSON (number)', canonicalJsonText(5)],
+      ['non-object JSON (string)', canonicalJsonText('x')],
+      ['unknown top-level key', signedDocument({ ...unsignedDocument(), futureField: 1 })],
+      ['missing top-level key', signedDocument({
+        manifestVersion: '1.0.0',
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [catalogEntry()],
+      })],
+      ['signature not an object', canonicalJsonText({ ...unsignedDocument(), signature: 5 })],
+      ['signature missing value key', canonicalJsonText({
+        ...unsignedDocument(),
+        signature: { keyId: signatureBlock.keyId, publicKey: signatureBlock.publicKey },
+      })],
+      ['bad expiresAt (RFC-1123 spelling)', signedDocument({ ...unsignedDocument(), expiresAt: 'Wed, 01 Jan 2030 00:00:00 GMT' })],
+      ['bad expiresAt (leap second, format-valid but unparseable)', signedDocument({ ...unsignedDocument(), expiresAt: '2030-12-31T23:59:60Z' })],
+      ['bad expiresAt (non-string)', signedDocument({ ...unsignedDocument(), expiresAt: 20300101 })],
+      ['space-separated expiresAt (both accept)', signedDocument({ ...unsignedDocument(), expiresAt: '2030-01-01 00:00:00Z' })],
+      [`packages over-limit (${String(10_001)} entries)`, signedDocument({
+        ...unsignedDocument(),
+        packages: Array.from({ length: 10_001 }, (_, index) =>
+          catalogEntry({ packageName: `example-plugin-${String(index)}` })),
+      })],
+    ]
+    for (const [label, text] of corpus) {
+      const assetPath = join(roots, 'company-market', `corpus-${label.replace(/[^a-z0-9]+/gu, '-')}.json`)
+      mkdirSync(dirname(assetPath), { recursive: true })
+      writeFileSync(assetPath, text)
+      const market = verifyCompanyManifest(text, { trustRoots: policy.trustRoots })
+      const decision = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy, { assetPath })
+      expect(decision.allowed, label).toBe(market.ok)
+      if (!market.ok && !decision.allowed) {
+        expect(decision.reason, label).toContain(`rejected the company catalog manifest (${String(market.code)})`)
+      }
+    }
+  })
+
   it('allows an explicit npm source and denies tarball-channel entries with market guidance', async () => {
     const hardenedIntegrity = `sha512-${Buffer.alloc(64, 5).toString('base64')}`
     const hardenedUrl = 'https://gitlab.company.example/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz'
