@@ -24,9 +24,9 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { PACKAGE_NAME_PATTERN, STABLE_VERSION_PATTERN } from './allowlist.mjs'
@@ -42,6 +42,13 @@ export const DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE = 'tools/company-catalog/plugin
 /** One hosted tarball's byte bound (mirrored by publish-local's artifact caps). */
 export const TARBALL_MAX_BYTES = 128 * 1024 * 1024
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
+// Determinism premise: gzipSync's bytes come from the zlib the running Node
+// links against. Within one Node/zlib build the container below is
+// byte-stable (mtime 0, fixed level, sorted entries); a different zlib
+// version may emit a different deflate stream — and a different gzip OS
+// byte — so re-packing a deployed artifact must happen on the same pinned
+// CI Node image, never ad hoc on arbitrary hosts. The signed integrity pin
+// makes any such divergence fail loudly instead of silently forking bytes.
 const GZIP_LEVEL = 9
 
 /** Standard-base64 SHA-512 integrity of exact bytes — the value the manifest signs. */
@@ -123,6 +130,34 @@ const safeEntryPath = (path) => typeof path === 'string'
   && !path.startsWith('/')
   && path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
 
+/**
+ * Validate a symlink target against its entry's directory: the target must
+ * be a non-empty relative path that lexically resolves back inside the
+ * `package/` root. Absolute targets (and empty ones) are refused outright;
+ * any `..` walk that would leave `package/` is an escape — extraction writes
+ * files with writeFileSync, which follows symlinks, so a link resolving
+ * outside the tree turns a later entry into an arbitrary-path write. The
+ * containment is checked lexically at parse time; extractTarballEntries adds
+ * an independent realpath-based safety net over what actually landed.
+ */
+function safeLinkTarget(entryPath, linkName) {
+  if (typeof linkName !== 'string' || linkName.length === 0 || linkName.startsWith('/') || linkName.includes('\\')) {
+    return false
+  }
+  const segments = dirname(entryPath).split('/')
+  for (const segment of linkName.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      segments.pop()
+      if (segments.length === 0) return false
+    } else {
+      segments.push(segment)
+    }
+  }
+  const resolved = segments.join('/')
+  return resolved === 'package' || resolved.startsWith('package/')
+}
+
 /** Parse a .tgz into normalized entries; every violation of the npm layout fails loudly. */
 export function parseTarball(bytes, what = 'the tarball') {
   let tar
@@ -165,13 +200,27 @@ export function parseTarball(bytes, what = 'the tarball') {
     if (!path.startsWith('package/') && path !== 'package') {
       throw new Error(`${what} entry '${path}' does not sit under the npm 'package/' prefix — not an npm pack artifact`)
     }
+    // The claimed data — header block + padded payload — must exist in full
+    // inside the archive: Buffer#subarray clamps silently, so a header whose
+    // size overruns the remaining bytes would otherwise hand back a short
+    // entry instead of failing loudly (a truncated tarball is corruption,
+    // not a smaller file).
+    const dataOffset = offset + BLOCK
+    const paddedEnd = dataOffset + Math.ceil(size / BLOCK) * BLOCK
+    if (paddedEnd > tar.length) {
+      throw new Error(
+        `${what} entry '${path}' claims ${String(size)} data bytes but only ${String(Math.max(tar.length - dataOffset, 0))} remain — the archive is truncated`,
+      )
+    }
     offset += Math.ceil(size / BLOCK) * BLOCK
     if (type === '0' || type === '\0' || type === '7') {
-      const dataOffset = offset + BLOCK - Math.ceil(size / BLOCK) * BLOCK
       entries.push({ path, type: 'file', mode, mtime, data: Buffer.from(tar.subarray(dataOffset, dataOffset + size)) })
     } else if (type === '2') {
-      if (!safeEntryPath(linkName) && !linkName.startsWith('/')) {
-        throw new Error(`${what} symlink '${path}' carries an unsafe link target '${linkName}'`)
+      if (!safeLinkTarget(path, linkName)) {
+        throw new Error(
+          `${what} symlink '${path}' carries an unsafe link target '${linkName}' ` +
+          '(empty, absolute, or resolving outside the package/ root — a later entry writing through it would land outside the extraction directory)',
+        )
       }
       entries.push({ path, type: 'symlink', mode, mtime, linkName })
     } else if (type === '5') {
@@ -273,9 +322,49 @@ export function stageSourceDirectory(sourceDir, targetDir) {
   return targetDir
 }
 
+/**
+ * Final containment assertion over an extraction: every node that landed —
+ * files, directories, symlinks — must realpath back inside the target
+ * directory. parseTarball's link-target validation already fails closed on
+ * escapes before anything is written; this walk is the independent safety
+ * net over the result itself (defense in depth for the arbitrary-path-write
+ * class: extractTarballEntries can be called with hand-built entries, and a
+ * containment bug in the lexical check must still be caught here). A
+ * dangling symlink cannot have routed a write outside — any successful
+ * write or mkdir through it would have materialized its target — so it is
+ * skipped rather than failing the walk.
+ */
+function assertExtractionContained(root) {
+  const pending = [root]
+  while (pending.length > 0) {
+    const dir = pending.pop()
+    for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+      const node = join(dir, dirent.name)
+      let real
+      try {
+        real = realpathSync(node)
+      } catch (error) {
+        if (error.code === 'ENOENT') continue
+        throw error
+      }
+      const inside = relative(root, real)
+      if (inside.startsWith('..') || isAbsolute(inside)) {
+        throw new Error(
+          `extracting the tarball produced '${relative(root, node)}', whose real path ${real} lies outside the extraction directory ${root} — the tarball carries an escaping link`,
+        )
+      }
+      // Symlinked directories are not descended into (their real location is
+      // covered by the walk when it is inside the tree; a link outside the
+      // tree tripped the check above).
+      if (dirent.isDirectory()) pending.push(node)
+    }
+  }
+}
+
 /** Materialize a parsed tarball under a directory (the npm-fetch patch staging area). */
 export function extractTarballEntries(entries, targetDir) {
   mkdirSync(targetDir, { recursive: true })
+  const root = realpathSync(targetDir)
   for (const entry of entries) {
     const destination = join(targetDir, entry.path.replace(/^package\//u, ''))
     if (entry.type === 'directory') {
@@ -290,6 +379,7 @@ export function extractTarballEntries(entries, targetDir) {
     }
     writeFileSync(destination, entry.data, { mode: 0o644 })
   }
+  assertExtractionContained(root)
   return targetDir
 }
 

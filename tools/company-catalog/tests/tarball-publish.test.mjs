@@ -55,9 +55,27 @@ test('parseTarballSourceUrl refuses any address outside the deployment being pus
     [`${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/a/b.tgz`, 'must address exactly packages/'],
     [`${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/foo.txt`, 'must address exactly packages/'],
     [`${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/../evil.tgz`, 'must address exactly packages/'],
+    [`${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/%zz.tgz`, 'not percent-decodable'],
   ]) {
     assert.throws(() => parse(url), new RegExp(hint.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'), `url '${url}' must be refused (${hint})`)
   }
+})
+
+test('parseTarballSourceUrl decodes a legitimately percent-encoded filename', () => {
+  // The one legal encoding: a filename character that must be escaped in a
+  // url (npm names cannot carry %, so this is theoretical — but the decode
+  // must neither reject it nor leak a bare URIError).
+  const result = parse(`${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/company%2Dplugin%2D2.1.0.tgz`)
+  assert.equal(result.filename, 'company-plugin-2.1.0.tgz')
+})
+
+test('parseTarballSourceUrl wraps a malformed percent-escape into an entry-named refusal', () => {
+  // A bare decodeURIComponent URIError would surface as a stack trace with
+  // no entry context; the parse must refuse with the url and the reason.
+  const bad = `${ORIGIN}/${PROJECT}/-/raw/${BRANCH}/packages/company-%zz.tgz`
+  assert.throws(() => parse(bad), (error) => error instanceof Error
+    && /entry\[0\].*company-%zz.*not percent-decodable/u.test(error.message)
+    && !(error instanceof URIError))
 })
 
 /** A minimal web Response stand-in: a ReadableStream-less body the reader walks. */

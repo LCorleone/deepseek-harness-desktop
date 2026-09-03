@@ -33,9 +33,10 @@ name: Company catalog publish
 # the company-catalog-signed artifact upload (still nothing is pushed
 # anywhere by this workflow).
 #
-# Artifact transport redundancy: a non-dry-run ALSO mirrors the same two
-# signed files to the catalog-artifacts branch (<run-id>/catalog-manifest.json
-# + <run-id>/publish-meta.json, newest 5 run directories kept). Reason: some
+# Artifact transport redundancy: a non-dry-run ALSO mirrors the artifact's
+# contents to the catalog-artifacts branch (<run-id>/catalog-manifest.json +
+# <run-id>/publish-meta.json + <run-id>/packages/*.tgz, newest 5 run
+# directories kept). Reason: some
 # intranet environments cannot reach GitHub's artifact blob storage at all
 # (gh run download always times out) while GitHub's git transport works —
 # publish-local falls back to that branch automatically when the download
@@ -71,6 +72,13 @@ jobs:
       # Secret copy for the step-level `if` below (secrets cannot appear in a
       # step `if` directly; GitHub rejects the workflow file at parse time).
       PINNED_KEY_FINGERPRINT: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}
+      # The deployment's catalog origin (the intranet GitLab the tarball
+      # channel hosts on), from an optional repository variable — same
+      # optional-input discipline: an unset variable must never arrive as a
+      # poisoned empty string, so it is copied to env and exported below only
+      # when non-empty. Tarball-channel allowlist entries refuse to load
+      # without it; npm-only allowlists never need it.
+      CATALOG_ORIGIN_VAR: ${{ vars.COMPANY_CATALOG_ORIGIN }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -112,6 +120,38 @@ jobs:
             throw "$statePath carries no non-negative lastSequence — refusing to guess the sequence floor"
           }
           "sequence floor: state lastSequence = $($state.lastSequence) → this run signs sequence $($state.lastSequence + 1)"
+      - name: Export the company catalog origin (optional repository variable)
+        # Tarball-channel entries validate against the deployment's pinned
+        # origin (COMPANY_CATALOG_ORIGIN) — exported before the pack, measure,
+        # and publish steps, which all load the allowlist. Only exported when
+        # the repository variable is set: an empty value would fail origin
+        # validation, and npm-only allowlists need no origin at all.
+        if: env.CATALOG_ORIGIN_VAR != ''
+        run: 'echo "COMPANY_CATALOG_ORIGIN=$env:CATALOG_ORIGIN_VAR" >> $env:GITHUB_ENV'
+      - name: Pack tarball-channel artifacts (allowlist pack-artifact entries)
+        # The tarball channel's pack step: every allowlist entry whose source
+        # pins a path gets its deterministic .tgz packed here from the
+        # plugin-sources tree, BEFORE anything measures or signs it — the
+        # measure and measure-and-publish steps resolve source.path against
+        # these artifacts. With no such entry (today's npm-only allowlist) the
+        # step is an explicit no-op. --no-measure: the treeDigest measurement
+        # for path-pinned entries happens once, in the measure step below.
+        run: node tools/company-catalog/cli.mjs pack-tarball --from-allowlist --no-measure
+      - name: Stage the packed tarballs for the artifact upload
+        # The upload layout publish-local replays: the signed pair plus every
+        # packed .tgz under packages/ next to it (planTarballPushes reads
+        # <artifact-dir>/packages/<filename>, and the catalog-artifacts mirror
+        # branch carries the same shape). The artifacts themselves stay at the
+        # repo-relative path the allowlist pins (the default out/packages).
+        shell: pwsh
+        run: |
+          if (Test-Path tools/company-catalog/out/packages) {
+            New-Item -ItemType directory -Force run/packages | Out-Null
+            Copy-Item tools/company-catalog/out/packages/*.tgz run/packages/
+            "staged $(@(Get-ChildItem run/packages -Filter *.tgz).Count) packed tarball(s) into run/packages/ for the artifact upload"
+          } else {
+            'no packed tarballs to stage (the allowlist pins no source.path artifact)'
+          }
       - name: Measure installed-tree root digests
         # Real installs through the repository-pinned pnpm 11.8.0 against
         # registry.npmjs.org, digested with the compiled
@@ -207,7 +247,7 @@ jobs:
               "node tools/company-catalog/publish-local.mjs --run $($meta.runId)",
               '```',
               '',
-              "The same two files are also mirrored to the ``catalog-artifacts`` branch under ``$($meta.runId)/`` — publish-local falls back to that branch automatically when the artifact download is unreachable, so the command above works unchanged either way.",
+              "The same artifact contents are also mirrored to the ``catalog-artifacts`` branch under ``$($meta.runId)/`` (signed pair + packed tarballs under ``packages/``) — publish-local falls back to that branch automatically when the artifact download is unreachable, so the command above works unchanged either way.",
               '',
               "publish-local verifies the artifact signature, requires sequence $($meta.sequence) = GitLab deployed + 1, pushes the canonical bytes to master, and re-reads the raw URL. After it succeeds, commit the state bump in this repository: \`tools/company-catalog/state/last-sequence.json\` → \`{ `"lastSequence`": $($meta.sequence) }\`.",
               ''
@@ -233,18 +273,24 @@ jobs:
         if: ${{ inputs.dry-run == false }}
         with:
           name: company-catalog-signed
+          # run/packages/ (the packed tarballs) uploads next to the signed
+          # pair: upload-artifact strips the shared run/ prefix, so the
+          # artifact root carries catalog-manifest.json, publish-meta.json,
+          # and packages/*.tgz — the layout publish-local replays and pushes.
           path: |
             run/catalog-manifest.json
             run/publish-meta.json
+            run/packages/
           if-no-files-found: error
 
   # Auxiliary transport for environments that cannot reach GitHub's artifact
   # blob storage (gh run download) but can reach GitHub over git: copy the
-  # just-uploaded signed pair onto the catalog-artifacts branch under
-  # <run-id>/. Job-scoped permissions — contents: write lives ONLY here, the
-  # measure-and-publish job above keeps contents: read. The artifact remains
-  # the authoritative channel: continue-on-error keeps a mirror failure from
-  # reddening the workflow, and the failure is recorded in the run summary.
+  # just-uploaded artifact — the signed pair plus the packed tarballs — onto
+  # the catalog-artifacts branch under <run-id>/. Job-scoped permissions —
+  # contents: write lives ONLY here, the measure-and-publish job above keeps
+  # contents: read. The artifact remains the authoritative channel:
+  # continue-on-error keeps a mirror failure from reddening the workflow,
+  # and the failure is recorded in the run summary.
   mirror-signed-artifacts:
     needs: measure-and-publish
     if: ${{ inputs.dry-run == false }}
@@ -295,16 +341,29 @@ jobs:
           cat > README.md <<'EOF'
           Machine branch written by the Company catalog publish workflow.
 
-          Each successful non-dry-run run mirrors its signed pair to
-          <run-id>/catalog-manifest.json + <run-id>/publish-meta.json (the
+          Each successful non-dry-run run mirrors its signed pair plus the
+          packed tarballs to <run-id>/catalog-manifest.json +
+          <run-id>/publish-meta.json + <run-id>/packages/*.tgz (the
           company-catalog-signed artifact stays the authoritative channel).
           Only the newest run directories are kept; older ones are pruned.
           Integrity never depends on this transport: publish-local re-runs the
-          sha256 + signature + sequence-ratchet checks on these bytes.
+          sha256 + signature + sequence-ratchet checks on these bytes, and the
+          tarball bytes against the signed integrity.
           EOF
 
           mkdir -p "${RUN_ID}"
           cp ../incoming/catalog-manifest.json ../incoming/publish-meta.json "${RUN_ID}/"
+          # Carry the packed tarballs (the third piece of the artifact): the
+          # workflow's pack step stages them under packages/, and
+          # publish-local's git-branch fallback replays that exact layout.
+          if compgen -G '../incoming/packages/*.tgz' > /dev/null; then
+            mkdir -p "${RUN_ID}/packages"
+            cp ../incoming/packages/*.tgz "${RUN_ID}/packages/"
+            printf 'mirror: carrying %d packed tarball(s) under %s/packages/\n' \
+              "$(find ../incoming/packages -maxdepth 1 -name '*.tgz' | wc -l)" "${RUN_ID}"
+          else
+            echo 'mirror: no packed tarballs in the artifact (npm-only manifest)'
+          fi
 
           # Prune: keep the newest KEEP_RUNS run directories by numeric run id
           # (run ids are monotonic — the current run is the largest, just written).

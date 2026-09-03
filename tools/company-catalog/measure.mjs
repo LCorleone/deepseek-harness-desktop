@@ -63,7 +63,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { entryKey, loadAllowlist } from './lib/allowlist.mjs'
+import { CATALOG_ORIGIN_ENV, entryKey, loadAllowlist, validateCatalogOrigin } from './lib/allowlist.mjs'
 
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(TOOL_DIR, '..', '..')
@@ -350,7 +350,15 @@ async function main() {
     }
     return
   }
-  const entries = loadAllowlist(allowlistPath)
+  // Tarball-channel entries validate against the deployment's pinned
+  // catalog origin (the desktop policy's `companyCatalogOrigin`) — the same
+  // COMPANY_CATALOG_ORIGIN environment value cli.mjs reads. Without it a
+  // tarball-carrying allowlist cannot load at all, so the workflow exports
+  // the variable before this step.
+  const catalogOriginRaw = process.env[CATALOG_ORIGIN_ENV]
+  const entries = loadAllowlist(allowlistPath, {
+    ...(catalogOriginRaw === undefined ? {} : { companyCatalogOrigin: validateCatalogOrigin(catalogOriginRaw) }),
+  })
   // Tarball-channel entries are measured from their packed artifact (the
   // controlled file: install the desktop performs); entries whose source
   // pins only a reviewed inline integrity have no local artifact bytes and

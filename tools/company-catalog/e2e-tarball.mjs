@@ -28,8 +28,12 @@
  * Nothing here touches a network: no registry (the allowlist is tarball-only),
  * no GitHub, no GitLab (the drill ratchet is a local file and the push stops
  * at the plan). Requires the built market + desktop libs and the installed
- * pinned pnpm; prints `e2e: SKIP` and exits 0 when they are absent (the yarn
- * check chain runs this after the builds, where the full chain executes).
+ * pinned pnpm; prints `e2e: SKIP` and exits 0 when they are absent. The yarn
+ * check chain runs this last (`yarn check:company-catalog`, after the
+ * workspace checks have built the libs and yarn install put the pinned pnpm
+ * in place), and the Company catalog workflow exercises it on CI; on a fresh
+ * checkout run it after `corepack yarn install --immutable && corepack yarn
+ * build` (or a full `corepack yarn check`).
  *
  * Usage: node tools/company-catalog/e2e-tarball.mjs [--keep]
  */

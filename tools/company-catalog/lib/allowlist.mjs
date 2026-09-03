@@ -471,7 +471,12 @@ export function loadAllowlist(path, options = {}) {
   // install-time resolution has no single answer for which artifact a profile
   // should pin. The rule is enforced here, at the allowlist boundary, where the
   // whole reviewed set is in view — the same place the duplicate-by-version
-  // refusal lives.
+  // refusal lives. Revocation is a state, not a deletion (entries stay for the
+  // signed audit trail), so revoked entries do not participate in the channel
+  // judgment: that is the one supported migration path — revoke every entry on
+  // the old channel first, then land entries on the new channel. Two ACTIVE
+  // channels for one name are still refused, whatever revoked history sits
+  // next to them.
   const channelByName = new Map()
   for (const [index, entry] of parsed.entries()) {
     const result = validateAllowlistEntry(entry, `entry[${index}]`, options)
@@ -481,14 +486,17 @@ export function loadAllowlist(path, options = {}) {
     seen.add(identity)
     const value = result.value
     const channel = value.source !== undefined && value.source.kind === 'tarball' ? 'tarball' : 'npm'
-    const existingChannel = channelByName.get(value.packageName)
-    if (existingChannel !== undefined && existingChannel !== channel) {
-      throw new Error(
-        `allowlist ${path}: ${value.packageName} appears on both the npm and the tarball channel ` +
-        '(one package name must never straddle two install channels) — pick one channel per name',
-      )
+    if (!value.revoked) {
+      const existingChannel = channelByName.get(value.packageName)
+      if (existingChannel !== undefined && existingChannel !== channel) {
+        throw new Error(
+          `allowlist ${path}: ${value.packageName} appears on both the npm and the tarball channel ` +
+          '(one package name must never straddle two install channels) — pick one channel per name ' +
+          '(to migrate, revoke every entry on the old channel first)',
+        )
+      }
+      channelByName.set(value.packageName, channel)
     }
-    channelByName.set(value.packageName, channel)
     entries.push(value)
   }
   return entries

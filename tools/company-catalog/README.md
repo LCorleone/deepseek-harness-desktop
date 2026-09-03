@@ -61,7 +61,7 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     "revoked": false,                     // revocation state, set by `revoke`
     "source": {                           // optional: install channel (P7 dual channel) — omit for npm
       "kind": "tarball",
-      "url": "https://gitlab…/packages/<name>-<version>.tgz",
+      "url": "https://gitlab…/-/raw/master/packages/<name>-<version>.tgz",
       "integrity": "sha512-…"            // sha512 of the tarball file itself, not the registry dist
     }
   }
@@ -98,6 +98,16 @@ coexist in one manifest:
   without one), and the desktop installs tarball entries only when they also
   carry a reviewed `treeDigest` (the channel is tree-anchored end to end).
 
+One package name never straddles both channels with **active** entries:
+`loadAllowlist` refuses the mix outright (the desktop's per-row install-time
+resolution has no single answer for a name served two ways). Revocation is a
+state, not a deletion, so revoked entries do not participate in that
+judgment — that is the one supported migration path: `catalog revoke
+<name>` every entry on the old channel (the signed audit trail stays in the
+allowlist and in every reissued manifest), then land the new-channel entries.
+Two active channels for one name are refused whatever revoked history sits
+next to them.
+
 The signed `source` field is a schema extension the market verifier's
 `additionalProperties:false` rejects whole — publishing the first
 `source`-carrying manifest therefore rides the same fleet-upgrade gate as
@@ -114,7 +124,11 @@ GitLab 宿主的 tarball：url 必须是 https 且落在 catalog origin
 `integrity` 是 tarball 文件本身的 sha512（同时作为条目顶层 `integrity` 签入，因为那正是
 profile 锁文件对 `file:` 安装钉住的完整性值）；tarball 条目必须显式给出 `repository`
 覆盖（构建缺少即中止），桌面端只安装携带已评审 `treeDigest` 的 tarball 条目（通道全程
-树锚定）。`source` 是旧客户端整体拒收的 schema 扩展——首次发布走与
+树锚定）。一个包名不允许同时在两条通道上持有**活跃**条目：`loadAllowlist` 直接
+拒绝混布（桌面端逐行安装解析对一名两供没有唯一答案）。撤销是状态不是删除，因此
+已撤销条目不参与该判定——这也是唯一支持的迁移路径：先 `catalog revoke <name>`
+撤销旧通道全部条目（签名审计痕迹留在 allowlist 与每次重发的清单里），再落地新通
+道条目；无论旁边留有多少撤销历史，两个活跃通道依然被拒。`source` 是旧客户端整体拒收的 schema 扩展——首次发布走与
 `treeDigest`/`approvedBuilds` 相同的 fleet 升级门禁（先全员升级，再
 `--confirm-fleet-upgraded` 发布）；不含 `source` 的清单仍对全部客户端可验（发布前会先
 过一遍 market 验证器证明这点）。
@@ -454,20 +468,25 @@ copy only.
 Publishing is split across the network boundary: **the GitHub runner cannot
 reach the intranet GitLab** (verified empirically), so it never pushes.
 `.github/workflows/company-catalog-publish.yml` (manual dispatch, Windows
-runner) chains: build the market + desktop libs → measure → `measure-and-publish`
-floored at the in-repo state file (a preflight step hard-fails when the state
-file is missing from the checkout) → step summary with the measured digests,
-sequence, fingerprint, and entries → upload of the `company-catalog-signed`
-artifact (`catalog-manifest.json` + `publish-meta.json`, the latter enriched
-with gitSha/runId). `dry-run` (default) runs the identical measure → sign →
-verify chain but uploads **no artifact** — the signed bytes die with the
-runner; with `dry-run` unchecked the artifact is uploaded and the summary
-prints the intranet publish command. No GitLab credentials exist in the
-workflow at all.
+runner) chains: build the market + desktop libs → pack the tarball-channel
+artifacts (`pack-tarball --from-allowlist`, an explicit no-op while the
+allowlist pins no `source.path` entry; the optional `COMPANY_CATALOG_ORIGIN`
+repository variable feeds the origin validation) → measure →
+`measure-and-publish` floored at the in-repo state file (a preflight step
+hard-fails when the state file is missing from the checkout) → step summary
+with the measured digests, sequence, fingerprint, and entries → upload of
+the `company-catalog-signed` artifact (`catalog-manifest.json` +
+`publish-meta.json` + `packages/*.tgz` — the layout `publish-local` replays
+and pushes; the meta file is enriched with gitSha/runId). `dry-run` (default)
+runs the identical measure → sign → verify chain but uploads **no artifact**
+— the signed bytes die with the runner; with `dry-run` unchecked the artifact
+is uploaded and the summary prints the intranet publish command. No GitLab
+credentials exist in the workflow at all.
 
-A non-dry-run also mirrors the same two signed files to the
+A non-dry-run also mirrors the artifact's contents to the
 `catalog-artifacts` branch (`<run-id>/catalog-manifest.json` +
-`<run-id>/publish-meta.json`, newest 5 run directories kept): some intranet
+`<run-id>/publish-meta.json` + `<run-id>/packages/*.tgz`, newest 5 run
+directories kept): some intranet
 environments cannot reach GitHub's artifact blob storage — `gh run download`
 always dies in the TLS handshake there — while GitHub's git transport works
 fine. The mirror is an auxiliary channel (a mirror push failure never fails
@@ -539,17 +558,22 @@ devDependency；`--electron-target` 覆盖版本，`--no-electron-env` 整体关
 
 发布按网络边界拆分：**GitHub runner 读不到内网 GitLab**（已实证），因此它
 绝不推送。`.github/workflows/company-catalog-publish.yml`（手动触发，Windows
-runner）串起：构建 market + desktop lib → 测量 → 以仓库内 state 文件为下限跑
-`measure-and-publish`（state 文件不在 checkout 里时预检步骤直接硬失败）→
-step summary 输出摘要、sequence、指纹与条目 → 上传 `company-catalog-signed`
-产物（`catalog-manifest.json` + `publish-meta.json`，后者补记 gitSha/runId）。
+runner）串起：构建 market + desktop lib → 打包 tarball 通道工件
+（`pack-tarball --from-allowlist`，allowlist 未落地 `source.path` 条目时是
+显式空操作；可选的 `COMPANY_CATALOG_ORIGIN` 仓库变量供给 origin 校验）→
+测量 → 以仓库内 state 文件为下限跑 `measure-and-publish`（state 文件不在
+checkout 里时预检步骤直接硬失败）→ step summary 输出摘要、sequence、指纹
+与条目 → 上传 `company-catalog-signed` 产物（`catalog-manifest.json` +
+`publish-meta.json` + `packages/*.tgz` ——即 `publish-local` 回放并推送的布
+局，后者补记 gitSha/runId）。
 `dry-run`（默认）跑同一条 测量→签名→验证 链但**不上传产物**——签名字节随
 runner 消亡；取消勾选才上传产物并在 summary 打印内网发布命令。workflow 里
 不存在任何 GitLab 凭据。
 
-非 dry-run 还会把同样两个签名文件镜像到 `catalog-artifacts` 分支
-（`<run-id>/catalog-manifest.json` + `<run-id>/publish-meta.json`，只保留
-最新 5 个 run 目录）：部分内网环境到 GitHub 的 artifact blob 存储完全不
+非 dry-run 还会把同样产物内容镜像到 `catalog-artifacts` 分支
+（`<run-id>/catalog-manifest.json` + `<run-id>/publish-meta.json` +
+`<run-id>/packages/*.tgz`，只保留最新 5 个 run 目录）：部分内网环境到
+GitHub 的 artifact blob 存储完全
 通——`gh run download` 在那里恒定死于 TLS 握手——而 git 协议畅通。镜像只是
 辅助通道（push 失败不会让 workflow 变红——失败记入 run summary——artifact
 仍是权威产物），也不放松完整性：镜像字节走同一套 sha256 + 验签 + 序列对拍，
@@ -604,7 +628,12 @@ aborts the build). Offline
 (或 `--force-offline`) it skips only the registry segment with an explicit
 notice and still exercises the whole signing chain. The GitHub Actions
 workflow `.github/workflows/company-catalog.yml` (manual trigger) installs,
-builds the market package, and runs the selftest.
+builds the market + desktop packages, runs the selftest, the offline unit
+test suite (`yarn test:company-catalog`), and the tarball publish channel
+e2e drill (`e2e-tarball.mjs`) — the same gate the yarn check chain runs as
+`yarn check:company-catalog` (unit tests always; the e2e executes after the
+workspace checks have built the libs, and skips itself with a notice when
+the prerequisites are absent).
 
 `selftest` 用临时密钥在临时目录跑全链：market 库解析、密钥指纹交叉校验、
 allowlist 校验、真实 registry 抓取、构建→签名→验证（磁盘字节即规范字节）、
@@ -612,5 +641,8 @@ sequence 严格递增（双向断言）、吊销重发、过期断言；reposito
 npm packument 双形式（对象形式 directory→subdirectory 用固定离线 fixture）与
 market 契约拒绝负例（github tree URL / 带 query 的覆盖会中止构建）。离线（或
 `--force-offline`）时仅跳过 registry 段并明示，核心签名链照跑。
-`.github/workflows/company-catalog.yml`（手动触发）安装、构建 market 包后跑
-selftest。
+`.github/workflows/company-catalog.yml`（手动触发）安装、构建 market +
+desktop 包后跑 selftest、离线单元测试（`yarn test:company-catalog`）与
+tarball 发布通道 e2e 演练（`e2e-tarball.mjs`）——同一条门也在 yarn check
+链里以 `yarn check:company-catalog` 运行（单元测试恒跑；e2e 在 workspace
+check 构建完 lib 之后执行，前置缺失时自行跳过并明示）。

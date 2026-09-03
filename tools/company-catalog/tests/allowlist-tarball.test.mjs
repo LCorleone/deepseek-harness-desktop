@@ -93,6 +93,56 @@ test('one package name never straddles both channels', () => {
   }
 })
 
+test('a revoked old-channel entry does not block the new channel (the npm → tarball migration path)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'allowlist-migration-test-'))
+  try {
+    const allowlistPath = join(dir, 'allowlist.json')
+    // The migration shape: every npm entry revoked (the signed audit trail
+    // stays), new tarball-channel entries active — loadAllowlist must accept it.
+    const migrated = [
+      { ...baseEntry, version: '1.0.0', revoked: true },
+      { ...baseEntry, version: '1.5.0', revoked: true },
+      {
+        ...baseEntry,
+        version: '2.0.0',
+        source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.0.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' },
+      },
+    ]
+    saveAllowlist(allowlistPath, migrated)
+    const loaded = loadAllowlist(allowlistPath, { companyCatalogOrigin: CATALOG_ORIGIN })
+    assert.equal(loaded.length, 3)
+    assert.deepEqual(loaded.map((entry) => entry.revoked), [true, true, false])
+    // The same migration in reverse (tarball revoked → npm active) is the one
+    // path back, and equally accepted.
+    const reversed = [
+      {
+        ...baseEntry,
+        version: '1.0.0',
+        revoked: true,
+        source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-1.0.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' },
+      },
+      { ...baseEntry, version: '2.0.0' },
+    ]
+    saveAllowlist(allowlistPath, reversed)
+    assert.equal(loadAllowlist(allowlistPath, { companyCatalogOrigin: CATALOG_ORIGIN }).length, 2)
+    // Two ACTIVE channels remain refused even when revoked history sits next
+    // to them: revoking one npm version is not enough to migrate.
+    const stillStraddling = [
+      { ...baseEntry, version: '1.0.0', revoked: true },
+      { ...baseEntry, version: '1.5.0' },
+      {
+        ...baseEntry,
+        version: '2.0.0',
+        source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.0.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' },
+      },
+    ]
+    saveAllowlist(allowlistPath, stillStraddling)
+    assert.throws(() => loadAllowlist(allowlistPath, { companyCatalogOrigin: CATALOG_ORIGIN }), /both the npm and the tarball channel/u)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('resolveTarballArtifacts computes the signed sha512 from the packed bytes and never trusts a reviewed value', () => {
   const dir = mkdtempSync(join(tmpdir(), 'resolve-tarball-test-'))
   try {

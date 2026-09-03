@@ -67,7 +67,7 @@ export function parseTarballSourceUrl(url, { origin, project, branch, at }) {
       `the hosting layout pins the artifact into the ${project} config repo on ${branch}`,
     )
   }
-  const filePath = decodeURIComponent(parsed.pathname.slice(expectedPrefix.length))
+  const filePath = decodeTarballUrlPath(parsed.pathname, expectedPrefix, at)
   const segments = filePath.split('/')
   if (segments.length !== 2 || segments[0] !== 'packages' || !isSafeBasename(segments[1])) {
     throw new Error(
@@ -76,6 +76,22 @@ export function parseTarballSourceUrl(url, { origin, project, branch, at }) {
     )
   }
   return { repoPath: project, filePath, filename: segments[1] }
+}
+
+/**
+ * Percent-decode the hosted path off a signed tarball url. A malformed
+ * escape (`%zz`) throws a bare URIError from decodeURIComponent — wrapped
+ * here into a refusal that names the entry, so the operator sees which url
+ * is undecodable instead of a stack trace with no context.
+ */
+function decodeTarballUrlPath(pathname, expectedPrefix, at) {
+  let decoded
+  try {
+    decoded = decodeURIComponent(pathname.slice(expectedPrefix.length))
+  } catch (error) {
+    throw new Error(`${at} tarball url path '${pathname}' is not percent-decodable (${error.message}) — the hosting layout addresses packages/<name>-<version>.tgz, never an encoded form of it`)
+  }
+  return decoded
 }
 
 /**

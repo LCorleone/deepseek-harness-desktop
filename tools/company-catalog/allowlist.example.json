@@ -38,7 +38,7 @@
     "treeDigest": "b7c1e0d94a2f6d3c5e8f4a6d0c1b9e7d5f3a8c2b6e4d0f9a7c5b3e1d24680ace",
     "source": {
       "kind": "tarball",
-      "url": "https://gitlab.company.example/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz",
+      "url": "https://gitlab.company.example/julu/dsh-desktop-config/-/raw/master/packages/company-hardened-plugin-2.1.0.tgz",
       "integrity": "sha512-lWmUl1PeGjKKkAArSRinbVXId3xSMH5+gleUNABy4jux0aMA+a8Fx7rvjj7R5mhX6DMlh76kezw/xVfCDGctaA=="
     }
   }

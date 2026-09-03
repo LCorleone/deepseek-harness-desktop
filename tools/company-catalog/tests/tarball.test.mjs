@@ -162,6 +162,92 @@ test('parseTarball fails closed on unsafe or non-ustar entry shapes', () => {
   }
 })
 
+test('parseTarball refuses symlink targets that escape the package/ root (P1: absolute/empty/../ targets)', () => {
+  // The review's PoC class: an absolute link target plus a later entry
+  // written through the link — writeFileSync follows symlinks, so without
+  // the refusal this is an arbitrary-path write at extraction time. The
+  // container is built with the pipeline's own writer to prove the reader
+  // (the trust boundary for registry tarballs) is what refuses it.
+  const poc = buildDeterministicTarball([
+    symlinkEntry('package/escape-link', '/tmp/company-catalog-poc-target'),
+    fileEntry('package/escape-link/pwned.js', 'arbitrary-path write\n'),
+  ])
+  assert.throws(() => parseTarball(poc), /unsafe link target '\/tmp\/company-catalog-poc-target'.*outside the package\/ root/u)
+
+  for (const [entry, hint] of [
+    [{ name: 'package/link', type: '2', linkName: '/etc/passwd', data: Buffer.alloc(0) }, 'unsafe link target'],
+    [{ name: 'package/link', type: '2', data: Buffer.alloc(0) }, 'unsafe link target'],
+    [{ name: 'package/sub/link', type: '2', linkName: '../../escape', data: Buffer.alloc(0) }, 'unsafe link target'],
+    [{ name: 'package/link', type: '2', linkName: 'a/../../escape', data: Buffer.alloc(0) }, 'unsafe link target'],
+    [{ name: 'package/link', type: '2', linkName: 'C:\\evil', data: Buffer.alloc(0) }, 'unsafe link target'],
+  ]) {
+    assert.throws(
+      () => parseTarball(tarballFromRaw([entry])),
+      /unsafe link target/u,
+      `link target ${JSON.stringify(entry.linkName)} must be refused`,
+    )
+  }
+
+  // Legitimate relative targets survive: same-directory, subdirectory, and
+  // a `..` that stays inside package/ (package/sub/x → package/y).
+  const legit = buildDeterministicTarball([
+    fileEntry('package/index.js', 'main\n'),
+    fileEntry('package/lib/deep.js', 'deep\n'),
+    symlinkEntry('package/link.js', 'index.js'),
+    symlinkEntry('package/sub/peer.js', '../lib/deep.js'),
+  ])
+  const parsed = parseTarball(legit)
+  const byPath = new Map(parsed.map((entry) => [entry.path, entry]))
+  assert.equal(byPath.get('package/link.js').linkName, 'index.js')
+  assert.equal(byPath.get('package/sub/peer.js').linkName, '../lib/deep.js')
+})
+
+test('extractTarballEntries keeps every produced node inside the target directory (root-containment net)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tarball-extract-containment-'))
+  try {
+    const target = join(dir, 'extracted')
+    const tarball = buildDeterministicTarball([
+      fileEntry('package/lib/deep.js', 'deep\n'),
+      symlinkEntry('package/link.js', 'lib/deep.js'),
+      // A symlink pointing at a directory inside the tree: contained.
+      symlinkEntry('package/dir-link', 'lib'),
+    ])
+    extractTarballEntries(parseTarball(tarball), target)
+    assert.equal(readFileSync(join(target, 'lib', 'deep.js'), 'utf8'), 'deep\n')
+    assert.equal(readFileSync(join(target, 'link.js'), 'utf8'), 'deep\n')
+    assert.equal(readFileSync(join(target, 'dir-link', 'deep.js'), 'utf8'), 'deep\n')
+
+    // Defense in depth: hand-built entries bypass parseTarball's validation,
+    // so the final realpath walk is the only guard left — it must fail loudly
+    // on a link resolving outside the extraction root.
+    const escapeRoot = join(dir, 'escape-target')
+    mkdirSync(escapeRoot, { recursive: true })
+    assert.throws(
+      () => extractTarballEntries([
+        symlinkEntry('package/escape-link', escapeRoot),
+        fileEntry('package/escape-link/pwned.js', 'escaped\n'),
+      ], join(dir, 'extracted-2')),
+      /lies outside the extraction directory/u,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('parseTarball refuses a truncated archive instead of clamping the last entry short', () => {
+  const full = rawTar([{ name: 'package/index.js', type: '0', data: Buffer.alloc(1536, 0x78) }])
+  assert.equal(full.length % 512, 0)
+  // Cut away the tail (payload padding + end-of-archive blocks): the header
+  // now claims 1536 data bytes that are no longer there. Buffer#subarray
+  // would clamp silently — the parser must refuse the truncation instead.
+  const truncated = full.subarray(0, 512 + 512)
+  assert.equal(truncated.length % 512, 0)
+  assert.throws(() => parseTarball(gzipSync(truncated)), /claims 1536 data bytes.*truncated/u)
+  // A header whose payload was cut mid-block (padding region missing) is the
+  // same refusal.
+  assert.throws(() => parseTarball(gzipSync(full.subarray(0, 512 + 100))), /not a tar archive|truncated/u)
+})
+
 test('normalizeTarballFile is an idempotent byte-stable re-serialization', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tarball-normalize-test-'))
   try {
@@ -222,6 +308,10 @@ test('stageSourceDirectory copies content but never node_modules/.git or a stale
     assert.equal(readFileSync(join(staged, 'package.json'), 'utf8'), '{"name":"x","version":"1.0.0"}\n')
     assert.equal(existsSync(join(staged, 'node_modules')), false)
     assert.equal(existsSync(join(staged, '.git')), false)
+    // The stale top-level tarball must be filtered out of the staged tree —
+    // npm packs top-level *.tgz files, so shipping one would nest the stale
+    // artifact inside the published tarball.
+    assert.equal(existsSync(join(staged, 'stale.tgz')), false)
   } finally {
     rmSync(source, { recursive: true, force: true })
     rmSync(target, { recursive: true, force: true })
