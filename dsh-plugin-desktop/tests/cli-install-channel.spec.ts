@@ -9,6 +9,7 @@ import {
   canonicalJsonText,
   createCompanyManifestSignature,
   ed25519PublicKeyFingerprint,
+  verifyCompanyManifest,
 } from 'dsh-community-market'
 import {
   authorizeLockedPluginAdd,
@@ -574,5 +575,166 @@ describe('locked plugin-add authorization', () => {
 
     expect(decision.allowed).toBe(false)
     if (!decision.allowed) expect(decision.reason).toContain('revoked in the signed company plugin catalog')
+  })
+
+  it('decides source-free manifests exactly like the field-unaware market verifier through the locked gate', async () => {
+    // The locked gate verifies through `verifyDesktopCompanyManifest` since
+    // the P7 wiring; for manifests without `source` every decision must stay
+    // byte-identical to the field-unaware market verifier that ran here
+    // before — verified over the same 13-case corpus the dual-channel
+    // verifier itself is pinned to.
+    const corpus: readonly [string, Record<string, unknown>][] = [
+      ['valid entry', catalogEntry()],
+      ['entry unknown key', catalogEntry({ extra: 1 })],
+      ['bad integrity shape', catalogEntry({ integrity: 'sha512-nope' })],
+      ['bad bundlePatch escape', catalogEntry({ bundlePatch: '../escape.yml' })],
+      ['bad repository url', catalogEntry({ repository: { url: 'http://insecure.example/r' } })],
+      ['repository subdirectory escape', catalogEntry({ repository: { url: 'https://github.com/example/example-plugin', subdirectory: '../up' } })],
+      ['bad runtime range', catalogEntry({ runtime: { dshRuntimeVersion: 'bogus range' } })],
+      ['missing dshRuntimeVersion', catalogEntry({ runtime: {} })],
+      ['bad approvedBuilds entry', catalogEntry({ approvedBuilds: ['not valid!'] })],
+      ['bad treeDigest shape', catalogEntry({ treeDigest: 'xyz' })],
+      ['revoked non-boolean', catalogEntry({ revoked: 'yes' })],
+      ['bad version', catalogEntry({ version: '2.0.0-rc.1' })],
+      ['duplicate entries', catalogEntry()],
+    ]
+    const policy = lockedCatalogPolicy()
+    for (const [label, entry] of corpus) {
+      const packages = label === 'duplicate entries' ? [entry, { ...entry }] : [entry]
+      const assetPath = writeCatalog(unsignedCatalog({ packages }))
+      const market = verifyCompanyManifest(readFileSync(assetPath, 'utf8'), { trustRoots: policy.trustRoots })
+      // The queried target stays the exact pinned spec so only the manifest
+      // decision (not spec parsing) decides the comparison.
+      const decision = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy, { assetPath })
+      expect(decision.allowed, label).toBe(market.ok)
+      if (!market.ok && !decision.allowed) {
+        expect(decision.reason, label).toContain(`rejected the company catalog manifest (${String(market.code)})`)
+      }
+    }
+    // Non-canonical bytes deny with the shared code: same parsed value in a
+    // non-sorted key order is not the canonical serialization, which is
+    // itself part of what is signed.
+    const assetPath = writeCatalog(unsignedCatalog())
+    const parsed = JSON.parse(readFileSync(assetPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(assetPath, JSON.stringify({
+      signature: parsed.signature,
+      packages: parsed.packages,
+      sequence: parsed.sequence,
+      manifestVersion: parsed.manifestVersion,
+      expiresAt: parsed.expiresAt,
+    }))
+    const nonCanonical = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy, { assetPath })
+    expect(nonCanonical.allowed).toBe(false)
+    if (!nonCanonical.allowed) expect(nonCanonical.reason).toContain('non-canonical')
+  })
+
+  it('decides manifest-level corpus cases exactly like the field-unaware market verifier', async () => {
+    // Document-level decisions the entry corpus cannot reach (P7 2a
+    // review): non-object JSON, unknown/missing top-level keys, signature
+    // shape, bad `expiresAt` spellings, and the packages bound. The
+    // bad-expiresAt cases pin the ajv-formats `date-time` mirror of the
+    // desktop verifier; the space-separated spelling is ACCEPTED by both
+    // verifiers (ajv's full date-time splits on t/T or whitespace, V8
+    // parses it), so the equivalence is locked in both directions.
+    const policy = lockedCatalogPolicy()
+    const signedDocument = (document: Record<string, unknown>): string => canonicalJsonText({
+      ...document,
+      signature: createCompanyManifestSignature(asUnsigned(document), privateKey, keyId),
+    })
+    const unsignedDocument = (): Record<string, unknown> => ({
+      manifestVersion: '1.0.0',
+      sequence: 42,
+      expiresAt: '2030-01-01T00:00:00Z',
+      packages: [catalogEntry()],
+    })
+    const signatureBlock = createCompanyManifestSignature(
+      asUnsigned(unsignedDocument()), privateKey, keyId,
+    ) as unknown as Record<string, unknown>
+    const corpus: readonly [string, string][] = [
+      ['non-object JSON (array)', canonicalJsonText([])],
+      ['non-object JSON (number)', canonicalJsonText(5)],
+      ['non-object JSON (string)', canonicalJsonText('x')],
+      ['unknown top-level key', signedDocument({ ...unsignedDocument(), futureField: 1 })],
+      ['missing top-level key', signedDocument({
+        manifestVersion: '1.0.0',
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [catalogEntry()],
+      })],
+      ['signature not an object', canonicalJsonText({ ...unsignedDocument(), signature: 5 })],
+      ['signature missing value key', canonicalJsonText({
+        ...unsignedDocument(),
+        signature: { keyId: signatureBlock.keyId, publicKey: signatureBlock.publicKey },
+      })],
+      ['bad expiresAt (RFC-1123 spelling)', signedDocument({ ...unsignedDocument(), expiresAt: 'Wed, 01 Jan 2030 00:00:00 GMT' })],
+      ['bad expiresAt (leap second, format-valid but unparseable)', signedDocument({ ...unsignedDocument(), expiresAt: '2030-12-31T23:59:60Z' })],
+      ['bad expiresAt (non-string)', signedDocument({ ...unsignedDocument(), expiresAt: 20300101 })],
+      ['space-separated expiresAt (both accept)', signedDocument({ ...unsignedDocument(), expiresAt: '2030-01-01 00:00:00Z' })],
+      [`packages over-limit (${String(10_001)} entries)`, signedDocument({
+        ...unsignedDocument(),
+        packages: Array.from({ length: 10_001 }, (_, index) =>
+          catalogEntry({ packageName: `example-plugin-${String(index)}` })),
+      })],
+    ]
+    for (const [label, text] of corpus) {
+      const assetPath = join(roots, 'company-market', `corpus-${label.replace(/[^a-z0-9]+/gu, '-')}.json`)
+      mkdirSync(dirname(assetPath), { recursive: true })
+      writeFileSync(assetPath, text)
+      const market = verifyCompanyManifest(text, { trustRoots: policy.trustRoots })
+      const decision = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy, { assetPath })
+      expect(decision.allowed, label).toBe(market.ok)
+      if (!market.ok && !decision.allowed) {
+        expect(decision.reason, label).toContain(`rejected the company catalog manifest (${String(market.code)})`)
+      }
+    }
+  })
+
+  it('allows an explicit npm source and denies tarball-channel entries with market guidance', async () => {
+    const hardenedIntegrity = `sha512-${Buffer.alloc(64, 5).toString('base64')}`
+    const hardenedUrl = 'https://gitlab.company.example/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz'
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog({
+      packages: [
+        catalogEntry({ source: { kind: 'npm' } }),
+        catalogEntry({
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: hardenedIntegrity,
+          treeDigest: 'ab'.repeat(32),
+          source: { kind: 'tarball', url: hardenedUrl, integrity: hardenedIntegrity },
+        }),
+      ],
+    })), 'utf8')
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://gitlab.company.example',
+      companyManifestUrl: 'https://gitlab.company.example/company-market/catalog-manifest.json',
+    })
+    const request = async () => new Response(manifestText)
+
+    // The manifest verifies under the origin-mode policy (field-aware), and
+    // an explicit npm source stays the npm channel byte for byte.
+    const npm = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], policy, { fetch: { request } })
+    expect(npm).toEqual({ allowed: true, packages: [{ packageName: 'example-plugin', version: '1.0.0' }] })
+
+    // The tarball channel cannot be served by a public-registry terminal
+    // add: its signed integrity is the intranet tarball's sha512, which the
+    // registry path can never pin — deny with the market guidance instead
+    // of allowing a doomed, boot-rejected install.
+    const tarball = await authorizeLockedPluginAdd(['company-hardened-plugin@2.1.0'], policy, { fetch: { request } })
+    expect(tarball.allowed).toBe(false)
+    if (!tarball.allowed) {
+      expect(tarball.reason).toContain('published on the tarball channel')
+      expect(tarball.reason).toContain('Install plugins from the company plugin market')
+    }
+
+    // Fleet gate cross-check: the field-unaware market verifier still
+    // rejects the whole manifest, and a content-mode policy (no origin)
+    // rejects it through the dual verifier as well.
+    expect(verifyCompanyManifest(manifestText, { trustRoots: policy.trustRoots }).ok).toBe(false)
+    const contentMode = lockedCatalogPolicy()
+    const contentAsset = writeCatalog(unsignedCatalog({
+      packages: [catalogEntry({ source: { kind: 'tarball', url: hardenedUrl, integrity: hardenedIntegrity } })],
+    }))
+    const refused = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], contentMode, { assetPath: contentAsset })
+    expect(refused.allowed).toBe(false)
+    if (!refused.allowed) expect(refused.reason).toContain('invalid-manifest')
   })
 })

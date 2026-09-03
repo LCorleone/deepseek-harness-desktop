@@ -11,9 +11,15 @@
  *
  * Verification chain per bundle, fail-closed at every step:
  *
- * 1. The manifest itself must verify (canonical JSON, trust-root binding,
+ * 1. The manifest itself must verify through the dual-channel verifier
+ *    (`verifyDesktopCompanyManifest`: canonical JSON, trust-root binding,
  *    detached ed25519 signature, an anti-rollback sequence floor — strictly
- *    lower is stale, an equal sequence replays — unexpired).
+ *    lower is stale, an equal sequence replays — unexpired). For manifests
+ *    without the optional `source` field the decisions are byte-for-byte
+ *    those of the field-unaware market verifier that ran here before the
+ *    P7 wiring; `source`-carrying manifests verify only on origin-mode
+ *    policies (`options.companyCatalogOrigin`), which is what makes this
+ *    build "field-aware" for the fleet publication gate.
  *    A missing, untrusted, rolled-back, or expired manifest rejects EVERY
  *    third-party bundle while the upstream Web client keeps booting: boot
  *    verification never refuses the whole startup, only third-party content.
@@ -75,15 +81,17 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
 import {
-  findCompanyManifestPackage,
-  verifyCompanyManifest,
-  type CompanyManifest,
   type CompanyManifestTrustRoot,
   type CompanyManifestVerificationCode,
   type MarketInstallReceipt,
 } from 'dsh-community-market'
 import { fetchCompanyManifestText } from './company-manifest-origin.ts'
-import { DESKTOP_MARKET_IDENTITIES } from './desktop-market.ts'
+import {
+  DESKTOP_MARKET_IDENTITIES,
+  findDesktopCompanyManifestPackage,
+  verifyDesktopCompanyManifest,
+  type DesktopCompanyManifest,
+} from './desktop-market.ts'
 import { desktopPluginBundleMutable } from './desktop-plugins.ts'
 import { resolveOverlayPackage } from './package-overlay.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
@@ -156,6 +164,15 @@ export interface DesktopBootVerificationInputs {
 export interface DesktopBootVerificationOptions {
   /** Policy-pinned signing keys; a manifest signed by any listed key verifies. */
   readonly trustRoots: readonly CompanyManifestTrustRoot[]
+  /**
+   * Origin every tarball `source.url` must live on (`policy.companyCatalogOrigin`).
+   * Omitted behaves like `null` (content mode): a `source`-carrying manifest
+   * is rejected whole — exactly what the field-unaware verifier did — because
+   * without a pinned origin there is no host the desktop would download a
+   * plugin tarball from. Manifests without `source` verify identically either
+   * way (byte-for-byte the field-unaware decisions).
+   */
+  readonly companyCatalogOrigin?: string | null
   /** Receipts keyed by exact (packageName, version); unusable receipts are ignored. */
   readonly receipts?: readonly DesktopBootReceipt[]
   /** Anti-rollback floor; see {@link DesktopBootVerificationInputs.lastSeenSequence}. */
@@ -838,7 +855,7 @@ export function verifyDesktopBootBundles(
     ? injectedFloor as number
     : receiptFloor
 
-  let verified: { readonly manifest: CompanyManifest; readonly keyId: string } | undefined
+  let verified: { readonly manifest: DesktopCompanyManifest; readonly keyId: string } | undefined
   let manifestFailure: DesktopBootManifestFailure | undefined
   if (manifestBytes === undefined) {
     manifestFailure = {
@@ -846,8 +863,16 @@ export function verifyDesktopBootBundles(
       reason: 'no signed company manifest bytes are available for this boot',
     }
   } else {
-    const verification = verifyCompanyManifest(manifestBytes, {
+    // The dual-channel verifier (P7): same canonical-byte, trust-root,
+    // signature, sequence, and expiry decisions as the field-unaware market
+    // verifier for `source`-free manifests, plus the one recognized
+    // extension — entries may carry a signed `source` install channel. This
+    // switch is what makes a build "field-aware" for the fleet publication
+    // gate (see the dual-channel section of desktop-market.ts): before it,
+    // boot verification rejected any `source`-carrying manifest whole.
+    const verification = verifyDesktopCompanyManifest(manifestBytes, {
       trustRoots: options.trustRoots,
+      companyCatalogOrigin: options.companyCatalogOrigin ?? null,
       lastSeenSequence,
       ...(options.now === undefined ? {} : { now: options.now }),
     })
@@ -893,7 +918,7 @@ export function verifyDesktopBootBundles(
       reject(`${bundle.packageName} cannot be resolved as an installed package in the active profile`)
       continue
     }
-    const entry = findCompanyManifestPackage(manifest, bundle.packageName, bundle.version)
+    const entry = findDesktopCompanyManifestPackage(manifest, bundle.packageName, bundle.version)
     if (entry === undefined) {
       const pinned = manifest.packages.find(candidate => candidate.packageName === bundle.packageName)
       reject(pinned === undefined

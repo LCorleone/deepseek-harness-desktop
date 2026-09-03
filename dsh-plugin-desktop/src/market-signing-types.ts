@@ -210,6 +210,18 @@ export interface CompanyCatalogProviderOptionsView {
   readonly sequenceStore?: MarketCompanyManifestSequenceStore
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Injectable manifest verification override (the market's
+   * `CompanyManifestVerifier`); defaults to the market's field-unaware
+   * `verifyCompanyManifest`. The injected verifier's verified manifest
+   * carries the market-known projection of every entry — extension fields
+   * like the dual-channel `source` ride through `findSignedPackage`
+   * untouched.
+   */
+  readonly manifestVerifier?: (
+    raw: string | Uint8Array,
+    options: VerifyCompanyManifestOptions,
+  ) => CompanyManifestVerification
 }
 
 /** Structural mirror of the company catalog provider's public query surface. */
@@ -222,6 +234,19 @@ export interface CompanyCatalogProviderView {
       readonly source: Record<string, unknown>
     },
   ): Promise<readonly { readonly items: readonly { readonly id: string }[] }[]>
+  /** Installable entries (signed integrity, bundle patch, runtime ranges) of the last verified manifest. */
+  verifiedPackages(): readonly {
+    readonly itemId: string
+    readonly packageName: string
+    readonly version: string
+    readonly integrity: string
+    readonly bundlePatch: string
+    readonly runtime: CompanyManifestRuntimeRanges
+  }[]
+  /** Signed entry of the last verified manifest (revoked included); extension fields ride through untouched. */
+  findSignedPackage(packageName: string, version: string):
+    | (CompanyManifestPackage & { readonly source?: unknown })
+    | undefined
   verification(): {
     readonly mode: 'origin' | 'content'
     readonly sequence: number

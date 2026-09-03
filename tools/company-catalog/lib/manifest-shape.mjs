@@ -38,6 +38,51 @@ const SHA512_INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]{86}==$/u
 const TREE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u
 const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
 const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9+/]{43}=$/u
+// `expiresAt` format gate: a faithful port of ajv-formats' full `date-time`
+// (3.0.1) — the operative definition of the market schema's "RFC 3339"
+// note — kept in sync with the desktop twin in
+// dsh-plugin-desktop/src/desktop-market.ts. V8's lenient `Date.parse` alone
+// admitted spellings the market verifier rejects (e.g. RFC-1123), so the
+// publishing tool would have signed an expiresAt every field-unaware client
+// rejects the whole manifest over.
+const MARKET_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u
+const MARKET_DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+const MARKET_TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)(z|([+-])(\d{2})(?::?(\d{2}))?)?$/iu
+
+const isLeapYear = (year) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+
+function isMarketDate(text) {
+  const matches = MARKET_DATE_PATTERN.exec(text)
+  if (matches === null) return false
+  const year = Number(matches[1])
+  const month = Number(matches[2])
+  const day = Number(matches[3])
+  return month >= 1 && month <= 12
+    && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : MARKET_DAYS_IN_MONTH[month])
+}
+
+function isMarketStrictTime(text) {
+  const matches = MARKET_TIME_PATTERN.exec(text)
+  if (matches === null) return false
+  const hour = Number(matches[1])
+  const minute = Number(matches[2])
+  const second = Number(matches[3])
+  const zone = matches[4]
+  const sign = matches[5] === '-' ? -1 : 1
+  const zoneHours = Number(matches[6] ?? 0)
+  const zoneMinutes = Number(matches[7] ?? 0)
+  if (zoneHours > 23 || zoneMinutes > 59 || zone === undefined) return false
+  if (hour <= 23 && minute <= 59 && second < 60) return true
+  const utcMinute = minute - zoneMinutes * sign
+  const utcHour = hour - zoneHours * sign - (utcMinute < 0 ? 1 : 0)
+  return (utcHour === 23 || utcHour === -1) && (utcMinute === 59 || utcMinute === -1) && second < 61
+}
+
+function isMarketDateTimeFormat(text) {
+  const parts = text.split(/t|\s/iu)
+  if (parts.length !== 2) return false
+  return isMarketDate(parts[0]) && isMarketStrictTime(parts[1])
+}
 const SIGNATURE_VALUE_PATTERN = /^[A-Za-z0-9+/]{86}==$/u
 const HTTPS_URI_PATTERN = /^https:\/\/(?![^/?#]*@)(?![^/?#]*:)[^#]+$/u
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
@@ -93,7 +138,7 @@ function parseEntrySource(source, at, companyCatalogOrigin) {
   if (kind !== 'tarball') throw new Error(`${at}.source.kind must be 'npm' or 'tarball'`)
   const unknown = unknownFields(source, TARBALL_SOURCE_KEYS)
   if (unknown.length > 0) throw new Error(`${at}.source has unknown field(s) ${unknown.join(', ')}`)
-  if (!isHttpsUri(source.url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment`)
+  if (!isHttpsUri(source.url)) throw new Error(`${at}.source.url must be a credential-free https URL without a fragment or an explicit port`)
   if (companyCatalogOrigin === undefined) {
     throw new Error(`${at}.source is the tarball channel, which requires the company catalog origin (--catalog-origin / ${'COMPANY_CATALOG_ORIGIN'})`)
   }
@@ -135,6 +180,7 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
     throw new Error('the company manifest sequence must be a safe positive integer')
   }
   if (typeof value.expiresAt !== 'string' || value.expiresAt.length < 20 || value.expiresAt.length > 64
+    || !isMarketDateTimeFormat(value.expiresAt)
     || Number.isNaN(Date.parse(value.expiresAt))) {
     throw new Error('the company manifest expiresAt must be an RFC 3339 timestamp')
   }
@@ -186,7 +232,7 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
     {
       const repositoryUnknown = unknownFields(rawEntry.repository, REPOSITORY_KEYS)
       if (repositoryUnknown.length > 0) throw new Error(`${at}.repository has unknown field(s) ${repositoryUnknown.join(', ')}`)
-      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment`)
+      if (!isHttpsUri(rawEntry.repository.url)) throw new Error(`${at}.repository.url must be a credential-free https URL without a fragment or an explicit port`)
       if (rawEntry.repository.subdirectory !== undefined
         && (typeof rawEntry.repository.subdirectory !== 'string'
           || rawEntry.repository.subdirectory.length < 1 || rawEntry.repository.subdirectory.length > 240

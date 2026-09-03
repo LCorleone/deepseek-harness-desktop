@@ -754,7 +754,7 @@ describe('pnpm controlled market tarball install target', () => {
           path: stagedPath,
           integrity: `sha512-${createHash('sha512').update(Buffer.from('company-hardened-plugin tarball fixture\n')).digest('base64')}`,
         },
-      })).rejects.toThrow('does not match the signed integrity')
+      })).rejects.toThrow('does not match its pinned integrity')
       expect(harness.spawn).not.toHaveBeenCalled()
       expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
       await harness.dispose()

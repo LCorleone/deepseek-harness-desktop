@@ -10,6 +10,7 @@ import {
   canonicalJsonText,
   createCompanyManifestSignature,
   ed25519PublicKeyFingerprint,
+  verifyCompanyManifest,
 } from 'dsh-community-market'
 import {
   BOOT_TREE_MAX_PATH_LENGTH,
@@ -155,6 +156,7 @@ const verify = (
     receipts?: readonly DesktopBootReceipt[]
     lastSeenSequence?: number
     now?: () => number
+    companyCatalogOrigin?: string | null
     measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
   } = {},
 ) => verifyDesktopBootBundles(manifestBytes, bundles, { trustRoots, ...options })
@@ -449,6 +451,206 @@ describe('desktop boot bundle verification', () => {
     })
     expect(result.manifestFailure?.code).toBe('unknown-key')
     expect(result.rejected).toHaveLength(1)
+  })
+})
+
+describe('dual-channel manifest source invariants (P7 wiring)', () => {
+  // The boot path verifies through `verifyDesktopCompanyManifest` since the
+  // P7 batch-2 wiring: same source-free decisions as the field-unaware
+  // market verifier, plus the one recognized extension — a signed per-entry
+  // `source` install channel.
+  const catalogOrigin = 'https://gitlab.company.example'
+  const tarballIntegrity = `sha512-${Buffer.alloc(64, 5).toString('base64')}`
+  const treeDigest = 'ab'.repeat(32)
+  const tarballUrl = `${catalogOrigin}/julu/dsh-desktop-config/-/packages/${packageName}-${version}.tgz`
+
+  const tarballChannelEntry = (overrides: Record<string, unknown> = {}): Record<string, unknown> => packageEntry({
+    integrity: tarballIntegrity,
+    treeDigest,
+    source: { kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity },
+    ...overrides,
+  })
+
+  it('decides source-free manifests exactly like the field-unaware market verifier through the boot path, in both catalog modes', () => {
+    const valid = signedManifestText([packageEntry()])
+    // Same parsed value, deliberately non-sorted key order: the bytes are
+    // not the canonical serialization, so both verifiers reject them before
+    // any signature is even examined.
+    const nonCanonical = (() => {
+      const parsed = JSON.parse(valid) as Record<string, unknown>
+      return JSON.stringify({
+        signature: parsed.signature,
+        packages: parsed.packages,
+        sequence: parsed.sequence,
+        manifestVersion: parsed.manifestVersion,
+        expiresAt: parsed.expiresAt,
+      })
+    })()
+    // Manifest-level corpus cases (P7 2a review): the document-level
+    // decisions the entry cases cannot reach. Non-object JSON shares the
+    // market verifier's `malformed-json` code; the bad-`expiresAt` cases pin
+    // the ajv-formats `date-time` mirror of the desktop verifier — note the
+    // space-separated spelling is ACCEPTED by both verifiers (ajv's full
+    // date-time splits on t/T or whitespace and V8 parses it), so the
+    // equivalence is locked in both directions.
+    const signatureBlock = (): Record<string, unknown> => {
+      const signature = createCompanyManifestSignature(
+        {
+          manifestVersion: '1.0.0',
+          sequence: manifestSequence,
+          expiresAt: '2030-01-01T00:00:00Z',
+          packages: [packageEntry()],
+        } as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+        privateKey,
+        keyId,
+      )
+      return signature as unknown as Record<string, unknown>
+    }
+    const signedDocument = (document: Record<string, unknown>): string => canonicalJsonText({
+      ...document,
+      signature: createCompanyManifestSignature(
+        document as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+        privateKey,
+        keyId,
+      ),
+    })
+    const corpus: readonly [string, string][] = [
+      ['valid', valid],
+      ['entry unknown key', signedManifestText([packageEntry({ extra: 1 })])],
+      ['non-canonical bytes', nonCanonical],
+      ['bad integrity shape', signedManifestText([packageEntry({ integrity: 'sha512-nope' })])],
+      ['bad bundlePatch escape', signedManifestText([packageEntry({ bundlePatch: '../escape.yml' })])],
+      ['bad repository url', signedManifestText([packageEntry({ repository: { url: 'http://insecure.example/r' } })])],
+      ['repository subdirectory escape', signedManifestText([packageEntry({ repository: { url: 'https://github.com/example/dsh-plugin-safe', subdirectory: '../up' } })])],
+      ['bad runtime range', signedManifestText([packageEntry({ runtime: { dshRuntimeVersion: 'bogus range' } })])],
+      ['missing dshRuntimeVersion', signedManifestText([packageEntry({ runtime: {} })])],
+      ['bad approvedBuilds entry', signedManifestText([packageEntry({ approvedBuilds: ['not valid!'] })])],
+      ['bad treeDigest shape', signedManifestText([packageEntry({ treeDigest: 'xyz' })])],
+      ['revoked non-boolean', signedManifestText([packageEntry({ revoked: 'yes' })])],
+      ['bad version', signedManifestText([packageEntry({ version: '1.0.0-rc.1' })])],
+      ['non-object JSON (array)', canonicalJsonText([])],
+      ['non-object JSON (number)', canonicalJsonText(5)],
+      ['non-object JSON (string)', canonicalJsonText('x')],
+      ['unknown top-level key', signedDocument({
+        manifestVersion: '1.0.0',
+        sequence: manifestSequence,
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [packageEntry()],
+        futureField: 1,
+      })],
+      ['missing top-level key', signedDocument({
+        manifestVersion: '1.0.0',
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [packageEntry()],
+      })],
+      ['signature not an object', canonicalJsonText({
+        manifestVersion: '1.0.0',
+        sequence: manifestSequence,
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [packageEntry()],
+        signature: 5,
+      })],
+      ['signature missing value key', canonicalJsonText({
+        manifestVersion: '1.0.0',
+        sequence: manifestSequence,
+        expiresAt: '2030-01-01T00:00:00Z',
+        packages: [packageEntry()],
+        signature: (() => { const block = signatureBlock(); return { keyId: block.keyId, publicKey: block.publicKey } })(),
+      })],
+      ['bad expiresAt (RFC-1123 spelling)', signedManifestText([packageEntry()], { expiresAt: 'Wed, 01 Jan 2030 00:00:00 GMT' })],
+      ['bad expiresAt (leap second, format-valid but unparseable)', signedManifestText([packageEntry()], { expiresAt: '2030-12-31T23:59:60Z' })],
+      ['bad expiresAt (non-string)', signedDocument({
+        manifestVersion: '1.0.0',
+        sequence: manifestSequence,
+        expiresAt: 20300101,
+        packages: [packageEntry()],
+      })],
+      ['space-separated expiresAt (both accept)', signedManifestText([packageEntry()], { expiresAt: '2030-01-01 00:00:00Z' })],
+      [`packages over-limit (${String(10_001)} entries)`, signedManifestText(
+        Array.from({ length: 10_001 }, (_, index) => packageEntry({ packageName: `dsh-plugin-safe-${String(index)}` })),
+      )],
+    ]
+    // The corpus runs in both production policy modes: origin mode (a pinned
+    // catalog origin) and content mode (no origin — the production default
+    // for embedded manifests, `companyCatalogOrigin ?? null`). For
+    // source-free manifests the two modes share every code path (the origin
+    // only matters inside the tarball `source` branch), so both must decide
+    // exactly like the market verifier.
+    const bundle = bundleInput()
+    for (const mode of ['origin', 'content'] as const) {
+      const bootOptions = mode === 'origin' ? { companyCatalogOrigin: catalogOrigin } : {}
+      for (const [label, text] of corpus) {
+        // The manifest decision must be the market verifier's decision: same
+        // trust outcome, same failure code, and the boot failure template
+        // over that code — exactly what the field-unaware verifier produced
+        // on this corpus before the switch. (Human-readable `reason` wording
+        // differs between the verifiers by design; the pinned compatibility
+        // surface is the decision plus the code.)
+        const market = verifyCompanyManifest(text, { trustRoots })
+        const boot = verify(text, [bundle], bootOptions)
+        expect(boot.manifestTrusted, `${mode}: ${label}`).toBe(market.ok)
+        if (market.ok || boot.manifestTrusted) continue
+        expect(boot.manifestFailure?.code, `${mode}: ${label}`).toBe(market.code)
+        expect(boot.rejected, `${mode}: ${label}`).toHaveLength(1)
+        const reason = boot.rejected[0]?.reason ?? ''
+        expect(reason.startsWith('the company manifest is not trusted ('), `${mode}: ${label}`).toBe(true)
+        expect(reason.includes(`(${String(market.code)}): `), `${mode}: ${label}`).toBe(true)
+      }
+    }
+    const validBoot = verify(valid, [bundleInput()], { companyCatalogOrigin: catalogOrigin })
+    expect(validBoot.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(validBoot.rejected).toEqual([])
+    // And the production-default content mode allows the same bundle.
+    const validContentBoot = verify(valid, [bundleInput()], {})
+    expect(validContentBoot.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(validContentBoot.rejected).toEqual([])
+  })
+
+  it('allows a bundle pinned by a source-carrying entry under an origin-mode policy', () => {
+    const result = verify(
+      signedManifestText([tarballChannelEntry()]),
+      [bundleInput({ lockIntegrity: tarballIntegrity })],
+      {
+        companyCatalogOrigin: catalogOrigin,
+        measureTreeRootDigest: (_packageDir, purpose) => {
+          expect(purpose).toBe('signed-tree')
+          return treeDigest
+        },
+      },
+    )
+    expect(result.manifestTrusted).toBe(true)
+    expect(result.manifestFailure).toBeUndefined()
+    expect(result.allowed).toEqual([{ packageName, evidence: 'signed-tree', manifestSequence, keyId }])
+    expect(result.rejected).toEqual([])
+  })
+
+  it('rejects a source-carrying manifest whole without a pinned origin, exactly like the field-unaware verifier', () => {
+    const text = signedManifestText([tarballChannelEntry()])
+    // Content-mode boot (no `companyCatalogOrigin` option) keeps the legacy
+    // whole-manifest rejection — one unknown key to the field-unaware
+    // verifier, the tarball-channel-needs-an-origin rule to the dual one.
+    const result = verify(text, [bundleInput({ lockIntegrity: tarballIntegrity })])
+    expect(result.manifestTrusted).toBe(false)
+    expect(result.manifestFailure?.code).toBe('invalid-manifest')
+    expect(result.manifestFailure?.reason).toContain('requires an origin-mode catalog policy')
+    expect(result.rejected).toHaveLength(1)
+    expect(verifyCompanyManifest(text, { trustRoots }).ok).toBe(false)
+    // A different pinned origin refuses the entry's url just the same.
+    const otherOrigin = verify(text, [bundleInput({ lockIntegrity: tarballIntegrity })], {
+      companyCatalogOrigin: 'https://elsewhere.company.example',
+    })
+    expect(otherOrigin.manifestFailure?.code).toBe('invalid-manifest')
+    expect(otherOrigin.manifestFailure?.reason).toContain('must stay inside the pinned catalog origin')
+  })
+
+  it('accepts an explicit npm source object as the npm channel', () => {
+    const result = verify(
+      signedManifestText([packageEntry({ source: { kind: 'npm' } })]),
+      [bundleInput()],
+      { companyCatalogOrigin: catalogOrigin },
+    )
+    expect(result.manifestTrusted).toBe(true)
+    expect(result.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
   })
 })
 

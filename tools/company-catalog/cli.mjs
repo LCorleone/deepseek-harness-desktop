@@ -219,7 +219,10 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
   console.log(`  manifest:    ${outPath}`)
   console.log(`  state:       ${resolve(stateDir, 'last-sequence.json')}`)
   if (tarballChannel > 0) {
-    console.log('  fleet gate:  this manifest carries the `source` field — every client must already run a dual-channel-aware build (see publish-local --confirm-fleet-upgraded)')
+    console.log('  fleet gate:  this manifest carries the `source` field — every client must already run a field-aware build:')
+    console.log('                boot verification, the locked terminal add gate, AND the market catalog provider')
+    console.log('                (through the injected verifier) all verify through verifyDesktopCompanyManifest')
+    console.log('                (see publish-local --confirm-fleet-upgraded and the README publication gate)')
   }
   return { manifest, fingerprint, outPath, sequenceSource }
 }

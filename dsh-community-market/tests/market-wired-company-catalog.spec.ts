@@ -30,13 +30,14 @@ import {
   SettingsCatalogSourceStore,
   type MarketSettingsDocument,
 } from '../src/catalog/source-store.js'
-import { CompanyCatalogUntrustedError } from '../src/catalog/company-provider.js'
-import type { CatalogHttpClient } from '../src/contracts/index.js'
+import { CompanyCatalogUntrustedError, type CompanyManifestVerifier } from '../src/catalog/company-provider.js'
+import type { CatalogAdapter, CatalogHttpClient } from '../src/contracts/index.js'
 import { createCommunityMarketCompanyCatalog, type DesktopPolicyView } from '../src/index.js'
 import {
   canonicalJsonText,
   createCompanyManifestSignature,
   ed25519PublicKeyFingerprint,
+  verifyCompanyManifest,
 } from '../src/signing/index.js'
 
 const keyId = 'company-catalog-2026.01'
@@ -503,5 +504,82 @@ describe('origin-mode host HTTP client injection', () => {
     await expect(service.scanCatalog(new AbortController().signal))
       .rejects.toThrow('blocked-address')
     expect(scope.document().companyManifest).toBeUndefined()
+  })
+
+  it('forwards an injected field-aware manifest verifier into the catalog provider', async () => {
+    // The wiring layer must hand the Host-injected verifier (Desktop's
+    // `desktopCompanyManifestVerifier` capability — the dual-channel
+    // verifier over the same policy roots) to the provider: a manifest whose
+    // entry carries a field the market schema does not know scans through
+    // the full wired chain instead of failing the whole catalog. Without the
+    // injection the same manifest is rejected whole — the field-unaware
+    // default the fleet-upgrade gate still pins.
+    const sourceCarrying = signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity, { source: { kind: 'npm' } }),
+    ])
+    const fixture = packagedAppFixture(sourceCarrying)
+    // Field-aware plumbing double (the same contract the Desktop host
+    // injects through the `desktopCompanyManifestVerifier` capability): the
+    // market-known projection verifies through the real market verifier and
+    // the extension rides back onto the verified manifest. The real
+    // dual-channel verification chain is exercised in the desktop workspace.
+    const fieldAwareVerifier: CompanyManifestVerifier = (raw, options) => {
+      const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+      const parsed = JSON.parse(text) as { packages?: Array<Record<string, unknown>>; signature?: unknown }
+      const packages = Array.isArray(parsed.packages) ? parsed.packages : []
+      const sources = packages.map(entry => entry.source)
+      const { signature: _wireSignature, ...document } = parsed
+      const projection = {
+        ...document,
+        packages: packages.map(({ source: _source, ...rest }) => rest),
+      }
+      const signature = createCompanyManifestSignature(
+        projection as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+        privateKey,
+        keyId,
+      )
+      const market = verifyCompanyManifest(canonicalJsonText({ ...projection, signature }), options)
+      if (!market.ok) return market
+      const extended = market.manifest.packages.map((entry, index) => (
+        sources[index] === undefined ? entry : { ...entry, source: sources[index] }
+      ))
+      return { ...market, manifest: { ...market.manifest, packages: extended } }
+    }
+    const injectedWiring = createCommunityMarketCompanyCatalog(fixture.policy, memoryScope(), {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+      manifestVerifier: fieldAwareVerifier,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(memoryScope(), { locked: true, companySource: injectedWiring.companySource }),
+      unusedHttp,
+      { adapters: injectedWiring.adapters },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
+      .toEqual([`npm:${safePackage}@${safeVersion}`])
+    expect(injectedWiring.installTargetAuthority.canInstall({
+      packageName: safePackage,
+      version: safeVersion,
+      integrity: safeIntegrity,
+    })).toEqual({ allowed: true, evidence: { manifestSequence: 42, keyId } })
+
+    // The same bytes through the default (field-unaware) wiring reject the
+    // whole scan: the injection is what makes the difference, never a
+    // silent widening of the default.
+    const defaultWiring = createCommunityMarketCompanyCatalog(fixture.policy, memoryScope(), {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+    })
+    const defaultAdapter = defaultWiring.adapters[0] as CatalogAdapter
+    if (defaultAdapter.scanCatalog === undefined) throw new Error('the wired company adapter must expose scanCatalog')
+    await expect(defaultAdapter.scanCatalog({}, {
+      signal: new AbortController().signal,
+      http: unusedHttp,
+      source: defaultWiring.companySource,
+      media: { register: vi.fn() },
+    })).rejects.toThrow(CompanyCatalogUntrustedError)
   })
 })
