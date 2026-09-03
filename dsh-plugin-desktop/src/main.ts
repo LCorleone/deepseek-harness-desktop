@@ -1128,6 +1128,7 @@ async function start(): Promise<void> {
               logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
             }),
           }),
+        )
         // Field-aware manifest verification for the locked market catalog
         // (the market's `desktopCompanyManifestVerifier` capability): the
         // catalog provider's scan and the signed-manifest install whitelist
