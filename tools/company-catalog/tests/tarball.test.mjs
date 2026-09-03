@@ -9,9 +9,9 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { gzipSync } from 'node:zlib'
@@ -32,6 +32,19 @@ const referenceIntegrity = (bytes) => `sha512-${createHash('sha512').update(byte
 const fileEntry = (path, data, { mode = 0o644 } = {}) => ({ path, type: 'file', mode, mtime: 1234567890, data: Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8') })
 
 const symlinkEntry = (path, linkName, { mode = 0o755 } = {}) => ({ path, type: 'symlink', mode, mtime: 1234567890, linkName })
+
+/**
+ * lstat without the throw: `null` when the node does not exist. existsSync
+ * follows symlinks, so it cannot prove a DANGLING link was never created —
+ * the escape tests assert absence of relocated links and need this oracle.
+ */
+const lstatSyncOptional = (path) => {
+  try {
+    return lstatSync(path)
+  } catch {
+    return null
+  }
+}
 
 /** Raw ustar builder for the shape-violation negatives (the module accepts only ustar). */
 function rawTar(entries) {
@@ -217,9 +230,10 @@ test('extractTarballEntries keeps every produced node inside the target director
     assert.equal(readFileSync(join(target, 'link.js'), 'utf8'), 'deep\n')
     assert.equal(readFileSync(join(target, 'dir-link', 'deep.js'), 'utf8'), 'deep\n')
 
-    // Defense in depth: hand-built entries bypass parseTarball's validation,
-    // so the final realpath walk is the only guard left — it must fail loudly
-    // on a link resolving outside the extraction root.
+    // Defense in depth: hand-built entries bypass parseTarball's lexical
+    // validation (layer 1), so the creation-time realpath guard (layer 2) is
+    // the one that refuses this link — before it exists on disk, hence
+    // before the write-through entry can do anything with it.
     const escapeRoot = join(dir, 'escape-target')
     mkdirSync(escapeRoot, { recursive: true })
     assert.throws(
@@ -227,8 +241,128 @@ test('extractTarballEntries keeps every produced node inside the target director
         symlinkEntry('package/escape-link', escapeRoot),
         fileEntry('package/escape-link/pwned.js', 'escaped\n'),
       ], join(dir, 'extracted-2')),
+      /refusing to create the link/u,
+    )
+    assert.equal(existsSync(join(escapeRoot, 'pwned.js')), false)
+
+    // Layer 3 proper — the final walk: a symlink PRE-EXISTING in the target
+    // directory is not a tar entry, so no creation-time guard ever sees it;
+    // the write routes through it and only the realpath walk over what
+    // landed catches the escape.
+    const outside = join(dir, 'preexisting-outside')
+    mkdirSync(outside, { recursive: true })
+    const poisoned = join(dir, 'extracted-3')
+    mkdirSync(poisoned, { recursive: true })
+    symlinkSync(outside, join(poisoned, 'escape-link'))
+    assert.throws(
+      () => extractTarballEntries([fileEntry('package/escape-link/pwned.js', 'escaped\n')], poisoned),
       /lies outside the extraction directory/u,
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('extractTarballEntries refuses a symlink relocated through an earlier symlink before creating it (two-hop escape)', () => {
+  // The review's P1 PoC: safeLinkTarget's lexical `..` counting assumes the
+  // link sits where its entry path says it does, but symlinkSync resolves
+  // the destination through any symlink an earlier entry left in the parent
+  // chain. `x/y` → `../q` means `x/y/inner` is physically created at
+  // `<root>/q/inner` — one level shallower than the lexical check assumed —
+  // so its `../../land` target resolves OUTSIDE the extraction root, and a
+  // later write-through entry lands outside before assertExtractionContained
+  // ever runs (the walk skips dangling links by design). The creation-time
+  // guard must refuse the link before it exists; every assertion below
+  // checks the FILE SYSTEM, not just the throw.
+  const dir = mkdtempSync(join(tmpdir(), 'tarball-twohop-'))
+  try {
+    const target = join(dir, 'extracted')
+    const tarball = buildDeterministicTarball([
+      // Makes package/q a real directory first (tar order), so x/y's target
+      // resolves and the second hop gets created through it.
+      fileEntry('package/q/anchor.js', 'q\n'),
+      symlinkEntry('package/x/y', '../q'), // hop 1: legal, lexically and physically inside
+      symlinkEntry('package/x/y/inner', '../../land'), // hop 2: physically at <root>/q/inner → escapes
+      fileEntry('package/x/y/inner/pwned.js', 'arbitrary-path write\n'),
+    ])
+    assert.throws(
+      () => extractTarballEntries(parseTarball(tarball), target),
+      /symlink 'package\/x\/y\/inner' → '\.\.\/\.\.\/land'.*refusing to create the link/u,
+    )
+    // Nothing landed outside the root: no land/ beside it, no pwned.js.
+    assert.equal(existsSync(join(dir, 'land')), false)
+    assert.equal(existsSync(resolve(dir, 'land', 'pwned.js')), false)
+    // The escaping link itself was never created — the refusal precedes
+    // symlinkSync (existsSync would follow it, so lstat is the oracle).
+    assert.equal(lstatSyncOptional(join(target, 'q', 'inner')), null)
+    // The legal prefix of the extraction did land: the anchor and hop 1,
+    // which still resolves inside the root.
+    assert.equal(readFileSync(join(target, 'q', 'anchor.js'), 'utf8'), 'q\n')
+    assert.equal(readFileSync(join(target, 'x', 'y', 'anchor.js'), 'utf8'), 'q\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('extractTarballEntries refuses a deep chain whose last link escapes from a relocated parent', () => {
+  // Deeper shape: every link except the last is legal on its own —
+  // `a/b/c/d` legitimately resolves back to `<root>/a` — but it relocates
+  // `a/b/c/d/e`'s physical parent two levels shallower, so the last link's
+  // `../../../../q` walks out of the extraction root even though the
+  // lexical layer counted it safely inside package/.
+  const dir = mkdtempSync(join(tmpdir(), 'tarball-deeplink-'))
+  try {
+    const target = join(dir, 'extracted')
+    const tarball = buildDeterministicTarball([
+      fileEntry('package/a/anchor.js', 'anchor\n'),
+      symlinkEntry('package/a/b/c/d', '../..'), // legal: resolves back to <root>/a, two levels shallower
+      symlinkEntry('package/a/b/c/d/e', '../../../../q'), // physical parent is <root>/a → escapes
+      fileEntry('package/a/b/c/d/e/pwned.js', 'arbitrary-path write\n'),
+    ])
+    assert.throws(
+      () => extractTarballEntries(parseTarball(tarball), target),
+      /symlink 'package\/a\/b\/c\/d\/e'.*refusing to create the link/u,
+    )
+    // The escaped target never materialized, and the last link was never
+    // created (its physical parent is <root>/a, so it would sit at
+    // <root>/a/e pointing outside). resolve(<root>/a, ../../../../q) is
+    // exactly where the guard counted the target — assert nothing is there.
+    assert.equal(existsSync(resolve(join(target, 'a'), '..', '..', '..', '..', 'q')), false)
+    assert.equal(lstatSyncOptional(join(target, 'a', 'e')), null)
+    // The legal link survives: d resolves back to <root>/a, so content is
+    // reachable through the whole legal prefix.
+    assert.equal(readFileSync(join(target, 'a', 'b', 'c', 'd', 'anchor.js'), 'utf8'), 'anchor\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('extractTarballEntries still accepts legitimate relative symlinks, including under a legal parent link', () => {
+  // Regression for the creation-time guard: links whose targets stay inside
+  // the extraction root when counted against their REAL parent must keep
+  // extracting — same-directory targets, `..` targets that stay inside, and
+  // a link created UNDER a symlinked parent (hop 1 of the escape PoC is a
+  // legal link in its own right, and the guard must not blanket-reject
+  // links whose parent directory is a symlink).
+  const dir = mkdtempSync(join(tmpdir(), 'tarball-legitlinks-'))
+  try {
+    const target = join(dir, 'extracted')
+    const tarball = buildDeterministicTarball([
+      fileEntry('package/index.js', 'main\n'),
+      fileEntry('package/lib/deep.js', 'deep\n'),
+      fileEntry('package/q/anchor.js', 'q\n'),
+      symlinkEntry('package/link.js', 'index.js'), // same-directory target
+      symlinkEntry('package/sub/peer.js', '../lib/deep.js'), // a `..` that stays inside
+      symlinkEntry('package/x/y', '../q'), // hop 1 of the PoC — legal on its own
+      // Physically lands at <root>/q/sibling.js; `../q/anchor.js` counted
+      // from that real parent stays inside, so it passes the guard.
+      symlinkEntry('package/x/y/sibling.js', '../q/anchor.js'),
+    ])
+    extractTarballEntries(parseTarball(tarball), target)
+    assert.equal(readFileSync(join(target, 'link.js'), 'utf8'), 'main\n')
+    assert.equal(readFileSync(join(target, 'sub', 'peer.js'), 'utf8'), 'deep\n')
+    assert.equal(readFileSync(join(target, 'x', 'y', 'anchor.js'), 'utf8'), 'q\n')
+    assert.equal(readFileSync(join(target, 'x', 'y', 'sibling.js'), 'utf8'), 'q\n')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

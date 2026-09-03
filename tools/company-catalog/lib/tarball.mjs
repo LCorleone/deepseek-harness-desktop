@@ -131,14 +131,18 @@ const safeEntryPath = (path) => typeof path === 'string'
   && path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
 
 /**
- * Validate a symlink target against its entry's directory: the target must
- * be a non-empty relative path that lexically resolves back inside the
- * `package/` root. Absolute targets (and empty ones) are refused outright;
- * any `..` walk that would leave `package/` is an escape — extraction writes
- * files with writeFileSync, which follows symlinks, so a link resolving
- * outside the tree turns a later entry into an arbitrary-path write. The
- * containment is checked lexically at parse time; extractTarballEntries adds
- * an independent realpath-based safety net over what actually landed.
+ * Layer 1 of the symlink containment — the lexical fast fail at parse
+ * time: the target must be a non-empty relative path that lexically
+ * resolves back inside the `package/` root. Absolute targets (and empty
+ * ones) are refused outright; any `..` walk that would leave `package/` is
+ * an escape — extraction writes files with writeFileSync, which follows
+ * symlinks, so a link resolving outside the tree turns a later entry into
+ * an arbitrary-path write. Lexical only: it counts `..` against the entry
+ * path as written and cannot see that the link's parent directory may
+ * itself be an earlier symlink that relocates the link physically
+ * shallower — extractTarballEntries layers a creation-time realpath check
+ * (layer 2, assertLinkTargetInside) and a final walk over what landed
+ * (layer 3, assertExtractionContained) on top of this one.
  */
 function safeLinkTarget(entryPath, linkName) {
   if (typeof linkName !== 'string' || linkName.length === 0 || linkName.startsWith('/') || linkName.includes('\\')) {
@@ -323,14 +327,16 @@ export function stageSourceDirectory(sourceDir, targetDir) {
 }
 
 /**
- * Final containment assertion over an extraction: every node that landed —
- * files, directories, symlinks — must realpath back inside the target
- * directory. parseTarball's link-target validation already fails closed on
- * escapes before anything is written; this walk is the independent safety
- * net over the result itself (defense in depth for the arbitrary-path-write
- * class: extractTarballEntries can be called with hand-built entries, and a
- * containment bug in the lexical check must still be caught here). A
- * dangling symlink cannot have routed a write outside — any successful
+ * Layer 3 of the symlink containment, run after extraction: every node that
+ * landed — files, directories, symlinks — must realpath back inside the
+ * target directory. The lexical parse-time check (layer 1) and the
+ * creation-time realpath guard (layer 2) already fail closed before any
+ * escaping link exists or any byte is written through one; this walk is the
+ * independent safety net over the result itself (defense in depth for the
+ * arbitrary-path-write class: extractTarballEntries can be called with
+ * hand-built entries or a target directory that already carries a symlink,
+ * and a containment bug in either earlier layer must still be caught here).
+ * A dangling symlink cannot have routed a write outside — any successful
  * write or mkdir through it would have materialized its target — so it is
  * skipped rather than failing the walk.
  */
@@ -361,6 +367,35 @@ function assertExtractionContained(root) {
   }
 }
 
+/**
+ * Layer 2 of the symlink containment, at link-creation time: resolve the
+ * link's physical containing directory BEFORE the link exists and require
+ * the target to land back inside the extraction root when counted from
+ * there. Layer 1's lexical `..` arithmetic assumes the link sits at its
+ * entry path, but symlinkSync resolves `destination` through any symlink an
+ * earlier entry left in the parent chain — a link created at `x/y/inner`
+ * when `x/y` is itself a symlink physically lands at the resolved
+ * (possibly shallower) location, where the stored `../..` segments walk
+ * somewhere the lexical check never looked: two chained links suffice to
+ * point outside the root, and both the write-through and the final walk
+ * come too late (the walk even skips dangling links by design). realpathSync
+ * follows every earlier link and fails loudly when the parent does not
+ * exist — tar ordering puts directory entries first, so a missing parent is
+ * corruption to surface, not a shape to paper over. The root is itself
+ * realpath-normalized by extractTarballEntries, so the comparison is
+ * physical on both sides.
+ */
+function assertLinkTargetInside(root, destination, entry) {
+  const realParent = realpathSync(dirname(destination))
+  const resolved = resolve(realParent, entry.linkName)
+  const inside = relative(root, resolved)
+  if (inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(
+      `tarball symlink '${entry.path}' → '${entry.linkName}' resolves to ${resolved} from its physical containing directory, outside the extraction directory ${root} — refusing to create the link`,
+    )
+  }
+}
+
 /** Materialize a parsed tarball under a directory (the npm-fetch patch staging area). */
 export function extractTarballEntries(entries, targetDir) {
   mkdirSync(targetDir, { recursive: true })
@@ -373,6 +408,7 @@ export function extractTarballEntries(entries, targetDir) {
     }
     mkdirSync(dirname(destination), { recursive: true })
     if (entry.type === 'symlink') {
+      assertLinkTargetInside(root, destination, entry)
       rmSync(destination, { force: true })
       symlinkSync(entry.linkName, destination)
       continue
