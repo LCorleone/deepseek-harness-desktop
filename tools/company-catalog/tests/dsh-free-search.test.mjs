@@ -503,6 +503,134 @@ test('tool execution smoke (fakes): free_search_advanced runs the chain; free_se
   }
 })
 
+test('i18n surface: every t.<key> referenced in client.js exists in both the zh and the en dictionary', () => {
+  // 评审 P2-1 回归钉：键集收窄曾误删仍被脏状态指示器引用的 unsaved
+  // （渲染 undefined）。client.js 是 ModuleLoader 工厂包，无法在 Node 直接
+  // import——对源码做结构化解析：引用侧扫 t.<key>，字典侧按 8 空格缩进的
+  // 键行收集两语言键集。
+  const source = read(join(LIB_DIR, 'client.js'))
+  const i18nStart = source.indexOf('const I18N = {')
+  assert.notEqual(i18nStart, -1, 'client.js must define the I18N dictionaries')
+  const i18nEnd = source.indexOf('\n    };', i18nStart)
+  assert.notEqual(i18nEnd, -1, 'the I18N literal must close at the factory top level')
+  const block = source.slice(i18nStart, i18nEnd)
+  const dictionary = (lang) => {
+    const start = block.indexOf(`${lang}: {`)
+    assert.notEqual(start, -1, `the ${lang} dictionary must exist`)
+    const end = block.indexOf('\n      },', start)
+    assert.notEqual(end, -1, `the ${lang} dictionary must close`)
+    return new Set([...block.slice(start, end).matchAll(/^ {8}([A-Za-z_$][\w$]*):/gmu)].map((m) => m[1]))
+  }
+  const zh = dictionary('zh')
+  const en = dictionary('en')
+  assert.deepEqual([...en], [...zh], 'zh and en carry the same key set (order preserved)')
+  const referenced = [...source.matchAll(/\bt\.([A-Za-z_$][\w$]*)/gu)].map((m) => m[1])
+  assert.ok(referenced.length >= 20, `expected a realistic key surface, got ${String(referenced.length)}`)
+  for (const key of referenced) {
+    assert.ok(zh.has(key), `t.${key} is referenced but missing from the zh dictionary`)
+    assert.ok(en.has(key), `t.${key} is referenced but missing from the en dictionary`)
+  }
+  assert.ok(new Set(referenced).has('unsaved'), 'the dirty-indicator key unsaved must stay referenced and defined')
+})
+
+test('system prompt engine list: env-configured keys count — same resolution path and priority as the chain', async () => {
+  // 评审 P2-2 回归钉：refreshPrompt 曾只看设置值，漏掉链路 resolveApiKey
+  // 的 TAVILY_API_KEY/EXA_API_KEY 环境变量回退，env 配 key 时提示词谎报
+  // 「无 keyed 引擎」。
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  const originalTavily = process.env.TAVILY_API_KEY
+  const originalExa = process.env.EXA_API_KEY
+  try {
+    // 1. settings 无 key、仅 env 配 TAVILY_API_KEY：提示词必须列 tavily。
+    process.env.TAVILY_API_KEY = 'tvly-env'
+    delete process.env.EXA_API_KEY
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { cache: false })
+      assert.equal(registered.promptSections.length, 1)
+      assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily\b/u)
+      assert.doesNotMatch(registered.promptSections[0].text, /Currently keyed engines: none/u)
+    }
+    // 2. 设置值与 env 同时存在：优先级与链一致（设置值 > env）——链发出的
+    //    请求必须携带设置值 key，提示词与链同源。
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { tavilyApiKey: 'tvly-settings', cache: false })
+      assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily\b/u)
+      let seenAuthorization = null
+      globalThis.fetch = async (url, init) => {
+        if (String(url).startsWith('https://api.tavily.com/')) {
+          seenAuthorization = init?.headers?.authorization
+          return jsonResponse(TAVILY_JSON)
+        }
+        throw new TypeError(`fake fetch: no route for ${String(url)}`)
+      }
+      const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+      assert.equal(result.provider, 'tavily')
+      assert.equal(seenAuthorization, 'Bearer tvly-settings', 'the settings value must beat the env value in the actual chain')
+    }
+  } finally {
+    for (const [name, value] of [['TAVILY_API_KEY', originalTavily], ['EXA_API_KEY', originalExa]]) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    globalThis.fetch = originalFetch
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('provider.search with an already-aborted signal: no fetch is issued and the abort resolves readably', async () => {
+  // 评审 P3 回归钉：fetchHtml 曾对已取消的 signal 照常发请求（abort 事件
+  // 不重放），最坏情有带一个引擎的完整重试周期。预检后 fetch 零调用。
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  const originalSetTimeout = globalThis.setTimeout
+  try {
+    const { ctx, registered } = makeFakeCtx()
+    plugin.apply(ctx, { cache: false })
+    let fetchCalls = 0
+    globalThis.fetch = async () => { fetchCalls += 1; return jsonResponse(TAVILY_JSON) }
+    // collapse the retry backoff so the abort path stays fast
+    globalThis.setTimeout = (fn) => { if (typeof fn === 'function') fn(); return { unref() {} } }
+    const controller = new AbortController()
+    controller.abort()
+    const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 }, controller.signal)
+    assert.equal(fetchCalls, 0, 'an already-aborted signal must never reach fetch')
+    assert.deepEqual(result.sources, [])
+    assert.equal(result.truncated, false)
+    assert.match(result.content, /search aborted/u, 'the readable outcome must say the search was aborted')
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.setTimeout = originalSetTimeout
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('a whole chain of true 0-results reads as “nothing matched”, not as an engine outage', async () => {
+  // 评审 P3 回归钉：全部引擎真无结果时，总结句不得再宣称「搜索暂不可用」
+  // （per-engine 条目已带 returned 0 results 字样）。
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  try {
+    const { ctx, registered } = makeFakeCtx()
+    plugin.apply(ctx, { cache: false })
+    const EMPTY_HTML = `<html><body><ol></ol>${'<pad>'.repeat(120)}</body></html>`
+    globalThis.fetch = fakeFetch([
+      ['https://www.bing.com/', jsonResponse(EMPTY_HTML)],
+      ['https://html.duckduckgo.com/', jsonResponse(EMPTY_HTML)],
+    ])
+    const result = await registered.providers[0].search({ query: 'obscure query with no matches', maxResults: 5 })
+    assert.deepEqual(result.sources, [])
+    assert.match(result.content, /returned 0 results for this query/u)
+    assert.match(result.content, /nothing matched/u)
+    assert.doesNotMatch(result.content, /temporarily unavailable/u)
+  } finally {
+    globalThis.fetch = originalFetch
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
 test('bridge smoke: raw-search is loopback-guarded, POST-only, and answers through the provider', async () => {
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch

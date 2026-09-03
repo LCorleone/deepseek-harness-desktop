@@ -6,9 +6,10 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
   applyTreeDigests,
@@ -20,6 +21,7 @@ import {
 } from '../lib/allowlist.mjs'
 import { sha512IntegrityOf } from '../lib/tarball.mjs'
 
+const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CATALOG_ORIGIN = 'https://gitlab.company.example'
 const PROJECT = 'julu/dsh-desktop-config'
 const tarballUrl = (filename) => `${CATALOG_ORIGIN}/${PROJECT}/-/raw/master/packages/${filename}`
@@ -247,4 +249,29 @@ test('the digest fill treats resolved tarball entries like any other entry', () 
   const entry = { ...baseEntry, treeDigest: 'c'.repeat(64), source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.1.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' } }
   const filled = applyTreeDigests([entry], [{ packageName: entry.packageName, version: entry.version, treeDigest: 'c'.repeat(64) }])
   assert.deepEqual(filled.unchanged, [entryKey(entry)])
+})
+
+test('the landed allowlist pins the release policy’s real catalog origin — no example domains survive review', () => {
+  // 评审 P1 回归钉：上面各测试自带的示例域 origin 只测机制；落地的
+  // allowlist.json 必须与桌面发布策略的 companyCatalogOrigin 对拍——示例域
+  // 在默认源下首次真实发布即 fail-closed，绕过则整个 catalog 被客户端拒
+  // （desktop-market 在清单解析内抛错，殃及无辜条目）。
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+  const policy = JSON.parse(readFileSync(join(repoRoot, 'dsh-plugin-desktop', 'src', 'policy', 'desktop-policy.release.json'), 'utf8'))
+  assert.equal(typeof policy.companyCatalogOrigin, 'string', 'the release policy must pin companyCatalogOrigin')
+  assert.equal(/\.example$/u.test(new URL(policy.companyCatalogOrigin).hostname), false, 'the release policy origin itself must not be an example domain')
+  const allowlistPath = join(TOOL_DIR, 'allowlist.json')
+  const landed = JSON.parse(readFileSync(allowlistPath, 'utf8'))
+  const tarballEntries = landed.filter((entry) => entry.source?.kind === 'tarball')
+  assert.ok(tarballEntries.length > 0, 'the landed allowlist carries at least one tarball-channel entry')
+  for (const entry of tarballEntries) {
+    const origin = new URL(entry.source.url).origin
+    assert.equal(
+      origin,
+      policy.companyCatalogOrigin,
+      `${entry.packageName}@${entry.version} source.url origin must equal the release policy companyCatalogOrigin (${policy.companyCatalogOrigin})`,
+    )
+  }
+  // And the landed file passes the review-time validation under that real origin.
+  assert.equal(loadAllowlist(allowlistPath, { companyCatalogOrigin: policy.companyCatalogOrigin }).length, landed.length)
 })

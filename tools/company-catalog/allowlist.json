@@ -20,7 +20,7 @@
     },
     "source": {
       "kind": "tarball",
-      "url": "https://gitlab.company.example/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz",
       "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.181.tgz"
     }
   }

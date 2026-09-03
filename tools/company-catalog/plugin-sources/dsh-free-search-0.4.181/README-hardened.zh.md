@@ -25,7 +25,10 @@ P7 首个上架插件：上游社区插件 `dsh-free-search` 的公司加固收�
 按钮与 `bridgeCheckUpdate` / `runUpdate`。全部删除：加固版没有版本探测、
 没有一键升级、没有对 registry.npmjs.org 的任何请求。测试断言：vendored 树
 内无 `pnpm add`、无 `child_process`、无 `npmjs.com`、无 `check-update`/`/update`
-路由。
+路由。客户端 I18N 键集随之收窄为「仍被引用的键」：曾因收窄误删仍被脏状态
+指示器引用的 `unsaved`（zh `未保存` / en `unsaved`，渲染 undefined）——
+已修复回补，并有断言钉住 client.js 引用的全部 `t.<key>` 在两语言字典
+均存在，防再丢。
 
 ### b. tools/ 旁路（本地 4789 HTTP server 直写 profile patch）
 
@@ -120,7 +123,7 @@ section 冲突；注册工具统一 `free_search_` 前缀（上游的
 ```sh
 corepack yarn catalog pack-tarball \
   --from-allowlist \
-  --catalog-origin https://gitlab.company.example   # 或 COMPANY_CATALOG_ORIGIN
+  --catalog-origin https://gitlab.s.dai.deloitte.cn   # 或 COMPANY_CATALOG_ORIGIN
 ```
 
 - 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.181/`
@@ -133,9 +136,12 @@ corepack yarn catalog pack-tarball \
   同名 `.pack.json`（sha512 / treeDigest / signable path）。
 - allowlist 条目（`tools/company-catalog/allowlist.json`）用
   `source:{kind:'tarball', url, path}` pack-artifact 形态，
-  `repository` 显式钉上游，**未携带 `treeDigest`**——参考环境（Windows
-  fleet 矩阵）实测后按流程评审落值；本仓 Linux 环境测出的 digest 不作为
-  评审值入库。
+  `repository` 显式钉上游，url 指向真实源
+  `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/`
+  （与 `desktop-policy.release.json` 的 `companyCatalogOrigin` 一致；测试对拍
+  两文件，防示例域再混入）。**未携带 `treeDigest`**——首发权威发布时落值：
+  参考环境（Windows fleet 矩阵）实测后按流程评审落值；本仓 Linux 环境测出的
+  digest 不作为评审值入库。
 - 真发布仍按 fleet 门禁顺序：全员升级 field-aware 构建 → 参考环境实测
   treeDigest → 评审落值 → 更高 sequence 重签 → publish-local 推 GitLab。
 

@@ -37,6 +37,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
 import {
   ALL_ENGINES,
+  ZERO_RESULTS_ERROR,
   approximateTimeRange,
   isoDaysAgo,
   parseTimeRange,
@@ -121,6 +122,10 @@ function uniqueSources(sources, limit) {
 }
 
 async function fetchHtml(url, signal) {
+  // 进入时外部 signal 已取消：abort 事件不会对已取消的 signal 重放，不预检
+  // 的话本函数会带着已取消的请求跑完 12s 超时与 3 次重试（上游同缺陷，
+  // 评审 P3 收编修正）。
+  if (signal?.aborted) throw new Error("search aborted");
   // 单次请求超时 12s，避免挂起被当成 Connection error（上游原样收编）
   let response;
   try {
@@ -563,11 +568,15 @@ function apply(ctx, config) {
 
   // key 解析：本插件设置节 > 环境变量。凭据中心路径已剥离——未 inject 的
   // 服务在 Cordis proxy 上 get 即抛（?. 救不了），这里不再触碰任何 ctx.get。
-  const resolveApiKey = async (envName, settingsKey) => {
+  // 同步核心 resolveApiKeyValue 供链调用（resolveApiKey）与系统提示词
+  // （refreshPrompt）共用：同一条优先级，提示词永远不谎报 keyed 引擎
+  // （评审 P2-2：env 配 key 时不得宣称「无 keyed 引擎」）。
+  const resolveApiKeyValue = (envName, settingsKey) => {
     const cfg = current();
     if (settingsKey && cfg[settingsKey]) return cfg[settingsKey];
     return process.env[envName] ?? "";
   };
+  const resolveApiKey = async (envName, settingsKey) => resolveApiKeyValue(envName, settingsKey);
 
   // 分发到链内四引擎的具体实现（时间过滤随引擎能力：tavily/exa 精确、
   // ddg 取近似档、bing 忽略）。
@@ -654,13 +663,20 @@ function apply(ctx, config) {
         return { ...cached, _cache: "miss" };
       }
 
-      // 全链失败：可读文本，不抛（单进程 harness 容错红线）
+      // 全链失败：可读文本，不抛（单进程 harness 容错红线）。全部引擎都是
+      // 「真 0 结果」时不是引擎故障——总结句换措辞，指引 agent 告知用户
+      // 无匹配、建议改写查询，而非宣称搜索不可用（per-engine 条目本就带
+      // returned 0 results 字样，与连接错误可区分；评审 P3）。
       const summary = outcome.failures.map((f) => `${f.engine}: ${f.error}`).join("; ").slice(0, 500);
-      logger.warn(`free-search: the whole engine chain failed (${summary})`);
+      const allZeroResults = outcome.failures.length > 0
+        && outcome.failures.every((f) => f.error.includes(ZERO_RESULTS_ERROR));
+      logger.warn(`free-search: the whole engine chain ${allZeroResults ? "returned 0 results" : "failed"} (${summary})`);
       return {
         sources: [],
         truncated: false,
-        content: `free-search: every engine in the company chain (${chain.join(" -> ")}) failed. Tell the user web search is temporarily unavailable rather than retrying immediately. Failures: ${summary}`,
+        content: allZeroResults
+          ? `free-search: every engine in the company chain (${chain.join(" -> ")}) ran but returned 0 results for this query — the engines are healthy, nothing matched. Tell the user the search found no results and suggest a broader or rephrased query; do not claim web search is unavailable. Engines: ${summary}`
+          : `free-search: every engine in the company chain (${chain.join(" -> ")}) failed. Tell the user web search is temporarily unavailable rather than retrying immediately. Failures: ${summary}`,
       };
     },
   };
@@ -916,9 +932,11 @@ function apply(ctx, config) {
         disposeSection = null;
       }
       const cfg = current();
+      // keyed 引擎清单与实际链同源：同一 resolveApiKeyValue（设置值 > 环境变量），
+      // env 配 key 时提示词照实列出（评审 P2-2）。
       const keyed = resolveEngineChain({
-        tavilyKey: cfg.tavilyApiKey,
-        exaKey: cfg.exaApiKey,
+        tavilyKey: resolveApiKeyValue("TAVILY_API_KEY", "tavilyApiKey"),
+        exaKey: resolveApiKeyValue("EXA_API_KEY", "exaApiKey"),
       }).filter((engine) => engine === "tavily" || engine === "exa");
       disposeSection = sctx.systemPrompt.section({
         name: "free-search:engines",

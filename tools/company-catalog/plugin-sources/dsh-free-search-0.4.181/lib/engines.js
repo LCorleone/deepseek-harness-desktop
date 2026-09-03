@@ -28,6 +28,14 @@ export const ALL_ENGINES = CHAIN_ENGINES;
 const keyPresent = (key) => typeof key === "string" && key.trim().length > 0;
 
 /**
+ * Failure text recorded when an engine answers but returns zero sources — the
+ * one chain failure that is NOT an engine fault. lib/index.js keys the
+ * total-chain summary wording off this marker so "nothing matched" never
+ * reads as "search is broken" (review P3).
+ */
+export const ZERO_RESULTS_ERROR = "returned 0 results";
+
+/**
  * Resolve the engine chain for the current configuration.
  *
  * @param {{ tavilyKey?: string, exaKey?: string }} keys configured keys
@@ -89,7 +97,7 @@ export async function runEngineChain({ chain, runEngine, signal, budgetMs = CHAI
     try {
       const result = await runEngine(engine, effectiveSignal);
       if (result === null || typeof result !== "object" || !Array.isArray(result.sources) || result.sources.length === 0) {
-        const error = `engine "${engine}" returned 0 results`;
+        const error = `engine "${engine}" ${ZERO_RESULTS_ERROR}`;
         failures.push({ engine, error });
         continue;
       }
