@@ -96,3 +96,13 @@ Status: Implemented（2026-09-04，P7 闭环：dsh-free-search 0.4.182 经 tarba
 **练**：亲自走一遍 fixture-hello——`cli.mjs pack-tarball --source-dir tools/company-catalog/fixtures/fixture-hello` 后重读 e2e 逐步输出，直到每行（pack→allowlist→gate→sign→publish dry-run→双验→boot）都能对应到你打开过的源码文件；做到这一点即完成接手。
 
 **非文档交接项**：仓库与 GitLab 权限、CI secrets 所有权（签名钥 `c469…`/GITLAB_TOKEN）、fleet 升级纪律（门禁是机械的，「fleet 是否真升级了」是人的判断）。
+
+## 上传件发布（当前手工路径）
+
+审核通过的 .tgz 上传件（未来网页市场入口）今天无需管线改动：
+
+1. 用 company-catalog 的安全解包器解包（tarball.mjs 三层防御：symlink 逃逸/绝对目标/截断全拒）——绝不直接用 tar 解不可信字节
+2. 解包内容放 `plugin-sources/<name>-<version>/`，按源码收编同款加 allowlist 条目（版本范围+bundle 一致性断言照跑）
+3. 走第 3 节标准发布流——重打包与上传件字节不同但内容相同，签名清单钉的是我们打的 sha512+树摘要，信任链与字节来源无关
+
+决策点（已记录，刻意延后）：`source.artifact` 条目形态 + `--from-artifact` 免重打包路径，待网页市场上传量落地后再建——手工路径在此之前安全且完整。

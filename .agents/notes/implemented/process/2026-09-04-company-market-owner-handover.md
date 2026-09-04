@@ -386,6 +386,31 @@ How to run the pieces:
   file catches up via the post-publish bump. Never hand-edit a sequence
   down.
 
+## Publishing an approved uploaded tarball (current manual path)
+
+For plugins that arrive as reviewed `.tgz` uploads (future web-market
+intake) rather than vendored source, no pipeline changes are required
+today — use the safe manual path:
+
+1. **Safe-extract the upload**: unpack the reviewed tarball through the
+   company-catalog tar parser/extractor (`tools/company-catalog/lib/tarball.mjs`
+   — the three-layer defense rejects symlink escapes, absolute targets,
+   and truncated archives before anything lands on disk). Never unpack
+   untrusted bytes with `tar` directly.
+2. **Vendor the extracted tree**: place the contents under
+   `tools/company-catalog/plugin-sources/<name>-<version>/` and add the
+   allowlist entry exactly like a source-curated plugin (runtime range,
+   bundle patch consistency — the pipeline assertion runs on pack).
+3. **Publish through the standard flow** (section 3). The repacked tarball
+   differs byte-wise from the upload but is content-identical — the
+   signed manifest pins OUR packed sha512 + treeDigest, and the trust
+   chain is indifferent to where the bytes originated.
+
+Decision point (deferred): a `source.artifact` allowlist form plus a
+`--from-artifact` verify-without-repack path are deliberate **future
+work**, to be built when the web market's upload volume justifies it —
+not before. The manual path above is safe and complete until then.
+
 ## 8. Cold-start checklist — your first day
 
 **Read (in this order):**
