@@ -199,6 +199,57 @@
   .defense.d7{border-top-color:var(--navy);}   .defense.d7 .dno{background:var(--navy);}
   .defense.d8{border-top-color:var(--red);}    .defense.d8 .dno{background:var(--red);}
 
+  /* ---------- 双锁 / 保障卡片（03 章） ---------- */
+  .guard-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+    gap:14px;
+    margin:16px 0 4px;
+  }
+  .guard{
+    border:1px solid var(--line);
+    border-radius:10px;
+    background:#fbfcfe;
+    padding:13px 15px 11px;
+    font-size:14.5px;line-height:1.68;
+  }
+  .guard .gno{
+    display:inline-block;
+    color:#fff;font-size:14px;font-weight:700;
+    border-radius:999px;
+    padding:1px 12px;
+    margin-bottom:8px;
+  }
+  .guard p{margin:6px 0;}
+  .guard .gkey{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  .guard.gseal{border-top:4px solid var(--steel);}   .guard.gseal .gno{background:var(--steel);}
+  .guard.gdigest{border-top:4px solid var(--green);}  .guard.gdigest .gno{background:var(--green);}
+  .guard.glist{border-top:4px solid var(--purple);}   .guard.glist .gno{background:var(--purple);}
+  .guard.grevoke{border-top:4px solid var(--red);}    .guard.grevoke .gno{background:var(--red);}
+
+  /* ---------- 实战案例卡（03 章） ---------- */
+  .case{
+    border:1px solid var(--line);
+    border-top:4px solid var(--orange);
+    border-radius:10px;
+    background:#fbfcfe;
+    padding:13px 16px 11px;
+    margin:16px 0 4px;
+    font-size:14.5px;line-height:1.7;
+  }
+  .case .ct{font-weight:700;color:var(--navy);display:block;margin-bottom:2px;}
+  .case .chain{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;margin:10px 0 8px;}
+  .case .step{
+    flex:1 1 138px;min-width:126px;
+    background:#fff;border:1px solid var(--line);border-radius:8px;
+    padding:7px 8px;font-size:13.5px;line-height:1.55;
+    display:flex;align-items:center;justify-content:center;text-align:center;
+  }
+  .case .step b{color:var(--navy);}
+  .case .step.last{border:1.5px solid var(--green);}
+  .case .step.last b{color:var(--green);}
+  .case .arr{align-self:center;color:var(--faint);font-size:15px;font-weight:700;flex:none;}
+
   /* ---------- 收尾 ---------- */
   .verdict{
     text-align:center;
@@ -249,7 +300,7 @@
     .hero .meta b{color:var(--navy);}
     section{box-shadow:none;border:1px solid #c9ced6;border-radius:6px;padding:14px 16px 12px;break-inside:auto;margin-bottom:12px;}
     h2,h3{break-after:avoid;}
-    figure,.defense,.metric,.flowitem,.callout,.pipe-summary{break-inside:avoid;}
+    figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case{break-inside:avoid;}
     figure svg{max-width:100%;}
     .pipe-summary{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .pipe-summary b{color:var(--navy);}
@@ -544,9 +595,118 @@
   </div>
 </section>
 
-<!-- ======================= 三、防线卡片（措施 → 防什么） ======================= -->
+<!-- ======================= 三、插件加密防护细解 ======================= -->
 <section id="s3">
-  <h2><span class="chip">03</span>防线层层设卡，不靠单点<span class="h2sub">每道防线成对写明：做了什么 · 防住什么</span></h2>
+  <h2><span class="chip">03</span>插件加密防护细解：两把锁，缺一不可<span class="h2sub">公司印章 + 指纹清单 · 拆开细讲</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead">上一章八步流水线里，「公司盖章」四个字反复出现——这枚章到底厉害在哪？
+  这一章把插件防护背后的<b>双锁体系</b>单独拆开讲透：一把<b>公司印章</b>管「是不是公司发布的」，
+  一把<b>指纹清单</b>管「内容有没有被中途换过」。两把锁各管一件事，缺一不可。</p>
+
+  <div class="guard-grid">
+    <div class="guard gseal">
+      <span class="gno">锁一 · 公司印章 = 数字签名</span>
+      <p>公司持有一把<b>唯一的私人印章</b>，存放在公司构建系统的保险库里：不随产品分发，任何员工电脑上都没有。</p>
+      <p>每个插件上架前，必须先盖上这枚章。造假者手里没有印章，就盖不出一枚能通过验证的章。</p>
+      <p class="gkey">员工电脑上配备的只是「验章器」——好比放大镜：<b>验章器人人可以有，刻章刀只有公司有</b>。谁能验、谁能刻，一开始就分开，这正是数字签名在数学上给出的保证。</p>
+    </div>
+    <div class="guard gdigest">
+      <span class="gno">锁二 · 全文件指纹清单</span>
+      <p>盖章只证明「这是公司发布的」，还不能证明「内容没在半路被换掉」。</p>
+      <p>所以公司发布每个插件时，同时记下它<b>每一个文件的指纹</b>，汇总成一个<b>总指纹</b>，钉在这份插件的签名清单里、随插件一起发布。</p>
+      <p class="gkey">任何一个文件被改动一个字节，总指纹就对不上——<b>换内容 = 换锁</b>，当场识破。</p>
+    </div>
+  </div>
+
+  <p>两把锁造好了，什么时候验？<b>三个时机，一次不落</b>——同一套核验动作（验章、验指纹），
+  在插件进店之前、落机之时、每天开机之后，反复执行：</p>
+
+  <figure>
+    <svg viewBox="0 0 1088 296" role="img" aria-label="三道核验时机时间线：上架时，来源地址必须与公司市场地址一字不差，随后验章、逐项核对指纹，仿冒地址、假章假指纹进不了店门；安装时，下载的每个字节当场逐一验章和指纹，对不上不但拒装、已下载的部分也当场清掉；每次启动时，已装插件全部重新验一遍章和指纹，夜里被偷改的插件次日开机就失效，装了也白装。">
+      <defs>
+        <marker id="mk-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#1c2e52"/>
+        </marker>
+      </defs>
+
+      <!-- 顶部标签 -->
+      <line x1="28" y1="22" x2="1060" y2="22" stroke="#1c2e52" stroke-width="1.4"/>
+      <rect x="334" y="11" width="420" height="21" fill="#fbfcfe"/>
+      <text x="544" y="27" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">三个时机 · 同一套核验动作：章对不对 · 指纹对不对</text>
+
+      <!-- 时机一：上架时 -->
+      <rect x="28" y="42" width="324" height="232" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="56" cy="72" r="14" fill="#2f5fa8"/>
+      <text x="56" y="77" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">1</text>
+      <text x="80" y="77" font-size="15.5" font-weight="700" fill="#1c2e52">上架时</text>
+      <text x="46" y="112" font-size="14" fill="#5d6774">插件想上架：来源地址必须与</text>
+      <text x="46" y="136" font-size="14" fill="#5d6774">公司市场地址一字不差；随后</text>
+      <text x="46" y="160" font-size="14" fill="#5d6774">验章、逐项核对指纹清单</text>
+      <line x1="44" y1="186" x2="336" y2="186" stroke="#dce1e9" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="46" y="214" font-size="14.5" font-weight="700" fill="#2f5fa8">仿冒地址、假章假指纹，进不了店门</text>
+
+      <line x1="356" y1="158" x2="378" y2="158" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-t)"/>
+
+      <!-- 时机二：安装时 -->
+      <rect x="382" y="42" width="324" height="232" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="410" cy="72" r="14" fill="#2e7d5b"/>
+      <text x="410" y="77" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">2</text>
+      <text x="434" y="77" font-size="15.5" font-weight="700" fill="#1c2e52">安装时</text>
+      <text x="400" y="112" font-size="14" fill="#5d6774">员工点安装：下载的每个字节</text>
+      <text x="400" y="136" font-size="14" fill="#5d6774">当场逐一验——章对不对、</text>
+      <text x="400" y="160" font-size="14" fill="#5d6774">指纹清单对不对</text>
+      <line x1="398" y1="186" x2="690" y2="186" stroke="#dce1e9" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="400" y="214" font-size="14.5" font-weight="700" fill="#2e7d5b">对不上不但拒装，</text>
+      <text x="400" y="238" font-size="14.5" font-weight="700" fill="#2e7d5b">已下载的部分也当场清掉</text>
+
+      <line x1="710" y1="158" x2="732" y2="158" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-t)"/>
+
+      <!-- 时机三：每次启动时 -->
+      <rect x="736" y="42" width="324" height="232" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="764" cy="72" r="14" fill="#b4541c"/>
+      <text x="764" y="77" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">3</text>
+      <text x="788" y="77" font-size="15.5" font-weight="700" fill="#1c2e52">每次启动时</text>
+      <text x="754" y="112" font-size="14" fill="#5d6774">每天打开应用：已装插件全部</text>
+      <text x="754" y="136" font-size="14" fill="#5d6774">重新验一遍章和指纹，不因为</text>
+      <text x="754" y="160" font-size="14" fill="#5d6774">「装过了」就免检</text>
+      <line x1="752" y1="186" x2="1044" y2="186" stroke="#dce1e9" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="754" y="214" font-size="14.5" font-weight="700" fill="#b4541c">夜里被偷改的插件，次日开机</text>
+      <text x="754" y="238" font-size="14.5" font-weight="700" fill="#b4541c">就失效——装了也白装</text>
+    </svg>
+    <figcaption><b>图 3 · 三道核验时机。</b>同一套核验动作（验章 · 验指纹）在三个时机反复执行：上架时、安装时、每次启动时——任一环节对不上，插件一律不放行。</figcaption>
+  </figure>
+
+  <p>两把锁之外，还有两处同样的门道——<b>清单</b>与<b>下架</b>本身，也在这套体系里：</p>
+
+  <div class="guard-grid">
+    <div class="guard glist">
+      <span class="gno">连「清单」也盖了章</span>
+      <p>市场这边还有一份<b>插件目录清单</b>：有哪些插件、哪些版本、对应什么指纹。这份目录整体再盖一次公司章——<b>连「清单」都不能伪造，也不能增删</b>：多一行、少一行、改一个字，章都对不上。</p>
+    </div>
+    <div class="guard grevoke">
+      <span class="gno">远程吊销，无需上门</span>
+      <p>某个插件万一出问题，公司只需在清单里把它<b>标记下架</b>、重新盖章发布；员工端下次拉取新清单，这款插件<b>立即失效</b>。不用挨个通知，更不用上门处理。</p>
+    </div>
+  </div>
+
+  <div class="case">
+    <span class="ct">实战走一遍 · 首个收编的社区插件（联网搜索）</span>
+    社区里口碑再好的开源插件，进公司也必须原样走完这套锁：
+    <div class="chain">
+      <div class="step">社区开源的<br><b>联网搜索插件</b></div><span class="arr">→</span>
+      <div class="step">安全审查发现<br><b>自带「自更新后门」</b></div><span class="arr">→</span>
+      <div class="step"><b>剥离后门</b>与<br>多余外联</div><span class="arr">→</span>
+      <div class="step">公司重新打包<br><b>盖上公司印章</b></div><span class="arr">→</span>
+      <div class="step last"><b>上架公司市场</b></div>
+    </div>
+    连「插件自己给自己升级」的暗门都被拆掉、多余的网络出口全部收拢，剥离得彻不彻底还有自动化检查持续把关——盖过章的版本，与开源原版早已不是同一份代码。这款插件的收编已经完成（见 <b>02 章「首个实战案例」</b>）：<b>再好的社区插件，也必须过完这套锁，才能进公司的门。</b>
+  </div>
+</section>
+
+<!-- ======================= 四、防线卡片（措施 → 防什么） ======================= -->
+<section id="s4">
+  <h2><span class="chip">04</span>防线层层设卡，不靠单点<span class="h2sub">每道防线成对写明：做了什么 · 防住什么</span></h2>
   <hr class="h2rule">
 
   <p class="lead">安全不押注在某一道关卡上。下面每道防线各自独立、层层叠扣——
@@ -597,8 +757,8 @@
   </div>
 </section>
 
-<!-- ======================= 四、收尾 ======================= -->
-<section id="s4">
+<!-- ======================= 五、收尾 ======================= -->
+<section id="s5">
   <div class="verdict">
     <div class="big">AI 能力全部经由公司可控通道交付 —— 可审计、可撤销、可追溯。</div>
     <div class="small">谁能用，看登录；能干什么，看权限；用了多少，有台账；出问题，能撤销。</div>
