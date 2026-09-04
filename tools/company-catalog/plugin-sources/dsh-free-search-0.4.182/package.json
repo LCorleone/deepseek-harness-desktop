@@ -1,6 +1,6 @@
 {
   "name": "dsh-free-search",
-  "version": "0.4.181",
+  "version": "0.4.182",
   "description": "Free web search for DeepSeek Harness, company-hardened build of upstream v0.4.18: reviewed engine chain tavily (keyed) -> exa (keyed) -> bing -> ddg, zero-key out of the box, settings-section key configuration, no self-update path (updates arrive through the company catalog channel).",
   "type": "module",
   "main": "lib/index.js",
@@ -48,7 +48,7 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "cordis.patch.yml"
+      "patch": "./cordis.patch.yml"
     },
     "client": {
       "inject": [

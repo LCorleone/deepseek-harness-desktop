@@ -311,6 +311,11 @@ function candidateKey(sourceRecordId: string, itemId: string): string {
   return `${sourceRecordId}\0${itemId}`
 }
 
+/** Inline a caught cause's message so a refusal text never hides the actual reason. */
+function causeDetail(cause: unknown): string {
+  return cause instanceof Error ? ` ${cause.message}` : ''
+}
+
 function opaqueToken(): string {
   return randomBytes(32).toString('base64url')
 }
@@ -710,7 +715,15 @@ async function assertInstalledBundleFromSnapshot(
   if (manifest.name !== packageName || manifest.version !== version) throw new Error('installed package mismatch')
   const patch = bundlePatch(manifest)
   if (patch === undefined || !safeBundlePatch(patch) || patch !== expectedPatch) {
-    throw new Error('bundle patch missing')
+    // Spelled with both values on purpose: `safeBundlePatch` normalizes an
+    // optional leading './' before validating, so a bare 'cordis.patch.yml'
+    // package declaration and a './cordis.patch.yml' signed entry are each
+    // individually valid yet never equal — the exact prefix drift that rolled
+    // back real-machine installs while the bare catch below hid the reason.
+    throw new Error(
+      `bundle patch mismatch: the installed package declares ${patch === undefined ? 'no dsh.bundle.patch' : JSON.stringify(patch)}, `
+      + `the verified target expects ${JSON.stringify(expectedPatch)}`,
+    )
   }
   const patchPath = resolve(resolvedPackageDir, patch)
   if (!containedPath(resolvedPackageDir, patchPath)) throw new Error('bundle patch invalid')
@@ -1101,10 +1114,9 @@ export class MarketInstallService {
         // The cause is runPlugin's MarketInstallError, whose message already
         // carries the captured pnpm stderr tail; inline it so this branch
         // does not swallow the actual failure reason behind a generic text.
-        const detail = cause instanceof Error ? ` ${cause.message}` : ''
         throw new MarketInstallError(
           'operation-failed',
-          `The package manager failed after changing the active profile, so the partial installation was rolled back.${detail}`,
+          `The package manager failed after changing the active profile, so the partial installation was rolled back.${causeDetail(cause)}`,
         )
       }
       let installedDir: string
@@ -1117,11 +1129,15 @@ export class MarketInstallService {
           verification.integrity,
         )
         operationSignal.throwIfAborted()
-      } catch {
+      } catch (cause) {
         await this.rollbackInstall(profile, candidate.packageName, receiptId)
+        // The cause is the post-install assertion's own error (bundle
+        // identity, bundle patch, lockfile provenance) — inlining it keeps
+        // the refusal honest instead of swallowing the reason behind a
+        // generic text (the failure mode that hid the 0.4.181 prefix drift).
         throw new MarketInstallError(
           'operation-failed',
-          'The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.',
+          `The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.${causeDetail(cause)}`,
         )
       }
       // Post-install measurement (P2-3): the receipt records what is actually
@@ -1132,11 +1148,11 @@ export class MarketInstallService {
         try {
           treeDigest = await computeInstallTreeDigest(installedDir)
           operationSignal.throwIfAborted()
-        } catch {
+        } catch (cause) {
           await this.rollbackInstall(profile, candidate.packageName, receiptId)
           throw new MarketInstallError(
             'operation-failed',
-            'The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.',
+            `The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.${causeDetail(cause)}`,
           )
         }
       }
@@ -1197,7 +1213,9 @@ export class MarketInstallService {
       await assertInstalledBundle(profile, receipt.packageName, receipt.version, receipt.bundlePatch, receipt.integrity)
       operationSignal.throwIfAborted()
     }
-    catch { throw new MarketInstallError('conflict', 'The installed plugin no longer matches its market receipt.') }
+    catch (cause) {
+      throw new MarketInstallError('conflict', `The installed plugin no longer matches its market receipt.${causeDetail(cause)}`)
+    }
     const expiresAt = this.now() + this.intentTtlMs
     const token = this.issueIntent({ kind: 'uninstall', receipt, profile, expiresAt })
     return {
@@ -1230,10 +1248,17 @@ export class MarketInstallService {
         )
         operationSignal.throwIfAborted()
       }
-      catch { throw new MarketInstallError('conflict', 'The installed plugin no longer matches its market receipt.') }
+      catch (cause) {
+        throw new MarketInstallError('conflict', `The installed plugin no longer matches its market receipt.${causeDetail(cause)}`)
+      }
       await this.runPlugin(['remove', currentReceipt.packageName], profile, operationSignal)
       try { await assertRemoved(profile, currentReceipt.packageName) }
-      catch { throw new MarketInstallError('operation-failed', 'The package manager finished, but the plugin remains in the active profile.') }
+      catch (cause) {
+        throw new MarketInstallError(
+          'operation-failed',
+          `The package manager finished, but the plugin remains in the active profile.${causeDetail(cause)}`,
+        )
+      }
       try {
         await this.saveReceipts(this.receipts().filter(receipt => receipt.receiptId !== currentReceipt.receiptId))
       } catch {

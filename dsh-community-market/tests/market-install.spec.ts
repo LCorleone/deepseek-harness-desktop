@@ -1123,10 +1123,61 @@ describe('market install service', () => {
     )
     service.observeCatalog(snapshot())
     const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
-    await expect(service.executeInstall(preview.intent, new AbortController().signal)).rejects.toMatchObject({
-      code: 'operation-failed',
-    })
+    const mismatch = await service.executeInstall(preview.intent, new AbortController().signal)
+      .then(() => { throw new Error('expected the mismatched-bundle install to reject') }, cause => cause as MarketInstallError)
+    expect(mismatch).toMatchObject({ code: 'operation-failed' })
+    // The rolled-back refusal must inline the post-install assertion's reason
+    // (both spellings), never swallow it behind the generic text.
+    expect(mismatch.message).toContain('The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.')
+    expect(mismatch.message).toContain('bundle patch mismatch')
+    expect(mismatch.message).toContain('"./other.yml"')
+    expect(mismatch.message).toContain('"./cordis.patch.yml"')
     expect(calls.map(args => args[0])).toEqual(['add', 'remove'])
+    expect(settings.receipts()).toEqual([])
+    expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({})
+  })
+
+  it('rolls back and names both spellings when the installed patch declaration drifts only by the ./ prefix', async () => {
+    // The 0.4.181 real-machine failure: the package declares the upstream
+    // bare spelling, the verified target the ecosystem './' spelling — each
+    // valid under safeBundlePatch (which normalizes the optional prefix),
+    // never equal under the strict post-install comparison.
+    const profileDir = await createProfile()
+    const calls: string[] = []
+    const pnpm = recoverableRunner(profileDir, {
+      runPlugin(args) {
+        calls.push(args[0]!)
+        const done = (async () => {
+          if (args[0] === 'add') {
+            await writeInstalledPlugin(profileDir)
+            const packageManifestPath = join(profileDir, 'node_modules', packageName, 'package.json')
+            const manifest = JSON.parse(await readFile(packageManifestPath, 'utf8')) as Record<string, unknown>
+            await writeFile(packageManifestPath, JSON.stringify({ ...manifest, dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+          } else {
+            await removeInstalledPlugin(profileDir)
+          }
+          return { exitCode: 0, signal: null }
+        })()
+        return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
+      },
+    })
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      pnpm,
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const failure = await service.executeInstall(preview.intent, new AbortController().signal)
+      .then(() => { throw new Error('expected the prefix-drifted install to reject') }, cause => cause as MarketInstallError)
+    expect(failure).toMatchObject({ code: 'operation-failed' })
+    expect(failure.message).toContain('rolled back')
+    expect(failure.message).toContain('bundle patch mismatch')
+    expect(failure.message).toContain('"cordis.patch.yml"')
+    expect(failure.message).toContain('"./cordis.patch.yml"')
+    expect(calls).toEqual(['add', 'remove'])
     expect(settings.receipts()).toEqual([])
     expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({})
   })

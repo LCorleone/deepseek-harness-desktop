@@ -5,7 +5,9 @@ Free web search for DeepSeek Harness — **company hardened build of upstream
 (commit `36c6446211cd2a759cf59de87a1ba6a893c34ebd`, MIT; upstream README kept
 at `docs/README-upstream.md`). Distributed **only** through the company
 catalog tarball channel — this package never resolves from the public npm
-registry, and its version (`0.4.181` = upstream `0.4.18` + company build `1`)
+registry, and its version (`0.4.182` = upstream `0.4.18` + company build `2`;
+build `1` = `0.4.181`, retired for a bundle patch declaration prefix mismatch
+that failed every real-machine install — see `README-hardened.zh.md`)
 never exists on npm.
 
 ## What it does

@@ -11,7 +11,7 @@ P7 首个上架插件：上游社区插件 `dsh-free-search` 的公司加固收�
 | 上游仓库 | https://github.com/DDDMUC/dsh-free-search |
 | 钉住版本 | **v0.4.18**（tag commit `36c6446211cd2a759cf59de87a1ba6a893c34ebd`） |
 | 为什么钉 0.4.18 | v0.4.19+ 改用 0.1.2-alpha.2 的 `sctx.settings.installSection` API；我们钉住的 harness `0.1.1-rc.2` 没有该 API，装上即崩。v0.4.18 用导出函数 `installSettingsSection`（rc.2 的 `@deepseek-ai/dsh-settings` 里有，已核对源码），兼容。 |
-| 本包版本 | `0.4.181` = 上游 `0.4.18` + 公司构建 1。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
+| 本包版本 | 当前 `0.4.182` = 上游 `0.4.18` + 公司构建 2（构建 1 = `0.4.181`，因包内 `dsh.bundle.patch` 前缀失配真机装机全败而作废，见下方「版本推进记录」）。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182、0.4.183…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
 | 上游 README | 原样保留于 `docs/README-upstream.md`（不进打包产物，`files` 白名单不含 docs/）。 |
 
 ## 剥离清单（红线，逐项验证）
@@ -126,24 +126,57 @@ corepack yarn catalog pack-tarball \
   --catalog-origin https://gitlab.s.dai.deloitte.cn   # 或 COMPANY_CATALOG_ORIGIN
 ```
 
-- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.181/`
+- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.182/`
   ——`--from-allowlist` 的 workflow 约定是
-  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.181`），
+  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.182`），
   目录名即按此命名，CI 打包零管线改动。（任务原文写的
   `plugins/dsh-free-search/` 与该约定不兼容：workflow 在
   `plugin-sources/<stem>/` 找不到源会直接失败。）
-- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.181.tgz` +
+- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.182.tgz` +
   同名 `.pack.json`（sha512 / treeDigest / signable path）。
 - allowlist 条目（`tools/company-catalog/allowlist.json`）用
   `source:{kind:'tarball', url, path}` pack-artifact 形态，
   `repository` 显式钉上游，url 指向真实源
   `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/`
   （与 `desktop-policy.release.json` 的 `companyCatalogOrigin` 一致；测试对拍
-  两文件，防示例域再混入）。**未携带 `treeDigest`**——首发权威发布时落值：
-  参考环境（Windows fleet 矩阵）实测后按流程评审落值；本仓 Linux 环境测出的
-  digest 不作为评审值入库。
+  两文件，防示例域再混入）。**未携带 `treeDigest`**（0.4.182 起）：与首发时
+  同口径——参考环境（Windows runner 的 digest 产出）实测后按流程评审落值；
+  本仓 Linux 环境测出的 digest 不作为评审值入库。0.4.181 曾评审入 Windows
+  实测值，随该条目作废一并移除。
 - 真发布仍按 fleet 门禁顺序：全员升级 field-aware 构建 → 参考环境实测
   treeDigest → 评审落值 → 更高 sequence 重签 → publish-local 推 GitLab。
+
+## 版本推进记录（0.4.181 → 0.4.182）
+
+0.4.181 是首次收编形态，**从未在任何真机装机成功**，根因是 bundle patch
+声明前缀失配：
+
+- 包内 `package.json` 的 `dsh.bundle.patch` 沿用上游原样声明
+  `"cordis.patch.yml"`（无 `./` 前缀）；allowlist/签名条目的
+  `bundlePatch` 则是生态惯例拼写 `"./cordis.patch.yml"`（better-sidebar
+  同形态）。
+- 桌面市场安装的装机后断言链（`dsh-community-market`
+  `src/install/service.ts` 的 `assertInstalledBundleFromSnapshot`）要求包内
+  声明与签名条目**严格相等**；`safeBundlePatch` 校验时会把可选的 `./`
+  前缀归一化——两种拼写各自合法，但永远不相等，于是每台真机都在装机后
+  断言处以 `bundle patch missing` 失败并回滚。
+- 更糟的是该失败当时被安装编排的裸 `catch {}` 吞掉真实原因，只报通用的
+  「plugin bundle was invalid」，导致盲排。两处均已修复：断言消息现在
+  内联两侧拼写值，回滚分支把底层原因并入拒因文本。
+
+0.4.182 的变化（内容变了，托管不可变规则要求新版本号）：
+
+1. 包内声明对齐生态惯例：`dsh.bundle.patch` → `"./cordis.patch.yml"`
+   （`safeBundlePatch` 不强制前缀，两种写法均合法；选择包侧对齐，与
+   better-sidebar 及仓库全部 fixture/测试一致）。
+2. 版本号 0.4.181 → 0.4.182：目录名、`package.json`、allowlist 条目的
+   `version`/`source.path`/`source.url` 末段同步。0.4.181 条目从 allowlist
+   删除（从未装机成功，无需 revoked 记录）；其 Windows 实测 treeDigest
+   随条目移除，0.4.182 的 treeDigest 留空，待发布时参考环境实测评审落值。
+3. 防再犯：管线在 `pack-tarball --from-allowlist` 与构建（`build`/
+   `measure-and-publish`）两处新增对拍断言——打包/签包前读包内
+   `dsh.bundle.patch`，与 allowlist 条目 `bundlePatch` 严格相等才允许出制品，
+   不等即报错指出两侧拼写值。
 
 ## 留存与后续
 

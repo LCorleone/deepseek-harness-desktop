@@ -16,7 +16,9 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import {
+  assertBundlePatchDeclaration,
   buildDeterministicTarball,
+  declaredBundlePatchOfTarball,
   extractTarballEntries,
   normalizeTarballFile,
   parsePackSpec,
@@ -104,6 +106,49 @@ test('parsePackSpec accepts exact pinned versions and refuses ranges/tags/bad na
   ]) {
     assert.throws(() => parsePackSpec(spec), new RegExp(hint), `parsePackSpec('${spec}') must refuse`)
   }
+})
+
+/** A packed manifest body with a chosen dsh.bundle.patch declaration. */
+const manifestEntry = (patch) => fileEntry(
+  'package/package.json',
+  `${JSON.stringify({ name: 'fixture-hello', version: '1.0.0', ...(patch === null ? {} : { dsh: { bundle: { patch } } }) })}\n`,
+)
+
+test('declaredBundlePatchOfTarball reads the in-artifact dsh.bundle.patch declaration', () => {
+  assert.equal(declaredBundlePatchOfTarball(buildDeterministicTarball([manifestEntry('./cordis.patch.yml')])), './cordis.patch.yml')
+  assert.equal(declaredBundlePatchOfTarball(buildDeterministicTarball([manifestEntry('cordis.patch.yml')])), 'cordis.patch.yml')
+  // Absent declaration → undefined; malformed shapes are hard errors.
+  assert.equal(declaredBundlePatchOfTarball(buildDeterministicTarball([manifestEntry(null)])), undefined)
+  assert.throws(
+    () => declaredBundlePatchOfTarball(buildDeterministicTarball([fileEntry('package/index.js', 'x\n')])),
+    /carries no package\/package\.json/u,
+  )
+  assert.throws(
+    () => declaredBundlePatchOfTarball(buildDeterministicTarball([fileEntry('package/package.json', 'not json')]), 'the drift tarball'),
+    /the drift tarball package\/package\.json is not valid JSON/u,
+  )
+})
+
+test('assertBundlePatchDeclaration requires byte-equal spellings and names both sides on drift', () => {
+  // The real-incident shape (0.4.181): both spellings are individually valid
+  // paths, so only strict equality separates aligned from drifted.
+  assert.equal(
+    assertBundlePatchDeclaration({ declared: './cordis.patch.yml', expected: './cordis.patch.yml', at: 'x@1.0.0', source: 'the staged package.json' }),
+    './cordis.patch.yml',
+  )
+  assert.throws(
+    () => assertBundlePatchDeclaration({ declared: 'cordis.patch.yml', expected: './cordis.patch.yml', at: 'x@1.0.0', source: 'the staged package.json' }),
+    (error) => {
+      assert.match(error.message, /x@1\.0\.0 declares "cordis\.patch\.yml" in the staged package\.json/u)
+      assert.match(error.message, /the allowlist entry bundlePatch is "\.\/cordis\.patch\.yml"/u)
+      assert.match(error.message, /byte-identical/u)
+      return true
+    },
+  )
+  assert.throws(
+    () => assertBundlePatchDeclaration({ declared: undefined, expected: './cordis.patch.yml', at: 'x@1.0.0', source: 'the packed artifact p.tgz' }),
+    /x@1\.0\.0 declares no dsh\.bundle\.patch in the packed artifact p\.tgz/u,
+  )
 })
 
 test('buildDeterministicTarball is byte-identical across runs and normalizes mode/mtime', () => {

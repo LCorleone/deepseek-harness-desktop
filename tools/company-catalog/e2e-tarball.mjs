@@ -132,6 +132,7 @@ async function main() {
     assert(existsSync(recordPath), 'pack-tarball wrote no pack record sidecar')
     const record = JSON.parse(readFileSync(recordPath, 'utf8'))
     assert(record.packageName === 'fixture-hello' && record.version === '1.0.0', `unexpected pack record ${JSON.stringify(record)}`)
+    assert(record.bundlePatch === './cordis.patch.yml', `the pack record must carry the in-package declaration (got ${JSON.stringify(record.bundlePatch)})`)
     const tarballPath = join(packagesDir, record.filename)
     assert(!record.path.startsWith('/'), `the pack record path ${record.path} must be the repo-relative spelling`)
     assert(existsSync(join(REPO_ROOT, record.path)), `the pack record path ${record.path} does not resolve from the repository root`)
@@ -164,6 +165,31 @@ async function main() {
     const signingKey = privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64')
     const fingerprint = fingerprintOfRawPublicKey(rawPublicKeyBytes(publicKey))
     mkdirSync(runDir, { recursive: true })
+    // 3a. Consistency gate, negative first: the 0.4.181 real-incident shape —
+    // an allowlist entry whose bundlePatch spelling diverges from the packed
+    // package's own declaration — must abort the publish before anything is
+    // signed, naming both values. (The fixture declares './cordis.patch.yml';
+    // the drifted entry drops the prefix — the same strict-equality class as
+    // the incident, from the other side.) The aligned entry below then runs
+    // the same chain to green.
+    const driftAllowlistPath = join(workspace, 'allowlist-drift.json')
+    writeFileSync(driftAllowlistPath, `${JSON.stringify([{ ...allowlist[0], bundlePatch: 'cordis.patch.yml' }], null, 2)}\n`, 'utf8')
+    const driftRefusal = spawnSync(process.execPath, [join(TOOL_DIR, 'cli.mjs'),
+      'measure-and-publish',
+      '--digest-file', digestFilePath,
+      '--allowlist', driftAllowlistPath,
+      '--state-dir', join(workspace, 'state-drift'),
+      '--out', join(runDir, 'drift-manifest.json'),
+      '--catalog-origin', CATALOG_ORIGIN,
+    ], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, COMPANY_CATALOG_SIGNING_KEY: signingKey, COMPANY_CATALOG_KEY_ID: KEY_ID } })
+    const driftOutput = `${driftRefusal.stdout ?? ''}\n${driftRefusal.stderr ?? ''}`
+    assert(driftRefusal.status !== 0
+      && driftOutput.includes('declares "./cordis.patch.yml"')
+      && driftOutput.includes('the allowlist entry bundlePatch is "cordis.patch.yml"'),
+    `a prefix-drifted entry must abort measure-and-publish before signing:\n${driftOutput}`)
+    assert(!existsSync(join(runDir, 'drift-manifest.json')), 'the drifted publish must write no manifest')
+    console.log('[3] gate:      prefix-drifted bundlePatch spelling refused before signing (packed "./cordis.patch.yml" vs entry "cordis.patch.yml") — the 0.4.181 failure class, now caught at build time')
+    // 3b. The aligned shape (the real form: './'-prefixed on both sides) signs.
     runNode(join(TOOL_DIR, 'cli.mjs'), [
       'measure-and-publish',
       '--digest-file', digestFilePath,

@@ -46,6 +46,8 @@ import {
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
 import {
+  assertBundlePatchDeclaration,
+  declaredBundlePatchOfTarball,
   DEFAULT_PACKAGES_DIR_RELATIVE,
   DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE,
   REPO_ROOT,
@@ -217,6 +219,18 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
   if (artifacts.passthrough.length > 0) {
     console.log(`tarball:  ${artifacts.passthrough.join(', ')} carry reviewed inline integrity (no pack artifact resolved)`)
   }
+  // Cross-side consistency gate (real-incident regression, 0.4.181): the
+  // packed artifact's in-manifest `dsh.bundle.patch` declaration must equal
+  // the allowlist entry's `bundlePatch` strictly — the desktop's post-install
+  // assert enforces byte equality, and a './'-prefix drift would fail every
+  // install after this manifest shipped. pack-tarball refuses the artifact at
+  // pack time; this build-side check also catches artifacts packed earlier.
+  const entryByKey = new Map(artifacts.entries.map((entry) => [entryKey(entry), entry]))
+  for (const packed of artifacts.resolved) {
+    const entry = entryByKey.get(entryKey(packed))
+    const declared = declaredBundlePatchOfTarball(readFileSync(resolve(REPO_ROOT, ...packed.path.split('/'))), packed.path)
+    assertBundlePatchDeclaration({ declared, expected: entry.bundlePatch, at: entryKey(entry), source: `the packed artifact ${packed.path}` })
+  }
   const dists = await resolveDists(artifacts.entries)
   const sequenceFrom = flags['sequence-from']
   const persistedSequence = readLastSequence(stateDir)
@@ -308,7 +322,10 @@ async function commandPackTarball(flags) {
       const stem = entry.source.path.split('/').pop().replace(/\.tgz$/u, '')
       const sourceDir = resolve(sourcesRoot, stem)
       log(`pack-tarball: ${entryKey(entry)} ← ${sourceDir} (sources-root convention)`)
-      const record = packPluginSource({ sourceDir, outDir, log })
+      // The alignment gate rides inside the pack: a source whose declared
+      // dsh.bundle.patch differs from the entry's bundlePatch (even by the
+      // optional './' prefix) never yields an artifact.
+      const record = packPluginSource({ sourceDir, outDir, log, expectedBundlePatch: entry.bundlePatch, at: entryKey(entry) })
       if (record.packageName !== entry.packageName || record.version !== entry.version) {
         throw new Error(
           `the source at ${sourceDir} packed ${record.packageName}@${record.version}, but the allowlist entry is ${entryKey(entry)} — ` +

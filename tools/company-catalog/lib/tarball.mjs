@@ -419,7 +419,8 @@ export function extractTarballEntries(entries, targetDir) {
 
 /**
  * Read and validate the packed plugin's manifest (name/version must be
- * signable by the pipeline at all).
+ * signable by the pipeline at all) plus the declared `dsh.bundle.patch`
+ * (returned verbatim — present or absent — for the alignment gate below).
  */
 function readPackedManifest(pkgDir) {
   const manifestPath = join(pkgDir, 'package.json')
@@ -436,28 +437,86 @@ function readPackedManifest(pkgDir) {
   if (typeof manifest.version !== 'string' || !STABLE_VERSION_PATTERN.test(manifest.version)) {
     throw new Error(`${manifestPath} version must be an exact stable semver X.Y.Z (got ${JSON.stringify(manifest.version)}) — prerelease/build spellings cannot be signed`)
   }
-  return { name: manifest.name, version: manifest.version }
+  const dsh = manifest.dsh
+  const bundle = dsh !== null && typeof dsh === 'object' && !Array.isArray(dsh) ? dsh.bundle : undefined
+  const patch = bundle !== null && typeof bundle === 'object' && !Array.isArray(bundle) ? bundle.patch : undefined
+  return { name: manifest.name, version: manifest.version, declaredPatch: typeof patch === 'string' ? patch : undefined }
+}
+
+/** Render one side of the alignment gate's message: the value or its absence. */
+const declaredOrNone = (declared) => declared === undefined ? 'no dsh.bundle.patch' : JSON.stringify(declared)
+
+/**
+ * Cross-side consistency gate between a package's in-manifest
+ * `dsh.bundle.patch` declaration and the allowlist entry's `bundlePatch`.
+ *
+ * Both spellings pass `safeBundlePatch`-style validation individually — the
+ * market guard normalizes an optional leading `./` before checking the path
+ * segments — but the desktop's post-install assertion
+ * (`assertInstalledBundleFromSnapshot`) then requires the two to be
+ * **strictly equal**. A bare `cordis.patch.yml` package next to a
+ * `./cordis.patch.yml` entry therefore fails every real install as a bundle
+ * patch mismatch and rolls it back; this gate refuses to produce or sign the
+ * artifact at all, naming both spellings, so the drift dies at review time
+ * instead of on user machines.
+ */
+export function assertBundlePatchDeclaration({ declared, expected, at, source }) {
+  if (declared === expected) return declared
+  throw new Error(
+    `${at} declares ${declaredOrNone(declared)} in ${source}, but the allowlist entry bundlePatch is ${JSON.stringify(expected)} — `
+    + "the desktop's post-install assert requires the two spellings to be byte-identical (a './'-prefix drift fails every install and rolls it back); "
+    + 'align the package declaration with the allowlist entry (or the entry with the package)',
+  )
+}
+
+/**
+ * The `dsh.bundle.patch` string declared inside a packed artifact's
+ * `package/package.json` (undefined when absent) — the build-time side of the
+ * alignment gate, read from the packed bytes exactly as they would be
+ * installed. Every malformed shape (no manifest, unparseable JSON) is a hard
+ * error: a tarball whose declaration cannot be read must never be signed.
+ */
+export function declaredBundlePatchOfTarball(bytes, what = 'the tarball') {
+  const entries = parseTarball(bytes, what)
+  const manifest = entries.find((entry) => entry.type === 'file' && entry.path === 'package/package.json')
+  if (manifest === undefined) throw new Error(`${what} carries no package/package.json — not an npm pack artifact`)
+  let parsed
+  try {
+    parsed = JSON.parse(manifest.data.toString('utf8'))
+  } catch (error) {
+    throw new Error(`${what} package/package.json is not valid JSON (${error.message})`)
+  }
+  const dsh = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.dsh : undefined
+  const bundle = dsh !== null && typeof dsh === 'object' && !Array.isArray(dsh) ? dsh.bundle : undefined
+  const patch = bundle !== null && typeof bundle === 'object' && !Array.isArray(bundle) ? bundle.patch : undefined
+  return typeof patch === 'string' ? patch : undefined
 }
 
 /**
  * Pack one staged plugin source directory into `outDir` as the deterministic
  * npm-compatible tarball and return the pack record (the allowlist source
- * material). `outDir` is created when missing.
+ * material). `outDir` is created when missing. With `expectedBundlePatch`
+ * (the `--from-allowlist` spelling) the staged manifest's declared
+ * `dsh.bundle.patch` must match it strictly before `npm pack` runs, so a
+ * drifted entry never yields an artifact at all.
  */
-export function packPluginSource({ sourceDir, outDir, log }) {
+export function packPluginSource({ sourceDir, outDir, log, expectedBundlePatch, at }) {
   const staging = mkdtempSync(join(tmpdir(), 'company-catalog-pack-'))
   try {
     const pkgDir = join(staging, 'pkg')
     stageSourceDirectory(sourceDir, pkgDir)
-    return packStagedDirectory({ pkgDir, outDir, log })
+    return packStagedDirectory({ pkgDir, outDir, log, expectedBundlePatch, at })
   } finally {
     rmSync(staging, { recursive: true, force: true })
   }
 }
 
 /** Pack an already-staged, already-trusted package directory (shared by both input modes). */
-function packStagedDirectory({ pkgDir, outDir, log }) {
-  const { name, version } = readPackedManifest(pkgDir)
+function packStagedDirectory({ pkgDir, outDir, log, expectedBundlePatch, at }) {
+  const { name, version, declaredPatch } = readPackedManifest(pkgDir)
+  if (expectedBundlePatch !== undefined) {
+    assertBundlePatchDeclaration({ declared: declaredPatch, expected: expectedBundlePatch, at: at ?? `${name}@${version}`, source: `${pkgDir}/package.json` })
+  }
   mkdirSync(outDir, { recursive: true })
   const report = runNpmPack({ cwd: pkgDir, packDestination: outDir, log })
   const expected = expectedTarballFilename(name, version)
@@ -475,6 +534,10 @@ function packStagedDirectory({ pkgDir, outDir, log }) {
     packageName: name,
     version,
     filename: report.filename,
+    // The declared bundle patch, so the reviewed allowlist entry can be
+    // diffed against what the artifact actually carries (the alignment gate
+    // already proved equality for --from-allowlist packs).
+    ...(declaredPatch === undefined ? {} : { bundlePatch: declaredPatch }),
     // The allowlist `source.path` form: repo-relative when inside the repo
     // (the signable spelling), absolute otherwise (informational only).
     path: repoRelative.startsWith('../') ? absolute : repoRelative,

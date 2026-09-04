@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -79,6 +79,74 @@ test('pack-tarball takes exactly one input mode and refuses a mixture', () => {
   const result = run(CLI, ['pack-tarball', '--source-dir', FIXTURE, '--npm', 'fixture-hello@1.0.0', '--no-measure'])
   assert.notEqual(result.status, 0)
   assert.match(result.stdout + result.stderr, /pack-tarball takes exactly one input mode/u)
+})
+
+/** A sources-root workspace whose <stem>/ directory carries the given declaration. */
+function stageSourcesRoot(patchDeclaration) {
+  const workspace = mkdtempSync(join(TOOL_DIR, 'out', 'pack-surface-allowlist-'))
+  const sourcesRoot = join(workspace, 'sources')
+  const stem = 'fixture-drift-1.0.0'
+  cpSync(FIXTURE, join(sourcesRoot, stem), { recursive: true })
+  const pkgPath = join(sourcesRoot, stem, 'package.json')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  writeFileSync(pkgPath, `${JSON.stringify({ ...pkg, name: 'fixture-drift', version: '1.0.0', dsh: { bundle: { patch: patchDeclaration } } }, null, 2)}\n`)
+  const entry = {
+    packageName: 'fixture-drift',
+    version: '1.0.0',
+    bundlePatch: './cordis.patch.yml',
+    repository: 'https://github.com/example/fixture-drift',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    source: { kind: 'tarball', url: `${ORIGIN}/${PROJECT}/-/raw/master/packages/fixture-drift-1.0.0.tgz`, path: 'tools/company-catalog/out/packages/fixture-drift-1.0.0.tgz' },
+  }
+  const allowlistPath = join(workspace, 'allowlist.json')
+  writeFileSync(allowlistPath, `${JSON.stringify([entry], null, 2)}\n`)
+  return { workspace, sourcesRoot, allowlistPath, outDir: join(workspace, 'packages') }
+}
+
+test('pack-tarball --from-allowlist refuses an entry whose source declares a drifted bundle patch (and never emits the artifact)', () => {
+  // The 0.4.181 real-incident shape: the package declares the upstream bare
+  // spelling, the reviewed entry the ecosystem './' spelling. Individually
+  // both pass path validation; the desktop's post-install assert compares
+  // them strictly, so the pipeline must refuse the artifact at pack time.
+  const { workspace, sourcesRoot, allowlistPath, outDir } = stageSourcesRoot('cordis.patch.yml')
+  try {
+    const result = run(CLI, [
+      'pack-tarball', '--from-allowlist',
+      '--allowlist', allowlistPath,
+      '--sources-root', sourcesRoot,
+      '--pack-out', outDir,
+      '--no-measure',
+      '--catalog-origin', ORIGIN,
+    ])
+    assert.notEqual(result.status, 0, 'the drifted pack must fail the command')
+    const output = result.stdout + result.stderr
+    assert.match(output, /fixture-drift@1\.0\.0 declares "cordis\.patch\.yml"/u, 'the refusal must name the declared spelling')
+    assert.match(output, /the allowlist entry bundlePatch is "\.\/cordis\.patch\.yml"/u, 'the refusal must name the entry spelling')
+    assert.match(output, /byte-identical/u)
+    assert.equal(existsSync(join(outDir, 'fixture-drift-1.0.0.tgz')), false, 'no artifact may be produced for a drifted entry')
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test('pack-tarball --from-allowlist packs the aligned shape and records the declared bundle patch', () => {
+  const { workspace, sourcesRoot, allowlistPath, outDir } = stageSourcesRoot('./cordis.patch.yml')
+  try {
+    const result = run(CLI, [
+      'pack-tarball', '--from-allowlist',
+      '--allowlist', allowlistPath,
+      '--sources-root', sourcesRoot,
+      '--pack-out', outDir,
+      '--no-measure',
+      '--catalog-origin', ORIGIN,
+    ])
+    assert.equal(result.status, 0, `the aligned pack must succeed:\n${result.stderr}`)
+    const record = JSON.parse(readFileSync(join(outDir, 'fixture-drift-1.0.0.tgz.pack.json'), 'utf8'))
+    assert.equal(record.bundlePatch, './cordis.patch.yml', 'the pack record carries the declared (and gate-checked) spelling')
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
 })
 
 test('measure --tarball is not combinable with --allowlist', () => {

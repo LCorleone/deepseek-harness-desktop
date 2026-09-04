@@ -33,7 +33,7 @@ import { test } from 'node:test'
 
 const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // tools/company-catalog/tests → tools/company-catalog → the vendored plugin source.
-const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.181')
+const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.182')
 const LIB_DIR = join(PLUGIN_DIR, 'lib')
 
 // ---------------------------------------------------------------------------
@@ -264,14 +264,14 @@ test('coexistence patch: one insert row plus the single-key web row re-pin, noth
 test('package shape: no build scripts, pure-JS deps, stable semver, workflow-convention directory name', () => {
   const pkg = JSON.parse(read(join(PLUGIN_DIR, 'package.json')))
   assert.equal(pkg.name, 'dsh-free-search')
-  assert.equal(pkg.version, '0.4.181')
+  assert.equal(pkg.version, '0.4.182')
   assert.match(pkg.version, /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u, 'the manifest signs stable semver only')
   assert.equal(pkg.scripts, undefined, 'no build scripts — pnpm build-script interception never applies')
   assert.deepEqual(Object.keys(pkg.dependencies), ['@deepseek-ai/schemastery'], 'single pure-JS dependency, no native builds')
   assert.equal(Object.keys(pkg.peerDependencies).includes('@deepseek-ai/dsh-settings'), true)
   assert.equal(Object.keys(pkg.peerDependencies).includes('@deepseek-ai/dsh-tools'), true)
   assert.deepEqual(pkg.files.sort(), ['cordis.patch.yml', 'lib/client.js', 'lib/engines.js', 'lib/index.js'])
-  assert.equal(pkg.dsh.bundle.patch, 'cordis.patch.yml')
+  assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.deepEqual(pkg.dsh.client.inject, ['@deepseek-ai/dsh-client-runtime'], 'client inject stays a flat string array')
   assert.equal(basename(PLUGIN_DIR), `${pkg.name}-${pkg.version}`, 'the source directory follows the pack-tarball --from-allowlist stem convention')
   for (const file of pkg.files) assert.equal(existsSync(join(PLUGIN_DIR, file)), true, `${file} is declared but missing`)

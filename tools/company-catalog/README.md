@@ -482,7 +482,7 @@ artifacts (`pack-tarball --from-allowlist` — one pack per allowlist entry
 whose `source` pins a `path`, from the workflow convention
 `tools/company-catalog/plugin-sources/<tarball-stem>/` (the first live entry:
 the hardened `dsh-free-search` vendoring, see
-`plugin-sources/dsh-free-search-0.4.181/README-hardened.zh.md`); an explicit
+`plugin-sources/dsh-free-search-0.4.182/README-hardened.zh.md`); an explicit
 no-op while the allowlist pins no such entry; the optional
 `COMPANY_CATALOG_ORIGIN`
 repository variable feeds the origin validation) → measure →
@@ -577,7 +577,7 @@ runner）串起：构建 market + desktop lib → 打包 tarball 通道工件
 `path` 的条目各打一个包，源码按 workflow 约定取
 `tools/company-catalog/plugin-sources/<tarball-stem>/`（首个落地条目：
 收编加固的 `dsh-free-search`，见
-`plugin-sources/dsh-free-search-0.4.181/README-hardened.zh.md`）；无此类条目
+`plugin-sources/dsh-free-search-0.4.182/README-hardened.zh.md`）；无此类条目
 时是显式空操作；可选的 `COMPANY_CATALOG_ORIGIN` 仓库变量供给 origin 校验）→
 测量 → 以仓库内 state 文件为下限跑 `measure-and-publish`（state 文件不在
 checkout 里时预检步骤直接硬失败）→ step summary 输出摘要、sequence、指纹
