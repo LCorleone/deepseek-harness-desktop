@@ -1,0 +1,122 @@
+name: Company catalog digest (Windows)
+
+# Standalone Windows treeDigest measurement for the tarball-channel
+# artifacts (manual dispatch): pack every allowlist entry whose source pins
+# a path from the plugin-sources tree, then measure each packed .tgz with
+# measure.mjs --tarball through the same reference install the publishing
+# pipeline uses (repository-pinned pnpm, hoisted profile scaffold,
+# build-approval merge, electron runtime env, digest from the compiled
+# computeDesktopBootTreeRootDigest chunk). This is the automated replacement
+# for measuring dsh-free-search by hand on a company Windows machine: the
+# Windows fleet's reference values come out of this workflow, ready to be
+# reviewed into the allowlist (see the treeDigest note in
+# tools/company-catalog/README.md).
+#
+# Boundary (red line, same discipline as company-catalog-publish.yml): this
+# workflow never modifies tools/company-catalog/allowlist.json and never
+# signs or publishes anything — it only measures. Landing a measured digest
+# in the reviewed allowlist stays a human review commit; no signing key and
+# no GitLab credentials exist here.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  windows-digest:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # The deployment's catalog origin (the intranet GitLab the tarball
+      # channel hosts on), from an optional repository variable — copied to
+      # env so an unset variable never arrives as a poisoned empty string
+      # and is exported below only when non-empty. Tarball-channel allowlist
+      # entries refuse to load without it (pack-tarball --from-allowlist
+      # reads the same allowlist); npm-only allowlists never need it.
+      CATALOG_ORIGIN_VAR: ${{ vars.COMPANY_CATALOG_ORIGIN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.2
+      - run: corepack enable
+      - name: Resolve Yarn cache folder
+        id: yarn-cache
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$env:GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+      - run: yarn install --immutable
+      # measure.mjs hashes through the compiled desktop boot-verification
+      # chunk; its default --desktop-lib is dsh-plugin-desktop/lib, so the
+      # lib must exist before the measure step (pack below needs no lib).
+      - name: Build desktop lib (boot-verification chunk)
+        run: yarn workspace dsh-plugin-desktop build
+      - name: Export the company catalog origin (optional repository variable)
+        # Tarball-channel entries validate against the deployment's pinned
+        # origin (COMPANY_CATALOG_ORIGIN) — exported before the pack step,
+        # which loads the allowlist. Only exported when the repository
+        # variable is set: an empty value would fail origin validation.
+        if: env.CATALOG_ORIGIN_VAR != ''
+        run: 'echo "COMPANY_CATALOG_ORIGIN=$env:CATALOG_ORIGIN_VAR" >> $env:GITHUB_ENV'
+      - name: Pack tarball-channel artifacts (allowlist pack-artifact entries)
+        # Every allowlist entry whose source pins a path gets its
+        # deterministic .tgz packed from the plugin-sources tree into the
+        # default out/packages/ (the path the allowlist pins).
+        # --no-measure: the treeDigest measurement happens once, in the
+        # measure step below, with an explicit --out digest file; with no
+        # such entry the step is an explicit no-op.
+        run: node tools/company-catalog/cli.mjs pack-tarball --from-allowlist --no-measure
+      - name: Measure installed-tree root digests
+        # One measure.mjs --tarball pass per packed artifact (name/version
+        # come from the artifact's package/package.json), merged into a
+        # single digest.json — the measure-and-publish --digest-file shape.
+        shell: pwsh
+        run: |
+          $tarballs = @(Get-ChildItem tools/company-catalog/out/packages -Filter *.tgz -ErrorAction SilentlyContinue)
+          if ($tarballs.Count -eq 0) {
+            'no packed tarball artifacts — the allowlist pins no source.path entry; nothing to measure'
+            New-Item -ItemType directory -Force run | Out-Null
+            Set-Content -Path run/digest.json -Value '[]'
+            exit 0
+          }
+          New-Item -ItemType directory -Force run | Out-Null
+          $records = @()
+          foreach ($tarball in $tarballs) {
+            "measuring $($tarball.Name)"
+            node tools/company-catalog/measure.mjs --tarball $tarball.FullName --out run/digest-one.json --desktop-lib dsh-plugin-desktop/lib
+            if ($LASTEXITCODE -ne 0) { throw "measure.mjs failed for $($tarball.Name)" }
+            $records += @(Get-Content run/digest-one.json -Raw | ConvertFrom-Json)
+          }
+          ConvertTo-Json -InputObject @($records) -Depth 4 | Set-Content -Path run/digest.json
+          "merged $($records.Count) digest record(s) into run/digest.json"
+      - name: Digest table → step summary
+        shell: pwsh
+        run: |
+          $records = @(Get-Content run/digest.json -Raw | ConvertFrom-Json)
+          $lines = @('## Windows tarball tree digests', '')
+          if ($records.Count -eq 0) {
+            $lines += @('_no packed tarball artifact — nothing measured_', '')
+          } else {
+            $lines += @('| package | version | treeDigest |', '| --- | --- | --- |')
+            foreach ($record in $records) { $lines += "| $($record.packageName) | $($record.version) | ``$($record.treeDigest)`` |" }
+            $lines += @('')
+          }
+          $lines += @('digest.json:', '', '```json', (Get-Content run/digest.json -Raw).Trim(), '```', '')
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
+      - name: Upload digest.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: company-catalog-digest
+          # upload-artifact strips the shared run/ prefix: the artifact root
+          # carries digest.json (the measure-and-publish --digest-file shape).
+          path: run/digest.json
+          if-no-files-found: error
