@@ -8,12 +8,14 @@
  * descriptor whose path is confined to the deterministic staging location and
  * whose bytes are re-hashed against the signed sha512 before pnpm runs. User
  * arguments still reach pnpm only through the audited flag list, so a
- * CLI-typed tarball path is rejected on every surface.
+ * CLI-typed tarball path is rejected on every surface. A market tarball
+ * install additionally crosses the packaged CLI child's locked add gate
+ * through the trusted launcher hand-off
+ * ({@link DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}), whose staged-path layout and
+ * hashing live in the shared `company-tarball-handoff.ts` contract.
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto'
-import { closeSync, constants, createReadStream, fstatSync, openSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, isAbsolute } from 'node:path'
 import type { Readable } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {
@@ -24,8 +26,35 @@ import type {
 import {
   DesktopInstallRecoveryStore,
 } from './install-recovery.ts'
+import {
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
+  companyTarballHandoffText,
+  desktopMarketTarballStagingPath,
+  isSha512Integrity,
+  sha512OfStagedFile,
+  stagedDigestMatchesIntegrity,
+  PACKAGE_NAME_PATTERN,
+  NPM_EXACT_VERSION_PATTERN,
+  type DesktopControlledMarketTarball,
+} from './company-tarball-handoff.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
+
+// The staging layout, hashing primitives, and launcher hand-off format are
+// the shared launcher↔CLI contract; re-exported here because this module has
+// always been their public surface (tests, the boot verifier, and the
+// company-catalog e2e tooling import them from here).
+export {
+  COMPANY_TARBALL_HANDOFF_MAX_BYTES,
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
+  DESKTOP_MARKET_TARBALL_MAX_BYTES,
+  DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
+  companyTarballHandoffText,
+  desktopMarketTarballStagingName,
+  desktopMarketTarballStagingPath,
+  parseCompanyTarballHandoff,
+} from './company-tarball-handoff.ts'
+export type { CompanyTarballHandoff, DesktopControlledMarketTarball } from './company-tarball-handoff.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const ELECTRON_HEADERS_URL = 'https://electronjs.org/headers'
@@ -77,51 +106,6 @@ function pnpmTlsEnvironmentEntries(source: NodeJS.ProcessEnv): Record<string, st
   return entries
 }
 const TERMINATION_GRACE_MS = 3_000
-const NPM_PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
-const NPM_EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u
-const SHA512_INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]{86}==$/u
-
-/**
- * Staging directory inside the active profile where the Desktop market
- * pipeline parks verified plugin tarballs before installing them. Only files
- * at the deterministic path below this directory can ever become an install
- * target (see {@link desktopMarketTarballStagingPath}).
- */
-export const DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY = '.dsh-market-tarballs'
-/** Upper bound of one staged market tarball; the download and install gates share it. */
-export const DESKTOP_MARKET_TARBALL_MAX_BYTES = 512 * 1024 * 1024
-
-/** Whether a value is the standard base64 SHA-512 integrity spelling the signed catalog pins. */
-function isSha512Integrity(value: string): boolean {
-  if (!SHA512_INTEGRITY_PATTERN.test(value)) return false
-  const encoded = value.slice('sha512-'.length)
-  const digest = Buffer.from(encoded, 'base64')
-  return digest.byteLength === 64 && digest.toString('base64') === encoded
-}
-
-/**
- * Deterministic staged file name of one package version: `@scope/name` becomes
- * `scope+name` (`+` cannot appear in an npm name, so the encoding is
- * collision-free) and the exact version follows, always `.tgz`.
- */
-export function desktopMarketTarballStagingName(packageName: string, version: string): string {
-  if (!NPM_PACKAGE_NAME_PATTERN.test(packageName) || !NPM_EXACT_VERSION_PATTERN.test(version)) {
-    throw new TypeError(`${BIN_NAME}: the market tarball staging name needs an exact npm package target`)
-  }
-  return `${packageName.replace(/^@/u, '').replace('/', '+')}-${version}.tgz`
-}
-
-/**
- * The one and only path a controlled market tarball for this exact package
- * version may be installed from: inside the profile's staging directory, with
- * the deterministic name above. The install boundary accepts no other path.
- */
-export function desktopMarketTarballStagingPath(profileDir: string, packageName: string, version: string): string {
-  if (typeof profileDir !== 'string' || !isAbsolute(profileDir) || profileDir.includes('\0')) {
-    throw new TypeError(`${BIN_NAME}: the market tarball staging profile directory must be absolute without NUL`)
-  }
-  return join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, desktopMarketTarballStagingName(packageName, version))
-}
 
 /**
  * One `file:` install spelling's path with its separators normalized to `/`.
@@ -134,50 +118,6 @@ export function desktopMarketTarballStagingPath(profileDir: string, packageName:
  */
 export function desktopMarketFileSpecPosixPath(path: string): string {
   return path.split('\\').join('/')
-}
-
-/**
- * The market pipeline's controlled tarball install target (P7). This
- * descriptor is constructed in-process by the Desktop market path after the
- * signed manifest entry's `source.integrity` has been verified over the
- * downloaded bytes; it never crosses a CLI or Renderer boundary, so a user
- * argument can never produce one. The install boundary re-validates it from
- * scratch: exact descriptor shape, the descriptor's own sha512 claim, and
- * the deterministic staging path for the receipt's exact package version —
- * plus a fresh hash of the staged bytes so the file cannot change between
- * staging and install (the signature binding to the signed entry happens in
- * the install orchestration, `installCompanyMarketTarballPlugin`).
- */
-export interface DesktopControlledMarketTarball {
-  readonly kind: 'market-tarball'
-  /** Absolute staged path; must equal {@link desktopMarketTarballStagingPath} for the receipt. */
-  readonly path: string
-  /** sha512 integrity of the tarball bytes (`sha512-` + standard base64); the orchestration binds it to the signed entry. */
-  readonly integrity: string
-}
-
-/**
- * Hash one staged tarball through a private descriptor opened without
- * following symlinks, so the bytes that are hashed are exactly the bytes the
- * opened file descriptor pins. An empty, oversized, or non-regular file
- * throws.
- */
-async function sha512OfStagedFile(path: string): Promise<Buffer> {
-  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-  try {
-    const info = fstatSync(descriptor)
-    if (!info.isFile()) throw new Error(`${BIN_NAME}: the staged market tarball must be a regular file`)
-    if (info.size <= 0 || info.size > DESKTOP_MARKET_TARBALL_MAX_BYTES) {
-      throw new Error(`${BIN_NAME}: the staged market tarball is empty or exceeds ${String(DESKTOP_MARKET_TARBALL_MAX_BYTES)} bytes`)
-    }
-    const hash = createHash('sha512')
-    for await (const chunk of createReadStream(path, { fd: descriptor, autoClose: false })) {
-      hash.update(chunk as Buffer)
-    }
-    return hash.digest()
-  } finally {
-    closeSync(descriptor)
-  }
 }
 
 /** Launcher-resolved values used by the active desktop pnpm generation. */
@@ -259,13 +199,16 @@ export interface DesktopPluginInstallRequest {
   /**
    * Controlled market-pipeline tarball target (P7 dual channel). When present,
    * the install target becomes `file:<staged path>` instead of the npm
-   * `name@version` spec. The descriptor is only ever constructed in-process
-   * by the Desktop market path after the signed tarball integrity verified
-   * over the downloaded bytes, and it is re-validated here (exact shape, exact
-   * deterministic staging path for the receipt's package version, the
-   * descriptor's own sha512 re-hashed over the staged file) — a user-supplied
-   * path can never produce one because every user-facing argument surface
-   * still audits against the npm-spec-only rules.
+   * `name@version` spec, and the spawn carries the launcher tarball hand-off
+   * (see {@link DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}) so the packaged CLI
+   * child's locked add gate can admit exactly this target after re-binding it
+   * to the signed catalog entry. The descriptor is only ever constructed
+   * in-process by the Desktop market path after the signed tarball integrity
+   * verified over the downloaded bytes, and it is re-validated here (exact
+   * shape, exact deterministic staging path for the receipt's package
+   * version, the descriptor's own sha512 re-hashed over the staged file) — a
+   * user-supplied path can never produce one because every user-facing
+   * argument surface still audits against the npm-spec-only rules.
    */
   readonly marketTarball?: DesktopControlledMarketTarball
   readonly signal?: AbortSignal
@@ -410,7 +353,7 @@ function validateExternalMarketInstallArgs(args: readonly string[]): string[] {
   const packageName = at > 0 ? target.slice(0, at) : ''
   const packageVersion = at > 0 ? target.slice(at + 1) : ''
   if (
-    !NPM_PACKAGE_NAME_PATTERN.test(packageName)
+    !PACKAGE_NAME_PATTERN.test(packageName)
     || !NPM_EXACT_VERSION_PATTERN.test(packageVersion)
   ) {
     throw new Error(`${BIN_NAME}: external Market plugin install requires an exact npm package target`)
@@ -644,8 +587,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     } catch (cause) {
       throw new Error(`${BIN_NAME}: the staged market tarball ${tarball.path} is unusable: ${cause instanceof Error ? cause.message : String(cause)}`)
     }
-    const expected = Buffer.from(tarball.integrity.slice('sha512-'.length), 'base64')
-    if (digest.byteLength !== expected.byteLength || !timingSafeEqual(digest, expected)) {
+    if (!stagedDigestMatchesIntegrity(digest, tarball.integrity)) {
       throw new Error(`${BIN_NAME}: the staged market tarball ${tarball.path} does not match its pinned integrity — refusing the install`)
     }
   }
@@ -684,6 +626,22 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     const installTarget = request.marketTarball === undefined
       ? `${request.recovery.packageName}@${request.recovery.packageVersion}`
       : `file:${request.marketTarball.path}`
+    // The controlled tarball install crosses the packaged CLI child's locked
+    // add gate, which rejects every `file:` target on its own: the launcher
+    // hand-off (DSH_COMPANY_TARBALL_HANDOFF) carries the receipt's package,
+    // version, the descriptor's sha512, and the staged path so the gate can
+    // re-bind them to the signed catalog entry and re-hash the staged bytes
+    // before admitting exactly this target. Injected for this spawn only —
+    // never part of the generation-wide policy environment — and length-
+    // bounded on the CLI side so a hostile value can never widen the gate.
+    const controlledTarballEnvironment = request.marketTarball === undefined ? undefined : {
+      [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+        packageName: request.recovery.packageName,
+        version: request.recovery.packageVersion,
+        integrity: request.marketTarball.integrity,
+        path: request.marketTarball.path,
+      }),
+    }
     // Approve the trusted builds before the recovery WAL snapshots the
     // profile, so a later rollback restores a workspace that still carries
     // the approval instead of stripping it from under the next install. The
@@ -719,6 +677,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
         cwd: request.invokingDir,
         recoveryTransactionId: transaction.transactionId,
         allowInstallPreparation: true,
+        ...(controlledTarballEnvironment === undefined ? {} : { environment: controlledTarballEnvironment }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       })
       this.installPreparationActive = false
@@ -775,6 +734,8 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     signal?: AbortSignal
     recoveryTransactionId?: string
     allowInstallPreparation?: boolean
+    /** Per-spawn trusted launcher hand-off entries merged after the policy environment. */
+    environment?: Readonly<Record<string, string>>
   }): DesktopPnpmHandle {
     if (this.closed) {
       throw new Error(`${BIN_NAME}: desktop pnpm generation is closed`)
@@ -806,6 +767,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
         npm_config_disturl: ELECTRON_HEADERS_URL,
         ...pnpmTlsEnvironmentEntries(process.env),
         ...(this.bootstrap.cliPolicyEnvironment ?? {}),
+        ...(command.environment ?? {}),
       },
     }
     const child = this.ctx.subprocess.spawn(spec)

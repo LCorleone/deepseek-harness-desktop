@@ -28,6 +28,7 @@ import {
   type Dirent,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import type { Readable } from 'node:stream'
 import { validRange } from 'semver'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import {
@@ -1360,6 +1361,14 @@ export interface DesktopCompanyTarballInstallRequest {
    */
   readonly pnpmOptions?: readonly string[]
   readonly signal?: AbortSignal
+  /**
+   * Live stderr bridge: every chunk the package-manager child writes to
+   * stderr is forwarded here while the install runs, so the caller (the
+   * market channel) can surface the real failure reason as it happens
+   * instead of a generic exit-code line. The bounded tail additionally
+   * rides with the failure the function throws.
+   */
+  readonly forwardStderr?: (chunk: string) => void
   /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
   readonly measureTreeRootDigest?: (packageDir: string) => string
 }
@@ -1445,6 +1454,38 @@ function assertCompanyTarballInstalledBundle(
   return resolvedPackageDir
 }
 
+/** Kept tail of the package-manager child's stderr, in characters. */
+const INSTALL_STDERR_TAIL_LIMIT = 8_000
+
+/**
+ * Consume one package-manager handle's stderr: keep a bounded tail and
+ * forward every chunk live to the optional bridge. Reading here is load
+ * bearing — the child's piped stderr has no other reader on this path.
+ * @param stderr - the install handle's stderr stream.
+ * @param forward - optional live bridge (the market channel's stderr).
+ * @returns accessor for the bounded tail collected so far.
+ */
+function collectPackageManagerStderr(
+  stderr: Readable,
+  forward?: (chunk: string) => void,
+): () => string {
+  const chunks: string[] = []
+  let length = 0
+  stderr.on('data', (chunk: Buffer | string) => {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    chunks.push(text)
+    length += text.length
+    while (length > INSTALL_STDERR_TAIL_LIMIT && chunks.length > 1) {
+      length -= chunks[0]!.length
+      chunks.shift()
+    }
+    forward?.(text)
+  })
+  // A torn-down pipe must never crash the install orchestration.
+  stderr.on('error', () => undefined)
+  return () => chunks.join('')
+}
+
 /**
  * Run one tarball-channel company plugin install end to end:
  *
@@ -1486,9 +1527,22 @@ export async function installCompanyMarketTarballPlugin(
     ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   })
+  // Drain the child's streams from here on: the managed subprocess exposes
+  // piped stdio without an internal reader, so an unconsumed pipe would both
+  // hide the real failure reason (the #48 triage saw only the generic exit
+  // line) and risk stalling the child on a full pipe. The stderr tail rides
+  // with the failure below; every chunk is also forwarded live to the
+  // caller's bridge (the market channel's stderr, which the market UI reads).
+  const stderrTail = collectPackageManagerStderr(handle.stderr, request.forwardStderr)
+  handle.stdout.resume()
   const outcome = await handle.done
   if (outcome.exitCode !== 0 || outcome.signal !== null) {
-    throw new Error(`${BIN_NAME}: the package manager failed installing the staged tarball for ${entry.packageName}@${entry.version} (exit ${String(outcome.exitCode)}, signal ${String(outcome.signal)}) — the recovery WAL restored the profile`)
+    const tail = stderrTail().trim()
+    throw new Error(
+      `${BIN_NAME}: the package manager failed installing the staged tarball for ${entry.packageName}@${entry.version}`
+      + ` (exit ${String(outcome.exitCode)}, signal ${String(outcome.signal)}) — the recovery WAL restored the profile`
+      + (tail.length === 0 ? '' : `; package manager stderr tail:\n${tail}`),
+    )
   }
   request.signal?.throwIfAborted()
   let packageDir: string

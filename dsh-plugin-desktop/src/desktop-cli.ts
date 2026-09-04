@@ -11,6 +11,10 @@ import {
 } from './install-recovery.ts'
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
 import { companyManifestFileRequest, DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
+import {
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
+  parseCompanyTarballHandoff,
+} from './company-tarball-handoff.ts'
 import { desktopPolicyFromEnvironment, DESKTOP_POLICY_ENVIRONMENT, readDesktopPolicy } from './desktop-policy.ts'
 import { isPackagedApplicationPath, packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
@@ -349,7 +353,10 @@ async function loadWithInstallRecovery(
  * permission-mode override. Unlocked and development runs keep today's CLI
  * shape byte-for-byte.
  *
- * @param environment - process environment inherited from the generated shim.
+ * @param environment - process environment inherited from the generated shim;
+ * besides the policy hand-off it may carry the launcher's market tarball
+ * hand-off (`DSH_COMPANY_TARBALL_HANDOFF`), which the locked add gate
+ * re-binds to the signed catalog before admitting its one `file:` target.
  * @param load - ESM loader used by the executable and focused tests.
  * @param argv - mutable process arguments presented to the upstream CLI.
  * @param policy - embedded company policy gating terminal plugin adds; defaults to the shipped asset.
@@ -376,6 +383,15 @@ export async function runDesktopDshCli(
   const companyManifestFile = takeEnvironmentValue(
     environment,
     DESKTOP_COMPANY_MANIFEST_FILE_ENV,
+  )
+  // Market-orchestrated tarball hand-off (P7 fix): when the trusted launcher
+  // spawns this child for a controlled market tarball install, it names the
+  // one `file:` target the locked add gate may admit. Consumed here so the
+  // upstream CLI and its pnpm children never inherit it; strictly parsed
+  // below — a present-but-malformed value fails the add closed.
+  const companyTarballHandoffRaw = takeEnvironmentValue(
+    environment,
+    DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   )
   if (profileName !== undefined) {
     argv.splice(2, argv.length - 2, ...withDefaultDesktopProfile(argv.slice(2), profileName))
@@ -427,6 +443,20 @@ export async function runDesktopDshCli(
       // `<package>@<version>` entry may proceed; every denial stays here.
       // The sequence floor rides the receipts ratchet boot verification also
       // reconciles against (see cli-install-channel.ts for the rationale).
+      //
+      // A launcher tarball hand-off, when present, is strictly parsed first:
+      // the launcher only ever injects the canonical four-field document, so
+      // anything else is a malformed (or hostile) value and fails closed
+      // before the manifest is even consulted.
+      let tarballHandoff: ReturnType<typeof parseCompanyTarballHandoff> = undefined
+      if (companyTarballHandoffRaw !== undefined) {
+        tarballHandoff = parseCompanyTarballHandoff(companyTarballHandoffRaw)
+        if (tarballHandoff === undefined) {
+          process.stderr.write(`dsh-desktop: the launcher tarball hand-off is malformed and the plugin add was refused\n`)
+          process.exitCode = 1
+          return
+        }
+      }
       const lastSeenSequence = await lockedPluginAddSequenceFloor(homeDir)
       const decision = await authorizeLockedPluginAdd(
         installCommand.packageSpecs,
@@ -437,6 +467,10 @@ export async function runDesktopDshCli(
             ? {}
             : { fetch: { request: companyManifestFileRequest(companyManifestFile) } }),
           ...(lastSeenSequence === undefined ? {} : { lastSeenSequence }),
+          ...(tarballHandoff === undefined ? {} : { tarballHandoff }),
+          ...(homeDir === undefined
+            ? {}
+            : { profileDir: resolveProfileDir(installCommand.profileName, homeDir) }),
         },
       )
       if (!decision.allowed) {

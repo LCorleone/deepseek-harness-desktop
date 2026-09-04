@@ -38,12 +38,17 @@
  *   the readable reason on its stderr, which is the tail the market surfaces
  *   to the UI as the operation's error detail.
  *
- * The CLI red line is untouched: a user argument can never produce a
- * controlled tarball descriptor (the pnpm boundary still rejects every
- * user-argument tarball path), and the locked terminal add gate still denies
- * tarball entries with market guidance — only this in-process channel, bound
- * to a manifest it verified itself, can divert an install onto the tarball
- * target.
+ * The CLI red line is preserved by construction: a user argument can never
+ * produce a controlled tarball descriptor (the pnpm boundary still rejects
+ * every user-argument tarball path), and the locked terminal add gate still
+ * denies a user-typed `file:` target with market guidance. The market
+ * install's own `file:` target crosses that gate through the launcher's
+ * trusted tarball hand-off (`DSH_COMPANY_TARBALL_HANDOFF`, injected by the
+ * pnpm boundary for exactly these spawns), which the gate admits only after
+ * re-binding it to the signed catalog entry and re-hashing the staged bytes
+ * — see `company-tarball-handoff.ts` and `cli-install-channel.ts`. Only this
+ * in-process channel, bound to a manifest it verified itself, can divert an
+ * install onto the tarball target.
  */
 
 import { readFileSync } from 'node:fs'
@@ -254,6 +259,11 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             // controlled tarball install runs with exactly the options its
             // registry twin would (the boundary re-audits them).
             ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
+            // Bridge the package-manager child's stderr into this channel's
+            // stderr while the install runs, so the real failure reason — a
+            // CLI gate denial, a pnpm error — reaches the market UI's error
+            // detail live instead of a generic exit-code line.
+            forwardStderr: chunk => { stderr.write(chunk) },
             signal,
           })
           return { exitCode: 0, signal: null }

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -16,6 +16,12 @@ import {
   companyManifestAssetPath,
   parseExactPluginAddSpec,
 } from '../src/cli-install-channel.ts'
+import {
+  companyTarballHandoffText,
+  desktopMarketTarballStagingPath,
+  parseCompanyTarballHandoff,
+  type CompanyTarballHandoff,
+} from '../src/company-tarball-handoff.ts'
 import { companyManifestFileRequest, fetchCompanyManifestText } from '../src/company-manifest-origin.ts'
 import { parseDesktopPolicy } from '../src/desktop-policy.ts'
 import type { DesktopPolicy } from '../src/desktop-policy.ts'
@@ -736,5 +742,277 @@ describe('locked plugin-add authorization', () => {
     const refused = await authorizeLockedPluginAdd(['example-plugin@1.0.0'], contentMode, { assetPath: contentAsset })
     expect(refused.allowed).toBe(false)
     if (!refused.allowed) expect(refused.reason).toContain('invalid-manifest')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The launcher's market-orchestrated tarball hand-off (P7 fix): the one
+// admitted `file:` target through the locked gate, and every forgery shape
+// that must stay denied.
+// ---------------------------------------------------------------------------
+
+describe('locked plugin-add controlled tarball hand-off', () => {
+  const roots = mkdtempSync(join(tmpdir(), 'dsh-desktop-cli-install-channel-handoff-'))
+  // Tarball-channel entries only verify under an origin-mode policy (the
+  // dual-channel verifier rejects `source` entries in content mode), so this
+  // suite serves every catalog through the origin fetch seam.
+  const policy = lockedCatalogPolicy({
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/company-market/catalog-manifest.json',
+  })
+  const stagedBytes = Buffer.from('market tarball fixture bytes\n', 'utf8')
+  const stagedIntegrity = `sha512-${createHash('sha512').update(stagedBytes).digest('base64')}`
+  const tamperedBytes = Buffer.from('tampered replacement bytes\n', 'utf8')
+  const otherIntegrity = `sha512-${createHash('sha512').update(tamperedBytes).digest('base64')}`
+  const hardenedUrl = 'https://market.company.example/julu/dsh-desktop-config/-/packages/company-hardened-plugin-2.1.0.tgz'
+
+  afterEach(() => {
+    rmSync(roots, { recursive: true, force: true })
+  })
+
+  function writeCatalog(manifest: Record<string, unknown>, directory = roots): string {
+    const signature = createCompanyManifestSignature(asUnsigned(manifest), privateKey, keyId)
+    const assetPath = join(directory, 'company-market', 'catalog-manifest.json')
+    mkdirSync(join(directory, 'company-market'), { recursive: true })
+    writeFileSync(assetPath, canonicalJsonText({ ...manifest, signature }))
+    return assetPath
+  }
+
+  /** One tarball-channel catalog whose signed sha512 is the staged fixture's. */
+  function writeTarballCatalog(overrides: Record<string, unknown> = {}): string {
+    return writeCatalog(unsignedCatalog({
+      packages: [catalogEntry({
+        packageName: 'company-hardened-plugin',
+        version: '2.1.0',
+        integrity: stagedIntegrity,
+        treeDigest: 'ab'.repeat(32),
+        repository: { url: 'https://github.com/example/company-hardened-plugin' },
+        approvedBuilds: ['@company/signed-builder'],
+        source: { kind: 'tarball', url: hardenedUrl, integrity: stagedIntegrity },
+        ...overrides,
+      })],
+    }))
+  }
+
+  /** The staged fixture at its deterministic path inside one profile. */
+  function stageFixture(profileDir: string, bytes: Buffer = stagedBytes): string {
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'company-hardened-plugin', '2.1.0')
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, bytes)
+    return stagedPath
+  }
+
+  it('round-trips the hand-off document canonically and rejects every malformed spelling', () => {
+    const handoff: CompanyTarballHandoff = {
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      integrity: stagedIntegrity,
+      path: join('/tmp', 'profile', '.dsh-market-tarballs', 'company-hardened-plugin-2.1.0.tgz'),
+    }
+    const text = companyTarballHandoffText(handoff)
+    // Fixed sorted key order, no whitespace — the canonical serialization.
+    expect(text).toBe(JSON.stringify({
+      integrity: handoff.integrity,
+      packageName: handoff.packageName,
+      path: handoff.path,
+      version: handoff.version,
+    }))
+    expect(parseCompanyTarballHandoff(text)).toEqual(handoff)
+
+    expect(parseCompanyTarballHandoff('')).toBeUndefined()
+    expect(parseCompanyTarballHandoff('not json')).toBeUndefined()
+    expect(parseCompanyTarballHandoff('[]')).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, extra: 1 }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({
+      integrity: handoff.integrity,
+      packageName: handoff.packageName,
+      path: handoff.path,
+    }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, version: '2.1' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, version: '2.1.0-rc.1' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, packageName: 'Not-A-Name' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, integrity: 'sha512-nope' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, path: 'relative/path.tgz' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(`${JSON.stringify({ ...handoff, path: `${'x'.repeat(4_096)}.tgz` })}`)).toBeUndefined()
+  })
+
+  /** Serve one written catalog asset through the origin fetch seam. */
+  const serveCatalog = (assetPath: string) => async () => new Response(readFileSync(assetPath, 'utf8'))
+
+  it('admits the launcher hand-off file: target after the signed-entry and staged-byte double check', async () => {
+    const assetPath = writeTarballCatalog()
+    const profileDir = join(roots, 'profiles', 'web')
+    const stagedPath = stageFixture(profileDir)
+    const handoff: CompanyTarballHandoff = {
+      packageName: 'company-hardened-plugin',
+      version: '2.1.0',
+      integrity: stagedIntegrity,
+      path: stagedPath,
+    }
+
+    const decision = await authorizeLockedPluginAdd(
+      ['--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`],
+      policy,
+      { fetch: { request: serveCatalog(assetPath) }, tarballHandoff: handoff, profileDir },
+    )
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'company-hardened-plugin', version: '2.1.0' }],
+      approvedBuildDependencies: ['@company/signed-builder'],
+    })
+  })
+
+  it('still denies the same file: target without the hand-off (the terminal red line)', async () => {
+    const assetPath = writeTarballCatalog()
+    const profileDir = join(roots, 'profiles', 'web')
+    const stagedPath = stageFixture(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(
+      ['--save-exact', `file:${stagedPath}`],
+      policy,
+      { fetch: { request: serveCatalog(assetPath) }, profileDir },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('is not a <package>@<exact version> spec')
+      expect(decision.reason).toContain('Install plugins from the company plugin market instead.')
+    }
+  })
+
+  it.each([
+    ['npm-form spec instead of the file: target', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      const decision = await authorizeLockedPluginAdd(
+        ['company-hardened-plugin@2.1.0'],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('is only valid for its own file: install target')
+    }],
+    ['file: target other than the hand-off path', async (assetPath: string, profileDir: string, _stagedPath: string) => {
+      const other = stageFixture(join(profileDir, 'other'))
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${other}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: join(profileDir, '.dsh-market-tarballs', 'company-hardened-plugin-2.1.0.tgz') },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('pins the install target file:')
+    }],
+    ['hand-off path outside the deterministic staging location', async (assetPath: string, profileDir: string, _stagedPath: string) => {
+      const planted = join(profileDir, 'planted.tgz')
+      writeFileSync(planted, stagedBytes)
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${planted}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: planted },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('may only install from the staged path')
+    }],
+    ['hand-off integrity diverging from the signed entry', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: otherIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('pins integrity')
+    }],
+    ['staged bytes swapped after staging', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      writeFileSync(stagedPath, tamperedBytes)
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('does not match the integrity pinned in the signed company plugin catalog')
+    }],
+    ['staged file missing entirely', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      rmSync(stagedPath, { force: true })
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('is unusable')
+    }],
+    ['npm-channel entry behind the hand-off file: target', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('is not published on the tarball channel')
+    }],
+    ['revoked tarball entry behind the hand-off', async (assetPath: string, profileDir: string, stagedPath: string) => {
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        policy,
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          profileDir,
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('revoked in the signed company plugin catalog')
+    }],
+    ['no profile directory to confine the staged path', async (assetPath: string, _profileDir: string, stagedPath: string) => {
+      const decision = await authorizeLockedPluginAdd(
+        [`file:${stagedPath}`],
+        lockedCatalogPolicy(),
+        {
+          fetch: { request: serveCatalog(assetPath) },
+          tarballHandoff: { packageName: 'company-hardened-plugin', version: '2.1.0', integrity: stagedIntegrity, path: stagedPath },
+        },
+      )
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) expect(decision.reason).toContain('cannot be confined without the active profile directory')
+    }],
+  ])('denies the hand-off shape: %s', async (_label, run) => {
+    const assetPath = writeTarballCatalog(
+      _label === 'npm-channel entry behind the hand-off file: target'
+        ? { source: { kind: 'npm' } }
+        : _label === 'revoked tarball entry behind the hand-off'
+          ? { revoked: true }
+          : {},
+    )
+    const profileDir = join(roots, 'profiles', 'deny')
+    const stagedPath = stageFixture(profileDir)
+    await run(assetPath, profileDir, stagedPath)
   })
 })

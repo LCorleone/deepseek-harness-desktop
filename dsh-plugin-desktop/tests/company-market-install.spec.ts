@@ -49,7 +49,9 @@ import {
   desktopMarketTarballStagingPath,
   inject as desktopPnpmInject,
   name as desktopPnpmName,
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
+  parseCompanyTarballHandoff,
   type DesktopPnpm,
   type DesktopPnpmBootstrap,
 } from '../src/pnpm.ts'
@@ -477,6 +479,16 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
       // twin would (P7 2c review fix: they must not silently vanish).
       expect(argv).toContain('--save-exact')
       expect(argv).toContain('--registry=https://registry.npmjs.org/')
+      // The spawn carries the launcher tarball hand-off: the packaged CLI
+      // child's locked add gate re-binds exactly these facts to the signed
+      // entry before admitting the file: target.
+      const environment = composition.spawn.mock.calls[0]?.[0].env as Record<string, string | undefined>
+      expect(parseCompanyTarballHandoff(environment?.[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '')).toEqual({
+        packageName: PACKAGE_NAME,
+        version: PACKAGE_VERSION,
+        integrity: TARBALL_INTEGRITY,
+        path: stagedPath,
+      })
       expect(readFileSync(stagedPath)).toEqual(TARBALL_BYTES)
       expect(existsSync(join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, `${PACKAGE_NAME}-2.0.0.tgz`))).toBe(false)
       const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
@@ -558,6 +570,46 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
       expect(executed.status).toBe(502)
       expect((executed.body as { error?: string }).error ?? '').toContain('differ from the tree digest pinned in the signed company manifest')
       // The rollback restored the profile and left no receipt.
+      expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
+      expect(await composition.service.recoveredInstallReceiptIds()).toEqual([])
+    } finally {
+      await composition.dispose()
+    }
+  })
+
+  it('surfaces the package-manager child\u2019s real stderr through the channel when the controlled install fails', async () => {
+    const root = temporaryDirectory('child-stderr')
+    const profileDir = join(root, 'profiles', 'web')
+    const composition = await composeMarketDesktop(root, {
+      manifestText: signedManifestText(),
+      spawn: vi.fn<(spec: SubprocessSpawnSpec) => SubprocessHandle>(() => {
+        const child = controlledSubprocess()
+        void Promise.resolve().then(() => {
+          // The CLI child's own stderr — the reason a real device failure
+          // was invisible in the #48 report.
+          ;(child.stderr as PassThrough).write(
+            "dsh-desktop: 'file:/planted.tgz' is not a <package>@<exact version> spec; install from the market instead.\n",
+          )
+          child.resolveDone({ exitCode: 1, signal: null })
+          child.resolveTree()
+        })
+        return child
+      }),
+    })
+    const originalManifest = readFileSync(join(profileDir, 'package.json'), 'utf8')
+    try {
+      await expect(composition.installable()).resolves.toMatchObject({ status: 200 })
+      const preview = await composition.preview({ action: 'install', sourceRecordId: COMPANY_SOURCE_ID, itemId: ITEM_ID })
+      expect(preview.status).toBe(200)
+      const executed = await composition.execute({ previewId: preview.body.previewId })
+      expect(executed.status).toBe(502)
+      const error = (executed.body as { error?: string }).error ?? ''
+      // The contract wording plus the child's real stderr tail — both the
+      // live bridge and the thrown message's tail reach the UI detail.
+      expect(error).toContain('the package manager failed installing the staged tarball')
+      expect(error).toContain('the recovery WAL restored the profile')
+      expect(error).toContain('is not a <package>@<exact version> spec')
+      // The WAL restored the profile and left no receipt.
       expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
       expect(await composition.service.recoveredInstallReceiptIds()).toEqual([])
     } finally {

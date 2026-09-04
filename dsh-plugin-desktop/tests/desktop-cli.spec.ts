@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
@@ -23,6 +23,11 @@ import {
 import { COMPANY_PRESET_ID } from '../src/company-agent-presets.ts'
 import { companyPresetRoot, lockedPermissionConfig } from '../src/profile.ts'
 import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from '../src/company-manifest-origin.ts'
+import {
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
+  companyTarballHandoffText,
+  desktopMarketTarballStagingPath,
+} from '../src/company-tarball-handoff.ts'
 import {
   desktopPolicyEnvironmentEntries,
   desktopPolicyFromEnvironment,
@@ -450,6 +455,118 @@ describe('packaged dsh bootstrap', () => {
         phase: 'awaiting-restart',
       })
     } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a market-orchestrated file: add through the launcher tarball hand-off in a locked build', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-tarball-handoff-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const stagedBytes = Buffer.from('terminal handoff staged tarball\n', 'utf8')
+    const stagedIntegrity = `sha512-${createHash('sha512').update(stagedBytes).digest('base64')}`
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'example-plugin', '1.0.0')
+    // Tarball-channel entries only verify under an origin-mode policy, so
+    // the catalog rides the staged-manifest-file hand-off like an origin-mode
+    // fleet's CLI child reads it.
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({
+      packages: [catalogEntry({
+        integrity: stagedIntegrity,
+        treeDigest: 'ab'.repeat(32),
+        source: { kind: 'tarball', url: 'https://market.company.example/packages/example-plugin-1.0.0.tgz', integrity: stagedIntegrity },
+      })],
+    }))
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, stagedBytes)
+      const load = vi.fn(async () => undefined)
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`]
+      const environment = {
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: assetPath,
+        [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+          packageName: 'example-plugin',
+          version: '1.0.0',
+          integrity: stagedIntegrity,
+          path: stagedPath,
+        }),
+      }
+
+      await runDesktopDshCli(environment, load, argv, companyLockedOriginPolicy(), assetPath)
+
+      // The hand-off admitted exactly this file: target: the upstream CLI
+      // import ran, the launcher's own flags were kept (no duplicate
+      // --save-exact), and the hand-off never leaked into the child env.
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`,
+      ])
+      expect(environment[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]).toBeUndefined()
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed when the launcher tarball hand-off is malformed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-tarball-handoff-bad-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'example-plugin', '1.0.0')
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: '{"packageName":',
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', `file:${stagedPath}`],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('tarball hand-off is malformed')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still denies a user-typed file: target without the launcher tarball hand-off', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-file-without-handoff-'))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+      stderrWrite.mockClear()
+
+      await runDesktopDshCli({ DSH_DESKTOP_DEFAULT_PROFILE: 'desktop' }, load,
+        [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'file:/tmp/planted.tgz'],
+        companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('is not a <package>@<exact version> spec')
+      expect(stderr).toContain('Install plugins from the company plugin market instead.')
+    } finally {
+      stderrWrite.mockRestore()
       process.exitCode = originalExitCode
       rmSync(root, { recursive: true, force: true })
     }

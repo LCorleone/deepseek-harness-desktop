@@ -1225,6 +1225,54 @@ describe('company tarball install orchestration', () => {
     }
   })
 
+  it('bridges the package-manager child\u2019s stderr live and rides the bounded tail with the failure', async () => {
+    const root = temporaryDirectory('orchestrate-stderr')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ name: 'profile', dependencies: {} }))
+    const selectedBootstrap = bootstrap(root, profileDir)
+    const tarball = await stagedFixture(root)
+    const child = controlledSubprocess()
+    const harness = await createPnpmHarness(queuedSpawn([child]), selectedBootstrap)
+    const forwarded: string[] = []
+    try {
+      const pending = installCompanyMarketTarballPlugin({
+        service: harness.service,
+        entry: {
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: TARBALL_INTEGRITY,
+          bundlePatch: './cordis.patch.yml',
+          revoked: false,
+          treeDigest: TREE_DIGEST,
+        },
+        tarball,
+        recovery: installRecovery,
+        profileDir,
+        invokingDir: profileDir,
+        // The market channel's live bridge: every chunk the child writes is
+        // forwarded while the install runs.
+        forwardStderr: chunk => { forwarded.push(chunk) },
+        measureTreeRootDigest: () => {
+          throw new Error('must not be reached')
+        },
+      })
+      ;(child.stderr as PassThrough).write('ERR_PNPM_MISSING_PACKAGE the real failure reason\n')
+      child.resolveDone({ exitCode: 1, signal: null })
+      child.resolveTree()
+      const failure = await pending.then(() => undefined, (cause: unknown) => cause) as Error
+      // The thrown failure keeps its contract wording and now carries the
+      // child's real stderr tail, so the market UI's error detail shows the
+      // actual reason instead of a bare exit code.
+      expect(failure.message).toContain('the package manager failed installing the staged tarball')
+      expect(failure.message).toContain('the recovery WAL restored the profile')
+      expect(failure.message).toContain('ERR_PNPM_MISSING_PACKAGE the real failure reason')
+      expect(forwarded.join('')).toContain('ERR_PNPM_MISSING_PACKAGE the real failure reason')
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   it.each([
     ['a revoked entry', { revoked: true }, 'revoked'],
     ['an entry without a signed treeDigest', { treeDigest: undefined }, 'no signed treeDigest'],
@@ -1530,8 +1578,11 @@ describe('composition invariance: the controlled marketTarball descriptor', () =
     const boundary = bodyOf(pnpm, 'private async assertControlledMarketTarball')
     // The boundary's comparisons are against the descriptor's own integrity
     // claim and the deterministic staging path — the words that would claim
-    // signature authority at this layer must not appear in its checks.
-    expect(boundary).toContain('tarball.integrity.slice')
+    // signature authority at this layer must not appear in its checks. (The
+    // digest comparison itself lives in the shared staged-tarball contract,
+    // `company-tarball-handoff.ts`, which this boundary feeds the
+    // descriptor's own integrity into.)
+    expect(boundary).toContain('stagedDigestMatchesIntegrity(digest, tarball.integrity)')
     expect(boundary).toContain('desktopMarketTarballStagingPath')
     expect(boundary).not.toContain('entry.integrity')
     // And it constructs nothing: no construction spelling (any quote style,

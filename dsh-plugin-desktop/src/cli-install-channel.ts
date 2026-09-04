@@ -14,6 +14,23 @@
  * terminal resolves through the public registry, which can never satisfy a
  * tarball entry's signed integrity (see the deny site below).
  *
+ * One exception to the blanket `file:` denial: a market-orchestrated
+ * controlled tarball install. The Desktop market path installs verified
+ * tarball-channel entries through this same packaged CLI child
+ * (`dsh plugin add --save-exact --registry=… file:<staged path>`), so the
+ * launcher hands the one allowed target across the process boundary in the
+ * trusted tarball hand-off (`DSH_COMPANY_TARBALL_HANDOFF`, see
+ * `company-tarball-handoff.ts` — the same trust model as the seven-key
+ * policy hand-off and `DSH_COMPANY_MANIFEST_FILE`). The gate admits that
+ * `file:` target only after double verification: the hand-off must name a
+ * package@version the verified signed catalog carries on the tarball
+ * channel with the entry's signed sha512 and the deterministic staged path
+ * inside the profile being installed into, and a fresh hash of the staged
+ * bytes must equal that signed sha512. Every other `file:` target — a
+ * user-typed path, a hand-off naming different bytes, a mismatched spec —
+ * stays denied, so the terminal red line is unchanged: without the
+ * launcher's hand-off no `file:` argument ever reaches pnpm.
+ *
  * Acquisition modes: content-mode builds read the manifest asset embedded in
  * the application bundle synchronously (milliseconds, no network); origin-
  * mode builds fetch the manifest once over the shared restricted client with
@@ -51,15 +68,19 @@ import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fetchCompanyManifestText, type CompanyManifestFetchOptions } from './company-manifest-origin.ts'
+import {
+  EXACT_VERSION_PATTERN,
+  PACKAGE_NAME_PATTERN,
+  desktopMarketTarballStagingPath,
+  sha512OfStagedFile,
+  stagedDigestMatchesIntegrity,
+  type CompanyTarballHandoff,
+} from './company-tarball-handoff.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 /** Upper bound of the embedded catalog asset; the schema caps 10000 entries (~2.5 MiB). */
 const MAX_MANIFEST_ASSET_BYTES = 4 * 1024 * 1024
-/** Mirrors `packageName` in the market's `docs/schemas/company-manifest.schema.json`. */
-const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
-/** Mirrors `version` in the market's `docs/schemas/company-manifest.schema.json`. */
-const EXACT_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u
 const MARKET_GUIDANCE = 'Install plugins from the company plugin market instead.'
 /**
  * pnpm flag the launcher injects after an allow so the profile lockfile pins
@@ -109,6 +130,22 @@ export interface LockedPluginAddOptions {
   readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * The launcher's market-orchestrated tarball hand-off
+   * (`DSH_COMPANY_TARBALL_HANDOFF`), already strictly parsed by the CLI
+   * bootstrap. When present, the one package argument must be exactly the
+   * hand-off's own `file:<staged path>` target, and that target is admitted
+   * only after the double verification below. Without it, every `file:`
+   * argument stays a non-exact-spec denial.
+   */
+  readonly tarballHandoff?: CompanyTarballHandoff
+  /**
+   * Directory of the profile the add targets — anchors the hand-off's
+   * staged-path confinement (`desktopMarketTarballStagingPath`). Required
+   * whenever a hand-off is offered; an absent directory fails the hand-off
+   * closed instead of admitting an unconfined target.
+   */
+  readonly profileDir?: string
 }
 
 function denied(reason: string): LockedPluginAddDecision {
@@ -182,7 +219,7 @@ function isAcceptedRegistryFlag(argument: string): boolean {
  * plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
- * @param options - the manifest asset path, origin fetch overrides, the receipts sequence floor, and test clock overrides.
+ * @param options - the manifest asset path, origin fetch overrides, the receipts sequence floor, the test clock, and — for a market-orchestrated install — the launcher's parsed tarball hand-off plus the profile directory confining its staged path.
  * @returns the allow decision with the resolved targets, or the denial reason.
  */
 export async function authorizeLockedPluginAdd(
@@ -212,9 +249,38 @@ export async function authorizeLockedPluginAdd(
     return denied(`locked builds accept 'dsh plugin add <package>@<exact version>' with exactly one package argument (got ${String(packageArguments.length)}). ${MARKET_GUIDANCE}`)
   }
   const spec = packageArguments[0]!
-  const target = parseExactPluginAddSpec(spec)
-  if (target === undefined) {
-    return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
+  const handoff = options.tarballHandoff
+  let target: CliPluginAddPackage
+  if (spec.startsWith('file:')) {
+    // The one admitted `file:` target is the launcher's own controlled
+    // tarball install. Without the hand-off this is exactly the user-typed
+    // case, and the denial below is the terminal red line unchanged.
+    if (handoff === undefined) {
+      return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
+    }
+    if (options.profileDir === undefined) {
+      return denied(`the controlled tarball hand-off for ${handoff.packageName}@${handoff.version} cannot be confined without the active profile directory. ${MARKET_GUIDANCE}`)
+    }
+    if (spec !== `file:${handoff.path}`) {
+      return denied(`the controlled tarball hand-off pins the install target file:${handoff.path}, but the command asked for '${spec}'. ${MARKET_GUIDANCE}`)
+    }
+    // Path confinement mirrors the pnpm boundary: only the deterministic
+    // staging path for this exact package version inside the profile being
+    // installed into can ever be the target.
+    const stagedPath = desktopMarketTarballStagingPath(options.profileDir, handoff.packageName, handoff.version)
+    if (handoff.path !== stagedPath) {
+      return denied(`a controlled market tarball may only install from the staged path ${stagedPath}. ${MARKET_GUIDANCE}`)
+    }
+    target = { packageName: handoff.packageName, version: handoff.version }
+  } else {
+    if (handoff !== undefined) {
+      return denied(`the controlled tarball hand-off for ${handoff.packageName}@${handoff.version} is only valid for its own file: install target, but the command asked for '${spec}'. ${MARKET_GUIDANCE}`)
+    }
+    const parsed = parseExactPluginAddSpec(spec)
+    if (parsed === undefined) {
+      return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
+    }
+    target = parsed
   }
   let raw: string
   if (policy.companyCatalogOrigin === null) {
@@ -265,13 +331,45 @@ export async function authorizeLockedPluginAdd(
   }
   const source = entry.source ?? { kind: 'npm' as const }
   if (source.kind === 'tarball') {
-    // The terminal `pnpm add <name>@<version>` resolves through the public
-    // registry, but a tarball-channel entry's signed integrity is the
-    // intranet tarball's sha512 — the registry path could never satisfy it
-    // (and boot verification would refuse the mismatched tree). Controlled
-    // tarball installs belong to the company market install path alone.
+    if (handoff === undefined) {
+      // The terminal `pnpm add <name>@<version>` resolves through the public
+      // registry, but a tarball-channel entry's signed integrity is the
+      // intranet tarball's sha512 — the registry path could never satisfy it
+      // (and boot verification would refuse the mismatched tree). Controlled
+      // tarball installs belong to the company market install path alone.
+      return denied(
+        `${target.packageName}@${target.version} is published on the tarball channel of the signed company plugin catalog and cannot be installed from the public registry. ${MARKET_GUIDANCE}`,
+      )
+    }
+    // Market-orchestrated install — double verification (双验) before the
+    // one `file:` target is admitted: the hand-off must carry exactly the
+    // entry's signed sha512, and a fresh hash of the staged bytes must
+    // equal that same signed integrity. A forged hand-off naming other
+    // bytes, or a staged file that changed after staging, fails here.
+    if (handoff.integrity !== entry.integrity) {
+      return denied(
+        `the controlled tarball hand-off for ${target.packageName}@${target.version} pins integrity ${handoff.integrity}, but the signed company plugin catalog pins ${entry.integrity}. ${MARKET_GUIDANCE}`,
+      )
+    }
+    let digest: Buffer
+    try {
+      digest = await sha512OfStagedFile(handoff.path)
+    } catch (cause) {
+      return denied(
+        `the staged tarball ${handoff.path} for ${target.packageName}@${target.version} is unusable: ${messageOf(cause)}. ${MARKET_GUIDANCE}`,
+      )
+    }
+    if (!stagedDigestMatchesIntegrity(digest, entry.integrity)) {
+      return denied(
+        `the staged tarball ${handoff.path} for ${target.packageName}@${target.version} does not match the integrity pinned in the signed company plugin catalog. ${MARKET_GUIDANCE}`,
+      )
+    }
+  } else if (handoff !== undefined) {
+    // A `file:` target (the only shape a hand-off admits) is never valid for
+    // an npm-channel entry: its signed integrity is the registry dist's, and
+    // the controlled pipeline is not what the catalog signed for it.
     return denied(
-      `${target.packageName}@${target.version} is published on the tarball channel of the signed company plugin catalog and cannot be installed from the public registry. ${MARKET_GUIDANCE}`,
+      `${target.packageName}@${target.version} is not published on the tarball channel of the signed company plugin catalog — the controlled file: install target is not valid for it. ${MARKET_GUIDANCE}`,
     )
   }
   return {
