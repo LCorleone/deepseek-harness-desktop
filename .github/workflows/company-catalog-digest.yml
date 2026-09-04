@@ -58,7 +58,9 @@ jobs:
       # measure.mjs hashes through the compiled desktop boot-verification
       # chunk; its default --desktop-lib is dsh-plugin-desktop/lib, so the
       # lib must exist before the measure step (pack below needs no lib).
-      - name: Build desktop lib (boot-verification chunk)
+      - name: Build the community-market lib (boot-verification dependency)
+        run: yarn workspace dsh-community-market build
+      - name: Build the desktop boot-verification lib
         run: yarn workspace dsh-plugin-desktop build
       - name: Export the company catalog origin (optional repository variable)
         # Tarball-channel entries validate against the deployment's pinned
