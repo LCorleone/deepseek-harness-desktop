@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 桌面助手 · 安全架构一页通（管理层版）· 2026-09-04</title>
+<style>
+  :root{
+    --navy:#1c2e52;
+    --steel:#2f5fa8;
+    --green:#2e7d5b;
+    --orange:#b4541c;
+    --purple:#6b4fa8;
+    --red:#a83a3a;
+    --ink:#222a36;
+    --muted:#5d6774;
+    --faint:#8a93a2;
+    --line:#dce1e9;
+    --bg:#eef1f6;
+    --paper:#ffffff;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC",-apple-system,"Segoe UI",sans-serif;
+    font-size:15px;
+    line-height:1.75;
+  }
+  .page{max-width:1140px;margin:0 auto;padding:0 26px 26px;}
+
+  /* ---------- 页眉 ---------- */
+  .hero{
+    background:linear-gradient(135deg,#16274b 0%,#1c2e52 55%,#26396b 100%);
+    color:#fff;
+    border-radius:0 0 14px 14px;
+    padding:26px 36px 22px;
+    margin:0 0 20px;
+  }
+  .hero .badge{
+    display:inline-block;
+    border:1.5px solid #e8b34b;
+    color:#ffd98a;
+    font-size:14px;
+    letter-spacing:4px;
+    padding:2px 14px 2px 18px;
+    border-radius:999px;
+    font-weight:600;
+    margin-bottom:10px;
+  }
+  .hero h1{margin:0 0 6px;font-size:28px;line-height:1.35;letter-spacing:1px;font-weight:700;}
+  .hero .sub{font-size:16px;color:#c6d2e8;margin:0 0 12px;}
+  .hero .meta{
+    display:flex;flex-wrap:wrap;gap:6px 26px;
+    font-size:14px;color:#a9b8d4;
+    border-top:1px solid rgba(255,255,255,.18);
+    padding-top:10px;
+  }
+  .hero .meta b{color:#dbe4f4;font-weight:600;}
+
+  /* ---------- 章节 ---------- */
+  section{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:12px;
+    box-shadow:0 1px 4px rgba(24,38,70,.05);
+    padding:24px 28px 22px;
+    margin-bottom:22px;
+  }
+  h2{
+    display:flex;align-items:center;gap:12px;
+    font-size:20px;color:var(--navy);
+    margin:0 0 4px;line-height:1.4;
+  }
+  h2 .chip{
+    flex:none;background:var(--navy);color:#fff;
+    font-size:14px;font-weight:700;border-radius:6px;
+    padding:2px 10px;letter-spacing:1px;
+  }
+  h2 .h2sub{font-size:14px;color:var(--faint);font-weight:400;margin-left:2px;}
+  .h2rule{
+    height:3px;border:none;margin:4px 0 14px;
+    background:linear-gradient(90deg,var(--navy) 0%,var(--steel) 42%,transparent 100%);
+    border-radius:2px;
+  }
+  p{margin:8px 0;}
+  .lead{font-size:15.5px;}
+  b,strong{color:var(--navy);}
+  .muted{color:var(--muted);}
+
+  /* ---------- 图示 ---------- */
+  figure{
+    margin:16px 0 12px;
+    padding:14px 12px 8px;
+    background:#fbfcfe;
+    border:1px solid var(--line);
+    border-radius:10px;
+  }
+  figure svg{display:block;width:100%;height:auto;font-family:inherit;}
+  figcaption{
+    text-align:center;font-size:14px;color:var(--muted);
+    padding:8px 6px 4px;line-height:1.6;
+  }
+  figcaption b{color:var(--navy);}
+
+  /* ---------- 数据流图例 ---------- */
+  .flowlist{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(430px,1fr));
+    gap:10px 22px;
+    margin:14px 0 4px;
+  }
+  .flowitem{
+    display:flex;gap:10px;align-items:flex-start;
+    background:#f6f8fc;
+    border:1px solid var(--line);
+    border-left:4px solid var(--steel);
+    border-radius:9px;
+    padding:9px 14px;
+    font-size:14.5px;line-height:1.65;
+  }
+  .flowitem .no{
+    flex:none;width:24px;height:24px;border-radius:50%;
+    color:#fff;font-size:14.5px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;
+    margin-top:2px;
+  }
+  .flowitem b{display:inline;}
+  .flowitem.f1{border-left-color:var(--steel);}   .flowitem.f1 .no{background:var(--steel);}
+  .flowitem.f2{border-left-color:var(--green);}   .flowitem.f2 .no{background:var(--green);}
+  .flowitem.f3{border-left-color:var(--orange);}  .flowitem.f3 .no{background:var(--orange);}
+  .flowitem.f4{border-left-color:var(--purple);}  .flowitem.f4 .no{background:var(--purple);}
+
+  /* ---------- 插件管道总结条 ---------- */
+  .pipe-summary{
+    background:var(--navy);
+    color:#fff;
+    border-radius:9px;
+    padding:11px 20px;
+    font-size:15px;
+    text-align:center;
+    margin:16px 0 4px;
+    line-height:1.7;
+  }
+  .pipe-summary b{color:#ffd98a;}
+
+  /* ---------- 提示框 ---------- */
+  .callout{
+    background:#eef6f1;
+    border-left:4px solid var(--green);
+    border-radius:7px;
+    padding:10px 16px;
+    margin:14px 0 2px;
+    font-size:14.5px;line-height:1.7;
+  }
+  .callout .ct{font-weight:700;color:var(--navy);display:block;margin-bottom:2px;}
+
+  /* ---------- 五道防线卡片 ---------- */
+  .defense-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(196px,1fr));
+    gap:14px;
+    margin:16px 0 4px;
+  }
+  .defense{
+    border:1px solid var(--line);
+    border-top:4px solid var(--navy);
+    border-radius:10px;
+    background:#fbfcfe;
+    padding:14px 15px 12px;
+    font-size:14.5px;line-height:1.68;
+  }
+  .defense .dno{
+    display:inline-block;
+    background:var(--navy);color:#fff;
+    font-size:14px;font-weight:700;
+    border-radius:999px;
+    padding:1px 12px;
+    margin-bottom:8px;
+  }
+  .defense .dt{font-size:16px;font-weight:700;color:var(--navy);line-height:1.45;margin-bottom:6px;}
+  .defense.d1{border-top-color:var(--steel);}  .defense.d1 .dno{background:var(--steel);}
+  .defense.d2{border-top-color:var(--green);}  .defense.d2 .dno{background:var(--green);}
+  .defense.d3{border-top-color:var(--orange);} .defense.d3 .dno{background:var(--orange);}
+  .defense.d4{border-top-color:var(--purple);} .defense.d4 .dno{background:var(--purple);}
+  .defense.d5{border-top-color:var(--navy);}   .defense.d5 .dno{background:var(--navy);}
+
+  /* ---------- 收尾 ---------- */
+  .verdict{
+    text-align:center;
+    padding:8px 10px 4px;
+  }
+  .verdict .big{
+    font-size:20px;font-weight:700;color:var(--navy);
+    line-height:1.6;
+    margin:6px 0 2px;
+  }
+  .verdict .small{font-size:15px;color:var(--muted);margin:4px 0 14px;}
+  .metric-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+    gap:14px;
+    margin:10px 0 8px;
+  }
+  .metric{
+    border:1px solid var(--line);
+    border-top:3px solid var(--navy);
+    border-radius:9px;
+    padding:14px 12px 12px;
+    background:#fbfcfe;
+    text-align:center;
+  }
+  .metric .num{
+    font-size:27px;font-weight:700;color:var(--navy);
+    line-height:1.25;letter-spacing:.5px;
+  }
+  .metric .lbl{font-size:14px;color:var(--muted);line-height:1.5;margin-top:4px;}
+
+  /* ---------- 页脚 ---------- */
+  footer{
+    text-align:center;color:var(--muted);font-size:14px;line-height:2;
+    padding:14px 10px 6px;
+  }
+  footer .fbar{display:inline-block;border-top:2px solid var(--navy);padding-top:8px;}
+  footer .secret{color:var(--red);font-weight:700;letter-spacing:2px;}
+
+  /* ---------- 打印 ---------- */
+  @media print{
+    @page{size:A4;margin:12mm 10mm;}
+    body{background:#fff;font-size:14px;}
+    .page{max-width:none;padding:0;}
+    .hero{background:#fff !important;color:var(--navy) !important;border:none;border-bottom:3px double var(--navy);border-radius:0;padding:4px 2px 12px;margin-bottom:12px;}
+    .hero .badge{border-color:var(--red);color:var(--red);background:#fff;}
+    .hero .sub,.hero .meta{color:var(--muted) !important;}
+    .hero .meta b{color:var(--navy);}
+    section{box-shadow:none;border:1px solid #c9ced6;border-radius:6px;padding:14px 16px 12px;break-inside:auto;margin-bottom:12px;}
+    h2,h3{break-after:avoid;}
+    figure,.defense,.metric,.flowitem,.callout,.pipe-summary{break-inside:avoid;}
+    figure svg{max-width:100%;}
+    .pipe-summary{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .pipe-summary b{color:var(--navy);}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ======================= 页眉 ======================= -->
+<header class="hero">
+  <span class="badge">内部资料</span>
+  <h1>AI 桌面助手 · 安全架构一页通</h1>
+  <p class="sub">数据怎么流、插件怎么管 —— 三分钟看懂 · 面向公司管理层</p>
+  <div class="meta">
+    <span>日期：<b>2026 年 9 月 4 日</b></span>
+    <span>呈报对象：<b>公司管理层</b></span>
+    <span>产品：<b>DSH Desktop 公司版</b></span>
+    <span>事实依据：<b>项目工程实施记录与代码评审（2026-08）</b></span>
+  </div>
+</header>
+
+<main class="page">
+
+<!-- ======================= 一、总架构图 ======================= -->
+<section id="s1">
+  <h2><span class="chip">01</span>一张图看懂：数据只在公司围墙内流动<span class="h2sub">核心图 · 先看这一张</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead">把这套系统想象成一个<b>带门禁的办公园区</b>：员工的电脑是前台，公司内网是园区，
+  互联网在围墙外面。员工与公司之间的全部来往，只有下面图中的 <b>四条通道</b>——每条都在围墙之内、都有人看守。</p>
+
+  <figure>
+    <svg viewBox="0 0 1088 630" role="img" aria-label="总架构图：左侧员工电脑区运行 AI 桌面应用（登录门、工作界面、AI 助手），中间公司内网区有统一登录中心、AI 模型网关、插件市场、用量审计库四个节点，四条编号通道连接两区；右侧公司外互联网区为灰色空白，两条被红叉阻断的虚线表示出不去、进不来。">
+      <defs>
+        <marker id="mk-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#1c2e52"/>
+        </marker>
+        <marker id="mk-steel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#2f5fa8"/>
+        </marker>
+        <marker id="mk-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#2e7d5b"/>
+        </marker>
+        <marker id="mk-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#b4541c"/>
+        </marker>
+        <marker id="mk-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#6b4fa8"/>
+        </marker>
+      </defs>
+
+      <!-- ======== 员工电脑区 ======== -->
+      <rect x="20" y="72" width="300" height="486" rx="14" fill="#f0f5fc" stroke="#2f5fa8" stroke-width="1.8"/>
+      <text x="170" y="101" text-anchor="middle" font-size="17" font-weight="700" fill="#1c2e52">员工电脑</text>
+      <text x="170" y="125" text-anchor="middle" font-size="14" fill="#5d6774">每人桌上的工作电脑</text>
+      <line x1="36" y1="140" x2="304" y2="140" stroke="#c9d6ec" stroke-width="1.2"/>
+
+      <!-- 桌面应用容器 -->
+      <rect x="44" y="156" width="252" height="348" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.6"/>
+      <path d="M 44 166 q 0 -10 10 -10 h 232 q 10 0 10 10 v 28 h -252 Z" fill="#1c2e52"/>
+      <text x="170" y="181" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">AI 桌面应用</text>
+
+      <rect x="62" y="210" width="216" height="56" rx="8" fill="#eaf1fb" stroke="#2f5fa8" stroke-width="1.4"/>
+      <text x="170" y="233" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">登录门</text>
+      <text x="170" y="255" text-anchor="middle" font-size="14" fill="#5d6774">刷公司账号才能进</text>
+
+      <line x1="170" y1="266" x2="170" y2="282" stroke="#1c2e52" stroke-width="1.8" marker-end="url(#mk-navy)"/>
+
+      <rect x="62" y="286" width="216" height="56" rx="8" fill="#eaf1fb" stroke="#2f5fa8" stroke-width="1.4"/>
+      <text x="170" y="309" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">工作界面</text>
+      <text x="170" y="331" text-anchor="middle" font-size="14" fill="#5d6774">办公 · 写代码 · 查资料</text>
+
+      <line x1="170" y1="342" x2="170" y2="358" stroke="#1c2e52" stroke-width="1.8" marker-end="url(#mk-navy)"/>
+
+      <rect x="62" y="362" width="216" height="56" rx="8" fill="#eaf1fb" stroke="#2f5fa8" stroke-width="1.4"/>
+      <text x="170" y="385" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">AI 助手</text>
+      <text x="170" y="407" text-anchor="middle" font-size="14" fill="#5d6774">对话 · 写作 · 找资料</text>
+
+      <rect x="62" y="436" width="216" height="52" rx="8" fill="#f6f8fb" stroke="#d5dce8" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="170" y="458" text-anchor="middle" font-size="14" fill="#8a93a2">不是本人账号登录，</text>
+      <text x="170" y="478" text-anchor="middle" font-size="14" fill="#8a93a2">一个功能都进不去</text>
+
+      <!-- ======== 公司内网区 ======== -->
+      <rect x="424" y="72" width="372" height="486" rx="14" fill="#f2f8f4" stroke="#2e7d5b" stroke-width="1.8"/>
+      <text x="610" y="101" text-anchor="middle" font-size="17" font-weight="700" fill="#1c2e52">公司内网</text>
+      <text x="610" y="125" text-anchor="middle" font-size="14" fill="#5d6774">所有数据只在围墙内流动</text>
+      <line x1="440" y1="140" x2="780" y2="140" stroke="#c6dfd1" stroke-width="1.2"/>
+
+      <rect x="448" y="154" width="324" height="58" rx="8" fill="#ffffff" stroke="#2e7d5b" stroke-width="1.4"/>
+      <text x="610" y="177" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">统一登录中心（SSO）</text>
+      <text x="610" y="199" text-anchor="middle" font-size="14" fill="#5d6774">核对是不是本公司员工本人</text>
+
+      <rect x="448" y="228" width="324" height="88" rx="8" fill="#eef6f0" stroke="#2e7d5b" stroke-width="2.2"/>
+      <rect x="466" y="240" width="76" height="24" rx="12" fill="#2e7d5b"/>
+      <text x="504" y="257" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">唯一入口</text>
+      <text x="610" y="262" text-anchor="middle" font-size="16" font-weight="700" fill="#1c2e52">AI 模型网关</text>
+      <text x="610" y="286" text-anchor="middle" font-size="14" font-weight="700" fill="#2e7d5b">公司的 AI 总入口</text>
+      <text x="610" y="306" text-anchor="middle" font-size="14" fill="#5d6774">每一句 AI 对话都经它中转</text>
+
+      <rect x="448" y="332" width="324" height="78" rx="8" fill="#ffffff" stroke="#2e7d5b" stroke-width="1.4"/>
+      <text x="610" y="356" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">插件市场</text>
+      <text x="610" y="377" text-anchor="middle" font-size="14" fill="#5d6774">每个插件先审核、盖章，才准上架</text>
+      <text x="610" y="397" text-anchor="middle" font-size="14" fill="#5d6774">员工装插件，只有这一家店</text>
+
+      <rect x="448" y="424" width="324" height="78" rx="8" fill="#ffffff" stroke="#2e7d5b" stroke-width="1.4"/>
+      <text x="610" y="448" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">用量审计库</text>
+      <text x="610" y="469" text-anchor="middle" font-size="14" fill="#5d6774">每次 AI 调用，自动记一笔账</text>
+      <text x="610" y="489" text-anchor="middle" font-size="14" fill="#5d6774">只记数字，不记对话内容</text>
+
+      <!-- ======== 公司外 / 互联网区 ======== -->
+      <rect x="888" y="72" width="180" height="486" rx="14" fill="#f4f5f7" stroke="#9aa2ae" stroke-width="1.6" stroke-dasharray="7 5"/>
+      <text x="978" y="101" text-anchor="middle" font-size="16" font-weight="700" fill="#6a7482">公司外 · 互联网</text>
+      <text x="978" y="125" text-anchor="middle" font-size="14" fill="#9aa2ae">围墙之外</text>
+
+      <circle cx="978" cy="190" r="30" fill="none" stroke="#b3452f" stroke-width="3.5"/>
+      <line x1="957.5" y1="210.5" x2="998.5" y2="169.5" stroke="#b3452f" stroke-width="3.5"/>
+
+      <text x="978" y="252" text-anchor="middle" font-size="16" font-weight="700" fill="#6a7482">这里什么都没有</text>
+
+      <text x="978" y="300" text-anchor="middle" font-size="14" fill="#7a828e"><tspan fill="#b3452f" font-weight="700">✕ </tspan>AI 请求不出公司</text>
+      <text x="978" y="330" text-anchor="middle" font-size="14" fill="#7a828e"><tspan fill="#b3452f" font-weight="700">✕ </tspan>插件不从公网来</text>
+      <text x="978" y="360" text-anchor="middle" font-size="14" fill="#7a828e"><tspan fill="#b3452f" font-weight="700">✕ </tspan>对话内容不外传</text>
+
+      <text x="978" y="420" text-anchor="middle" font-size="14" fill="#9aa2ae">所有通道都在围墙内，</text>
+      <text x="978" y="442" text-anchor="middle" font-size="14" fill="#9aa2ae">没有一条通到这里</text>
+
+      <!-- 被阻断的两条路 -->
+      <line x1="800" y1="262" x2="884" y2="262" stroke="#b3452f" stroke-width="1.8" stroke-dasharray="5 4"/>
+      <text x="842" y="244" text-anchor="middle" font-size="14" fill="#b3452f">出不去</text>
+      <circle cx="842" cy="262" r="11" fill="#ffffff" stroke="#b3452f" stroke-width="2"/>
+      <line x1="835" y1="255" x2="849" y2="269" stroke="#b3452f" stroke-width="2"/>
+      <line x1="849" y1="255" x2="835" y2="269" stroke="#b3452f" stroke-width="2"/>
+
+      <line x1="884" y1="372" x2="800" y2="372" stroke="#b3452f" stroke-width="1.8" stroke-dasharray="5 4"/>
+      <text x="842" y="354" text-anchor="middle" font-size="14" fill="#b3452f">进不来</text>
+      <circle cx="842" cy="372" r="11" fill="#ffffff" stroke="#b3452f" stroke-width="2"/>
+      <line x1="835" y1="365" x2="849" y2="379" stroke="#b3452f" stroke-width="2"/>
+      <line x1="849" y1="365" x2="835" y2="379" stroke="#b3452f" stroke-width="2"/>
+
+      <!-- ======== 四条通道 ======== -->
+      <line x1="278" y1="238" x2="444" y2="183" stroke="#2f5fa8" stroke-width="2.6" marker-end="url(#mk-steel)"/>
+      <circle cx="363" cy="211" r="13" fill="#2f5fa8"/>
+      <text x="363" y="216" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">1</text>
+
+      <line x1="278" y1="390" x2="444" y2="272" stroke="#2e7d5b" stroke-width="2.6" marker-end="url(#mk-green)"/>
+      <circle cx="363" cy="331" r="13" fill="#2e7d5b"/>
+      <text x="363" y="336" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">2</text>
+
+      <line x1="444" y1="371" x2="300" y2="452" stroke="#b4541c" stroke-width="2.6" marker-end="url(#mk-orange)"/>
+      <circle cx="372" cy="411" r="13" fill="#b4541c"/>
+      <text x="372" y="416" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">3</text>
+
+      <line x1="170" y1="504" x2="444" y2="474" stroke="#6b4fa8" stroke-width="2.6" marker-end="url(#mk-purple)"/>
+      <circle cx="307" cy="489" r="13" fill="#6b4fa8"/>
+      <text x="307" y="494" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">4</text>
+
+      <!-- 底部括注 -->
+      <path d="M 20 588 L 20 578 L 796 578 L 796 588" fill="none" stroke="#1c2e52" stroke-width="1.5"/>
+      <rect x="310" y="568" width="196" height="20" fill="#fbfcfe"/>
+      <text x="408" y="583" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">四条通道，全部在围墙内</text>
+    </svg>
+    <figcaption><b>图 1 · 数据流总览。</b>员工的每一次登录、每一句 AI 对话、每一次插件安装、每一笔用量记录，
+    都只发生在左、中两个区域之间；右侧互联网区域没有任何数据通道。</figcaption>
+  </figure>
+
+  <div class="flowlist">
+    <div class="flowitem f1"><span class="no">1</span><div><b>登录认证：</b>打开应用先刷公司账号，后台自动核对是本人——不是员工，门都进不来。</div></div>
+    <div class="flowitem f2"><span class="no">2</span><div><b>AI 对话：</b>每一句对话都发给公司 AI 网关，由它统一对接大模型——<b>对话内容不出公司</b>。</div></div>
+    <div class="flowitem f3"><span class="no">3</span><div><b>安装插件：</b>只能从公司插件市场装；市场上的每个插件，都是公司审核并盖章后才上架的。</div></div>
+    <div class="flowitem f4"><span class="no">4</span><div><b>用量台账：</b>每次 AI 调用自动记一笔账（谁、用哪个模型、用了多少），<b>只记数字，不记对话内容</b>。</div></div>
+  </div>
+</section>
+
+<!-- ======================= 二、插件的一生 ======================= -->
+<section id="s2">
+  <h2><span class="chip">02</span>插件的一生：从申请上架到一键下架<span class="h2sub">八步流水线 · 步步有人把关</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead">插件不是想装就能装。从开发者申请，到员工电脑上运行，再到万一出事时撤下，
+  全程八步、两道总关：<b>上架之前公司逐关把关，上架之后管控一点不松。</b></p>
+
+  <figure>
+    <svg viewBox="0 0 1088 384" role="img" aria-label="插件生命周期流水线：上排四步为上架之前（申请上架、逐行审核、公司盖章、独家上架），下排四步为上架之后（安装验章、启动复验、权限管控、一键下架），步骤间以箭头连接。">
+      <defs>
+        <marker id="mk-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#1c2e52"/>
+        </marker>
+      </defs>
+
+      <!-- 分组标签：上架之前 -->
+      <line x1="28" y1="22" x2="1058" y2="22" stroke="#1c2e52" stroke-width="1.4"/>
+      <rect x="445" y="11" width="198" height="21" fill="#fbfcfe"/>
+      <text x="544" y="27" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">上架之前 · 公司逐关把关</text>
+
+      <!-- 第 1 步 -->
+      <rect x="28" y="40" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="56" cy="70" r="14" fill="#2f5fa8"/>
+      <text x="56" y="75" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">1</text>
+      <text x="80" y="75" font-size="15.5" font-weight="700" fill="#1c2e52">申请上架</text>
+      <text x="46" y="106" font-size="14" fill="#5d6774">开发者向公司提出申请</text>
+      <text x="46" y="130" font-size="14" fill="#5d6774">交出插件全部代码</text>
+
+      <line x1="260" y1="96" x2="288" y2="96" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 2 步 -->
+      <rect x="294" y="40" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="322" cy="70" r="14" fill="#2f5fa8"/>
+      <text x="322" y="75" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">2</text>
+      <text x="346" y="75" font-size="15.5" font-weight="700" fill="#1c2e52">逐行审核</text>
+      <text x="312" y="106" font-size="14" fill="#5d6774">公司逐行检查代码</text>
+      <text x="312" y="130" font-size="14" fill="#5d6774">不合格，直接打回</text>
+
+      <line x1="526" y1="96" x2="554" y2="96" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 3 步 -->
+      <rect x="560" y="40" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="588" cy="70" r="14" fill="#1c2e52"/>
+      <text x="588" y="75" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">3</text>
+      <text x="612" y="75" font-size="15.5" font-weight="700" fill="#1c2e52">公司盖章</text>
+      <text x="578" y="106" font-size="14" fill="#5d6774">给通过的插件盖专属印章</text>
+      <text x="578" y="130" font-size="14" fill="#5d6774">这枚章，别人仿不出来</text>
+
+      <line x1="792" y1="96" x2="820" y2="96" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 4 步 -->
+      <rect x="826" y="40" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="854" cy="70" r="14" fill="#1c2e52"/>
+      <text x="854" y="75" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">4</text>
+      <text x="878" y="75" font-size="15.5" font-weight="700" fill="#1c2e52">独家上架</text>
+      <text x="844" y="106" font-size="14" fill="#5d6774">进入公司插件市场</text>
+      <text x="844" y="130" font-size="14" fill="#5d6774">员工装插件的唯一商店</text>
+
+      <!-- 换行连接线 -->
+      <path d="M 1058 96 L 1076 96 L 1076 352 L 144 352 L 144 330" fill="none" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 分组标签：上架之后 -->
+      <line x1="28" y1="190" x2="1058" y2="190" stroke="#1c2e52" stroke-width="1.4"/>
+      <rect x="468" y="179" width="150" height="21" fill="#fbfcfe"/>
+      <text x="543" y="195" text-anchor="middle" font-size="15" font-weight="700" fill="#1c2e52">上架之后 · 管控不松</text>
+
+      <!-- 第 5 步 -->
+      <rect x="28" y="212" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="56" cy="242" r="14" fill="#2e7d5b"/>
+      <text x="56" y="247" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">5</text>
+      <text x="80" y="247" font-size="15.5" font-weight="700" fill="#1c2e52">安装验章</text>
+      <text x="46" y="278" font-size="14" fill="#5d6774">员工点安装，当场先验章</text>
+      <text x="46" y="302" font-size="14" fill="#5d6774">不是公司的章，直接拒收</text>
+
+      <line x1="260" y1="268" x2="288" y2="268" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 6 步 -->
+      <rect x="294" y="212" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="322" cy="242" r="14" fill="#2e7d5b"/>
+      <text x="322" y="247" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">6</text>
+      <text x="346" y="247" font-size="15.5" font-weight="700" fill="#1c2e52">启动复验</text>
+      <text x="312" y="278" font-size="14" fill="#5d6774">每次打开应用，重验一遍</text>
+      <text x="312" y="302" font-size="14" fill="#5d6774">装过了、被改过，都逃不掉</text>
+
+      <line x1="526" y1="268" x2="554" y2="268" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 7 步 -->
+      <rect x="560" y="212" width="232" height="112" rx="10" fill="#ffffff" stroke="#1c2e52" stroke-width="1.5"/>
+      <circle cx="588" cy="242" r="14" fill="#b4541c"/>
+      <text x="588" y="247" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">7</text>
+      <text x="612" y="247" font-size="15.5" font-weight="700" fill="#1c2e52">权限管控</text>
+      <text x="578" y="278" font-size="14" fill="#5d6774">运行时只能碰授权范围</text>
+      <text x="578" y="302" font-size="14" fill="#5d6774">越界的动作，一律拦下</text>
+
+      <line x1="792" y1="268" x2="820" y2="268" stroke="#1c2e52" stroke-width="2" marker-end="url(#mk-p)"/>
+
+      <!-- 第 8 步 -->
+      <rect x="826" y="212" width="232" height="112" rx="10" fill="#ffffff" stroke="#a83a3a" stroke-width="1.8"/>
+      <circle cx="854" cy="242" r="14" fill="#a83a3a"/>
+      <text x="854" y="247" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">8</text>
+      <text x="878" y="247" font-size="15.5" font-weight="700" fill="#a83a3a">一键下架</text>
+      <text x="844" y="278" font-size="14" fill="#5d6774">一旦发现问题</text>
+      <text x="844" y="302" font-size="14" fill="#5d6774">远程撤下，全员立即失效</text>
+    </svg>
+    <figcaption><b>图 2 · 插件的一生（八步流水线）。</b>上排四步发生在上架之前——公司逐关把关；
+    下排四步发生在员工电脑上——验章、复验、限权、可撤，管控贯穿始终。</figcaption>
+  </figure>
+
+  <div class="pipe-summary">
+    从申请到下架，每一步都有记录、有责任人——插件<b>谁写的、谁审的、谁装的、何时撤下</b>，全都查得到。
+  </div>
+
+  <div class="callout">
+    <span class="ct">首个实战案例</span>
+    一款社区热门的联网搜索插件已完成安全收编：公司逐项检查代码、剥离多余的联网能力后，
+    即将在公司市场上架——这是市场能力的第一个例证。今后社区好用的插件，都会走同一条路收进来。
+  </div>
+</section>
+
+<!-- ======================= 三、五道防线 ======================= -->
+<section id="s3">
+  <h2><span class="chip">03</span>五道防线：层层设卡，不靠单点<span class="h2sub">就算一道被绕过，下一道照样拦得住</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead">安全不押注在某一道关卡上。下面五道防线各自独立、层层叠扣——
+  这套「层层设卡」的做法，行业里叫<b>纵深防御</b>。</p>
+
+  <div class="defense-grid">
+    <div class="defense d1">
+      <span class="dno">第 1 道</span>
+      <div class="dt">只装公司审过的</div>
+      插件唯一来源是公司市场。没有公司盖章的插件，连安装入口都不存在。
+    </div>
+    <div class="defense d2">
+      <span class="dno">第 2 道</span>
+      <div class="dt">装了也每次重验</div>
+      不是装完就一劳永逸：每次打开应用，所有插件重新验一遍；文件被动过手脚，立即停用。
+    </div>
+    <div class="defense d3">
+      <span class="dno">第 3 道</span>
+      <div class="dt">危险动作先点头</div>
+      AI 要做有后果的操作——比如在网页上提交表单——必须先弹窗征得员工本人同意，可一键否决。
+    </div>
+    <div class="defense d4">
+      <span class="dno">第 4 道</span>
+      <div class="dt">文件出不了授权范围</div>
+      AI 读写文件被限定在授权范围内，越界即被拦下；「全部放开」的最高权限已从产品中移除。
+    </div>
+    <div class="defense d5">
+      <span class="dno">第 5 道</span>
+      <div class="dt">每次调用都有台账</div>
+      每一次 AI 调用都自动记账：谁在用、用哪个模型、用了多少——按人按模型随时可查，账里没有对话内容。
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 四、收尾 ======================= -->
+<section id="s4">
+  <div class="verdict">
+    <div class="big">AI 能力全部经由公司可控通道交付 —— 可审计、可撤销、可追溯。</div>
+    <div class="small">谁能用，看登录；能干什么，看权限；用了多少，有台账；出问题，能撤销。</div>
+  </div>
+  <div class="metric-grid">
+    <div class="metric"><div class="num">5 层</div><div class="lbl">安全防线<br>层层设卡 · 不靠单点</div></div>
+    <div class="metric"><div class="num">1700+ 项</div><div class="lbl">自动化测试<br>每次发布前全量通过</div></div>
+    <div class="metric"><div class="num">分钟级</div><div class="lbl">新版发布全链路<br>全自动 · 零人工</div></div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="fbar">
+    <span class="secret">内部资料 · 请勿外传</span><br>
+    AI 桌面助手 · 安全架构一页通（管理层版）· 2026-09-04<br>
+    本页全部事实来自项目工程实施记录与代码评审（2026-08），关键论断均可在代码库中逐条复核。
+  </div>
+</footer>
+
+</body>
+</html>
