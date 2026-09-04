@@ -35,6 +35,11 @@ import {
   agentBrowserNavigationDeniedNotice,
 } from '../src/agent-browser-policy.ts'
 import { AUDITED_SNIPPET_IS_SUBMIT_CONTROL } from '../src/agent-browser-session.ts'
+import type {
+  AgentBrowserDownloadItem,
+  AgentBrowserGuestSession,
+  AgentBrowserGuestWebContents,
+} from '../src/agent-browser-session.ts'
 import {
   AGENT_BROWSER_PROMPT_SECTION,
   AGENT_BROWSER_SCREENSHOT_RETENTION_HINT,
@@ -193,6 +198,19 @@ describe('frameNavigated post-commit backstop (§5.5)', () => {
     expect(session.describe().policyNotices).toBeUndefined()
   })
 
+  it('never flags the Chromium error page an allowlisted origin failed to load into', async () => {
+    const { debugger_, logLines, session } = guardedSession(ALLOWLIST_POLICY)
+    await session.open('https://docs.example.test/', { waitForLoad: false })
+
+    // When an ALLOWLISTED origin fails to load (DNS/network/server error)
+    // Chromium commits chrome-error://chromewebdata/ as the error page: the
+    // load's failure state, not a policy evasion — a violation notice there
+    // would blame the policy with misleading copy (B4 review follow-up).
+    debugger_.emit('Page.frameNavigated', { frame: { id: 'main-frame', url: 'chrome-error://chromewebdata/' } })
+    expect(session.describe().policyNotices).toBeUndefined()
+    expect(logLines).toHaveLength(0)
+  })
+
   it('honors the declared main-frame boundary: an off-allowlist IFRAME navigation is not a violation', async () => {
     const { debugger_, session } = guardedSession(ALLOWLIST_POLICY)
     await session.open('https://docs.example.test/', { waitForLoad: false })
@@ -237,6 +255,62 @@ describe('download refusal (§5.1 v1 posture: cancel + report)', () => {
     const notices = session.describe().policyNotices ?? []
     expect(notices).toHaveLength(5)
     expect(notices.at(-1)).toContain('file-7.bin')
+  })
+
+  it('takes the will-download listener down with the surface — no accumulation across open/close cycles', async () => {
+    // Under a persist partition the SESSION object outlives the window:
+    // Electron hands the SAME session back on every reopen, so a listener
+    // that survives close stacks one copy per cycle — one download would
+    // fire N cancels, N notices, and N audit lines (B4 review follow-up).
+    const listeners = new Set<(event: unknown, item: AgentBrowserDownloadItem) => void>()
+    const sharedSession: AgentBrowserGuestSession = {
+      // Real-Electron shape (probed): `on` returns the emitter, not a
+      // disposer — removal rides the Node `removeListener` seam.
+      on: (event, listener) => {
+        if (event !== 'will-download') return undefined
+        listeners.add(listener)
+        return undefined
+      },
+      removeListener: (event, listener) => {
+        if (event === 'will-download') listeners.delete(listener)
+      },
+    }
+    // A fresh guest per cycle (the webContents dies with the window), all
+    // riding the one shared session object — the persist-partition shape.
+    const debugger_ = fakeGuestDebugger()
+    const guestForCycle = (): AgentBrowserGuestWebContents => ({
+      ...guardedFakeGuest(debugger_.target).guest,
+      session: sharedSession,
+    })
+    const logLines: string[] = []
+    const { session } = createHarness({
+      attachGuest: guestForCycle,
+      navigationPolicy: { enabled: true, allowOrigins: ALLOWLIST_POLICY.allowOrigins, allowPersistLogin: false },
+      logError: line => { logLines.push(line) },
+    })
+
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      await session.open('https://docs.example.test/', { waitForLoad: false })
+      expect(listeners.size).toBe(1)
+      await session.close()
+      expect(listeners.size).toBe(0)
+    }
+
+    // Reopen over the same session object: ONE page download, ONE cancel,
+    // ONE notice — with the leak the third cycle would carry three.
+    await session.open('https://docs.example.test/', { waitForLoad: false })
+    expect(listeners.size).toBe(1)
+    let cancels = 0
+    for (const listener of [...listeners]) {
+      listener(undefined, {
+        cancel: () => { cancels += 1 },
+        getURL: () => 'https://docs.example.test/files/report.zip',
+        getFilename: () => 'report.zip',
+      })
+    }
+    expect(cancels).toBe(1)
+    expect(session.describe().policyNotices ?? []).toHaveLength(1)
+    expect(logLines).toHaveLength(1)
   })
 })
 
@@ -388,10 +462,20 @@ describe('audited classifier label→control forwarding (B2-fix2 review P2)', ()
         return name === 'for' ? (el.forId ?? null) : null
       },
       querySelector(selector: string): MirrorElement | null {
-        const tags = selector.split(',').map(part => part.trim().toLowerCase())
+        // The two shapes the audited snippet's label search uses: `button`
+        // and `input:not([type=hidden i])` — a tag, optionally excluding one
+        // case-insensitive [attr=value] match (hidden inputs are not
+        // labelable, so the nested search skips them).
+        const parts = selector.split(',').map(part => part.trim().toLowerCase())
+        const matches = (candidate: MirrorElement, part: string): boolean => {
+          const parsed = /^([a-z]+)(?::not\(\[([a-z-]+)=([^\]]+?)( i)?\]\))?$/.exec(part)
+          if (parsed === null || candidate.tagName.toLowerCase() !== parsed[1]) return false
+          if (parsed[2] === undefined) return true
+          return String(candidate.type ?? '').toLowerCase() !== parsed[3]
+        }
         const walk = (candidate: MirrorElement): MirrorElement | null => {
           for (const child of candidate.children ?? []) {
-            if (tags.includes(child.tagName.toLowerCase())) return child
+            if (parts.some(part => matches(child, part))) return child
             const nested = walk(child)
             if (nested !== null) return nested
           }
@@ -433,6 +517,25 @@ describe('audited classifier label→control forwarding (B2-fix2 review P2)', ()
     const nestedText = mirrorElement({ tag: 'input', type: 'text' })
     const textLabel = mirrorElement({ tag: 'label', children: [nestedText] })
     expect(classify(textLabel)).toBe(false)
+  })
+
+  it('skips a nested hidden input when forwarding to the label control', () => {
+    // A hidden input is not labelable — Chromium forwards a label
+    // activation to the first LABELABLE control — so tree-order-first over
+    // `button, input` must not let a hidden CSRF token swallow the ask when
+    // the real submit control follows it (B4 review follow-up).
+    const hidden = mirrorElement({ tag: 'input', type: 'hidden' })
+    const submit = mirrorElement({ tag: 'input', type: 'submit' })
+    const label = mirrorElement({ tag: 'label', children: [hidden, submit] })
+    expect(classify(label)).toBe(true)
+
+    // The case-insensitive selector spelling: content `type=HIDDEN` is the
+    // same non-labelable control as `type=hidden`.
+    const upperHidden = mirrorElement({ tag: 'input', type: 'HIDDEN' })
+    expect(classify(mirrorElement({ tag: 'label', children: [upperHidden, submit] }))).toBe(true)
+
+    // A label wrapping ONLY a hidden input forwards to nothing: no ask.
+    expect(classify(mirrorElement({ tag: 'label', children: [hidden] }))).toBe(false)
   })
 
   it('keeps the button/input ancestor climb and fails closed elsewhere', () => {

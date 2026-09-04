@@ -33,8 +33,17 @@
  *      type attribute reports the IDL default `type=submit` — so it raises
  *      the form-submission ask — and a trusted click on a `<label>` forwards
  *      to the label's associated control (`for=` id first, first nested
- *      control otherwise), so a label whose control submits raises the same
- *      ask as the control itself.
+ *      LABELABLE control otherwise — a hidden input is skipped), so a label
+ *      whose control submits raises the same ask as the control itself;
+ *   7. real pre-commit enforcement under the allowlist (B4 §5.5): a
+ *      navigationPolicy-bound session opens a fixture page whose
+ *      `location.assign` timer targets an OFF-allowlist origin, and the
+ *      guest's `will-navigate` guard really cancels it — the main-frame
+ *      snapshot URL stays put and a denial notice is recorded (the unit
+ *      fakes only replay the event shape; this pins the real Chromium
+ *      behavior) — and the will-download guard really comes off the guest
+ *      SESSION on close (`listenerCount` over the same partition's session:
+ *      1 while open, 0 after — the persist-partition accumulation guard).
  *
  * Run it headless exactly like the B1 spike did:
  *   xvfb-run -a node_modules/electron/dist/electron --no-sandbox \
@@ -85,9 +94,32 @@ const FIXTURE_HTML = `<!doctype html>
   <label id="label-wrapping-submit"><span id="label-wrapping-inner">Wrapped submit</span><button type="submit" id="wrapped-submit-btn">Go</button></label>
   <label id="label-for-text" for="wrapped-input">Label for a text field</label>
   <input type="text" id="wrapped-input" value="">
+  <!-- B4 review follow-up: a hidden input is not labelable — the nested
+       search must skip it and land on the trailing submit control. -->
+  <label id="label-with-hidden"><input type="hidden" name="csrf2" value="x"><input type="submit" id="after-hidden-submit" value="Go"></label>
 </form>
 <div id="tall" style="height:4000px; background:linear-gradient(#222,#888)">tall content</div>
 <p id="footer">footer marker</p>
+</body></html>
+`
+
+/**
+ * The off-allowlist bounce target (§5.5 enforcement step): `.invalid` never
+ * resolves, so even a regression that lets the navigation through can only
+ * reach Chromium's error page — never the network.
+ */
+const OFF_ALLOWLIST_URL = 'https://off-allowlist.invalid/landing'
+
+/**
+ * Enforcement fixture: a page that TRIES to bounce the main frame off the
+ * allowlist 150 ms after load — the renderer-initiated `location.assign`
+ * timer the `will-navigate` guard must deny before commit (§5.5).
+ */
+const REDIRECT_FIXTURE_HTML = `<!doctype html>
+<html><head><title>Redirect Fixture</title></head><body>
+<h1>Bouncing off the allowlist…</h1>
+<p id="redirect-marker">redirect fixture body</p>
+<script>setTimeout(() => { location.assign('${OFF_ALLOWLIST_URL}') }, 150)</script>
 </body></html>
 `
 
@@ -128,7 +160,12 @@ async function main() {
   app.on('window-all-closed', () => {})
   await app.whenReady()
 
-  const server = createServer((_request, response) => {
+  const server = createServer((request, response) => {
+    if (request.url !== undefined && request.url.startsWith('/redirect')) {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      response.end(REDIRECT_FIXTURE_HTML)
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     response.end(FIXTURE_HTML)
   })
@@ -262,6 +299,12 @@ async function main() {
       // A label whose associated control does not submit never raises the ask.
       assert(await session_.isSubmitControl(refFor(snapshot.tree, 'id="label-for-text"')) === false,
         'a label[for=text-field] was misclassified as submit')
+      // A hidden input is not labelable — Chromium forwards to the first
+      // LABELABLE control, so the trailing submit still raises the ask even
+      // though the hidden CSRF token comes first in tree order (B4 review
+      // follow-up).
+      assert(await session_.isSubmitControl(refFor(snapshot.tree, 'id="label-with-hidden"')) === true,
+        'a label whose first nested input is hidden was not classified as submit')
     })
 
     await step('default session storage gains zero entries across the cycle', async () => {
@@ -348,6 +391,55 @@ async function main() {
       const document = loginStore.read()
       assert((document.persistUuid ?? '') !== persistedUuid, 'the clear action did not rotate the UUID')
       assert(document.persistLogin === true, 'clearing uninstallated the preference')
+    })
+
+    // ── B4 §5.5: real pre-commit enforcement under the allowlist ──
+
+    await step('policy enforcement cancels an off-allowlist navigation and unwinds the download guard on close', async () => {
+      // The launcher-shaped composition: the session carries a navigation
+      // policy whose allowlist holds ONLY the fixture origin. The unit
+      // fakes replay the event shape; this pins that a real Chromium
+      // `location.assign` timer is really cancelled — the main frame stays
+      // on the fixture page and the denial surfaces as a policy notice.
+      const redirectUrl = new URL('/redirect', fixtureUrl).toString()
+      let enforcementPartition = ''
+      const enforcementSession = new DesktopAgentBrowserSession({
+        createWindowHost: options => {
+          enforcementPartition = options.partition
+          return new DesktopAgentBrowserWindowHost(options)
+        },
+        mintPartitionToken: () => `dsh-agent-browser-smoke-${randomUUID()}`,
+        navigationPolicy: {
+          enabled: true,
+          allowOrigins: [new URL(fixtureUrl).origin],
+          allowPersistLogin: false,
+        },
+      })
+      try {
+        await enforcementSession.open(redirectUrl, { waitForLoad: true })
+        // Give the page's redirect timer every chance to fire — and be denied.
+        await settle(1_500)
+        const snapshot = await enforcementSession.snapshot(undefined)
+        assert(snapshot.url === redirectUrl,
+          `the off-allowlist navigation was not cancelled (main frame at ${snapshot.url})`)
+        const notices = enforcementSession.describe().policyNotices ?? []
+        assert(notices.some(notice => notice.includes('will-navigate') && notice.includes(OFF_ALLOWLIST_URL)),
+          `no will-navigate denial notice for ${OFF_ALLOWLIST_URL}: [${notices.join(' | ')}]`)
+        // The download guard rides the guest SESSION object, which outlives
+        // the window (the persist-partition hazard): exactly one listener
+        // while open, none after close — counted on the REAL Electron
+        // session over the same partition token.
+        const guardSession = electronSession.fromPartition(enforcementPartition)
+        const whileOpen = guardSession.listenerCount('will-download')
+        assert(whileOpen === 1,
+          `expected exactly one will-download listener while open, saw ${String(whileOpen)}`)
+        await enforcementSession.close()
+        const afterClose = guardSession.listenerCount('will-download')
+        assert(afterClose === 0,
+          `close left ${String(afterClose)} will-download listener(s) on the guest session — the accumulation leak`)
+      } finally {
+        await enforcementSession.close()
+      }
     })
 
     await step('closes cleanly', () => {

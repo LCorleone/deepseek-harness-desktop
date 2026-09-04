@@ -9,7 +9,10 @@
  * P0 default-session zero-entry isolation, snapshot secret masking, and
  * (B4) the §5.1 classifier's real-Chromium behavior: an untyped `<button>`
  * reports the IDL default `type=submit`, and a label click forwards to the
- * label's associated control (`for=` or first nested control).
+ * label's associated control (`for=` or first nested LABELABLE control — a
+ * hidden input is skipped), plus (B4 review follow-up) the §5.5 enforcement
+ * semantics under the real guest: a policy-bound session really cancels a
+ * page-initiated off-allowlist navigation before commit.
  *
  * The suite runs ONLY under `DSH_XVFB=1` (a desktop/Xvfb is a hard
  * prerequisite for a BrowserWindow); everywhere else it is the visible
@@ -33,7 +36,7 @@ const smokeScript = `${packageRoot}scripts/agent-browser-smoke.mjs`
 
 describe.runIf(process.env.DSH_XVFB !== undefined)('agent-browser real composition (DSH_XVFB)', () => {
   it(
-    'boots the real Electron smoke: partition identity, default-session zero entries, secret masking, real-IDL submit classification',
+    'boots the real Electron smoke: partition identity, default-session zero entries, secret masking, real-IDL submit classification, real allowlist enforcement',
     () => {
       expect(existsSync(electronBinary)).toBe(true)
       expect(existsSync(smokeScript)).toBe(true)

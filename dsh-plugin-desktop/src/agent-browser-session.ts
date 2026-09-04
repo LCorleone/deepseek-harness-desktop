@@ -83,6 +83,16 @@ export interface AgentBrowserDownloadItem {
 /** Guest session surface the download refusal consumes (§5.1, B4). */
 export interface AgentBrowserGuestSession {
   on(event: 'will-download', listener: (event: unknown, item: AgentBrowserDownloadItem) => void): unknown
+  /**
+   * Remove one `will-download` listener — the canonical Node EventEmitter
+   * seam the pinned Electron exposes (probed: `session.on` there returns
+   * the emitter itself, NOT a disposer, so the unwind cannot ride the `on`
+   * return value). Optional so pre-B4 fakes keep compiling.
+   */
+  removeListener?(
+    event: 'will-download',
+    listener: (event: unknown, item: AgentBrowserDownloadItem) => void,
+  ): unknown
 }
 
 /** Guest webContents surface the session consumes (structural Electron subset). */
@@ -180,9 +190,14 @@ export const AUDITED_SNIPPET_READ_VALUE = 'function(){ return (this instanceof H
  * B4 label semantics: a trusted click on a `<label>` (or its inner text)
  * forwards to the label's associated control exactly as Chromium does — a
  * `for=` id wins over a nested control — so a label whose control submits
- * raises the same ask as the control itself (B2-fix2 review P2).
+ * raises the same ask as the control itself (B2-fix2 review P2). The
+ * nested search skips `input[type=hidden]` (case-insensitive): a hidden
+ * input is not a labelable control, so Chromium never forwards a label
+ * activation to it — and tree-order-first would otherwise swallow the ask
+ * when a hidden CSRF token precedes the real submit control (B4 review
+ * follow-up).
  */
-export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const classify = el => { if (!el) return false; const tag = String(el.tagName).toLowerCase(); if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }; const self = this && typeof this.closest === "function" ? this : null; if (!self) return false; const control = self.closest("button, input"); if (control) return classify(control); const label = self.closest("label"); if (!label) return false; const forId = label.getAttribute("for"); if (forId !== null && forId !== "" && label.ownerDocument) { const target = label.ownerDocument.getElementById(forId); return target ? classify(target) : false; } const nested = label.querySelector("button, input"); return nested ? classify(nested) : false; }'
+export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const classify = el => { if (!el) return false; const tag = String(el.tagName).toLowerCase(); if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }; const self = this && typeof this.closest === "function" ? this : null; if (!self) return false; const control = self.closest("button, input"); if (control) return classify(control); const label = self.closest("label"); if (!label) return false; const forId = label.getAttribute("for"); if (forId !== null && forId !== "" && label.ownerDocument) { const target = label.ownerDocument.getElementById(forId); return target ? classify(target) : false; } const nested = label.querySelector("button, input:not([type=hidden i])"); return nested ? classify(nested) : false; }'
 
 /** Audited `scrollBy` snippet; only a rounded finite number is interpolated. */
 export function auditedSnippetScrollBy(deltaY: number): string {
@@ -656,11 +671,17 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       // still committed outside the allowlist is only SURFACED here — the
       // event fires after commit, when the target may already have run
       // script. `about:blank` is the surface's own mount document, not a
-      // navigation target, so it never counts as a violation. Iframe
-      // navigations never reach here either (the parentId filter above is
-      // the declared main-frame boundary: iframes and subresources may
-      // reach non-allowlisted origins — page behavior, outside §5.5).
+      // navigation target, so it never counts as a violation — and neither
+      // does `chrome-error://chromewebdata/`: when an ALLOWLISTED origin
+      // fails to load (DNS/network/server error) Chromium commits that URL
+      // as the error page, which is the load's failure state, not a policy
+      // evasion — flagging it would blame the policy with misleading copy
+      // (B4 review follow-up). Iframe navigations never reach here either
+      // (the parentId filter above is the declared main-frame boundary:
+      // iframes and subresources may reach non-allowlisted origins — page
+      // behavior, outside §5.5).
       if (this.navigationPolicy !== undefined && params.frame.url !== 'about:blank'
+        && params.frame.url !== 'chrome-error://chromewebdata/'
         && !agentBrowserAllowsUrl(params.frame.url, this.navigationPolicy)) {
         const notice = agentBrowserNavigationBackstopNotice(params.frame.url)
         this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
@@ -739,20 +760,42 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     guest.on?.('will-redirect', (event, url) => {
       if (!agentBrowserAllowsUrl(url, policy)) denyNavigation(event, url, 'will-redirect')
     })
-    guest.session?.on('will-download', (_event, item) => {
-      let url = ''
-      let filename = ''
-      try {
-        url = item.getURL()
-        filename = item.getFilename()
-      } catch {
-        // The report degrades to the cancel fact when the item is torn down.
+    // The download channel rides the SESSION object, which under a persist
+    // partition OUTLIVES the window — Electron hands the SAME session back
+    // on every reopen — while the webContents guards above die with the
+    // window. A listener left on the session therefore accumulates one copy
+    // per open/close cycle (duplicate notices, fake audit traces, a slow
+    // leak), so the unwind closure rides `unsubscribers` and `closeLocked`
+    // takes the channel down with the surface (B4 review follow-up). The
+    // listener reference lives in the closure: this Electron's `session.on`
+    // returns the emitter, not a disposer, so the removal goes through the
+    // Node `removeListener` seam instead (probed under the pinned 43.4.0).
+    const downloadSession = guest.session
+    if (downloadSession !== undefined) {
+      const onWillDownload = (_event: unknown, item: AgentBrowserDownloadItem): void => {
+        let url = ''
+        let filename = ''
+        try {
+          url = item.getURL()
+          filename = item.getFilename()
+        } catch {
+          // The report degrades to the cancel fact when the item is torn down.
+        }
+        item.cancel()
+        const notice = agentBrowserDownloadCancelledNotice(url, filename)
+        this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
+        this.recordPolicyNotice(notice)
       }
-      item.cancel()
-      const notice = agentBrowserDownloadCancelledNotice(url, filename)
-      this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
-      this.recordPolicyNotice(notice)
-    })
+      downloadSession.on('will-download', onWillDownload)
+      // An emitter without the removal seam keeps the listener for its own
+      // lifetime (the pre-fix posture — no worse); the real one always has it.
+      const { removeListener } = downloadSession
+      if (removeListener !== undefined) {
+        this.unsubscribers.push(() => {
+          removeListener.call(downloadSession, 'will-download', onWillDownload)
+        })
+      }
+    }
   }
 
   /** Record one policy-enforcement notice (bounded, newest last). */

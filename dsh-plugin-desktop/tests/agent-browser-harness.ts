@@ -122,10 +122,19 @@ export function guardedFakeGuest(
       return () => { (event === 'will-navigate' ? willNavigate : willRedirect).delete(listener) }
     },
     session: {
+      // Real-Electron shape (probed under the pinned 43.4.0): `on` returns
+      // the emitter itself, not a disposer — removal goes through the Node
+      // `removeListener` seam, which is what the session's unwind closure uses.
       on: (event: 'will-download', listener: (event: unknown, item: { cancel(): void, getURL(): string, getFilename(): string }) => void) => {
-        if (event !== 'will-download') return
+        if (event !== 'will-download') return undefined
         willDownload.add(listener)
-        return () => { willDownload.delete(listener) }
+        return undefined
+      },
+      removeListener: (
+        event: 'will-download',
+        listener: (event: unknown, item: { cancel(): void, getURL(): string, getFilename(): string }) => void,
+      ) => {
+        if (event === 'will-download') willDownload.delete(listener)
       },
     },
   }
