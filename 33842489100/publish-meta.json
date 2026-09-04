@@ -1,0 +1,25 @@
+{
+  "sequence": 11,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "ef06cd7e9f99b0a2988c426de21503e7ea6bd4400d350410971e19cc4c3f962d",
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.15.2",
+      "treeDigest": "47e34732e474c20d045e74f19155d561f27950f04262bf7ac151ff3c05758d94",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-free-search",
+      "version": "0.4.181",
+      "treeDigest": "0c800abadac2a36b44dfc5ab18f1da7f0a9f1f7a471639b315927d8ba6cce2d5",
+      "sourceKind": "tarball",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-09-04T06:01:00.147Z",
+  "gitSha": "67a897d1ca91ac25e4d7718546ee57cc90316777",
+  "runId": "33842489100",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/33842489100"
+}
