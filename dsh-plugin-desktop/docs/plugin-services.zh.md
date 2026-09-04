@@ -146,6 +146,8 @@ interface DesktopPnpmHandle {
 
 `installPlugin()` 拥有可恢复的 `add` 生命周期。调用方提供 pnpm flag、绝对调用目录和持久 receipt 身份。Desktop 会生成精确的 `${packageName}@${packageVersion}` 目标，在 spawn 前快照 profile manifest 与 lockfile，命令失败后恢复，成功后封存安装后图像。`receiptId` 把调用方的持久 receipt ledger 与 Desktop WAL 关联起来。启动回滚后，必须先删除精确 receipt，然后才调用 `acknowledgeRecoveredInstall(receiptId)`；确认操作是幂等的。`rollbackPluginInstall(receiptId)` 仅适用于当前 generation 中匹配的 transaction。
 
+锁定构建上，Electron host 会向该边界注入一个可选分流（P7 2c）：当请求未携带受控 tarball 描述符、且其精确 `(packageName, packageVersion)` 对应的签名 company-manifest 条目发布在 tarball 通道时，Host 通道（`src/company-market-install.ts`，以 `desktopCompanyMarketTarballInstall` 提供）接管该请求——把签名 tarball 下载并暂存到 profile 的受控暂存区，以唯一可构造的 `marketTarball` 描述符和同一 receipt 重新执行安装，复验安装后的 bundle 与签名 tree digest，出现偏差即回滚 profile。任一步拒绝时，合成 handle 以非零 settle，并把可读原因写在其 stderr 上。其余请求——以及未注入该通道的部署——逐字节保持上述 registry 路径不变；任何用户参数面都无法触发该分流，因为描述符只在进程内构造。
+
 `runPluginInstall()` 仅为避免破坏 v2.0.1 插件管理器而保留。它只接受 `['add', ...flags, exactTarget]`，其中 `exactTarget` 必须精确等于 `${recovery.packageName}@${recovery.packageVersion}`，中间参数必须全部是 flag。命令、目标不符，存在额外位置参数，或参数格式错误时，都会在启动进程前拒绝。
 
 Service 在每个 generation 同时最多启动一个 package operation；已有 operation 活跃时再次调用会同步抛错。它只暴露输出，不选择 progress UI，也没有内置 timeout。Consumer 拥有 deadline、读取两个 stream、报告 progress、在需要时调用 `cancel()` 或 abort signal、等待 `done`，并同时检查 `exitCode` 与 `signal`。

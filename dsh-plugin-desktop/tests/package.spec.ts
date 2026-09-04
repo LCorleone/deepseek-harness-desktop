@@ -556,6 +556,7 @@ describe('published package surface', () => {
       "  createCachedDesktopBootTreeRootDigestMeasure,\n"
         + "  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,\n"
         + "  desktopBootVerificationInputs,\n"
+        + "  readDesktopBootReceiptsFromSettings,\n"
         + "} from './boot-verification.ts'",
     )
     expect(main).toContain('await desktopBootVerificationInputs(')

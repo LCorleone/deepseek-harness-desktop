@@ -25,8 +25,15 @@
  *    verification never refuses the whole startup, only third-party content.
  * 2. The manifest must carry an entry for the exact (packageName, version).
  *    Absent entries, other-version pins, and revoked entries are rejected.
- * 3. The profile lockfile must pin the same npm dist integrity the manifest
- *    signed. A missing or diverging lockfile record is rejected.
+ * 3. The profile lockfile must pin the same integrity the manifest signed —
+ *    for a registry install the exact specifier plus the npm dist
+ *    integrity, for a controlled-tarball install (P7 2c) pnpm's `file:` pin
+ *    of the deterministic staged path whose recorded sha512 is the signed
+ *    tarball integrity and whose staged file is still present and still
+ *    hashes to it. A missing or diverging lockfile record is rejected; a
+ *    broken controlled-tarball pin (typically a deleted or tampered staged
+ *    tarball) is rejected with a reason pointing at the reinstall repair
+ *    path. Either way only that bundle is refused — never the whole boot.
  * 4. Installed-tree evidence. Which anchor the check uses is decided by the
  *    signed entry itself (gradual enablement):
  *
@@ -75,9 +82,10 @@
  * recorded by the market install path compare equal here.
  */
 
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
 import {
@@ -87,11 +95,17 @@ import {
 } from 'dsh-community-market'
 import { fetchCompanyManifestText } from './company-manifest-origin.ts'
 import {
+  COMPANY_TARBALL_MAX_BYTES,
   DESKTOP_MARKET_IDENTITIES,
   findDesktopCompanyManifestPackage,
   verifyDesktopCompanyManifest,
   type DesktopCompanyManifest,
 } from './desktop-market.ts'
+import {
+  DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
+  desktopMarketTarballStagingName,
+  desktopMarketTarballStagingPath,
+} from './pnpm.ts'
 import { desktopPluginBundleMutable } from './desktop-plugins.ts'
 import { resolveOverlayPackage } from './package-overlay.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
@@ -117,6 +131,13 @@ export interface DesktopBootBundle {
   readonly lockIntegrity: string | undefined
   /** Installed package directory to measure; undefined when the package cannot be resolved. */
   readonly packageDir: string | undefined
+  /**
+   * Pointed repair reason set when the lockfile pins this bundle through the
+   * controlled tarball channel but that pin no longer verifies (the staged
+   * tarball is gone or no longer hashes to the pinned sha512); undefined
+   * otherwise. Only read when {@link lockIntegrity} is undefined.
+   */
+  readonly lockProblem?: string
 }
 
 /** Receipt evidence for one exact installed bundle (market install receipt v2, narrowed). */
@@ -685,35 +706,179 @@ export function readDesktopBootLockfile(profileDir: string): UnknownRecord | und
   return lockfile
 }
 
+/** Standard base64 SHA-512 integrity spelling the catalog and lockfile pin. */
+const SHA512_INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]{86}==$/u
+
+/** Options of {@link desktopBootLockIntegrity}. */
+export interface DesktopBootLockIntegrityOptions {
+  /**
+   * Active profile directory. When present, a controlled-tarball `file:`
+   * specifier must equal the exact deterministic staging path inside this
+   * directory; without it the specifier is matched structurally (absolute,
+   * inside the staging directory, exact deterministic file name).
+   */
+  readonly profileDir?: string
+}
+
 /**
  * Resolve the npm dist integrity the profile lockfile pins for one exact
  * (packageName, version), mirroring the reader of the market install path:
  * the root importer must declare the exact specifier and resolution, and the
  * matching package entry must carry the signed resolution integrity.
  * Returns undefined whenever any link of that chain is absent.
+ *
+ * Controlled-tarball pins (P7 2c): a dependency the market UI installed
+ * through the tarball channel records pnpm's `file:` form — the specifier is
+ * `file:<deterministic staged path>` for this exact (packageName, version)
+ * and the package entry `name@file:…` pins the sha512 of the tarball bytes,
+ * which is exactly the manifest's signed `integrity`. The semantics of a
+ * recognized pin are therefore "installed by the controlled tarball channel,
+ * the staged file is still there, and it still hashes to the pinned sha512":
+ * the staged file is re-hashed synchronously here, so a GC'd, deleted, or
+ * tampered staged tarball fails this step exactly like a diverging registry
+ * pin — the bundle is rejected by name while the rest of the boot continues.
  */
 export function desktopBootLockIntegrity(
   lockfile: UnknownRecord,
   packageName: string,
   version: string,
+  options: DesktopBootLockIntegrityOptions = {},
 ): string | undefined {
   const importer = record(record(lockfile.importers)?.['.'])
   const dependencies = record(importer?.dependencies)
   const dependency = dependencies !== undefined && own(dependencies, packageName)
     ? record(dependencies[packageName])
     : undefined
-  if (dependency === undefined
-    || dependency.specifier !== version
-    || !exactLockResolution(dependency.version, version)) {
+  if (dependency === undefined) return undefined
+  if (dependency.specifier === version && exactLockResolution(dependency.version, version)) {
+    const resolvedVersion = dependency.version
+    const baseKey = `${packageName}@${version}`
+    const resolvedKey = `${packageName}@${resolvedVersion}`
+    const packageKeys = [...new Set([baseKey, `/${baseKey}`, resolvedKey, `/${resolvedKey}`])]
+    const packages = record(lockfile.packages) ?? {}
+    const resolution = record(lockEntry(packages, packageKeys)?.resolution)
+    return typeof resolution?.integrity === 'string' ? resolution.integrity : undefined
+  }
+  return desktopBootTarballLockIntegrity(lockfile, dependency, packageName, version, options)
+}
+
+/** The staged path a controlled-tarball `file:` specifier must pin for this exact package version, or undefined. */
+function controlledTarballSpecifierStagedPath(
+  specifier: unknown,
+  packageName: string,
+  version: string,
+  profileDir: string | undefined,
+): string | undefined {
+  if (typeof specifier !== 'string' || !specifier.startsWith('file:')) return undefined
+  const stagedPath = specifier.slice('file:'.length)
+  try {
+    // With the profile directory the pin must be the exact deterministic
+    // staging path inside it; without one (direct unit use) the structural
+    // shape — absolute, inside the staging directory, exact deterministic
+    // file name for this (packageName, version) — still has to match.
+    if (profileDir !== undefined) {
+      return stagedPath === desktopMarketTarballStagingPath(profileDir, packageName, version) ? stagedPath : undefined
+    }
+    if (!isAbsolute(stagedPath) || basename(dirname(stagedPath)) !== DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY) {
+      return undefined
+    }
+    return basename(stagedPath) === desktopMarketTarballStagingName(packageName, version) ? stagedPath : undefined
+  } catch {
     return undefined
   }
-  const resolvedVersion = dependency.version
-  const baseKey = `${packageName}@${version}`
-  const resolvedKey = `${packageName}@${resolvedVersion}`
-  const packageKeys = [...new Set([baseKey, `/${baseKey}`, resolvedKey, `/${resolvedKey}`])]
+}
+
+/** Root-importer dependency record of one package, if the lockfile pins it at all. */
+function lockfileDependency(lockfile: UnknownRecord, packageName: string): UnknownRecord | undefined {
+  const importer = record(record(lockfile.importers)?.['.'])
+  const dependencies = record(importer?.dependencies)
+  return dependencies !== undefined && own(dependencies, packageName)
+    ? record(dependencies[packageName])
+    : undefined
+}
+
+/**
+ * Synchronously hash the staged tarball through a private descriptor opened
+ * without following symlinks — the same read discipline the staging keepalive
+ * uses (desktop-market.ts). An absent path, a planted symlink, or a
+ * non-regular, empty, or oversized file yields undefined: not intact. Any
+ * other open/read failure is not "intact" either for boot purposes — the
+ * bytes cannot be proven, and the bundle fails this step by name instead of
+ * bricking the whole startup.
+ */
+function sha512OfStagedTarball(path: string): Buffer | undefined {
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const info = fstatSync(descriptor)
+    if (!info.isFile() || info.size <= 0 || info.size > COMPANY_TARBALL_MAX_BYTES) return undefined
+    const hash = createHash('sha512')
+    const chunk = Buffer.allocUnsafe(1024 * 1024)
+    let read: number
+    while ((read = readSync(descriptor, chunk, 0, chunk.byteLength, null)) > 0) {
+      hash.update(chunk.subarray(0, read))
+    }
+    return hash.digest()
+  } catch {
+    return undefined
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
+}
+
+/**
+ * The lock-integrity decision for one controlled-tarball `file:` pin: the
+ * specifier must be the deterministic staged path of this exact (packageName,
+ * version), the package entry `name@file:…` must pin a well-formed sha512,
+ * the pnpm-relative resolution spelling must point back at the same staged
+ * file, and the staged file must still hash to that pinned value. Returns the
+ * pinned integrity (the value the signed manifest entry must carry) or
+ * undefined.
+ */
+function desktopBootTarballLockIntegrity(
+  lockfile: UnknownRecord,
+  dependency: UnknownRecord,
+  packageName: string,
+  version: string,
+  options: DesktopBootLockIntegrityOptions,
+): string | undefined {
+  const stagedPath = controlledTarballSpecifierStagedPath(dependency.specifier, packageName, version, options.profileDir)
+  if (stagedPath === undefined) return undefined
+  const resolvedSpelling = typeof dependency.version === 'string' ? dependency.version : undefined
+  if (resolvedSpelling === undefined || !resolvedSpelling.startsWith('file:')) return undefined
+  if (options.profileDir !== undefined
+    && resolve(options.profileDir, resolvedSpelling.slice('file:'.length)) !== stagedPath) {
+    return undefined
+  }
   const packages = record(lockfile.packages) ?? {}
-  const resolution = record(lockEntry(packages, packageKeys)?.resolution)
-  return typeof resolution?.integrity === 'string' ? resolution.integrity : undefined
+  const integrity = record(lockEntry(packages, [`${packageName}@${resolvedSpelling}`])?.resolution)?.integrity
+  if (typeof integrity !== 'string' || !SHA512_INTEGRITY_PATTERN.test(integrity)) return undefined
+  const digest = sha512OfStagedTarball(stagedPath)
+  if (digest === undefined) return undefined
+  const expected = Buffer.from(integrity.slice('sha512-'.length), 'base64')
+  if (digest.byteLength !== expected.byteLength || !timingSafeEqual(digest, expected)) return undefined
+  return integrity
+}
+
+/**
+ * Pointed repair reason for one bundle whose controlled-tarball pin no longer
+ * verifies — the lockfile still pins the deterministic staged path of this
+ * exact (packageName, version), but the full chain of {@link
+ * desktopBootLockIntegrity} failed for it (typically the staged tarball was
+ * deleted or no longer hashes to the pinned sha512). Undefined for every
+ * other unpinned shape, which keeps the generic lockfile rejection reason.
+ */
+export function desktopBootControlledTarballPinProblem(
+  lockfile: UnknownRecord,
+  packageName: string,
+  version: string,
+  options: DesktopBootLockIntegrityOptions = {},
+): string | undefined {
+  const dependency = lockfileDependency(lockfile, packageName)
+  if (dependency === undefined) return undefined
+  const stagedPath = controlledTarballSpecifierStagedPath(dependency.specifier, packageName, version, options.profileDir)
+  if (stagedPath === undefined) return undefined
+  return `${packageName}@${version} was installed through the controlled company tarball channel, but its staged tarball ${stagedPath} is missing or no longer matches the sha512 pinned in the profile lockfile — reinstall the plugin from the company market (or uninstall it) to repair the profile`
 }
 
 function usableReceipt(
@@ -824,13 +989,20 @@ export function collectDesktopBootBundles(
       }
     }
     const lockIntegrity = lockfile !== undefined && version !== undefined
-      ? desktopBootLockIntegrity(lockfile, packageName, version)
+      ? desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })
+      : undefined
+    // A recognized controlled-tarball pin that no longer verifies gets the
+    // pointed repair reason; every other unpinned shape keeps the generic
+    // rejection text (see verifyDesktopBootBundles).
+    const lockProblem = lockIntegrity === undefined && lockfile !== undefined && version !== undefined
+      ? desktopBootControlledTarballPinProblem(lockfile, packageName, version, { profileDir })
       : undefined
     return {
       packageName,
       version,
       lockIntegrity,
       packageDir,
+      ...(lockProblem === undefined ? {} : { lockProblem }),
     }
   })
 }
@@ -931,7 +1103,8 @@ export function verifyDesktopBootBundles(
       continue
     }
     if (bundle.lockIntegrity === undefined) {
-      reject(`${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`)
+      reject(bundle.lockProblem
+        ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`)
       continue
     }
     if (bundle.lockIntegrity !== entry.integrity) {

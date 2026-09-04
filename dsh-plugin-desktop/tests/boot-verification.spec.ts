@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,6 +12,7 @@ import {
   ed25519PublicKeyFingerprint,
   verifyCompanyManifest,
 } from 'dsh-community-market'
+import { desktopMarketTarballStagingPath } from '../src/pnpm.js'
 import {
   BOOT_TREE_MAX_PATH_LENGTH,
   createCachedDesktopBootTreeRootDigestMeasure,
@@ -19,6 +20,7 @@ import {
   companyManifestAssetPath,
   computeDesktopBootTreeRootDigest,
   desktopBootBundleNames,
+  desktopBootControlledTarballPinProblem,
   desktopBootLockIntegrity,
   desktopBootReceipts,
   desktopBootTreeStatFingerprint,
@@ -1352,5 +1354,161 @@ describe('cross-implementation tree digest parity', () => {
     expect(marketDigest).toMatch(/^[0-9a-f]{64}$/u)
     expect(desktopDigest).toMatch(/^[0-9a-f]{64}$/u)
     expect(marketDigest).toBe(desktopDigest)
+  })
+})
+
+describe('controlled tarball file: lock pins (P7 2c)', () => {
+  const CATALOG_ORIGIN = 'https://gitlab.company.example'
+  const TARBALL_BYTES = Buffer.from('boot verification tarball fixture bytes\n')
+  const TARBALL_INTEGRITY = `sha512-${createHash('sha512').update(TARBALL_BYTES).digest('base64')}`
+
+  function filePinLockfile(
+    profileDir: string,
+    options: {
+      readonly integrity?: string
+      readonly specifier?: string
+      readonly resolutionSpelling?: string
+    } = {},
+  ): string {
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, packageName, version)
+    const relativeStaged = relative(profileDir, stagedPath).split(sep).join('/')
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      '${packageName}':`,
+      `        specifier: '${options.specifier ?? `file:${stagedPath}`}'`,
+      `        version: '${options.resolutionSpelling ?? `file:${relativeStaged}`}'`,
+      'packages:',
+      `  '${packageName}@file:${options.resolutionSpelling ?? relativeStaged}':`,
+      '    resolution:',
+      `      integrity: '${options.integrity ?? TARBALL_INTEGRITY}'`,
+      '    version: ' + `'${version}'`,
+      'snapshots:',
+      `  '${packageName}@file:${options.resolutionSpelling ?? relativeStaged}': {}`,
+      '',
+    ].join('\n'))
+    return stagedPath
+  }
+
+  function writeStagedTarball(stagedPath: string, bytes: Buffer = TARBALL_BYTES): void {
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, bytes)
+  }
+
+  it('recognizes an intact controlled pin and returns the recorded tarball sha512', () => {
+    const profileDir = temporaryDirectory()
+    const stagedPath = filePinLockfile(profileDir)
+    writeStagedTarball(stagedPath)
+    const lockfile = readDesktopBootLockfile(profileDir)!
+    expect(lockfile).toBeDefined()
+    // Strict form: the exact deterministic staging path inside the profile.
+    expect(desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })).toBe(TARBALL_INTEGRITY)
+    // Structural form (direct unit use without the profile directory).
+    expect(desktopBootLockIntegrity(lockfile, packageName, version)).toBe(TARBALL_INTEGRITY)
+    // A different package or version never matches this pin.
+    expect(desktopBootLockIntegrity(lockfile, packageName, '9.9.9', { profileDir })).toBeUndefined()
+    expect(desktopBootLockIntegrity(lockfile, 'other-plugin', version, { profileDir })).toBeUndefined()
+  })
+
+  it('returns nothing for a file: pin that is not the deterministic staged path', () => {
+    const profileDir = temporaryDirectory()
+    // A tarball path outside the staging directory entirely.
+    const rogue = join(profileDir, 'rogue-plugin-1.2.3.tgz')
+    writeFileSync(rogue, TARBALL_BYTES)
+    const stagedPath = filePinLockfile(profileDir, { specifier: `file:${rogue}` })
+    writeStagedTarball(stagedPath)
+    const lockfile = readDesktopBootLockfile(profileDir)!
+    expect(desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })).toBeUndefined()
+    expect(desktopBootControlledTarballPinProblem(lockfile, packageName, version, { profileDir })).toBeUndefined()
+    // A staged-path basename for a different version, still inside the
+    // staging directory, is equally refused.
+    const wrongVersion = filePinLockfile(temporaryDirectory(), {
+      specifier: `file:${join(profileDir, '.dsh-market-tarballs', 'dsh-plugin-safe-9.9.9.tgz')}`,
+    })
+    void wrongVersion
+  })
+
+  it('fails the pin when the staged file is missing or no longer hashes to the pinned sha512', () => {
+    const missing = temporaryDirectory()
+    filePinLockfile(missing)
+    const missingLock = readDesktopBootLockfile(missing)!
+    expect(desktopBootLockIntegrity(missingLock, packageName, version, { profileDir: missing })).toBeUndefined()
+    // The pointed repair reason names the controlled channel and the staged path.
+    const problem = desktopBootControlledTarballPinProblem(missingLock, packageName, version, { profileDir: missing })
+    expect(problem).toContain('controlled company tarball channel')
+    expect(problem).toContain(desktopMarketTarballStagingPath(missing, packageName, version))
+    expect(problem).toContain('reinstall the plugin from the company market')
+
+    const tampered = temporaryDirectory()
+    const stagedPath = filePinLockfile(tampered)
+    writeStagedTarball(stagedPath, Buffer.from('tampered staged bytes\n'))
+    const tamperedLock = readDesktopBootLockfile(tampered)!
+    expect(desktopBootLockIntegrity(tamperedLock, packageName, version, { profileDir: tampered })).toBeUndefined()
+    expect(desktopBootControlledTarballPinProblem(tamperedLock, packageName, version, { profileDir: tampered })).toBeDefined()
+  })
+
+  it('collects the pointed lock problem and rejects only that bundle, never the whole boot', () => {
+    const profileDir = temporaryDirectory()
+    filePinLockfile(profileDir)
+    // The installed package exists and reports its version; only the staged
+    // tarball is gone (the GC/loss negative).
+    const packageDir = join(profileDir, 'node_modules', packageName)
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), `{"name":"${packageName}","version":"${version}"}\n`)
+    const [tarballBundle, npmBundle] = collectDesktopBootBundles(profileDir, [packageName, 'other-plugin'])
+    expect(tarballBundle?.lockIntegrity).toBeUndefined()
+    expect(tarballBundle?.lockProblem).toContain('reinstall the plugin from the company market')
+    expect(npmBundle?.lockProblem).toBeUndefined()
+
+    const manifest = signedManifestText([
+      packageEntry({ integrity: TARBALL_INTEGRITY }),
+      {
+        packageName: 'other-plugin',
+        version: '2.0.0',
+        integrity: otherIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        repository: { url: 'https://github.com/example/other-plugin' },
+        revoked: false,
+        runtime: { dshRuntimeVersion: '*' },
+      },
+    ])
+    const otherDir = join(temporaryDirectory(), 'node_modules', 'other-plugin')
+    mkdirSync(otherDir, { recursive: true })
+    writeFileSync(join(otherDir, 'package.json'), '{"name":"other-plugin","version":"2.0.0"}\n')
+    const result = verify(manifest, [
+      tarballBundle!,
+      { packageName: 'other-plugin', version: '2.0.0', lockIntegrity: otherIntegrity, packageDir: otherDir },
+    ])
+    expect(result.allowed).toEqual([
+      { packageName: 'other-plugin', evidence: 'manifest-only', manifestSequence, keyId },
+    ])
+    expect(result.rejected).toEqual([{
+      packageName,
+      reason: expect.stringContaining('reinstall the plugin from the company market') as unknown as string,
+    }])
+  })
+
+  it('verifies a file:-pinned bundle end to end against the signed tree digest', () => {
+    const profileDir = temporaryDirectory()
+    const stagedPath = filePinLockfile(profileDir)
+    writeStagedTarball(stagedPath)
+    const packageDir = installedPackage(defaultFiles)
+    const manifest = signedManifestText([
+      packageEntry({
+        integrity: TARBALL_INTEGRITY,
+        treeDigest: computeDesktopBootTreeRootDigest(packageDir),
+        source: { kind: 'tarball', url: `${CATALOG_ORIGIN}/p/${packageName}-${version}.tgz`, integrity: TARBALL_INTEGRITY },
+      }),
+    ])
+    const bundle = bundleInput({
+      lockIntegrity: desktopBootLockIntegrity(readDesktopBootLockfile(profileDir)!, packageName, version, { profileDir }),
+      packageDir,
+    })
+    expect(bundle.lockIntegrity).toBe(TARBALL_INTEGRITY)
+    const result = verify(manifest, [bundle], { companyCatalogOrigin: CATALOG_ORIGIN })
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName, evidence: 'signed-tree', manifestSequence, keyId }])
   })
 })

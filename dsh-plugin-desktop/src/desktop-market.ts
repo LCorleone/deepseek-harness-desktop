@@ -326,10 +326,14 @@ export const desktopMarketStateConstants = Object.freeze({
 // `verifyDesktopCompanyManifest` below is the verifier of every production
 // consumer of the company manifest — boot verification
 // (`boot-verification.ts`), the locked terminal add gate
-// (`cli-install-channel.ts`), and the locked market catalog scan. The market
-// plugin's catalog provider verifies through this verifier only when the
-// Desktop host injects it: `desktopCompanyManifestVerifierForMarket` below
-// is that injection, delivered through the `desktopCompanyManifestVerifier`
+// (`cli-install-channel.ts`), the locked market catalog scan, and the
+// tarball-channel install seam (`company-market-install.ts`, P7 2c — it
+// fetches and verifies the manifest itself to decide whether a market
+// catalog entry is published on the tarball channel, before diverting the
+// market's install request onto `installCompanyMarketTarballPlugin` below).
+// The market plugin's catalog provider verifies through this verifier only
+// when the Desktop host injects it: `desktopCompanyManifestVerifierForMarket`
+// below is that injection, delivered through the `desktopCompanyManifestVerifier`
 // context capability (main.ts) into the provider's `manifestVerifier`
 // override; a market deployment without the injection keeps the field-
 // unaware market verifier, which rejects a `source`-carrying manifest whole.

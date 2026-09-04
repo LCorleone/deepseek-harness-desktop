@@ -95,9 +95,11 @@ import {
   createCachedDesktopBootTreeRootDigestMeasure,
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
+  readDesktopBootReceiptsFromSettings,
 } from './boot-verification.ts'
 import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
 import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
+import { createDesktopCompanyMarketTarballInstallChannel } from './company-market-install.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController, { projectSsoSession } from './desktop-settings-controller.ts'
 import { DesktopStartupRecoveryController } from './startup-recovery-controller.ts'
@@ -1177,6 +1179,38 @@ async function start(): Promise<void> {
           'desktopCompanyManifestVerifier',
           desktopCompanyManifestVerifierForMarket(policy),
         )
+        if (policy.locked) {
+          // Tarball install orchestration for the market UI (P7 2c): one
+          // channel object serves two capabilities. The market library
+          // consumes its verifier view (`desktopMarketTarballEntryVerifier`)
+          // so catalog entries published on the tarball channel verify with
+          // their signed facts instead of failing the registry verification;
+          // the desktop pnpm boundary consumes its diversion view
+          // (`desktopCompanyMarketTarballInstall`) so the market's install
+          // request for such an entry runs the controlled pipeline — stage →
+          // install → signed tree re-verification → rollback — instead of
+          // the registry target. Origin-mode fetches (manifest and tarball)
+          // ride the same Chromium network boundary boot verification uses,
+          // and the anti-rollback floor is the shared receipts ratchet.
+          const companyMarketTarballInstall = createDesktopCompanyMarketTarballInstallChannel({
+            policy,
+            profileDir: prepared.profile.dir,
+            lastSeenSequence: () => {
+              let highest: number | undefined
+              for (const receipt of readDesktopBootReceiptsFromSettings(join(homeDir, 'settings.yaml'))) {
+                if (highest === undefined || receipt.manifestSequence > highest) highest = receipt.manifestSequence
+              }
+              return highest
+            },
+            fetchManifestText: fetchCompanyManifestTextOverElectronNet,
+            request: (url, init) => net.fetch(url, init),
+            ...(electronLogger === undefined
+              ? {}
+              : { warn: message => { electronLogger.error(`${BIN_NAME}: ${message}`) } }),
+          })
+          hostCtx.provide('desktopMarketTarballEntryVerifier', companyMarketTarballInstall)
+          hostCtx.provide('desktopCompanyMarketTarballInstall', companyMarketTarballInstall)
+        }
         if (policy.companyCatalogOrigin !== null) {
           // Origin-mode market catalog fetches ride the same Chromium network
           // boundary boot verification uses: the community market's portable

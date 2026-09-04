@@ -261,8 +261,7 @@ export interface DesktopPluginInstallRequest {
 /** Public package-operation interface for one immutable Desktop profile generation. */
 export interface DesktopPnpm {
   run(args: readonly string[], signal?: AbortSignal): DesktopPnpmHandle
-  runPlugin(args: readonly string[], invokingDir: string, signal?: AbortSignal): DesktopPnpmHandle
-  /**
+  runPlugin(args: readonly string[], invokingDir: string, signal?: AbortSignal): DesktopPnpmHandle  /**
    * Run the dsh-market add operation without its per-install WAL.
    * The launcher enables this boundary only for the selected dsh-market provider.
    */
@@ -282,6 +281,33 @@ export interface DesktopPnpm {
   recoveredInstallReceiptIds(): Promise<readonly string[]>
   acknowledgeRecoveredInstall(receiptId: string): Promise<void>
   rollbackPluginInstall(receiptId: string): Promise<boolean>
+}
+
+/**
+ * Host-injected diversion of market install requests whose signed company
+ * catalog entry is published on the tarball channel (P7 2c). The pnpm
+ * boundary stays package-manager-generic: it hands one install request that
+ * carries no controlled tarball descriptor to the channel before opening any
+ * recovery transaction, and the channel either takes the request over —
+ * downloading, staging, and installing through {@link installPlugin} with a
+ * `marketTarball` descriptor, i.e. the one constructible controlled target —
+ * or returns undefined and the registry path runs unchanged. The channel is
+ * constructed in-process by the Desktop market path (`main.ts` provides the
+ * `desktopCompanyMarketTarballInstall` capability); a user argument can
+ * never reach it because every user-facing argument surface still audits
+ * against the npm-spec-only rules.
+ */
+export interface DesktopPnpmCompanyMarketChannel {
+  /**
+   * Take over one install whose verified signed entry is a tarball entry, or
+   * return undefined to keep the registry path. The returned handle follows
+   * the {@link DesktopPnpmHandle} contract; failures surface as a settled
+   * nonzero outcome with the readable reason on the handle's stderr.
+   */
+  divertCompanyTarballInstall(
+    request: DesktopPluginInstallRequest,
+    service: DesktopPnpm,
+  ): Promise<DesktopPnpmHandle | undefined>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -414,8 +440,15 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
    * Register the service for one immutable desktop profile generation.
    * @param ctx - Host context providing the managed subprocess capability.
    * @param bootstrap - launcher-resolved profile and packaged runtime paths.
+   * @param companyMarketChannel - optional Host-injected tarball-channel
+   * diversion for signed catalog entries (see {@link DesktopPnpmCompanyMarketChannel});
+   * absent in standalone compositions and focused tests.
    */
-  constructor(ctx: Context, private readonly bootstrap: DesktopPnpmBootstrap) {
+  constructor(
+    ctx: Context,
+    private readonly bootstrap: DesktopPnpmBootstrap,
+    private readonly companyMarketChannel?: DesktopPnpmCompanyMarketChannel,
+  ) {
     validateBootstrap(bootstrap)
     super(ctx, 'desktopPnpm')
     this.installRecovery = new DesktopInstallRecoveryStore({
@@ -615,6 +648,20 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
     auditInstallOptions(resolvedOptions)
     assertAbsolutePath('plugin invoking directory', request.invokingDir)
+    // Tarball-channel diversion (P7 2c): a request without a controlled
+    // tarball descriptor whose signed catalog entry is published as a
+    // tarball is handed to the Host channel before the workspace approval
+    // is widened or any recovery transaction is opened — the channel runs
+    // the controlled pipeline (stage → install through the one
+    // constructible `marketTarball` target → installed-bundle and signed
+    // tree re-verification → rollback on divergence) and settles its own
+    // handle. Every other request keeps the registry path below unchanged;
+    // a request that already carries a descriptor (the channel's own
+    // callback) always passes through.
+    if (request.marketTarball === undefined && this.companyMarketChannel !== undefined) {
+      const diverted = await this.companyMarketChannel.divertCompanyTarballInstall(request, this)
+      if (diverted !== undefined) return diverted
+    }
     // The controlled tarball target is validated before the workspace
     // approval is widened or any recovery transaction is opened, so a bad
     // descriptor leaves the profile untouched.
@@ -811,5 +858,11 @@ export const inject = ['desktopPnpmBootstrap', 'subprocess']
  * @param ctx - Host context carrying launcher bootstrap values and subprocess ownership.
  */
 export function apply(ctx: Context): void {
-  new DesktopPnpmService(ctx, ctx.desktopPnpmBootstrap)
+  new DesktopPnpmService(
+    ctx,
+    ctx.desktopPnpmBootstrap,
+    // Host-injected tarball-channel diversion (P7 2c, main.ts). Absent in
+    // standalone compositions; `undefined` there keeps the service generic.
+    ctx.get('desktopCompanyMarketTarballInstall') as DesktopPnpmCompanyMarketChannel | undefined,
+  )
 }

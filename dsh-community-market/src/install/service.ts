@@ -174,6 +174,56 @@ export interface MarketNpmPackageVerification {
   readonly tarball: string
 }
 
+/**
+ * Host-provided verification for catalog entries the embedding deployment
+ * publishes through a controlled tarball channel instead of the public npm
+ * registry (P7 2c). The market library stays registry-generic: the Host
+ * injects this seam through the `desktopMarketTarballEntryVerifier` context
+ * capability, and `composeTarballAwareVerifier` consults it before the
+ * registry verifier on every preview and execution verification.
+ *
+ * Contract for injected implementations:
+ *
+ * - returning `undefined` keeps the built-in registry path byte-for-byte —
+ *   the exact behavior of an uninjected deployment for that candidate;
+ * - returning a verification hands the signed tarball facts to the standard
+ *   install flow unchanged: `integrity` is the signed sha512 of the tarball
+ *   file (the value a `file:` install pins into the lockfile's
+ *   `resolution.integrity`), `bundlePatch` the signed in-package patch, and
+ *   `tarball` the controlled tarball URL (display/audit only);
+ * - the seam never throws for business failures — an unverifiable manifest,
+ *   an absent or revoked entry, or a transport failure returns `undefined`
+ *   so the registry verifier produces the standard, already-localized
+ *   verification failure instead of an opaque host error;
+ * - the Host owns binding the entry to its own trust chain (signature,
+ *   sequence floor, expiry) exactly like its other manifest consumers.
+ */
+export interface MarketTarballEntryVerifier {
+  verifyTarballEntry(
+    candidate: Pick<InstallCandidate, 'packageName' | 'version'>,
+    signal: AbortSignal,
+  ): Promise<MarketNpmPackageVerification | undefined>
+}
+
+/**
+ * Compose the registry verifier with an optional Host tarball-channel seam:
+ * tarball-channel candidates verify through the Host's signed facts, every
+ * other candidate (and every deployment without the injection) keeps the
+ * registry verifier's decisions byte-for-byte.
+ */
+export function composeTarballAwareVerifier(
+  base: MarketNpmPackageVerifier,
+  tarball: MarketTarballEntryVerifier,
+): MarketNpmPackageVerifier {
+  return {
+    async verify(candidate, signal) {
+      const verified = await tarball.verifyTarballEntry(candidate, signal)
+      if (verified !== undefined) return verified
+      return await base.verify(candidate, signal)
+    },
+  }
+}
+
 /** One npm install target already verified against the allowed registry. */
 export interface InstallTargetCandidate {
   readonly packageName: string
@@ -569,6 +619,19 @@ async function readProfileLock(profile: MarketDesktopProfile): Promise<UnknownRe
   return lockfile
 }
 
+/**
+ * The lockfile pin shape of a controlled `file:` dependency (the tarball
+ * channel, P7 2c): the importer records a `file:` specifier and a `file:`
+ * resolution spelling. The market library treats this shape generically — it
+ * never interprets the path — while the binding check stays the recorded
+ * `resolution.integrity` compared against the verified expectation.
+ */
+function isFileDependencyPin(dependency: UnknownRecord | undefined): dependency is UnknownRecord {
+  if (dependency === undefined) return false
+  return typeof dependency.specifier === 'string' && dependency.specifier.startsWith('file:')
+    && typeof dependency.version === 'string' && dependency.version.startsWith('file:')
+}
+
 function assertProfileLockRecord(
   lockfile: UnknownRecord,
   packageName: string,
@@ -580,19 +643,31 @@ function assertProfileLockRecord(
   const dependency = dependencies !== undefined && own(dependencies, packageName)
     ? record(dependencies[packageName])
     : undefined
-  if (dependency?.specifier !== version || !exactLockResolution(dependency.version, version)) {
+  // Registry channel: the exact specifier a `--save-exact` add produces.
+  // Tarball channel: the controlled `file:` pin whose recorded integrity is
+  // checked below — the same value the verified entry signed over the
+  // tarball bytes, so the record still pins the exact expected bytes.
+  const registryPinned = dependency !== undefined
+    && dependency.specifier === version
+    && exactLockResolution(dependency.version, version)
+  if (!registryPinned && !isFileDependencyPin(dependency)) {
     throw new Error('lockfile dependency mismatch')
   }
 
   const resolvedVersion = dependency.version
   const baseKey = `${packageName}@${version}`
   const resolvedKey = `${packageName}@${resolvedVersion}`
-  const packageKeys = [...new Set([baseKey, `/${baseKey}`, resolvedKey, `/${resolvedKey}`])]
+  // A `file:` pin resolves to its own lockfile key (`name@file:…`), never a
+  // registry version key, so only the registry channel consults the
+  // version-spelled keys.
+  const packageKeys = registryPinned
+    ? [...new Set([baseKey, `/${baseKey}`, resolvedKey, `/${resolvedKey}`])]
+    : [resolvedKey]
   const packageSnapshot = lockEntry(record(lockfile.packages) ?? {}, packageKeys)
   const resolution = record(packageSnapshot?.resolution)
   if (resolution?.integrity !== expectedIntegrity) throw new Error('lockfile integrity mismatch')
 
-  const snapshot = lockEntry(record(lockfile.snapshots) ?? {}, [resolvedKey, `/${resolvedKey}`])
+  const snapshot = lockEntry(record(lockfile.snapshots) ?? {}, registryPinned ? [resolvedKey, `/${resolvedKey}`] : [resolvedKey])
   if (snapshot === undefined) throw new Error('lockfile snapshot missing')
 }
 
@@ -620,7 +695,13 @@ async function assertInstalledBundleFromSnapshot(
   expectedPatch: string,
   expectedIntegrity: string,
 ): Promise<string> {
-  if (profileDependency(snapshot.manifest, packageName) !== version) throw new Error('dependency mismatch')
+  // Registry channel pins the exact version; the tarball channel (P7 2c)
+  // pins the controlled `file:` tarball — the lockfile record below binds the
+  // exact expected bytes either way.
+  const dependencyValue = profileDependency(snapshot.manifest, packageName)
+  if (dependencyValue !== version && !dependencyValue?.startsWith('file:')) {
+    throw new Error('dependency mismatch')
+  }
   if (!profileBundles(snapshot.manifest).includes(packageName)) throw new Error('bundle missing')
   const packageDir = join(snapshot.nodeModules, ...packageSegments(packageName))
   const resolvedPackageDir = await realpath(packageDir)

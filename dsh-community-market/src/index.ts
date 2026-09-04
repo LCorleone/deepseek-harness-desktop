@@ -11,11 +11,13 @@ import {
 } from './host/routes.js'
 import { createRestrictedHttpClient } from './network/restricted-http.js'
 import {
+  composeTarballAwareVerifier,
   createNpmRegistryVerifier,
   MarketInstallService,
   rejectAllInstallTargetAuthority,
   type MarketDesktopPnpm,
   type MarketDesktopProfile,
+  type MarketTarballEntryVerifier,
 } from './install/service.js'
 import { createSignedManifestInstallTargetAuthority, type SignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'
 import type { CatalogSourceLockOptions, MarketSettingsMutatingScope } from './catalog/source-store.js'
@@ -334,6 +336,18 @@ export function apply(ctx: Context): void {
   // over one unknown key. A missing capability keeps the portable
   // field-unaware verifier — standalone deployments included.
   const companyManifestVerifier = ctx.get('desktopCompanyManifestVerifier') as CompanyManifestVerifier | undefined
+  // Tarball-channel verification injection (P7 2c): the Desktop host
+  // provides `desktopMarketTarballEntryVerifier`, the seam that verifies a
+  // catalog entry published as a controlled tarball against the same signed
+  // company manifest the catalog scan verified. Entries the seam does not
+  // claim (`undefined`) keep the registry verifier's decisions byte-for-byte
+  // — standalone deployments and every npm-channel entry included. The
+  // verified tarball facts then ride the standard install flow: the
+  // signed-manifest authority allows the exact signed sha512, the
+  // package-manager boundary installs the staged tarball through the Host's
+  // controlled target, and the post-install lockfile assert accepts the
+  // `file:` pin whose recorded integrity is that same signed sha512.
+  const tarballEntryVerifier = ctx.get('desktopMarketTarballEntryVerifier') as MarketTarballEntryVerifier | undefined
   const locked = policy?.locked === true
   // L2 wiring: a locked deployment with pinned trust roots serves the signed
   // company catalog end to end. A locked policy without trust roots cannot
@@ -396,7 +410,9 @@ export function apply(ctx: Context): void {
         scope,
         () => profiles.current,
         pnpm,
-        createNpmRegistryVerifier(npmRegistryHttp),
+        tarballEntryVerifier === undefined
+          ? createNpmRegistryVerifier(npmRegistryHttp)
+          : composeTarballAwareVerifier(createNpmRegistryVerifier(npmRegistryHttp), tarballEntryVerifier),
         {
           // Locked installs pass exactly when the signed company manifest
           // allows them; until trust roots are pinned (and for every
@@ -453,6 +469,9 @@ export type {
   InstallTargetCandidate,
   InstallTargetDecision,
   InstallTargetEvidence,
+  MarketNpmPackageVerifier,
+  MarketNpmPackageVerification,
+  MarketTarballEntryVerifier,
 } from './install/service.js'
 export type {
   MarketInstallTreeDigest,

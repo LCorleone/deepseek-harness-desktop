@@ -41,11 +41,11 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createEphemeralKeyPair, fingerprintOfRawPublicKey, rawPublicKeyBytes } from './lib/keys.mjs'
 import { loadMarketLibrary } from './lib/market.mjs'
-import { REPO_ROOT } from './lib/tarball.mjs'
+import { parseTarball, REPO_ROOT } from './lib/tarball.mjs'
 
 /** tools/company-catalog (the lib module reports its own directory). */
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
@@ -65,10 +65,14 @@ const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
 
-/** Resolve one exported function from a compiled lib chunk by its original name. */
+/** Resolve one exported function from a compiled lib chunk by its original name (namespace objects included). */
 function exportedFunctionFromNamespace(moduleNamespace, name) {
   for (const value of Object.values(moduleNamespace)) {
     if (typeof value === 'function' && value.name === name) return value
+    if (value !== null && typeof value === 'object') {
+      const nested = value[name]
+      if (typeof nested === 'function' && nested.name === name) return nested
+    }
   }
   throw new Error(`the compiled lib module does not export a function named ${name}`)
 }
@@ -245,8 +249,110 @@ async function main() {
     assert(!wrongOrigin.ok, 'the desktop verifier must reject the tarball url outside the pinned catalog origin')
     console.log('[5] verify:    desktop verifyDesktopCompanyManifest accepts the exact bytes (source + treeDigest parsed identically; wrong origin rejected)')
 
+    // --- 6. install + boot re-verification (P7 2c) -------------------------------
+    // The client half of the channel, entirely offline: stage the signed
+    // tarball through the real staging step (the download boundary is the
+    // packed artifact bytes, no socket), simulate what the market install
+    // orchestration + its pnpm `file:` target leave behind in a profile
+    // (the exact pnpm 11 lockfile spelling measured on the real pnpm), and
+    // re-verify that profile through the real boot-verification functions
+    // against the same signed manifest — then break the staged file and
+    // watch the same boot step refuse the bundle with the pointed repair
+    // reason instead of silently allowing it.
+    const bootModule = await import(pathToFileURL(libChunk(desktopLibDir, 'boot-verification-') ?? join(desktopLibDir, 'boot-verification-CHUNK.js')).href)
+    const pnpmModule = await import(pathToFileURL(libChunk(desktopLibDir, 'pnpm') ?? join(desktopLibDir, 'pnpm.js')).href)
+    const stageCompanyMarketTarball = exportedFunctionFromNamespace(desktopMarketModule, 'stageCompanyMarketTarball')
+    const desktopBootLockIntegrity = exportedFunctionFromNamespace(bootModule, 'desktopBootLockIntegrity')
+    const desktopBootControlledTarballPinProblem = exportedFunctionFromNamespace(bootModule, 'desktopBootControlledTarballPinProblem')
+    const readDesktopBootLockfile = exportedFunctionFromNamespace(bootModule, 'readDesktopBootLockfile')
+    const verifyDesktopBootBundles = exportedFunctionFromNamespace(bootModule, 'verifyDesktopBootBundles')
+    const desktopMarketTarballStagingPath = exportedFunctionFromNamespace(pnpmModule, 'desktopMarketTarballStagingPath')
+    const profileDir = join(workspace, 'boot-profile')
+    mkdirSync(profileDir, { recursive: true })
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, record.packageName, record.version)
+    const staged = await stageCompanyMarketTarball({
+      policy: { companyCatalogOrigin: CATALOG_ORIGIN },
+      source: signedEntry.source,
+      packageName: record.packageName,
+      version: record.version,
+      profileDir,
+      request: async (url, init) => {
+        if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
+        if (url !== signedEntry.source.url) return new Response('not found', { status: 404 })
+        return new Response(new Uint8Array(originalBytes), {
+          status: 200,
+          headers: { 'content-type': 'application/gzip' },
+        })
+      },
+    })
+    assert(staged.integrity === integrity && readFileSync(staged.stagedPath).equals(originalBytes), 'the real staging step did not land the signed bytes at the controlled path')
+    // The market orchestration's install target: the unpacked tarball under
+    // node_modules, the `file:` dependency pin, and pnpm 11's lockfile
+    // spelling of a file: install (absolute specifier, profile-relative
+    // resolution, the tarball's own sha512 as the recorded integrity).
+    const packageDir = join(profileDir, 'node_modules', record.packageName)
+    mkdirSync(packageDir, { recursive: true })
+    for (const entry of parseTarball(originalBytes, 'the packed fixture')) {
+      const target = join(packageDir, entry.path.replace(/^package\//u, ''))
+      if (entry.type === 'directory') {
+        mkdirSync(target, { recursive: true })
+        continue
+      }
+      assert(entry.type === 'file', `the fixture tarball carries a ${entry.type} entry the drill does not materialize`)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, entry.data)
+    }
+    writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
+      name: 'drill-profile',
+      dependencies: { [record.packageName]: `file:${stagedPath}` },
+      dsh: { profile: { bundles: [record.packageName] } },
+    })}\n`)
+    const relativeStaged = relative(profileDir, stagedPath).split(sep).join('/')
+    writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      ${record.packageName}:`,
+      `        specifier: file:${stagedPath}`,
+      `        version: file:${relativeStaged}`,
+      'packages:',
+      `  ${record.packageName}@file:${relativeStaged}:`,
+      `    resolution: {integrity: ${integrity}, tarball: file:${relativeStaged}}`,
+      `    version: ${record.version}`,
+      'snapshots:',
+      `  ${record.packageName}@file:${relativeStaged}: {}`,
+      '',
+    ].join('\n'))
+    const drillLockfile = readDesktopBootLockfile(profileDir)
+    assert(drillLockfile !== undefined, 'the drill lockfile did not parse')
+    const lockIntegrity = desktopBootLockIntegrity(drillLockfile, record.packageName, record.version, { profileDir: profileDir })
+    assert(lockIntegrity === integrity, `boot lock-integrity resolved ${String(lockIntegrity)} instead of the signed tarball sha512`)
+    const bootVerdict = verifyDesktopBootBundles(manifestText, [
+      { packageName: record.packageName, version: record.version, lockIntegrity, packageDir },
+    ], { trustRoots: [{ keyId: KEY_ID, fingerprint }], companyCatalogOrigin: CATALOG_ORIGIN })
+    assert(bootVerdict.rejected.length === 0, `boot re-verification rejected the simulated install: ${JSON.stringify(bootVerdict.rejected)}`)
+    assert(bootVerdict.allowed.length === 1 && bootVerdict.allowed[0].evidence === 'signed-tree', `boot re-verification did not allow the bundle with signed-tree evidence: ${JSON.stringify(bootVerdict.allowed)}`)
+    console.log('[6] boot:      staged tarball (real staging) + file: pin (pnpm 11 spelling) → lock-integrity = signed sha512 → boot allowed (signed-tree)')
+    // Negative: the staged file no longer matches the pinned sha512 (the
+    // GC/loss case) — the same boot step refuses the bundle by name with the
+    // reinstall repair reason, never a silent allow.
+    const tamperedStaged = Buffer.from(originalBytes)
+    tamperedStaged[tamperedStaged.length - 1] ^= 0xFF
+    writeFileSync(stagedPath, tamperedStaged)
+    const brokenLockfile = readDesktopBootLockfile(profileDir)
+    assert(desktopBootLockIntegrity(brokenLockfile, record.packageName, record.version, { profileDir: profileDir }) === undefined, 'a tampered staged tarball still passed the boot lock-integrity step')
+    const problem = desktopBootControlledTarballPinProblem(brokenLockfile, record.packageName, record.version, { profileDir: profileDir })
+    assert(typeof problem === 'string' && problem.includes('reinstall the plugin from the company market'), `the broken pin did not produce the pointed repair reason: ${String(problem)}`)
+    const brokenVerdict = verifyDesktopBootBundles(manifestText, [
+      { packageName: record.packageName, version: record.version, lockIntegrity: undefined, lockProblem: problem, packageDir },
+    ], { trustRoots: [{ keyId: KEY_ID, fingerprint }], companyCatalogOrigin: CATALOG_ORIGIN })
+    assert(brokenVerdict.allowed.length === 0 && brokenVerdict.rejected.length === 1, `the broken staged tarball did not refuse exactly its own bundle: ${JSON.stringify(brokenVerdict)}`)
+    assert(String(brokenVerdict.rejected[0].reason).includes('reinstall the plugin from the company market'), `the refusal did not point at the repair path: ${brokenVerdict.rejected[0].reason}`)
+    console.log('[6] boot:      tampered staged tarball → lock-integrity fails, bundle refused by name with the reinstall repair reason')
+
     console.log('')
-    console.log('e2e: PASS — pack → allowlist → sign → publish dry-run → dual-verifier verify, all offline')
+    console.log('e2e: PASS — pack → allowlist → sign → publish dry-run → dual-verifier verify → install + boot re-verification, all offline')
   } finally {
     if (keep === true || process.env.DSH_E2E_KEEP === '1') {
       console.log(`e2e: kept the workspace ${workspace}`)
