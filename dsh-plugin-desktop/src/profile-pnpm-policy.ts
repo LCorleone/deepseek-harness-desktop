@@ -211,6 +211,57 @@ function withDesktopApprovedBuilds(content: string, names: readonly string[]): s
 }
 
 /**
+ * Error codes whose rename failure is frequently transient on Windows: an
+ * antivirus scanner or a search indexer holding the destination open returns
+ * EPERM (or EACCES, or EINVAL for some device states) for exactly the
+ * duration of the scan, and the same rename succeeds immediately afterwards.
+ * Mirrors RENAME_TRANSIENT_CODES of the @deepseek-ai/dsh-atomic-write yarn
+ * patch (.yarn/patches), which every settings/WAL/plugin-state writer on the
+ * install path already goes through — this writer cannot: the patched
+ * writeFileAtomic is async, and every caller of this module's sync entry
+ * point (the CLI bootstrap and the pnpm boundary chief among them) is sync.
+ */
+const RENAME_TRANSIENT_CODES: ReadonlySet<string> = new Set(['EPERM', 'EACCES', 'EINVAL'])
+
+/**
+ * Backoff between rename retries, in milliseconds — the same bounded ladder
+ * the dsh-atomic-write patch uses, so both retry wrappers share one contract:
+ * five retries, worst case 775ms of added wait, then the original error.
+ */
+const RENAME_RETRY_DELAYS_MS: readonly number[] = [25, 50, 100, 200, 400]
+
+/** Synchronous bounded sleep (Atomics.wait is the process-wide idiom). */
+const sleepSync = (milliseconds: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
+}
+
+/**
+ * renameSync with bounded exponential backoff over transient external locks
+ * on the destination — the sync twin of the patched dsh-atomic-write retry.
+ * Only the rename commit is retried: the temp file is already complete, so
+ * every attempt re-issues the same atomic commit. Any other failure code,
+ * and any failure that outlasts the backoff window, rethrows the original
+ * error. A rename that needed a retry reports itself once through
+ * `console.warn` (stderr, which packaged captures keep) when it commits.
+ */
+function renameSyncWithTransientRetry(from: string, to: string): void {
+  let transientCode: string | undefined
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to)
+      if (attempt > 0) {
+        console.warn(`dsh-plugin-desktop: atomic rename onto ${to} succeeded after ${attempt} ${attempt === 1 ? 'retry' : 'retries'} (transient ${transientCode ?? 'unknown'})`)
+      }
+      return
+    } catch (cause) {
+      transientCode = (cause as NodeJS.ErrnoException).code
+      if (attempt >= RENAME_RETRY_DELAYS_MS.length || transientCode === undefined || !RENAME_TRANSIENT_CODES.has(transientCode)) throw cause
+    }
+    sleepSync(RENAME_RETRY_DELAYS_MS[attempt]!)
+  }
+}
+
+/**
  * Ensure the profile's pnpm-workspace.yaml pre-approves Desktop's trusted
  * dependency build scripts, creating the file from the upstream template
  * when absent. Idempotent: an already-approved workspace is not rewritten,
@@ -233,11 +284,14 @@ export function ensureProfilePnpmBuildApproval(
   // Write through a sibling temporary file and rename it into place: a crash
   // mid-write can never leave a truncated pnpm-workspace.yaml behind, which
   // pnpm would refuse on every later plugin operation. Node's same-directory
-  // rename is atomic on every supported platform.
+  // rename is atomic on every supported platform; its commit retries the
+  // transient Windows EPERM/EACCES/EINVAL race (an antivirus or indexer
+  // briefly holding the destination) with the same bounded backoff the
+  // dsh-atomic-write patch gives every other install-path writer.
   const temporaryPath = `${workspacePath}.tmp-${process.pid}-${randomUUID()}`
   try {
     writeFileSync(temporaryPath, updated)
-    renameSync(temporaryPath, workspacePath)
+    renameSyncWithTransientRetry(temporaryPath, workspacePath)
   } finally {
     rmSync(temporaryPath, { force: true })
   }

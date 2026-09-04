@@ -1374,7 +1374,9 @@ export interface DesktopCompanyTarballInstallRequest {
    * identity, bundle-patch, and tree-digest refusal logs its assertion name
    * and expected-vs-actual detail here before throwing, so the desktop log
    * file keeps the full reason even when the market UI surfaces only the
-   * one-line error. Defaults to silence.
+   * one-line error. Best-effort: a sink that throws of its own accord never
+   * masks the refusal nor skips the rollback that follows it. Defaults to
+   * silence.
    */
   readonly logError?: (message: string) => void
   /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
@@ -1391,6 +1393,23 @@ export interface DesktopCompanyTarballInstallResult {
 }
 
 const messageOf = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause)
+
+/**
+ * Best-effort assertion logging: the refusal (and the rollback that follows
+ * it) is the security decision, the sink line is diagnostics — so a sink that
+ * throws of its own accord must neither mask the assertion error nor skip
+ * the rollback. Every post-install assertion path logs through here.
+ */
+function logTarballInstallAssertionFailure(
+  request: Pick<DesktopCompanyTarballInstallRequest, 'entry' | 'logError'>,
+  reason: string,
+): void {
+  try {
+    request.logError?.(`market tarball install assertion failed for ${request.entry.packageName}@${request.entry.version}: ${reason}`)
+  } catch {
+    // A broken log sink never upgrades into an install outcome.
+  }
+}
 
 function packageSegments(packageName: string): readonly string[] {
   return packageName.startsWith('@') ? packageName.split('/') : [packageName]
@@ -1473,7 +1492,7 @@ function assertCompanyTarballInstalledBundle(
       throw new Error(`[installed-bundle/patch-presence] the signed bundle patch ${request.entry.bundlePatch} is missing from the installed package: ${messageOf(cause)}`)
     }
   } catch (cause) {
-    request.logError?.(`market tarball install assertion failed for ${request.entry.packageName}@${request.entry.version}: ${messageOf(cause)}`)
+    logTarballInstallAssertionFailure(request, messageOf(cause))
     throw new Error(`${BIN_NAME}: the tarball install of ${request.entry.packageName}@${request.entry.version} did not produce a valid installed bundle: ${messageOf(cause)}`)
   }
   return resolvedPackageDir
@@ -1584,13 +1603,13 @@ export async function installCompanyMarketTarballPlugin(
     measured = measure(packageDir)
   } catch (cause) {
     const reason = `[tree-digest/measure] the installed tree of ${entry.packageName} could not be measured: ${messageOf(cause)}`
-    request.logError?.(`market tarball install assertion failed for ${entry.packageName}@${entry.version}: ${reason}`)
+    logTarballInstallAssertionFailure(request, reason)
     await request.service.rollbackPluginInstall(recovery.receiptId)
     throw new Error(`${BIN_NAME}: ${reason} — the installation was rolled back`)
   }
   if (measured !== entry.treeDigest) {
     const reason = `[tree-digest/match] measured tree root digest ${measured} but the signed company manifest pins ${entry.treeDigest}`
-    request.logError?.(`market tarball install assertion failed for ${entry.packageName}@${entry.version}: ${reason}`)
+    logTarballInstallAssertionFailure(request, reason)
     await request.service.rollbackPluginInstall(recovery.receiptId)
     if (profileReferencesPlugin(request.profileDir, entry.packageName)) {
       throw new Error(`${BIN_NAME}: [tree-digest/match] the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest and the rollback left profile references behind — use the saved recovery state before another plugin change`)

@@ -69,15 +69,18 @@ describe('writeFileAtomic transient rename retry (Windows EPERM patch)', () => {
   it('commits the new content when the first two renames fail EPERM and the third succeeds', async () => {
     const target = temporaryTarget('recovers')
     renameScript.remaining = 2
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     await writeFileAtomic(target, 'next content\n', { mode: 0o600 })
     expect(readFileSync(target, 'utf8')).toBe('next content\n')
     // The committed file replaced the target in place: no temp litter left.
     expect(readdirSync(dirname(target))).toEqual(['settings.yaml'])
-    // One diagnostic line records the recovered transient failure.
-    expect(debug).toHaveBeenCalledTimes(1)
-    expect(debug.mock.calls[0]?.[0]).toContain('dsh-atomic-write: rename onto')
-    expect(debug.mock.calls[0]?.[0]).toContain('EPERM')
+    // One warn-level summary records the recovered transient failure: warn
+    // rides stderr, which packaged captures keep — console.debug aliases
+    // stdout-bound console.log in Node and is dropped in packaged GUI runs.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain('dsh-atomic-write: atomic rename onto')
+    expect(warn.mock.calls[0]?.[0]).toContain('succeeded after 2 retries')
+    expect(warn.mock.calls[0]?.[0]).toContain('transient EPERM')
     expect(renameScript.calls).toBe(3)
   })
 
@@ -85,7 +88,7 @@ describe('writeFileAtomic transient rename retry (Windows EPERM patch)', () => {
     const target = temporaryTarget(`transient-${code}`)
     renameScript.remaining = 1
     renameScript.codes = [code]
-    vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     await writeFileAtomic(target, 'recovered\n', { mode: 0o600 })
     expect(readFileSync(target, 'utf8')).toBe('recovered\n')
   })

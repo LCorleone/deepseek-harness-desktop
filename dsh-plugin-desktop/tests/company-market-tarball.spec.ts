@@ -1294,6 +1294,106 @@ describe('company tarball install orchestration', () => {
     }
   })
 
+  it('still refuses and rolls back when the desktop sink itself throws (tree-digest mismatch)', async () => {
+    const root = temporaryDirectory('orchestrate-mismatch-broken-sink')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const originalManifest = JSON.stringify({ name: 'profile', dependencies: {} })
+    writeFileSync(join(profileDir, 'package.json'), originalManifest)
+    const selectedBootstrap = bootstrap(root, profileDir)
+    const tarball = await stagedFixture(root)
+    const harness = await createPnpmHarness(
+      installSimulatingSpawn(() => simulateSuccessfulPnpmTarballInstall(
+        profileDir,
+        { packageName: 'company-hardened-plugin', version: '2.1.0', bundlePatch: './cordis.patch.yml' },
+        tarball.path,
+      )),
+      selectedBootstrap,
+    )
+    try {
+      // A sink that is itself broken (log file unwritable mid-install): the
+      // logging must stay best-effort — the refusal is the decision, the
+      // sink line is diagnostics — so the assertion error, not the sink's,
+      // rides out and the rollback still runs.
+      const failure = await installCompanyMarketTarballPlugin({
+        service: harness.service,
+        entry: {
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: TARBALL_INTEGRITY,
+          bundlePatch: './cordis.patch.yml',
+          revoked: false,
+          treeDigest: TREE_DIGEST,
+        },
+        tarball,
+        recovery: installRecovery,
+        profileDir,
+        invokingDir: profileDir,
+        logError: () => { throw new Error('desktop log sink is broken') },
+        measureTreeRootDigest: () => 'f'.repeat(64),
+      }).then(() => undefined, (cause: unknown) => cause) as Error
+      expect(failure.message).toContain('[tree-digest/match]')
+      expect(failure.message).toContain('differ from the tree digest pinned in the signed company manifest')
+      expect(failure.message).not.toContain('desktop log sink is broken')
+      // The rollback ran despite the sink failure: pre-install declarative
+      // state restored and the recovery WAL cleared.
+      expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('still refuses with the assertion reason when the desktop sink itself throws (bundle identity)', async () => {
+    const root = temporaryDirectory('orchestrate-identity-broken-sink')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const originalManifest = JSON.stringify({ name: 'profile', dependencies: {} })
+    writeFileSync(join(profileDir, 'package.json'), originalManifest)
+    const selectedBootstrap = bootstrap(root, profileDir)
+    const tarball = await stagedFixture(root)
+    const harness = await createPnpmHarness(
+      installSimulatingSpawn(() => simulateSuccessfulPnpmTarballInstall(
+        profileDir,
+        { packageName: 'company-hardened-plugin', version: '2.0.9', bundlePatch: './cordis.patch.yml' },
+        tarball.path,
+      )),
+      selectedBootstrap,
+    )
+    try {
+      const failure = await installCompanyMarketTarballPlugin({
+        service: harness.service,
+        entry: {
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: TARBALL_INTEGRITY,
+          bundlePatch: './cordis.patch.yml',
+          revoked: false,
+          treeDigest: TREE_DIGEST,
+        },
+        tarball,
+        recovery: installRecovery,
+        profileDir,
+        invokingDir: profileDir,
+        logError: () => { throw new Error('desktop log sink is broken') },
+        measureTreeRootDigest: () => {
+          throw new Error('must not be reached')
+        },
+      }).then(() => undefined, (cause: unknown) => cause) as Error
+      // The bundle-identity refusal survives the broken sink: the thrown
+      // error is the assertion's, with its assertion name and the real
+      // expected-vs-actual identity, never the sink's own failure.
+      expect(failure.message).toContain('did not produce a valid installed bundle')
+      expect(failure.message).toContain('[installed-bundle/manifest-identity]')
+      expect(failure.message).toContain('installed company-hardened-plugin@2.0.9 instead of company-hardened-plugin@2.1.0')
+      expect(failure.message).not.toContain('desktop log sink is broken')
+      expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   it('refuses package-manager failures without measuring the tree', async () => {
     const root = temporaryDirectory('orchestrate-failure')
     const profileDir = join(root, 'profiles', 'web')

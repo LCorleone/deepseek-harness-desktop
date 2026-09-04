@@ -2,7 +2,7 @@ diff --git a/lib/index.js b/lib/index.js
 index 8e708ec0a021ae0d738194f6339734e8cd58273f..e92d54431c1d79c078389c58047991fb4d162fcb 100644
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -21,12 +21,52 @@ import { dirname } from "node:path";
+@@ -21,12 +21,54 @@ import { dirname } from "node:path";
  * rename, so replacing a wider-permission file narrows it without a chmod
  * race. The rename also replaces a symlinked target itself instead of writing
  * through to its referent, and the same-directory sibling keeps the rename on
@@ -35,8 +35,10 @@ index 8e708ec0a021ae0d738194f6339734e8cd58273f..e92d54431c1d79c078389c58047991fb
 +* complete, so every attempt re-issues the same atomic commit and the writer
 +* lock semantics around the write are untouched. Any other failure code, and
 +* any failure that outlasts the backoff window, rethrows the original error.
-+* A rename that needed a retry reports itself through `console.debug` once it
-+* finally commits, so fleet logs carry the transient-failure evidence.
++* A rename that needed a retry reports itself once through `console.warn`
++* when it finally commits: warn rides stderr, which packaged log captures
++* keep, where `console.debug` (Node aliases it to stdout-bound console.log)
++* is dropped in packaged GUI runs.
 +*/
 +async function renameWithTransientRetry(temp, filename) {
 +	let transientCode;
@@ -44,7 +46,7 @@ index 8e708ec0a021ae0d738194f6339734e8cd58273f..e92d54431c1d79c078389c58047991fb
 +		try {
 +			await rename(temp, filename);
 +			if (attempt > 0) {
-+				console.debug(`dsh-atomic-write: rename onto ${filename} succeeded on retry ${attempt} after a transient ${transientCode} failure`);
++				console.warn(`dsh-atomic-write: atomic rename onto ${filename} succeeded after ${attempt} ${attempt === 1 ? "retry" : "retries"} (transient ${transientCode})`);
 +			}
 +			return;
 +		} catch (error) {
@@ -57,7 +59,7 @@ index 8e708ec0a021ae0d738194f6339734e8cd58273f..e92d54431c1d79c078389c58047991fb
  async function writeFileAtomic(filename, content, options) {
  	await mkdir(dirname(filename), {
  		recursive: true,
-@@ -38,7 +78,7 @@ async function writeFileAtomic(filename, content, options) {
+@@ -38,7 +80,7 @@ async function writeFileAtomic(filename, content, options) {
  			mode: options.mode,
  			flag: "wx"
  		});
