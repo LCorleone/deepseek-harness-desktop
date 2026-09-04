@@ -321,6 +321,30 @@ describe('published package surface', () => {
     }
   })
 
+  it('retries transient Windows rename failures in the atomic-write patch', () => {
+    const patchPath = './.yarn/patches/@deepseek-ai-dsh-atomic-write-npm-0.1.1-rc.2-be3f055a11.patch'
+    expect(workspaceManifest.resolutions).toMatchObject({
+      '@deepseek-ai/dsh-atomic-write@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
+      '@deepseek-ai/dsh-atomic-write@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
+    })
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedIndex = readFileSync(new URL(
+      'node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js',
+      packageRoot,
+    ), 'utf8')
+    // Both descriptors (the workspaces' exact pins and every npm transitive
+    // `^0.1.1-rc.2`, dsh-settings-file's persistSection included) resolve to
+    // this one patched install.
+    for (const marker of [
+      'const RENAME_TRANSIENT_CODES = /* @__PURE__ */ new Set(["EPERM", "EACCES", "EINVAL"]);',
+      'const RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400];',
+      'renameWithTransientRetry(temp, filename)',
+    ]) {
+      expect(patch).toContain(marker)
+      expect(installedIndex).toContain(marker)
+    }
+  })
+
   it('preserves model input modalities in the Host session catalog', () => {
     const patchPath = './patches/dsh-host-apiproxy-model-modalities@0.1.1-rc.2.patch'
     expect(workspaceManifest.resolutions).toMatchObject({

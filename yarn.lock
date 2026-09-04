@@ -1236,6 +1236,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@deepseek-ai/dsh-atomic-write@patch:@deepseek-ai/dsh-atomic-write@npm%3A0.1.1-rc.2#./.yarn/patches/@deepseek-ai-dsh-atomic-write-npm-0.1.1-rc.2-be3f055a11.patch::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.1-rc.2
+  resolution: "@deepseek-ai/dsh-atomic-write@patch:@deepseek-ai/dsh-atomic-write@npm%3A0.1.1-rc.2#./.yarn/patches/@deepseek-ai-dsh-atomic-write-npm-0.1.1-rc.2-be3f055a11.patch::version=0.1.1-rc.2&hash=4849c3&locator=deepseek-harness-desktop%40workspace%3A."
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.1
+    "@deepseek-ai/dsh-invariants": ^0.1.1-rc.2
+  checksum: 10c0/fbe97ff548a271c55aaf5aaf1b3b47c63efeef36e7caba338ad9ba7f5136851d2324b1e0232077d46a5806bea2ed510bc37c764fb67ac54eb268c295a6fb521d
+  languageName: node
+  linkType: hard
+
 "@deepseek-ai/dsh-attachment-local@npm:^0.1.1-rc.2":
   version: 0.1.1-rc.2
   resolution: "@deepseek-ai/dsh-attachment-local@npm:0.1.1-rc.2"

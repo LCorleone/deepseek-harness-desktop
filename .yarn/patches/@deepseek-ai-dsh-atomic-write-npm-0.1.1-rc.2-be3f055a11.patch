@@ -1,0 +1,68 @@
+diff --git a/lib/index.js b/lib/index.js
+index 8e708ec0a021ae0d738194f6339734e8cd58273f..e92d54431c1d79c078389c58047991fb4d162fcb 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -21,12 +21,52 @@ import { dirname } from "node:path";
+ * rename, so replacing a wider-permission file narrows it without a chmod
+ * race. The rename also replaces a symlinked target itself instead of writing
+ * through to its referent, and the same-directory sibling keeps the rename on
+-* one filesystem. On any failure the temp file is removed and the failure
+-* rethrown. Crash durability (fsync) is out of scope.
++* one filesystem. The rename commit retries transient EPERM/EACCES/EINVAL
++* failures (an antivirus or indexer briefly holding the target) with bounded
++* backoff before giving up. On any failure the temp file is removed and the
++* failure rethrown. Crash durability (fsync) is out of scope.
+ * @param filename - final path receiving the content.
+ * @param content - complete next file content.
+ * @param options - permission bits for the replacement inode.
+ */
++/**
++* Error codes whose rename failure is frequently transient on Windows: an
++* antivirus scanner or a search indexer holding the destination open returns
++* EPERM (or EACCES, or EINVAL for some device states) for exactly the
++* duration of the scan, and the same rename succeeds immediately afterwards.
++*/
++const RENAME_TRANSIENT_CODES = /* @__PURE__ */ new Set(["EPERM", "EACCES", "EINVAL"]);
++/**
++* Backoff between rename retries, in milliseconds. Five retries keep the
++* worst-case added wait at 775ms, under every lock holder's default patience
++* (see DEFAULT_LOCK_WAIT_MS).
++*/
++const RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400];
++/**
++* Rename with bounded exponential backoff over transient external locks on
++* the destination. Only the rename step is retried — the temp file is already
++* complete, so every attempt re-issues the same atomic commit and the writer
++* lock semantics around the write are untouched. Any other failure code, and
++* any failure that outlasts the backoff window, rethrows the original error.
++* A rename that needed a retry reports itself through `console.debug` once it
++* finally commits, so fleet logs carry the transient-failure evidence.
++*/
++async function renameWithTransientRetry(temp, filename) {
++	let transientCode;
++	for (let attempt = 0; ; attempt++) {
++		try {
++			await rename(temp, filename);
++			if (attempt > 0) {
++				console.debug(`dsh-atomic-write: rename onto ${filename} succeeded on retry ${attempt} after a transient ${transientCode} failure`);
++			}
++			return;
++		} catch (error) {
++			transientCode = error?.code;
++			if (attempt >= RENAME_RETRY_DELAYS_MS.length || !RENAME_TRANSIENT_CODES.has(transientCode)) throw error;
++		}
++		await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
++	}
++}
+ async function writeFileAtomic(filename, content, options) {
+ 	await mkdir(dirname(filename), {
+ 		recursive: true,
+@@ -38,7 +78,7 @@ async function writeFileAtomic(filename, content, options) {
+ 			mode: options.mode,
+ 			flag: "wx"
+ 		});
+-		await rename(temp, filename);
++		await renameWithTransientRetry(temp, filename);
+ 	} catch (error) {
+ 		await rm(temp, { force: true });
+ 		throw error;

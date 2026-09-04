@@ -1188,6 +1188,112 @@ describe('company tarball install orchestration', () => {
     }
   })
 
+  it('logs the tree-digest assertion name and expected-vs-actual digests to the desktop sink', async () => {
+    const root = temporaryDirectory('orchestrate-mismatch-log')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const originalManifest = JSON.stringify({ name: 'profile', dependencies: {} })
+    writeFileSync(join(profileDir, 'package.json'), originalManifest)
+    const selectedBootstrap = bootstrap(root, profileDir)
+    const tarball = await stagedFixture(root)
+    const harness = await createPnpmHarness(
+      installSimulatingSpawn(() => simulateSuccessfulPnpmTarballInstall(
+        profileDir,
+        { packageName: 'company-hardened-plugin', version: '2.1.0', bundlePatch: './cordis.patch.yml' },
+        tarball.path,
+      )),
+      selectedBootstrap,
+    )
+    const sink: string[] = []
+    try {
+      const failure = await installCompanyMarketTarballPlugin({
+        service: harness.service,
+        entry: {
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: TARBALL_INTEGRITY,
+          bundlePatch: './cordis.patch.yml',
+          revoked: false,
+          treeDigest: TREE_DIGEST,
+        },
+        tarball,
+        recovery: installRecovery,
+        profileDir,
+        invokingDir: profileDir,
+        // The desktop sink (main.ts wires it to the electron logger): the
+        // full assertion reason lands there even when the market UI shows
+        // only the one-line refusal.
+        logError: message => { sink.push(message) },
+        measureTreeRootDigest: () => 'f'.repeat(64),
+      }).then(() => undefined, (cause: unknown) => cause) as Error
+      expect(failure.message).toContain('[tree-digest/match]')
+      expect(failure.message).toContain('differ from the tree digest pinned in the signed company manifest')
+      expect(sink).toHaveLength(1)
+      expect(sink[0]).toContain('market tarball install assertion failed for company-hardened-plugin@2.1.0')
+      expect(sink[0]).toContain('[tree-digest/match]')
+      // Expected vs actual, in the log even though the thrown line omits them.
+      expect(sink[0]).toContain(`measured tree root digest ${'f'.repeat(64)}`)
+      expect(sink[0]).toContain(`pins ${TREE_DIGEST}`)
+      expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('logs the installed-bundle identity assertion name to the desktop sink before the rollback', async () => {
+    const root = temporaryDirectory('orchestrate-identity-log')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const originalManifest = JSON.stringify({ name: 'profile', dependencies: {} })
+    writeFileSync(join(profileDir, 'package.json'), originalManifest)
+    const selectedBootstrap = bootstrap(root, profileDir)
+    const tarball = await stagedFixture(root)
+    // The simulated package manager installs the right package name at the
+    // wrong version: the post-install bundle assert must refuse it.
+    const harness = await createPnpmHarness(
+      installSimulatingSpawn(() => simulateSuccessfulPnpmTarballInstall(
+        profileDir,
+        { packageName: 'company-hardened-plugin', version: '2.0.9', bundlePatch: './cordis.patch.yml' },
+        tarball.path,
+      )),
+      selectedBootstrap,
+    )
+    const sink: string[] = []
+    try {
+      const failure = await installCompanyMarketTarballPlugin({
+        service: harness.service,
+        entry: {
+          packageName: 'company-hardened-plugin',
+          version: '2.1.0',
+          integrity: TARBALL_INTEGRITY,
+          bundlePatch: './cordis.patch.yml',
+          revoked: false,
+          treeDigest: TREE_DIGEST,
+        },
+        tarball,
+        recovery: installRecovery,
+        profileDir,
+        invokingDir: profileDir,
+        logError: message => { sink.push(message) },
+        measureTreeRootDigest: () => {
+          throw new Error('must not be reached')
+        },
+      }).then(() => undefined, (cause: unknown) => cause) as Error
+      expect(failure.message).toContain('did not produce a valid installed bundle')
+      expect(failure.message).toContain('[installed-bundle/manifest-identity]')
+      expect(failure.message).toContain('installed company-hardened-plugin@2.0.9 instead of company-hardened-plugin@2.1.0')
+      expect(sink).toHaveLength(1)
+      expect(sink[0]).toContain('market tarball install assertion failed for company-hardened-plugin@2.1.0')
+      expect(sink[0]).toContain('[installed-bundle/manifest-identity]')
+      // The refused install rolled back: the profile keeps its pre-install
+      // declarative state and the recovery WAL is gone.
+      expect(readFileSync(join(profileDir, 'package.json'), 'utf8')).toBe(originalManifest)
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   it('refuses package-manager failures without measuring the tree', async () => {
     const root = temporaryDirectory('orchestrate-failure')
     const profileDir = join(root, 'profiles', 'web')

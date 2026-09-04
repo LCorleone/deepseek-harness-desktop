@@ -111,6 +111,14 @@ export interface DesktopCompanyMarketTarballInstallOptions {
   readonly request?: UpdateChannelRequest
   /** Diagnostic sink for staging keepalive warnings; defaults to silence. */
   readonly warn?: (message: string) => void
+  /**
+   * Desktop log sink for post-install assertion failures (bundle identity,
+   * bundle patch, signed tree digest); rides the install orchestration, so
+   * the desktop log file keeps the assertion name and expected-vs-actual
+   * detail even when the market UI shows only the one-line reason. Defaults
+   * to silence.
+   */
+  readonly logError?: (message: string) => void
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
 }
@@ -259,6 +267,11 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             // controlled tarball install runs with exactly the options its
             // registry twin would (the boundary re-audits them).
             ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
+            // The desktop log sink rides along, so every post-install
+            // assertion failure (bundle identity, patch application, signed
+            // tree digest) reaches the desktop log file with its assertion
+            // name and expected-vs-actual detail.
+            ...(options.logError === undefined ? {} : { logError: options.logError }),
             // Bridge the package-manager child's stderr into this channel's
             // stderr while the install runs, so the real failure reason — a
             // CLI gate denial, a pnpm error — reaches the market UI's error

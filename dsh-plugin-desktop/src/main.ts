@@ -1206,7 +1206,13 @@ async function start(): Promise<void> {
             request: (url, init) => net.fetch(url, init),
             ...(electronLogger === undefined
               ? {}
-              : { warn: message => { electronLogger.error(`${BIN_NAME}: ${message}`) } }),
+              : {
+                  warn: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+                  // Post-install assertion failures (bundle identity, bundle
+                  // patch, signed tree digest) reach the desktop log file
+                  // with their assertion name and expected-vs-actual detail.
+                  logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+                }),
           })
           hostCtx.provide('desktopMarketTarballEntryVerifier', companyMarketTarballInstall)
           hostCtx.provide('desktopCompanyMarketTarballInstall', companyMarketTarballInstall)

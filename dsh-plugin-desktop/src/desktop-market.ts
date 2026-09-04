@@ -1369,6 +1369,14 @@ export interface DesktopCompanyTarballInstallRequest {
    * rides with the failure the function throws.
    */
   readonly forwardStderr?: (chunk: string) => void
+  /**
+   * Desktop log sink for post-install assertion failures: every bundle
+   * identity, bundle-patch, and tree-digest refusal logs its assertion name
+   * and expected-vs-actual detail here before throwing, so the desktop log
+   * file keeps the full reason even when the market UI surfaces only the
+   * one-line error. Defaults to silence.
+   */
+  readonly logError?: (message: string) => void
   /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
   readonly measureTreeRootDigest?: (packageDir: string) => string
 }
@@ -1430,25 +1438,42 @@ function profileReferencesPlugin(profileDir: string, packageName: string): boole
  * Assert the installed bundle matches the signed entry: the package resolved
  * inside the profile's node_modules, the exact name and version, and the
  * signed in-package bundle patch present. Mirrors the market install path's
- * post-install assert for the desktop-owned tarball channel.
+ * post-install assert for the desktop-owned tarball channel. Every failure
+ * carries its assertion name (`[installed-bundle/<assertion>]`) in the thrown
+ * message and, when `logError` is provided, reaches the desktop log sink
+ * with the same detail before the throw.
  */
 function assertCompanyTarballInstalledBundle(
-  request: Pick<DesktopCompanyTarballInstallRequest, 'entry' | 'profileDir'>,
+  request: Pick<DesktopCompanyTarballInstallRequest, 'entry' | 'profileDir' | 'logError'>,
 ): string {
   const nodeModules = resolve(request.profileDir, 'node_modules')
   const packageDir = join(nodeModules, ...packageSegments(request.entry.packageName))
   let resolvedPackageDir: string
   try {
     resolvedPackageDir = resolve(packageDir)
-    if (!containedPath(nodeModules, resolvedPackageDir)) throw new Error('the package escaped the profile')
-    const manifest = readJsonManifest(join(resolvedPackageDir, 'package.json'))
+    if (!containedPath(nodeModules, resolvedPackageDir)) {
+      throw new Error('[installed-bundle/package-containment] the installed package escaped the profile\u2019s node_modules')
+    }
+    let manifest: JsonManifest
+    try {
+      manifest = readJsonManifest(join(resolvedPackageDir, 'package.json'))
+    } catch (cause) {
+      throw new Error(`[installed-bundle/manifest-read] the installed package.json is unreadable: ${messageOf(cause)}`)
+    }
     if (manifest.name !== request.entry.packageName || manifest.version !== request.entry.version) {
-      throw new Error(`installed ${String(manifest.name)}@${String(manifest.version)} instead of ${request.entry.packageName}@${request.entry.version}`)
+      throw new Error(`[installed-bundle/manifest-identity] installed ${String(manifest.name)}@${String(manifest.version)} instead of ${request.entry.packageName}@${request.entry.version}`)
     }
     const patchPath = resolve(resolvedPackageDir, request.entry.bundlePatch)
-    if (!containedPath(resolvedPackageDir, patchPath)) throw new Error('the bundle patch path escapes the package')
-    lstatSync(patchPath)
+    if (!containedPath(resolvedPackageDir, patchPath)) {
+      throw new Error('[installed-bundle/patch-containment] the signed bundle patch path escapes the installed package')
+    }
+    try {
+      lstatSync(patchPath)
+    } catch (cause) {
+      throw new Error(`[installed-bundle/patch-presence] the signed bundle patch ${request.entry.bundlePatch} is missing from the installed package: ${messageOf(cause)}`)
+    }
   } catch (cause) {
+    request.logError?.(`market tarball install assertion failed for ${request.entry.packageName}@${request.entry.version}: ${messageOf(cause)}`)
     throw new Error(`${BIN_NAME}: the tarball install of ${request.entry.packageName}@${request.entry.version} did not produce a valid installed bundle: ${messageOf(cause)}`)
   }
   return resolvedPackageDir
@@ -1558,15 +1583,19 @@ export async function installCompanyMarketTarballPlugin(
   try {
     measured = measure(packageDir)
   } catch (cause) {
+    const reason = `[tree-digest/measure] the installed tree of ${entry.packageName} could not be measured: ${messageOf(cause)}`
+    request.logError?.(`market tarball install assertion failed for ${entry.packageName}@${entry.version}: ${reason}`)
     await request.service.rollbackPluginInstall(recovery.receiptId)
-    throw new Error(`${BIN_NAME}: the installed tree of ${entry.packageName} could not be measured: ${messageOf(cause)} — the installation was rolled back`)
+    throw new Error(`${BIN_NAME}: ${reason} — the installation was rolled back`)
   }
   if (measured !== entry.treeDigest) {
+    const reason = `[tree-digest/match] measured tree root digest ${measured} but the signed company manifest pins ${entry.treeDigest}`
+    request.logError?.(`market tarball install assertion failed for ${entry.packageName}@${entry.version}: ${reason}`)
     await request.service.rollbackPluginInstall(recovery.receiptId)
     if (profileReferencesPlugin(request.profileDir, entry.packageName)) {
-      throw new Error(`${BIN_NAME}: the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest and the rollback left profile references behind — use the saved recovery state before another plugin change`)
+      throw new Error(`${BIN_NAME}: [tree-digest/match] the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest and the rollback left profile references behind — use the saved recovery state before another plugin change`)
     }
-    throw new Error(`${BIN_NAME}: the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest — the installation was rolled back and refused`)
+    throw new Error(`${BIN_NAME}: [tree-digest/match] the installed files of ${entry.packageName}@${entry.version} differ from the tree digest pinned in the signed company manifest — the installation was rolled back and refused`)
   }
   // Best-effort staging GC: the lockfile now references exactly this
   // version's staged file, so superseded versions of the same package are
