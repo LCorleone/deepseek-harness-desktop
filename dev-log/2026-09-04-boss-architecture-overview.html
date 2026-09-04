@@ -334,6 +334,39 @@
   .exam.e2{border-top-color:var(--red);}     .exam.e2 .eno{background:var(--red);}
   .exam.e3{border-top-color:var(--orange);}  .exam.e3 .eno{background:var(--orange);}
 
+  /* 卡二附表：攻击者考题实例 */
+  .atk{
+    border:1px solid var(--line);
+    border-top:4px solid var(--red);
+    border-radius:10px;
+    background:#fff;
+    margin:14px 0 4px;
+    overflow:hidden;
+  }
+  .atk-title{
+    padding:9px 15px 8px;
+    font-size:14.5px;font-weight:700;color:var(--navy);
+    background:#fbfcfe;
+    border-bottom:1px solid var(--line);
+  }
+  .atk-title .tag{
+    display:inline-block;
+    color:#fff;background:var(--red);
+    font-size:12.5px;font-weight:700;
+    border-radius:999px;
+    padding:1px 10px;
+    margin-right:8px;
+  }
+  .atk-table{width:100%;border-collapse:collapse;font-size:13.8px;line-height:1.6;}
+  .atk-table th{
+    text-align:left;color:#fff;background:var(--navy);
+    font-weight:600;padding:7px 15px;font-size:13.5px;white-space:nowrap;
+  }
+  .atk-table td{padding:8px 15px;border-top:1px solid var(--line);vertical-align:top;}
+  .atk-table tbody tr:nth-child(even) td{background:#f7f9fc;}
+  .atk-table .no{color:var(--red);font-weight:700;margin-right:6px;}
+  .atk-table .rslt{color:var(--ink);}
+
   /* ---------- 收尾 ---------- */
   .verdict{
     text-align:center;
@@ -385,6 +418,9 @@
     section{box-shadow:none;border:1px solid #c9ced6;border-radius:6px;padding:14px 16px 12px;break-inside:auto;margin-bottom:12px;}
     h2,h3{break-after:avoid;}
     figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case,.bypass,.exam{break-inside:avoid;}
+    .atk-title{break-after:avoid;}
+    .atk-table thead{display:table-header-group;}
+    .atk-table tr{break-inside:avoid;}
     figure svg{max-width:100%;}
     .pipe-summary{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .pipe-summary b{color:var(--navy);}
@@ -893,22 +929,43 @@
   <div class="exam-grid">
     <div class="exam e1">
       <span class="eno">考卷一 · 每次发版前，全自动考试</span>
-      <p>任何一版发布前，必须通过 <b>1700+ 项自动化测试</b>全部全绿——从单元、集成，
-      一直到打包链路上<b>真实 Windows 安装冒烟（13 步）</b>。</p>
+      <p>任何一版发布前，必须通过 <b>1700+ 项自动化测试</b>全部全绿，五类考题一类不缺：
+      单元测试 · 跨模块集成 · 打包链路<b>真实 Windows 实机安装冒烟（13 步）</b> ·
+      发版前检查门（版本 / 签名 / 清单一致性）· 多语言文档一致性。</p>
       <p class="ekey">任何一项不绿，发布流程<b>自动中止</b>——不靠人记得检查，<b>靠机器不放过</b>。</p>
     </div>
     <div class="exam e2">
       <span class="eno">考卷二 · 专门有人扮演攻击者</span>
-      <p>考题里有一批「攻击者视角」的题：模拟真实绕过手段，逐个验证全部被挡——命令行私装插件、
-      篡改插件文件、伪造市场清单、签名不符、内容指纹不符、下载途中被换字节……</p>
+      <p>考题里有一批「攻击者视角」的题：每一道对应一次<b>真实模拟攻击</b>，逐题验证必须被挡。
+      不空谈「防得住」——下表 8 道<b>真题实例</b>，就是这类考题的样子。</p>
       <p class="ekey">前文每张「绕过尝试」卡背后都有对应考题——<b>全部红灯，才算通过</b>。</p>
     </div>
     <div class="exam e3">
       <span class="eno">考卷三 · 考题本身也要被考试（负向验证）</span>
       <p>我们定期做一种特殊验证：<b>故意把某道防线拆掉，确认对应考题立刻亮红灯</b>。
       拆了防线测试还绿 = 考题是假的——这种考题不允许存在。</p>
-      <p class="ekey">签名核验、启动复验、下载校验、监听清理等关键防线均已做过拆除验证，<b>全部当场红灯</b>。</p>
+      <p class="ekey">签名核验、启动复验、下载校验、监听清理等关键防线均已做过拆除验证，<b>全部当场红灯</b>。
+      最近一次拆除验证：注释掉下载校验的清理代码，<b>2 个考题当场红灯</b>。</p>
     </div>
+  </div>
+
+  <div class="atk">
+    <div class="atk-title"><span class="tag">考卷二 · 附表</span>攻击者考题实例 —— 8 道真题，每一道都必须被拒</div>
+    <table class="atk-table">
+      <thead>
+        <tr><th style="width:54%">考题（我们模拟的攻击）</th><th>必须的结果</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="no">1</span>在命令行用三种不同姿势强行装外部插件</td><td class="rslt">三种全部被拒</td></tr>
+        <tr><td><span class="no">2</span>篡改插件包内容后重新安装（下载途中被换字节 / 装完改文件）</td><td class="rslt">指纹对不上，拒装并清掉残留</td></tr>
+        <tr><td><span class="no">3</span>伪造市场清单、混进一个「看起来正常」的插件</td><td class="rslt">整份清单作废——多一个未知字段都不行（13 组真假清单对拍测试）</td></tr>
+        <tr><td><span class="no">4</span>仿冒市场地址（长得像的域名、加端口、加用户名前缀等变体）</td><td class="rslt">全部识别为假地址，拒绝</td></tr>
+        <tr><td><span class="no">5</span>恶意安装包里藏「符号链接陷阱」（解包时写出安装目录、覆盖系统文件的三种手法）</td><td class="rslt">三种手法全部在解包前拒绝（曾用真实攻击样本验证）</td></tr>
+        <tr><td><span class="no">6</span>安装到一半拔网线 / 断电式中断</td><td class="rslt">重启后不留半成品，下次安装照常</td></tr>
+        <tr><td><span class="no">7</span>假冒内部安装指令（伪造「已授权」标记）</td><td class="rslt">标记对不上签名，零执行直接拒</td></tr>
+        <tr><td><span class="no">8</span>拆掉防线后跑测试（故意注释掉签名核验代码）</td><td class="rslt">对应考题立刻红灯——证明考题真咬合</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <div class="metric-grid">
