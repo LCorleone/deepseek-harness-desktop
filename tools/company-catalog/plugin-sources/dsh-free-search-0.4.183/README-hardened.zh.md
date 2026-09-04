@@ -11,7 +11,7 @@ P7 首个上架插件：上游社区插件 `dsh-free-search` 的公司加固收�
 | 上游仓库 | https://github.com/DDDMUC/dsh-free-search |
 | 钉住版本 | **v0.4.18**（tag commit `36c6446211cd2a759cf59de87a1ba6a893c34ebd`） |
 | 为什么钉 0.4.18 | v0.4.19+ 改用 0.1.2-alpha.2 的 `sctx.settings.installSection` API；我们钉住的 harness `0.1.1-rc.2` 没有该 API，装上即崩。v0.4.18 用导出函数 `installSettingsSection`（rc.2 的 `@deepseek-ai/dsh-settings` 里有，已核对源码），兼容。 |
-| 本包版本 | 当前 `0.4.182` = 上游 `0.4.18` + 公司构建 2（构建 1 = `0.4.181`，因包内 `dsh.bundle.patch` 前缀失配真机装机全败而作废，见下方「版本推进记录」）。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182、0.4.183…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
+| 本包版本 | 当前 `0.4.183` = 上游 `0.4.18` + 公司构建 3（构建 1 = `0.4.181`，因包内 `dsh.bundle.patch` 前缀失配真机装机全败而作废；构建 2 = `0.4.182`，首次真机装机成功，后因引擎链改版被取代——均见下方「版本推进记录」）。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182、0.4.183…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
 | 上游 README | 原样保留于 `docs/README-upstream.md`（不进打包产物，`files` 白名单不含 docs/）。 |
 
 ## 剥离清单（红线，逐项验证）
@@ -41,30 +41,49 @@ vendored 树无 `tools/` 目录、无 `.cmd`/`.ps1`、无 `4789`、lib/ 内无
 
 ### c. 遥测 / 外联收敛
 
-对 `lib/*.js` 做 URL 全量收集，允许的外联恰好等于链内四引擎端点：
-`api.tavily.com`、`api.exa.ai`、`www.bing.com`、`html.duckduckgo.com`。
-被剥离的外联面：npm registry（版本探测，见 a）、AnySearch / SearXNG 公共
-实例列表 / Keenable REST+MCP / Perplexity / DeepSeek 官方 API（引擎收敛，
-见下）、exa 与 tavily 的 keyless 匿名端点（`mcp.exa.ai`、
-`x-tavily-access-mode` 头）、platform_search 的八个平台 API（github / v2ex
-/ bilibili / reddit / hn / stackexchange / wikipedia / npm——不在评审源口径
-内，整体剥除，`platform_search` 工具与 `platforms` 设置随之删除）。无统计
-上报、无 CDN 引用（上游本就没有，已核对）。
+对 `lib/*.js` 做 URL 全量收集，允许的外联恰好等于链内三引擎端点：
+`api.tavily.com`、`api.exa.ai`、`api.anysearch.com`。被剥离的外联面：npm registry
+（版本探测，见 a）、SearXNG 公共实例列表 / Keenable REST+MCP / Perplexity /
+DeepSeek 官方 API（引擎收敛，见下）、exa 与 tavily 的 keyless 匿名端点
+（`mcp.exa.ai`、`x-tavily-access-mode` 头）、platform_search 的八个平台 API
+（github / v2ex / bilibili / reddit / hn / stackexchange / wikipedia / npm——不在
+评审源口径内，整体剥除，`platform_search` 工具与 `platforms` 设置随之删除）。
+bing（`www.bing.com` HTML 抓取）与 ddg（`html.duckduckgo.com` HTML 抓取）在
+0.4.183 随三键制改版整体移除（见版本推进记录）。注：AnySearch 在 0.4.181/
+0.4.182 收编时随上游十引擎面剥离，0.4.183 以 keyed REST 形态重新入链
+（公司集成，非上游原样收编）。无统计上报、无 CDN 引用（上游本就没有，
+已核对）。
 
-## 引擎链（公司源口径，2026-09-03 定案）
+## 引擎链（公司源口径，2026-09-05 三键制定案）
 
 ```
-tavily（配 key 才入链）→ exa（配 key 才入链）→ bing 直连 → ddg 兜底
+tavily（配 key 才入链）→ exa（配 key 才入链）→ anysearch（配 key 才入链）
 ```
 
+- **纯三键制**：三个引擎全部「配 key 才入链」，没有免费兜底引擎。0.4.183
+  移除了 bing（HTML 直抓）与 ddg（HTML 直抓）两个免费引擎（决策与理由见
+  下方版本推进记录）。
+- **无 key 引导而非静默空链**：一个 key 都没配时，`search` 不跑空链、不报
+  空失败，而是返回配置引导文案（三个引擎的免费额度、注册入口与配置位
+  置：设置节或对应环境变量），agent 可直接转述给用户完成自注册。
 - 实现：`lib/engines.js`（纯逻辑、无 DSH 依赖、无网络），`resolveEngineChain`
-  按 key 有无生成链，`runEngineChain` 串行走链。零 key 时链 = `bing → ddg`
-  （开箱即用）；公司 Tavily/Exa key 后续在设置节插入即自动升链。
+  按 key 有无生成链（无 key → 空链），`runEngineChain` 串行走链（进入每
+  引擎前预检外部 signal 已取消——fetchHtml 移除后，评审 P3 预检上移到链
+  执行器，对全部引擎生效）。
+- AnySearch 集成（公司新增，非上游原样）：`POST
+  https://api.anysearch.com/v1/search`，`Authorization: Bearer <key>`，JSON
+  体 `{query, max_results}`（最小请求面，domain/zone 等可选参数不收编）；
+  响应 `code===0` → `data.results[]`（title/url/snippet 实测形态，另备
+  content 字段兼容）；`code!==0` → 可读错误。时间过滤不支持（忽略）。
 - key 经插件自身设置节配置（v0.4.18 `installSettingsSection`，命名空间
-  `free-search`，`tavilyApiKey`/`exaApiKey` 带 `role("secret")` 脱敏），或
-  `TAVILY_API_KEY`/`EXA_API_KEY` 环境变量回退。明文只存在运行时内存与本机
+  `free-search`，`tavilyApiKey`/`exaApiKey`/`anysearchApiKey` 带
+  `role("secret")` 脱敏），或 `TAVILY_API_KEY`/`EXA_API_KEY`/
+  `ANYSEARCH_API_KEY` 环境变量回退。明文只存在运行时内存与本机
   settings.yaml；打包产物（`files` 白名单：lib/index.js、lib/client.js、
-  lib/engines.js、cordis.patch.yml）不含任何 key 物料。
+  lib/engines.js、cordis.patch.yml）不含任何 key 物料。**key 政策 = 用户
+  自注册免费额度**（2026-09-05 用户拍板）：客户端持有必可提取，公司不代
+  理持钥、不随插件分发；三引擎免费额度：Tavily 1,000 次/月、Exa 注册送
+  $20+每月 $10（约 1,400 次/月）、AnySearch 1,000 次/天，链天然支持混配。
 - 上游的「首选引擎」（`provider` 设置、`advanced_search` 的 `engine` 强制
   参数、设置页引擎下拉、`/free-search-engine` 弹出命令）整体剥离：链序是
   公司口径，不是用户偏好。
@@ -86,7 +105,10 @@ tavily（配 key 才入链）→ exa（配 key 才入链）→ bing 直连 → d
   （`searchProvider: deepseek-official`，见钉住子模块
   `packages/bundle/base/cordis.patch.yml`）；
 - patch 语义是整行替换 config，因此加固 patch 以同样的单键形态重述该行
-  （`searchProvider: ddg`）——对 base 层零损失，不触碰 `web-runtime`/
+  （`searchProvider: free-search`，0.4.183 起；0.4.182 及以前为 `ddg`——
+  引擎移除后旧 id 失去指称，改为中性的插件名 id，一处定义于
+  lib/index.js 的 `PROVIDER_ID`，与 patch 值保持一致）——对 base 层零损
+  失，不触碰 `web-runtime`/
   `webserver`/desktop 层任何行，官方 web 插件的 seam、web_fetch 工具面与
   其余行为不变；卸载即还原官方默认；
 - 插件运行时保留上游的让位兜底：`web.searchProviderId` 未指向任何
@@ -126,23 +148,24 @@ corepack yarn catalog pack-tarball \
   --catalog-origin https://gitlab.s.dai.deloitte.cn   # 或 COMPANY_CATALOG_ORIGIN
 ```
 
-- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.182/`
+- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.183/`
   ——`--from-allowlist` 的 workflow 约定是
-  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.182`），
+  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.183`），
   目录名即按此命名，CI 打包零管线改动。（任务原文写的
   `plugins/dsh-free-search/` 与该约定不兼容：workflow 在
   `plugin-sources/<stem>/` 找不到源会直接失败。）
-- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.182.tgz` +
+- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.183.tgz` +
   同名 `.pack.json`（sha512 / treeDigest / signable path）。
 - allowlist 条目（`tools/company-catalog/allowlist.json`）用
   `source:{kind:'tarball', url, path}` pack-artifact 形态，
   `repository` 显式钉上游，url 指向真实源
   `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/`
   （与 `desktop-policy.release.json` 的 `companyCatalogOrigin` 一致；测试对拍
-  两文件，防示例域再混入）。**未携带 `treeDigest`**（0.4.182 起）：与首发时
-  同口径——参考环境（Windows runner 的 digest 产出）实测后按流程评审落值；
-  本仓 Linux 环境测出的 digest 不作为评审值入库。0.4.181 曾评审入 Windows
-  实测值，随该条目作废一并移除。
+  两文件，防示例域再混入）。**未携带 `treeDigest`**（0.4.183 现行形态：
+  与 0.4.182 首发时同口径——参考环境（Windows runner 的 digest 产出）实测
+  后按流程评审落值；本仓 Linux 环境测出的 digest 不作为评审值入库。
+  0.4.182 曾评审入 Windows 实测值 adce37b4…（双平台对拍一致），随该条目
+  被 0.4.183 取代一并移除；0.4.181 的实测值同此前惯例随作废移除。
 - 真发布仍按 fleet 门禁顺序：全员升级 field-aware 构建 → 参考环境实测
   treeDigest → 评审落值 → 更高 sequence 重签 → publish-local 推 GitLab。
 
@@ -177,6 +200,46 @@ corepack yarn catalog pack-tarball \
    `measure-and-publish`）两处新增对拍断言——打包/签包前读包内
    `dsh.bundle.patch`，与 allowlist 条目 `bundlePatch` 严格相等才允许出制品，
    不等即报错指出两侧拼写值。
+
+## 版本推进记录（0.4.182 → 0.4.183，三键制改版）
+
+0.4.182 是首个真机装机成功的形态（sequence 12 上线），但运营一周后免费链
+实际不可用，用户拍板改版（2026-09-05）：
+
+- **决策**：引擎链改为**纯三键制** `tavily → exa → anysearch`，三个引擎全
+  部「配 key 才入链」；**删除 bing 与 ddg 两个免费抓取引擎**（用户拍板：
+  不要免费抓取源）。
+- **理由**：bing HTML 直抓质量差（「这一周上海天气」实测不可用），ddg 被
+  公司网络封禁（真机全不可达）——零 key 的「开箱即用」链实际是零 key 的
+  「开箱即坏」。免费兜底候选实测三连（百度=验证码拦死、搜狗=反爬墙、
+  360=可用但需限速与跳转处理）后，用户选择不收编任何免费抓取源；搜索源
+  口径定为**用户自注册免费额度**（客户端持有必可提取，公司不代理持钥），
+  三引擎免费额度足够日常：Tavily 1,000 次/月、Exa 注册送 $20+每月 $10、
+  AnySearch 1,000 次/天，链天然支持混配。
+- **无 key 行为变更**：一个 key 都没配时，`search` 返回配置引导文案（免费
+  额度、注册入口、配置位置：设置节或环境变量），不再静默跑空链/免费链。
+  系统提示词、设置卡（三 key 输入 + 注册指引卡）同步。
+- **新增 AnySearch 引擎**（公司集成，非上游原样）：keyed REST，`POST
+  /v1/search`、Bearer、`{query, max_results}` 最小请求面；`code===0` 解析
+  `data.results[]`，`code!==0` 可读错误；设置键 `anysearchApiKey` +
+  `ANYSEARCH_API_KEY` 环境回退（与既有两键同 `resolveApiKey` 路径）。
+- **随 bing/ddg 一并移除**：fetchHtml/fetchHtmlWithRetry 抓取路径与 UA/
+  语言头、`safeSearch`/`region`/`bingMarket` 设置（设置卡同删）、DDG/Bing
+  的 URL 常量与解析器；`searchBing`/`searchDdgHtml` 导出面消失（测试 grep
+  断言钉死：包内无 `BING_URL`/`DDG_HTML_URL`）。fetchHtml 移除后，「进入
+  时 signal 已取消」预检（评审 P3）上移到 `runEngineChain` 链执行器。
+- **provider 基 id 更换**：`ddg`（引擎已删，id 失去指称）→ 中性
+  `free-search`，一处定义（lib/index.js `PROVIDER_ID`），cordis.patch.yml
+  的 `searchProvider` 重定向值同步；升级 0.4.183 时 base 层官方默认
+  `deepseek-official` 的让位/接管规则不变。
+- **版本号 0.4.182 → 0.4.183**：目录名、`package.json`（含 keywords 去
+  duckduckgo/bing、增 anysearch）、allowlist 条目的 `version`/
+  `source.path`/`source.url` 末段同步。0.4.182 条目从 allowlist 删除
+  （已被真机 fleet 安装，由更高 sequence 的 0.4.183 覆盖更新，无需 revoked
+  ——吊销是恶意/ compromised 场景，不是版本演进）；其 treeDigest 随条目
+  移除，0.4.183 留空待参考环境实测评审落值。发布顺序照旧：digest
+  workflow（Windows）实测 → 评审落值 → sequence 13 重签 → publish-local
+  推 GitLab。
 
 ## 留存与后续
 

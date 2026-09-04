@@ -1,7 +1,7 @@
 {
   "name": "dsh-free-search",
-  "version": "0.4.182",
-  "description": "Free web search for DeepSeek Harness, company-hardened build of upstream v0.4.18: reviewed engine chain tavily (keyed) -> exa (keyed) -> bing -> ddg, zero-key out of the box, settings-section key configuration, no self-update path (updates arrive through the company catalog channel).",
+  "version": "0.4.183",
+  "description": "Free web search for DeepSeek Harness, company-hardened build of upstream v0.4.18: reviewed keyed-only engine chain tavily -> exa -> anysearch (each engine joins only with its self-registered free API key; zero keys answer with setup guidance — the keyless bing/ddg engines were removed in 0.4.183), settings-section key configuration, no self-update path (updates arrive through the company catalog channel).",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -21,10 +21,9 @@
     "dsh",
     "dsh-plugin",
     "web-search",
-    "duckduckgo",
-    "bing",
     "tavily",
     "exa",
+    "anysearch",
     "search",
     "free"
   ],

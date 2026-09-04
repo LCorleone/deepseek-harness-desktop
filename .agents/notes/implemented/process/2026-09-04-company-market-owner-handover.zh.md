@@ -12,7 +12,7 @@ Status: Implemented（2026-09-04，P7 闭环：dsh-free-search 0.4.182 经 tarba
 | --- | --- | --- |
 | `dsh-plugin-desktop/` | 客户端安装/验证/boot 复验/CLI 闸门 | `src/desktop-market.ts`（provider 钉死＋双通道严格验证器 `verifyDesktopCompanyManifest`＋受控 tarball 暂存/安装）· `src/company-market-install.ts`（市场 UI 接线：验证缝＋pnpm 分流钩）· `src/boot-verification.ts`（`verifyDesktopBootBundles`＋`computeDesktopBootTreeRootDigest`）· `src/cli-install-channel.ts`（锁定终端 add 闸门）· `src/company-tarball-handoff.ts`（受信交接）· `src/pnpm.ts`（pnpm 边界，唯一可构造 `file:` 目标）· `src/policy/desktop-policy.release.json`（锁定策略＋trustRoots） |
 | `dsh-community-market/` | 市场 UI 服务＋签名/验证库＋catalog provider 注入面 | `src/catalog/company-provider.ts`（`CompanyCatalogProvider`）· `src/index.ts`（`desktopCompanyManifestVerifier` capability 注入点）· `docs/schemas/company-manifest.schema.json`（`additionalProperties:false`） |
-| `tools/company-catalog/` | 发布管线（allowlist→pack→measure→sign→publish）＋收编插件源码真身 | `cli.mjs` · `measure.mjs` · `publish-local.mjs` · `e2e-tarball.mjs` · `allowlist.json`（唯一人工输入）· `state/last-sequence.json`（现值 12）· `plugin-sources/dsh-free-search-0.4.182/`（收编源真身）· `fixtures/fixture-hello/` |
+| `tools/company-catalog/` | 发布管线（allowlist→pack→measure→sign→publish）＋收编插件源码真身 | `cli.mjs` · `measure.mjs` · `publish-local.mjs` · `e2e-tarball.mjs` · `allowlist.json`（唯一人工输入）· `state/last-sequence.json`（现值 12）· `plugin-sources/dsh-free-search-0.4.183/`（收编源真身）· `fixtures/fixture-hello/` |
 | GitLab `julu/dsh-desktop-config` | 部署面（员工机实读） | `catalog-manifest.json`（master raw，URL 已钉进策略）＋ `packages/<name>-<version>.tgz` |
 | CI | 运维三工作流＋门禁 | `company-catalog-publish.yml`（手动、Windows、dry-run 默认开；只签名上传，绝不碰 GitLab）· `company-catalog-digest.yml`（手动，Windows 参考树摘要，只测不签）· `windows-package.yml`（fleet 构建装机烟测）＋ `company-catalog.yml`（管线自测）/`ci.yml` |
 

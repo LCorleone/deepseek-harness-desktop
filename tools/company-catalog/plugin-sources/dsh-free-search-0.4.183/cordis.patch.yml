@@ -12,14 +12,16 @@
 #
 # Uninstalling the plugin restores the base selection (deepseek-official).
 #
-# The provider id is "ddg" (upstream's stable id): the one provider this
-# plugin registers internally routes the whole company chain
-# (tavily -> exa -> bing -> ddg); the id is a registry key, not the engine
-# choice — the chain order is plugin policy, not configuration.
+# The provider id is "free-search" (0.4.183: the historical "ddg" id
+# outlived its engine): the one provider this plugin registers internally
+# routes the whole company chain (tavily -> exa -> anysearch, keyed-only);
+# the id is a registry key, not the engine choice — the chain order is
+# plugin policy, not configuration. It is defined once in lib/index.js
+# (PROVIDER_ID) and must equal the value below.
 - insert:
     - id: web-search-free
       name: dsh-free-search
 # Minimal selection pin (the row's only key, re-pointed):
 - id: web
   config:
-    searchProvider: ddg
+    searchProvider: free-search

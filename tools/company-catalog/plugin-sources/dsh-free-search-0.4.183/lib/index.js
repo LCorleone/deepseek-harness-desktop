@@ -4,11 +4,18 @@
  *
  * Hardened delta over upstream (see README-hardened.zh.md for the full strip
  * list and the review trail):
- *   - Engine chain is reviewed policy, not preference: tavily (key required)
- *     → exa (key required) → bing → ddg. Zero keys work out of the box
- *     (bing→ddg). Upstream's other engines (ddg-lite/searxng/anysearch/
- *     keenable/perplexity/deepseek-official, plus the keyless MCP/anonymous
- *     variants of exa/tavily) are removed, and so is the `provider`
+ *   - Engine chain is reviewed policy, not preference: tavily → exa →
+ *     anysearch, and since 0.4.183 every member is keyed-only (纯三键制).
+ *     The keyless bing/ddg scrapers are removed — bing's scraped quality was
+ *     unusable and ddg is blocked on the company network; the company
+ *     posture is self-registered free quotas, never free scraping. Zero
+ *     keys no longer silently run a keyless chain: search returns readable
+ *     setup guidance (free tiers, signup portals, where to configure).
+ *     AnySearch returns here as a keyed REST engine (upstream's variant was
+ *     stripped with the other extra engines; this is the company
+ *     integration). Upstream's remaining engines (ddg-lite/searxng/keenable/
+ *     perplexity/deepseek-official, plus the keyless MCP/anonymous variants
+ *     of exa/tavily) are removed, and so is the `provider`
  *     (preferred-engine) setting — selection is not user choice.
  *   - The self-update path is gone: no npm-registry version probe, no
  *     `pnpm add dsh-free-search@latest` exec, no check-update/update bridge
@@ -24,7 +31,7 @@
  *     per-engine try/catch, degrade to the next engine, readable text when
  *     the whole chain fails.
  *
- * Kept from upstream verbatim (bar the listed cuts): the four engine
+ * Kept from upstream verbatim (bar the listed cuts): the keyed engine
  * implementations, the result cache, the settings bridge shape, the loopback
  * guard, and the `installSettingsSection` wiring (v0.4.18 is the last
  * upstream line using the exported function; v0.4.19+ moved to the
@@ -45,13 +52,33 @@ import {
   runEngineChain,
 } from "./engines.js";
 
-const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
-const BING_URL = "https://www.bing.com/search";
 const TAVILY_URL = "https://api.tavily.com/search";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-const ACCEPT_LANG = "zh-CN,zh;q=0.9,en;q=0.8";
+const ANYSEARCH_URL = "https://api.anysearch.com/v1/search";
+
+/**
+ * The registry id of the one provider this plugin registers. It is a
+ * registry key, not an engine choice — the chain order is plugin policy.
+ * Neutral on purpose (0.4.183: the old "ddg" id outlived its engine): it
+ * names the plugin, matching the settings namespace and the tool prefix.
+ * cordis.patch.yml re-pins `web.searchProvider` to exactly this value —
+ * change them together.
+ */
+const PROVIDER_ID = "free-search";
+
+/**
+ * Zero-key guidance (0.4.183): with no engine key configured at all the
+ * chain is empty — answer with the free tiers, the signup portals, and where
+ * to configure, instead of a silent empty-chain failure.
+ */
+const NO_KEY_GUIDANCE = [
+  "free-search: no engine keys are configured, so the company chain (tavily -> exa -> anysearch) has no members - since 0.4.183 every engine is keyed-only and the keyless bing/ddg engines are removed.",
+  "Tell the user web search needs a one-time free key setup, then offer these self-registered free tiers (Settings > Plugins > Free Search, or the matching environment variable):",
+  "- tavily - free tier 1,000 searches/month, no credit card: register at https://tavily.com (configure tavilyApiKey or set TAVILY_API_KEY)",
+  "- exa - $20 signup credit plus $10/month free (about 1,400 searches/month): register at https://exa.ai (configure exaApiKey or set EXA_API_KEY)",
+  "- anysearch - free 1,000 searches/day: register at https://anysearch.com (configure anysearchApiKey or set ANYSEARCH_API_KEY)",
+  "Any one key is enough to search; each additional key adds automatic fallback.",
+].join("\n");
 
 const FREE_SEARCH_NS = settingsNamespace("free-search");
 const BRIDGE_PREFIX = "/api/dsh-free-search-settings";
@@ -78,36 +105,6 @@ function cleanSnippet(text) {
     .slice(0, 300);
 }
 
-function decodeEntities(text) {
-  return String(text)
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-}
-
-function stripTags(html) {
-  return decodeEntities(String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
-}
-
-function extractDdgUrl(rel) {
-  if (!rel) return null;
-  const m = rel.match(/uddg=([^&]+)/);
-  if (m) {
-    try {
-      return decodeURIComponent(m[1]);
-    } catch {
-      return m[1];
-    }
-  }
-  if (rel.startsWith("//")) return `https:${rel}`;
-  return rel;
-}
-
 function uniqueSources(sources, limit) {
   const seen = new Set();
   const out = [];
@@ -119,110 +116,6 @@ function uniqueSources(sources, limit) {
     if (out.length >= limit) break;
   }
   return out;
-}
-
-async function fetchHtml(url, signal) {
-  // 进入时外部 signal 已取消：abort 事件不会对已取消的 signal 重放，不预检
-  // 的话本函数会带着已取消的请求跑完 12s 超时与 3 次重试（上游同缺陷，
-  // 评审 P3 收编修正）。
-  if (signal?.aborted) throw new Error("search aborted");
-  // 单次请求超时 12s，避免挂起被当成 Connection error（上游原样收编）
-  let response;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
-    const onAbort = () => controller.abort();
-    signal?.addEventListener("abort", onAbort);
-    response = await fetch(url, {
-      headers: { "user-agent": USER_AGENT, "accept-language": ACCEPT_LANG },
-      signal: controller.signal,
-      redirect: "follow",
-    });
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", onAbort);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    throw new Error(`connection error: ${error?.message ?? String(error)}`);
-  }
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} from ${url.split("?")[0]}`);
-  }
-  const html = await response.text();
-  // DuckDuckGo 反爬验证页检测（HTTP 202 或验证关键字）
-  if (response.status === 202 || /anomaly|captcha|unusual traffic|robot check/i.test(html.slice(0, 4000))) {
-    throw new Error("DuckDuckGo is rate-limited right now (anti-bot challenge, usually temporary) - Bing works");
-  }
-  return html;
-}
-
-// 带重试的抓取：网络错误/空结果时重试，间隔 1.5s，最多 3 次（上游原样收编）
-async function fetchHtmlWithRetry(url, signal) {
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const html = await fetchHtml(url, signal);
-      if (html.length > 500) return html;
-      lastError = new Error(`empty response (${html.length} bytes)`);
-    } catch (error) {
-      lastError = error;
-    }
-    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
-  throw lastError ?? new Error("fetch failed");
-}
-
-async function searchDdgHtml(query, maxResults, options, signal) {
-  const params = new URLSearchParams({ q: query });
-  if (options?.region) params.set("kl", options.region);
-  // DDG 安全搜索：off(adlt=-1) / moderate(adlt=0) / strict(adlt=1)
-  const adlt = options?.safeSearch ?? "off";
-  params.set("adlt", adlt === "strict" ? "1" : adlt === "moderate" ? "0" : "-1");
-  // DDG 时间过滤：df=d/w/m/y（只支持固定档，自定义取近似档）
-  if (options?.timeRange) {
-    const df = { day: "d", week: "w", month: "m", year: "y" }[approximateTimeRange(options.timeRange.days ?? 7)];
-    if (df) params.set("df", df);
-  }
-  const html = await fetchHtmlWithRetry(`${DDG_HTML_URL}?${params}`, signal);
-  const blocks = html.match(/<div class="result results_links[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g) ?? [];
-  const sources = [];
-  for (const block of blocks) {
-    const urlMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"/);
-    const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>(.*?)<\/a>/);
-    const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/);
-    const dateMatch = block.match(/<span[^>]*>\s*([\dT:.+-]+)\s*<\/span>/);
-    const url = extractDdgUrl(urlMatch?.[1]);
-    if (!url) continue;
-    sources.push({
-      url,
-      ...(titleMatch ? { title: stripTags(titleMatch[1]) } : {}),
-      ...(snippetMatch ? { snippet: stripTags(snippetMatch[1]) } : {}),
-      ...(dateMatch ? { publishedAt: dateMatch[1] } : {}),
-    });
-  }
-  return { sources: uniqueSources(sources, maxResults ?? 10), truncated: false };
-}
-
-async function searchBing(query, maxResults, options, signal) {
-  const params = new URLSearchParams({ q: query, mkt: options?.bingMarket ?? "zh-CN" });
-  const adlt = options?.safeSearch ?? "off";
-  if (adlt === "off") params.set("adlt", "off");
-  else if (adlt === "moderate") params.set("adlt", "moderate");
-  else if (adlt === "strict") params.set("adlt", "strict");
-  const html = await fetchHtmlWithRetry(`${BING_URL}?${params}`, signal);
-  const blocks = html.match(/<li class="b_algo"[\s\S]*?<\/li>/g) ?? [];
-  const sources = [];
-  for (const block of blocks) {
-    const hrefMatch = block.match(/<a[^>]*href="(https?:\/\/[^"]+)"/);
-    const titleMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*>(.*?)<\/a>[\s\S]*?<\/h2>/);
-    const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
-    if (!hrefMatch) continue;
-    sources.push({
-      url: hrefMatch[1],
-      ...(titleMatch ? { title: stripTags(titleMatch[1]) } : {}),
-      ...(snippetMatch ? { snippet: stripTags(snippetMatch[1]) } : {}),
-    });
-  }
-  return { sources: uniqueSources(sources, maxResults ?? 10), truncated: false };
 }
 
 // Exa：账号档 REST（key 必需）。上游的无 key MCP 匿名端点已按源口径剥离。
@@ -330,6 +223,48 @@ async function searchTavily(query, maxResults, apiKey, timeRange, signal) {
   return { sources: uniqueSources(sources, maxResults ?? 10), truncated: false };
 }
 
+// AnySearch：keyed REST（0.4.183 入链，纯三键制的末位引擎）。POST
+// /v1/search，Bearer 鉴权，最小请求面 {query, max_results}（domain/zone
+// 等可选参数不收编）。响应 code===0 → data.results[]（title/url/snippet
+// 实测形态，另备 content 字段兼容）；code!==0 → 可读错误。
+async function searchAnysearch(query, maxResults, apiKey, signal) {
+  if (!apiKey) throw new Error("AnySearch search requires ANYSEARCH_API_KEY (configured in Settings > Plugins > Free Search)");
+  const response = await fetch(ANYSEARCH_URL, {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      ...(maxResults !== undefined ? { max_results: maxResults } : {}),
+    }),
+    ...(signal !== undefined ? { signal } : {}),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    if (response.status === 401) {
+      throw new Error("AnySearch API key is invalid (HTTP 401) - update it in Settings > Plugins > Free Search");
+    }
+    throw new Error(`AnySearch API error (HTTP ${response.status}): ${detail.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  if (data.code !== 0) {
+    throw new Error(`AnySearch API error (code ${String(data.code)}): ${String(data.message ?? data.msg ?? "unknown error").slice(0, 200)}`);
+  }
+  const sources = (data.data?.results ?? [])
+    .filter((r) => r.url)
+    .map((r) => ({
+      url: r.url,
+      ...(r.title ? { title: String(r.title) } : {}),
+      // snippet 为实测形态；content 字段作为兼容回退
+      ...(r.snippet ? { snippet: String(r.snippet).slice(0, 300) } : r.content ? { snippet: String(r.content).slice(0, 300) } : {}),
+    }));
+  return { sources: uniqueSources(sources, maxResults ?? 10), truncated: false };
+}
+
 //#region bridge（上游 v0.4.18 原样收编；check-update / update / credentials-* 路由已剥离）
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 
@@ -406,7 +341,7 @@ function makeBridgeRoutes(settings, search, testEngine) {
       const maxResults = Math.min(Math.max(Number(request.maxResults) || 5, 1), 10);
       const timeRange = parseTimeRange(request.timeRange);
       // 指定 engine：直测该引擎本身（不走回退链），报告它自己的可用性。
-      // 收编后仅接受链内四引擎（上游的十引擎枚举随引擎剥离一起收敛）。
+      // 收编后仅接受链内三引擎（上游的十引擎枚举随引擎剥离一起收敛）。
       if (typeof request.engine === "string" && request.engine.length > 0) {
         if (!ALL_ENGINES.includes(request.engine)) {
           return { ok: false, code: "engine-rejected", message: `unknown engine "${request.engine}" - the company chain is: ${ALL_ENGINES.join(", ")}` };
@@ -544,16 +479,15 @@ const name = "web-search-free";
 const inject = ["web"];
 
 // 收编后的设置面：引擎链是公司口径（无 provider 选择）；key 只经本插件
-// 设置节（settings.yaml 的 free-search 命名空间）+ 环境变量回退。
+// 设置节（settings.yaml 的 free-search 命名空间）+ 环境变量回退。0.4.183
+// 起三键制：tavilyApiKey / exaApiKey / anysearchApiKey，三者均 role("secret")。
 const Config = z.object({
   cache: z.boolean().default(true), // 单 query 结果缓存开关（防限流/省额度）
   cacheTtl: z.number().default(5), // 缓存时长（分钟），0-5 可配置（使用处再 clamp）
   lang: z.string().default("zh"), // 设置卡片界面语言（zh/en）
-  region: z.string(), // DuckDuckGo region（kl 参数）
-  bingMarket: z.string().default("zh-CN"),
-  safeSearch: z.string().default("off"),
   tavilyApiKey: z.string().role("secret"),
   exaApiKey: z.string().role("secret"),
+  anysearchApiKey: z.string().role("secret"),
 });
 
 function apply(ctx, config) {
@@ -578,21 +512,21 @@ function apply(ctx, config) {
   };
   const resolveApiKey = async (envName, settingsKey) => resolveApiKeyValue(envName, settingsKey);
 
-  // 分发到链内四引擎的具体实现（时间过滤随引擎能力：tavily/exa 精确、
-  // ddg 取近似档、bing 忽略）。
+  // 分发到链内三引擎的具体实现（时间过滤随引擎能力：tavily/exa 精确、
+  // anysearch 忽略）。
   const dispatchEngine = async (engine, query, maxResults, cfg, timeRange, signal) => {
-    if (engine === "ddg") return searchDdgHtml(query, maxResults, { ...cfg, timeRange }, signal);
-    if (engine === "bing") return searchBing(query, maxResults, cfg, signal);
     if (engine === "exa") return searchExa(query, maxResults, await resolveApiKey("EXA_API_KEY", "exaApiKey"), timeRange, signal);
     if (engine === "tavily") return searchTavily(query, maxResults, await resolveApiKey("TAVILY_API_KEY", "tavilyApiKey"), timeRange, signal);
+    if (engine === "anysearch") return searchAnysearch(query, maxResults, await resolveApiKey("ANYSEARCH_API_KEY", "anysearchApiKey"), signal);
     throw new Error(`unknown engine "${engine}" - the company chain is: ${ALL_ENGINES.join(", ")}`);
   };
 
-  // 总控 provider：公司链 tavily(配 key)→exa(配 key)→bing→ddg。任何引擎失败
-  // （缺 key / 401 / 限流 / 网络 / 0 结果）自动降级到下一引擎；全链失败返回
-  // 可读文本，绝不向调用方抛顶层异常（单进程 harness 的容错红线）。
+  // 总控 provider：公司链 tavily→exa→anysearch（纯三键制，0.4.183）。任何
+  // 引擎失败（缺 key / 401 / 限流 / 网络 / 0 结果）自动降级到下一引擎；一个
+  // key 都没有时链为空，返回配置引导文案；全链失败返回可读文本，绝不向
+  // 调用方抛顶层异常（单进程 harness 的容错红线）。
   const provider = {
-    id: "ddg",
+    id: PROVIDER_ID,
     available() {
       return true;
     },
@@ -604,6 +538,19 @@ function apply(ctx, config) {
       const cfg = current();
       const timeRange = parseTimeRange(request.timeRange);
       const timeRangeLabel = typeof request.timeRange === "string" ? request.timeRange : String(timeRange?.days ?? timeRange?.after ?? "");
+
+      // 三键制核心：链 = 配了 key 的引擎。一个 key 都没有 → 不进缓存、不
+      // 发请求，直接返回配置引导（免费额度 + 注册入口 + 配置位置）。
+      const chain = resolveEngineChain({
+        tavilyKey: await resolveApiKey("TAVILY_API_KEY", "tavilyApiKey"),
+        exaKey: await resolveApiKey("EXA_API_KEY", "exaApiKey"),
+        anysearchKey: await resolveApiKey("ANYSEARCH_API_KEY", "anysearchApiKey"),
+      });
+      if (chain.length === 0) {
+        if (signal?.aborted) throw new Error("search aborted");
+        logger.warn("free-search: no engine keys configured - answering with setup guidance instead of running an empty chain");
+        return { sources: [], truncated: false, content: NO_KEY_GUIDANCE };
+      }
 
       // 缓存 TTL（分钟，0-5 可配置）；cache=false 或 ttl<=0 时完全禁用
       const cacheTtlMs = (Math.min(Math.max(Number(cfg.cacheTtl) ?? 5, 0), 5)) * 60 * 1000;
@@ -623,10 +570,6 @@ function apply(ctx, config) {
         if (hit) searchCache.delete(cacheKey);
       }
 
-      const chain = resolveEngineChain({
-        tavilyKey: await resolveApiKey("TAVILY_API_KEY", "tavilyApiKey"),
-        exaKey: await resolveApiKey("EXA_API_KEY", "exaApiKey"),
-      });
       const outcome = await runEngineChain({
         chain,
         signal,
@@ -720,19 +663,9 @@ function apply(ctx, config) {
     const cfg = current();
     const q = query || "DeepSeek Harness";
     const tr = parseTimeRange(timeRange);
-    const attempt = async () => {
-      if (!ALL_ENGINES.includes(engine)) return { ok: false, error: `unknown engine: ${engine}` };
-      return await dispatchEngine(engine, q, 2, cfg, tr);
-    };
     try {
-      const result = await attempt();
-      // 配了 key 的引擎无 key / key 无效：直接透传失败结果
-      if (result.ok === false) return result;
-      // 免费引擎偶发反爬/空结果时重试一次
-      if (result.sources && result.sources.length === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        return await attempt();
-      }
+      if (!ALL_ENGINES.includes(engine)) return { ok: false, error: `unknown engine: ${engine}` };
+      const result = await dispatchEngine(engine, q, 2, cfg, tr);
       return {
         ok: true,
         sources: (result.sources ?? []).map((s) =>
@@ -755,11 +688,11 @@ function apply(ctx, config) {
         defineTool({
           name: "free_search_test",
           description:
-            "Test every engine in the company search chain (tavily, exa, bing, ddg) and report which ones work. Use this to verify engine availability, diagnose search failures, or check whether an API key is configured.",
+            "Test every engine in the company search chain (tavily, exa, anysearch) and report which ones work. Use this to verify engine availability, diagnose search failures, or check whether an API key is configured. Every engine is keyed-only since 0.4.183 — an engine fails here when its free API key is missing or invalid.",
           parameters: {
             engines: {
               type: "array",
-              description: "Which engines to test (default: all four). Options: tavily, exa, bing, ddg.",
+              description: "Which engines to test (default: all three). Options: tavily, exa, anysearch.",
               items: { type: "string" },
             },
             query: {
@@ -843,7 +776,7 @@ function apply(ctx, config) {
         defineTool({
           name: "free_search_advanced",
           description:
-            "Search the web with optional time filtering. Use when the user wants results from a specific time window (e.g. 'last week', 'this month'). Runs the company engine chain (tavily -> exa -> bing -> ddg, keyed engines only when configured) with automatic fallback, exactly like web_search.",
+            "Search the web with optional time filtering. Use when the user wants results from a specific time window (e.g. 'last week', 'this month'). Runs the company engine chain (tavily -> exa -> anysearch, each engine only while its free key is configured) with automatic fallback, exactly like web_search.",
           parameters: {
             query: {
               type: "string",
@@ -856,7 +789,7 @@ function apply(ctx, config) {
             },
             timeRange: {
               type: "string",
-              description: "Optional time filter. Fixed tiers: day, week, month, year. Custom: relative like 12h, 3d, 2mo, 1y, or an absolute date like 2026-07-01. Tavily/Exa apply it precisely; ddg maps to the nearest tier; bing ignores it.",
+              description: "Optional time filter. Fixed tiers: day, week, month, year. Custom: relative like 12h, 3d, 2mo, 1y, or an absolute date like 2026-07-01. Tavily/Exa apply it precisely; anysearch ignores it.",
             },
           },
           output: {
@@ -932,12 +865,14 @@ function apply(ctx, config) {
         disposeSection = null;
       }
       const cfg = current();
-      // keyed 引擎清单与实际链同源：同一 resolveApiKeyValue（设置值 > 环境变量），
-      // env 配 key 时提示词照实列出（评审 P2-2）。
+      // 链成员清单与实际链同源：同一 resolveApiKeyValue（设置值 > 环境变量），
+      // env 配 key 时提示词照实列出（评审 P2-2）。三键制下链=配了 key 的
+      // 引擎子集；一个都没有时链为空，提示词照实说明并给出注册指引。
       const keyed = resolveEngineChain({
         tavilyKey: resolveApiKeyValue("TAVILY_API_KEY", "tavilyApiKey"),
         exaKey: resolveApiKeyValue("EXA_API_KEY", "exaApiKey"),
-      }).filter((engine) => engine === "tavily" || engine === "exa");
+        anysearchKey: resolveApiKeyValue("ANYSEARCH_API_KEY", "anysearchApiKey"),
+      });
       disposeSection = sctx.systemPrompt.section({
         name: "free-search:engines",
         order: 500,
@@ -945,15 +880,14 @@ function apply(ctx, config) {
           "## Available web search engines (free-search plugin, company chain)",
           "",
           "You have the web_search tool. Its backend is the company engine chain - the order is fixed policy, not a setting.",
-          "Chain: tavily -> exa -> bing -> ddg. Tavily and Exa participate only while their API key is configured (Settings > Plugins > Free Search); without keys the chain is bing -> ddg, which works out of the box.",
-          `Currently keyed engines: ${keyed.length > 0 ? keyed.join(", ") : "none (bing -> ddg)"}.`,
-          "Safe search filter (Settings > Plugins > Free Search): " + (cfg.safeSearch ?? "off") + " (off|moderate|strict; applies to bing/ddg).",
+          "Chain: tavily -> exa -> anysearch. Since 0.4.183 every engine is keyed-only: an engine joins the chain only while its API key is configured (Settings > Plugins > Free Search, or the TAVILY_API_KEY / EXA_API_KEY / ANYSEARCH_API_KEY environment variables). The keyless bing/ddg engines are removed.",
+          `Currently keyed engines: ${keyed.length > 0 ? keyed.join(", ") : "none - web_search answers with setup guidance (free signups: tavily.com 1,000 searches/month, exa.ai $20 signup + $10/month, anysearch.com 1,000 searches/day) until at least one key is configured"}.`,
           "",
           "IMPORTANT: If an engine fails (missing or invalid key, 401, rate limit, or network error), web_search automatically tries the next engine in the chain. The result includes a note showing which engine actually answered and why the earlier one was skipped. If EVERY engine fails you get a readable failure message - tell the user web search is temporarily unavailable instead of retrying immediately. Never claim search is unavailable while the chain still has engines left.",
           "",
           "Use the free_search_test tool to check which engines work right now.",
           "",
-          "When the user wants results from a specific time window (e.g. 'last week', 'this month', 'last 3 days'), use the free_search_advanced tool with timeRange. Fixed tiers: day|week|month|year. Custom: 12h, 3d, 2mo, 1y, or an absolute date like 2026-07-01. Tavily/Exa apply it precisely; ddg maps to the nearest tier; bing ignores it.",
+          "When the user wants results from a specific time window (e.g. 'last week', 'this month', 'last 3 days'), use the free_search_advanced tool with timeRange. Fixed tiers: day|week|month|year. Custom: 12h, 3d, 2mo, 1y, or an absolute date like 2026-07-01. Tavily/Exa apply it precisely; anysearch ignores it.",
         ].join("\n"),
       });
     };
@@ -969,17 +903,17 @@ function apply(ctx, config) {
 
 export {
   ALL_ENGINES,
-  BING_URL,
+  ANYSEARCH_URL,
   Config,
-  DDG_HTML_URL,
   EXA_SEARCH_URL,
   FREE_SEARCH_NS,
+  NO_KEY_GUIDANCE,
+  PROVIDER_ID,
   TAVILY_URL,
   apply,
   inject,
   name,
-  searchBing,
-  searchDdgHtml,
+  searchAnysearch,
   searchExa,
   searchTavily,
 };

@@ -11,7 +11,7 @@
   },
   {
     "packageName": "dsh-free-search",
-    "version": "0.4.182",
+    "version": "0.4.183",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://github.com/DDDMUC/dsh-free-search",
     "revoked": false,
@@ -20,9 +20,8 @@
     },
     "source": {
       "kind": "tarball",
-      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.182.tgz",
-      "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.182.tgz"
-    },
-    "treeDigest": "adce37b46c7f255ab82cce45fb2309b6ac3bf29b8d7f45add2efaff5a2fa6a0b"
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.183.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.183.tgz"
+    }
   }
 ]

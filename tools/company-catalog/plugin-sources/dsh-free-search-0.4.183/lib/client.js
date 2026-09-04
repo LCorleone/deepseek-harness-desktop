@@ -11,9 +11,12 @@ window.__ModuleLoader__.load({
     // DDDMUC/dsh-free-search v0.4.18, lib/client.js). Stripped versus
     // upstream: the npm check-update / one-click-upgrade UI (updates arrive
     // only through the company catalog channel), the engine picker (the
-    // chain tavily->exa->bing->ddg is reviewed policy), the keyless/extra
+    // chain tavily->exa->anysearch is reviewed policy), the keyless/extra
     // engine key inputs, the credentials-center key storage toggle, the
-    // platform_search toggles, and the /free-search-engine command.
+    // platform_search toggles, and the /free-search-engine command. Since
+    // 0.4.183 the chain is keyed-only (three self-registered free keys) and
+    // the card carries a signup guide for the three free tiers; the bing/ddg
+    // engines and their safeSearch/market controls are gone with them.
     //#region css
     const css = [
       ".dshfs-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:8px;min-width:0;list-style:none;transition:border-color .16s,background .16s;overflow:hidden;margin-bottom:8px}",
@@ -34,12 +37,6 @@ window.__ModuleLoader__.load({
       ".dshfs-resultRow{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;margin-top:2px}",
       ".dshfs-field{flex-direction:column;gap:4px;min-width:0;display:flex}",
       ".dshfs-label{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500}",
-      ".dshfs-select{border:1px solid var(--dsw-alias-border-l2);font:inherit;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border-radius:6px;padding:6px 8px;font-size:13px;transition:border-color .13s,box-shadow .13s;width:100%}",
-      ".dshfs-select:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}",
-      // 下拉选项列表配色锁死：不随皮肤变量变化（皮肤只影响 select 框体本身）
-      ".dshfs-select{color-scheme:light dark}",
-      ".dshfs-select option,.dshfs-select optgroup{background-color:#ffffff;color:#1f2328}",
-      "@media (prefers-color-scheme:dark){.dshfs-select{color-scheme:dark}.dshfs-select option,.dshfs-select optgroup{background-color:#1e1f24;color:#e8e8ea}}",
       ".dshfs-input{border:1px solid var(--dsw-alias-border-l2);font:inherit;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border-radius:6px;padding:6px 8px;font-size:13px;transition:border-color .13s,box-shadow .13s;width:100%}",
       ".dshfs-ttl{width:88px}",
       ".dshfs-fieldRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
@@ -70,16 +67,22 @@ window.__ModuleLoader__.load({
     const NS = "free-search";
     const I18N = {
       zh: {
-        description: "免费网页搜索（公司引擎链 tavily→exa→bing→ddg，前两个需配 key）",
+        description: "免费网页搜索（公司引擎链 tavily→exa→anysearch，三引擎均需自注册免费 key）",
         chain: "公司引擎链",
-        chainSummary: "tavily → exa → bing → ddg",
-        chainHint: "链序为公司口径，不可在此切换。tavily/exa 仅在下方配置 key 后入链；无 key 时自动 bing → ddg，开箱即用。任一引擎失败自动降级到下一个。",
-        apiKeys: "API 密钥（可选）",
-        exaPh: (c) => c ? "Exa API 密钥（已配置）" : "Exa API 密钥（可选；未配置则不入链）",
-        tavilyPh: (c) => c ? "Tavily API 密钥（已配置）" : "Tavily API 密钥（可选；未配置则不入链）",
-        keysHint: "密钥保存在本机 settings.yaml 的 free-search 命名空间（本插件设置节），或通过 TAVILY_API_KEY / EXA_API_KEY 环境变量提供。密钥只存在本机，不随插件分发。",
-        safeSearch: "安全搜索过滤（adlt）",
-        safeSearchHint: "作用于 bing（adlt）与 ddg（adlt 档位）。若看到引擎自身的过滤效果，在此调整。",
+        chainSummary: "tavily → exa → anysearch",
+        chainHint: "链序为公司口径，不可在此切换。0.4.183 起纯三键制：三个引擎均需自注册免费 API key（免费抓取引擎已移除），配好任一 key 即入链，配多个可自动降级兜底；一个都没有时搜索会返回配置引导。任一引擎失败自动降级到下一个。",
+        signupTitle: "注册指引（三引擎均有免费额度）",
+        signupHint: "任配一个 key 即可搜索，配两个或三个可自动降级兜底。key 只需注册一次，免费额度见各官网：",
+        signupRows: [
+          { name: "tavily", url: "https://tavily.com", note: "免费档 1,000 次/月，无需信用卡" },
+          { name: "exa", url: "https://exa.ai", note: "注册送 $20 + 每月 $10（约 1,400 次/月）" },
+          { name: "anysearch", url: "https://anysearch.com", note: "免费 1,000 次/天" },
+        ],
+        apiKeys: "API 密钥（三引擎均需）",
+        tavilyPh: (c) => c ? "Tavily API 密钥（已配置）" : "Tavily API 密钥（未配置则不入链）",
+        exaPh: (c) => c ? "Exa API 密钥（已配置）" : "Exa API 密钥（未配置则不入链）",
+        anysearchPh: (c) => c ? "AnySearch API 密钥（已配置）" : "AnySearch API 密钥（未配置则不入链）",
+        keysHint: "密钥保存在本机 settings.yaml 的 free-search 命名空间（本插件设置节），或通过 TAVILY_API_KEY / EXA_API_KEY / ANYSEARCH_API_KEY 环境变量提供。密钥只存在本机，不随插件分发。",
         cacheTtl: "结果缓存时长（分钟）",
         cacheTtlHint: "0 关闭缓存，最长 5 分钟。缩短可加快时效，延长可防限流、省额度。",
         unavailable: "设置不可用 —— free-search 桥接未暴露。",
@@ -95,16 +98,22 @@ window.__ModuleLoader__.load({
         toggleLang: "EN",
       },
       en: {
-        description: "Free web search (company chain tavily→exa→bing→ddg; first two need keys)",
+        description: "Free web search (company chain tavily→exa→anysearch; every engine needs a self-registered free key)",
         chain: "Company engine chain",
-        chainSummary: "tavily → exa → bing → ddg",
-        chainHint: "The chain order is company policy and cannot be switched here. Tavily/Exa join the chain only after their key is configured below; without keys it is bing → ddg out of the box. Any engine failure degrades to the next one automatically.",
-        apiKeys: "API keys (optional)",
-        exaPh: (c) => c ? "Exa API key (configured)" : "Exa API key (optional; not in the chain without one)",
-        tavilyPh: (c) => c ? "Tavily API key (configured)" : "Tavily API key (optional; not in the chain without one)",
-        keysHint: "Keys are stored in this machine's settings.yaml under the free-search namespace (this plugin's settings section), or provided through the TAVILY_API_KEY / EXA_API_KEY environment variables. Keys never ship with the plugin.",
-        safeSearch: "Safe search filter (adlt)",
-        safeSearchHint: "Applies to bing (adlt) and ddg (adlt degree). If you see the engine's own filtering, adjust here.",
+        chainSummary: "tavily → exa → anysearch",
+        chainHint: "The chain order is company policy and cannot be switched here. Since 0.4.183 the chain is keyed-only (the keyless bing/ddg scrapers are removed): configure any one free key below and that engine joins; more keys add automatic fallback. With no key at all, search answers with setup guidance. Any engine failure degrades to the next one automatically.",
+        signupTitle: "Signup guide (free tiers)",
+        signupHint: "Any one key is enough to search; two or three add automatic fallback. Keys are a one-time signup - free tiers per their sites:",
+        signupRows: [
+          { name: "tavily", url: "https://tavily.com", note: "Free tier 1,000 searches/month, no credit card" },
+          { name: "exa", url: "https://exa.ai", note: "$20 signup credit + $10/month free (about 1,400 searches/month)" },
+          { name: "anysearch", url: "https://anysearch.com", note: "Free 1,000 searches/day" },
+        ],
+        apiKeys: "API keys (all three engines keyed)",
+        tavilyPh: (c) => c ? "Tavily API key (configured)" : "Tavily API key (not in the chain without one)",
+        exaPh: (c) => c ? "Exa API key (configured)" : "Exa API key (not in the chain without one)",
+        anysearchPh: (c) => c ? "AnySearch API key (configured)" : "AnySearch API key (not in the chain without one)",
+        keysHint: "Keys are stored in this machine's settings.yaml under the free-search namespace (this plugin's settings section), or provided through the TAVILY_API_KEY / EXA_API_KEY / ANYSEARCH_API_KEY environment variables. Keys never ship with the plugin.",
         cacheTtl: "Result cache TTL (minutes)",
         cacheTtlHint: "0 disables caching, max 5 minutes. Lower = fresher results, higher = less rate-limiting.",
         unavailable: "Settings unavailable — the free-search bridge is not exposed.",
@@ -150,31 +159,11 @@ window.__ModuleLoader__.load({
     }
 
     function FreeSearchCard(props) {
-      // 检测应用主题深浅（读 body 的 --dsw-alias-bg-base 变量亮度），用于锁定原生下拉配色
-      const isDarkScheme = react.useMemo(() => {
-        try {
-          const root = document.body || document.documentElement;
-          const bg = getComputedStyle(root).getPropertyValue("--dsw-alias-bg-base").trim();
-          const m = bg.match(/(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)/);
-          if (m) {
-            const l = 0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3]);
-            return l < 128;
-          }
-          if (/^#([0-9a-f]{3,8})/i.test(bg)) {
-            const hex = bg.slice(1);
-            const h = hex.length <= 4 ? hex.replace(/./g, (c) => c + c) : hex;
-            const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
-            return 0.299 * r + 0.587 * g + 0.114 * b < 128;
-          }
-        } catch {}
-        return typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)").matches : false;
-      }, []);
-      const selectColorScheme = isDarkScheme ? "dark" : "light";
       const [open, setOpen] = react.useState(false);
       const [state, setState] = react.useState({ status: "loading" });
-      const [safeSearch, setSafeSearch] = react.useState("off");
       const [exaKey, setExaKey] = react.useState("");
       const [tavilyKey, setTavilyKey] = react.useState("");
+      const [anysearchKey, setAnysearchKey] = react.useState("");
       const [cacheTtl, setCacheTtl] = react.useState(5);
       const [keysConfigured, setKeysConfigured] = react.useState({});
       const [lang, setLang] = react.useState("zh");
@@ -191,10 +180,10 @@ window.__ModuleLoader__.load({
             const view = result.value.namespaces.find((n) => n.ns === NS);
             if (view) {
               const v = view.value ?? {};
-              setSafeSearch(v.safeSearch === "strict" || v.safeSearch === "moderate" ? v.safeSearch : "off");
               setLang(v.lang === "en" ? "en" : "zh");
               setExaKey(v.exaApiKey ?? "");
               setTavilyKey(v.tavilyApiKey ?? "");
+              setAnysearchKey(v.anysearchApiKey ?? "");
               setCacheTtl(v.cacheTtl === undefined ? 5 : Math.min(Math.max(Number(v.cacheTtl) ?? 5, 0), 5));
               // secrets 字段标记哪些 key 已配置（值被脱敏，仅显示"已配置"）
               const configured = {};
@@ -203,6 +192,7 @@ window.__ModuleLoader__.load({
                   const path = secret.path.join(".");
                   if (path === "exaApiKey") configured.exa = true;
                   if (path === "tavilyApiKey") configured.tavily = true;
+                  if (path === "anysearchApiKey") configured.anysearch = true;
                 }
               }
               setKeysConfigured(configured);
@@ -229,11 +219,11 @@ window.__ModuleLoader__.load({
           // key 直接写入本插件设置节（settings.yaml 的 free-search 命名空间）
           const ops = [
             { op: "set", path: ["lang"], value: lang },
-            { op: "set", path: ["safeSearch"], value: safeSearch },
             { op: "set", path: ["cacheTtl"], value: Math.min(Math.max(Number(cacheTtl) ?? 5, 0), 5) },
           ];
           if (exaKey.trim()) ops.push({ op: "set", path: ["exaApiKey"], value: exaKey.trim() });
           if (tavilyKey.trim()) ops.push({ op: "set", path: ["tavilyApiKey"], value: tavilyKey.trim() });
+          if (anysearchKey.trim()) ops.push({ op: "set", path: ["anysearchApiKey"], value: anysearchKey.trim() });
           const result = await bridgeMutate({ ns: NS, ops });
           if (result.ok) {
             setDirty(false);
@@ -267,13 +257,19 @@ window.__ModuleLoader__.load({
           });
           if (result.ok) {
             const sources = result.value.sources ?? [];
-            setTestResult({
-              ok: true,
-              count: sources.length,
-              engine: result.value.provider ?? "chain",
-              content: result.value.content ?? "",
-              sample: sources[0]?.title ?? "",
-            });
+            // 0 结果且有引导文案（三键制下未配 key 的常态）：按失败样式展示
+            // 引导内容，而不是「✓ 0 条结果」
+            if (sources.length === 0) {
+              setTestResult({ ok: false, error: result.value.content || "0 results" });
+            } else {
+              setTestResult({
+                ok: true,
+                count: sources.length,
+                engine: result.value.provider ?? "chain",
+                content: result.value.content ?? "",
+                sample: sources[0]?.title ?? "",
+              });
+            }
           } else {
             setTestResult({ ok: false, error: result.message ?? "unknown error" });
           }
@@ -348,28 +344,25 @@ window.__ModuleLoader__.load({
                     children: [
                       react_jsx_runtime.jsx("div", {
                         className: "dshfs-label",
-                        children: t.safeSearch,
-                      }),
-                      react_jsx_runtime.jsx("select", {
-                        className: "dshfs-select",
-                        value: safeSearch,
-                        style: { colorScheme: selectColorScheme },
-                        disabled: !ready || saving,
-                        onChange: (e) => {
-                          setSafeSearch(e.target.value);
-                          setDirty(true);
-                          setFailed(false);
-                        },
-                        children: [
-                          react_jsx_runtime.jsx("option", { value: "off", children: "Off - engine default (no filtering)" }, "off"),
-                          react_jsx_runtime.jsx("option", { value: "moderate", children: "Moderate - Bing default" }, "moderate"),
-                          react_jsx_runtime.jsx("option", { value: "strict", children: "Strict" }, "strict"),
-                        ],
+                        children: t.signupTitle,
                       }),
                       react_jsx_runtime.jsx("p", {
                         className: "dshfs-hint",
-                        children: t.safeSearchHint,
+                        children: t.signupHint,
                       }),
+                      ...t.signupRows.map((row) =>
+                        react_jsx_runtime.jsx(
+                          "a",
+                          {
+                            className: "dshfs-link",
+                            href: row.url,
+                            target: "_blank",
+                            rel: "noreferrer noopener",
+                            children: `${row.name} (${row.url.replace(/^https:\/\//u, "")}) — ${row.note}`,
+                          },
+                          row.name
+                        )
+                      ),
                     ],
                   }),
                   react_jsx_runtime.jsx("div", {
@@ -399,6 +392,18 @@ window.__ModuleLoader__.load({
                         disabled: !ready || saving,
                         onChange: (e) => {
                           setExaKey(e.target.value);
+                          setDirty(true);
+                          setFailed(false);
+                        },
+                      }),
+                      react_jsx_runtime.jsx("input", {
+                        className: "dshfs-input",
+                        type: "password",
+                        placeholder: t.anysearchPh(keysConfigured.anysearch),
+                        value: anysearchKey,
+                        disabled: !ready || saving,
+                        onChange: (e) => {
+                          setAnysearchKey(e.target.value);
                           setDirty(true);
                           setFailed(false);
                         },

@@ -3,25 +3,33 @@
  * company engine chain, strip-surface assertions over the vendored tree, and
  * an offline fake-harness smoke of the plugin's apply() face.
  *
- * Coverage map (task P7 · 2026-09-03):
- *  - chain selection: resolveEngineChain with/without keys (zero-key =
- *    bing→ddg, keyed engines join only when configured),
+ * Coverage map (task P7 · 2026-09-03, 0.4.183 三键制改版 · 2026-09-05):
+ *  - chain selection: resolveEngineChain is keyed-only — zero keys resolve
+ *    to an empty chain (the caller must answer with setup guidance), keyed
+ *    engines join in reviewed order whatever the mix,
  *  - chain execution: per-engine try/catch degradation, zero-results treated
- *    as failure, total failure resolves (never rejects) with readable
- *    failures — the single-process-harness red line,
+ *    as failure, an already-aborted signal stops the chain before any engine
+ *    runs (the fetchHtml precheck moved into the executor), total failure
+ *    resolves (never rejects) with readable failures — the
+ *    single-process-harness red line,
  *  - strip surface: no pnpm self-update, no npm-registry probe, no 4789
  *    server, no profile-patch direct writes (no node:fs/path/child_process
- *    in lib/), engine endpoint allowlist sweep over lib/,
+ *    in lib/), engine endpoint allowlist sweep over lib/, and the 0.4.183
+ *    regression pins — no bing/ddg engine surface at all
+ *    (BING_URL/DDG_HTML_URL/fetchHtml/searchBing/searchDdgHtml gone),
  *  - coexistence patch: only the web-search-free insert + the single-key
- *    `web` row re-pin; no fetchProvider, no disabled rows,
+ *    `web` row re-pin; the re-pin value equals the provider id defined once
+ *    in lib/index.js (PROVIDER_ID, "free-search" since 0.4.183),
  *  - package shape: no build scripts, pure-JS dependency set, stable semver
  *    version, workflow-convention source directory name,
- *  - fake-harness smoke: apply() registers the provider (id ddg, takeover
- *    only when searchProviderId unset), the settings bridge (loopback
- *    guarded), both free_search_-prefixed tools with defineTool-projected
- *    complete JSON-Schema parameters, and provider.search returns results
- *    through a faked fetch (tavily keyed path, bing keyless path) and a
- *    readable message — not a throw — when every engine fails.
+ *  - fake-harness smoke: apply() registers the provider (id free-search,
+ *    takeover only when searchProviderId unset), the settings bridge
+ *    (loopback guarded), both free_search_-prefixed tools with
+ *    defineTool-projected complete JSON-Schema parameters; provider.search
+ *    returns results through a faked fetch (tavily keyed path, anysearch
+ *    keyed path with code!==0 readable rejection), zero keys return the
+ *    setup guidance without any fetch, and a readable message — not a
+ *    throw — when every engine fails.
  */
 
 import assert from 'node:assert/strict'
@@ -33,7 +41,7 @@ import { test } from 'node:test'
 
 const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // tools/company-catalog/tests → tools/company-catalog → the vendored plugin source.
-const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.182')
+const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.183')
 const LIB_DIR = join(PLUGIN_DIR, 'lib')
 
 // ---------------------------------------------------------------------------
@@ -51,16 +59,45 @@ function stripJsComments(source) {
 
 const libCode = () => ['index.js', 'client.js', 'engines.js'].map((f) => stripJsComments(read(join(LIB_DIR, f)))).join('\n')
 
-const BING_HTML = `<html><body><ol><li class="b_algo"><h2><a href="https://result.example/one">First Result</a></h2><p>first snippet about the query sign up read more</p></li><li class="b_algo"><h2><a href="https://result.example/two">Second Result</a></h2><p>second snippet</p></li></ol>${'<pad>'.repeat(120)}</body></html>`
-
 const TAVILY_JSON = JSON.stringify({
   results: [
     { url: 'https://result.example/tavily', title: 'Tavily Result', content: 'tavily snippet content' },
   ],
 })
 
+const EXA_JSON = JSON.stringify({
+  results: [
+    { url: 'https://result.example/exa-one', title: 'Exa Result One', highlights: ['exa highlight snippet one'], publishedDate: '2026-09-01' },
+    { url: 'https://result.example/exa-two', title: 'Exa Result Two', highlights: ['exa highlight snippet two'] },
+  ],
+})
+
+// AnySearch 实测形态：code===0 → data.results[]（title/url/snippet）
+const ANYSEARCH_JSON = JSON.stringify({
+  code: 0,
+  data: {
+    results: [
+      { url: 'https://result.example/anysearch', title: 'AnySearch Result', snippet: 'anysearch snippet' },
+    ],
+  },
+})
+
+// content 字段兼容形态：无 snippet 时回退 content
+const ANYSEARCH_CONTENT_JSON = JSON.stringify({
+  code: 0,
+  data: {
+    results: [
+      { url: 'https://result.example/anysearch-content', title: 'Content Field Result', content: 'content-field snippet' },
+    ],
+  },
+})
+
+// code!==0：配额/错误负载
+const ANYSEARCH_ERR_JSON = JSON.stringify({ code: 1001, message: 'quota exceeded' })
+
 /** Response-like object shaped for the plugin's engine implementations. */
 const jsonResponse = (payload) => ({ ok: true, status: 200, async text() { return payload }, async json() { return JSON.parse(payload) } })
+const statusResponse = (status, payload) => ({ ok: false, status, async text() { return payload }, async json() { return JSON.parse(payload) } })
 
 /** A fetch double routing by URL prefix; failures throw like a network error. */
 function fakeFetch(routes) {
@@ -76,29 +113,51 @@ function fakeFetch(routes) {
   }
 }
 
+const KEY_ENV_NAMES = ['TAVILY_API_KEY', 'EXA_API_KEY', 'ANYSEARCH_API_KEY']
+
+/**
+ * Snapshot the three engine-key env vars, delete them, return the restore
+ * fn. The keyed-only chain resolves keys settings > env, so key-sensitive
+ * assertions must not depend on whatever the test host carries in env.
+ */
+function isolateKeyEnv() {
+  const snapshot = KEY_ENV_NAMES.map((name) => [name, process.env[name]])
+  for (const [name] of snapshot) delete process.env[name]
+  return () => {
+    for (const [name, value] of snapshot) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // engine chain units (lib/engines.js — pure, no DSH imports)
 // ---------------------------------------------------------------------------
 
-test('resolveEngineChain: zero keys → bing → ddg (out-of-the-box behavior)', async () => {
+test('resolveEngineChain: keyed-only since 0.4.183 — zero keys resolve to an empty chain', async () => {
   const { resolveEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
-  assert.deepEqual(resolveEngineChain({}), ['bing', 'ddg'])
-  assert.deepEqual(resolveEngineChain({ tavilyKey: '', exaKey: '   ' }), ['bing', 'ddg'], 'blank/whitespace keys are absent')
-  assert.deepEqual(resolveEngineChain({ tavilyKey: 42, exaKey: null }), ['bing', 'ddg'], 'non-string keys are absent')
+  assert.deepEqual(resolveEngineChain({}), [], 'no keys, no chain — the caller answers with setup guidance')
+  assert.deepEqual(resolveEngineChain({ tavilyKey: '', exaKey: '   ', anysearchKey: '\t' }), [], 'blank/whitespace keys are absent')
+  assert.deepEqual(resolveEngineChain({ tavilyKey: 42, exaKey: null, anysearchKey: {} }), [], 'non-string keys are absent')
 })
 
-test('resolveEngineChain: keyed engines join in reviewed order ahead of the keyless pair', async () => {
+test('resolveEngineChain: keyed engines join in reviewed order whatever the mix', async () => {
   const { resolveEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
-  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1' }), ['tavily', 'bing', 'ddg'])
-  assert.deepEqual(resolveEngineChain({ exaKey: 'exa-1' }), ['exa', 'bing', 'ddg'])
-  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1', exaKey: 'exa-1' }), ['tavily', 'exa', 'bing', 'ddg'])
+  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1' }), ['tavily'])
+  assert.deepEqual(resolveEngineChain({ exaKey: 'exa-1' }), ['exa'])
+  assert.deepEqual(resolveEngineChain({ anysearchKey: 'as-1' }), ['anysearch'])
+  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1', anysearchKey: 'as-1' }), ['tavily', 'anysearch'])
+  assert.deepEqual(resolveEngineChain({ exaKey: 'exa-1', anysearchKey: 'as-1' }), ['exa', 'anysearch'])
+  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1', exaKey: 'exa-1' }), ['tavily', 'exa'])
+  assert.deepEqual(resolveEngineChain({ tavilyKey: 'tvly-1', exaKey: 'exa-1', anysearchKey: 'as-1' }), ['tavily', 'exa', 'anysearch'])
 })
 
 test('runEngineChain: first engine wins, no failures recorded', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const tried = []
   const outcome = await runEngineChain({
-    chain: ['tavily', 'exa', 'bing', 'ddg'],
+    chain: ['tavily', 'exa', 'anysearch'],
     runEngine: async (engine) => { tried.push(engine); return { sources: [{ url: `https://x/${engine}` }] } },
   })
   assert.equal(outcome.ok, true)
@@ -110,15 +169,15 @@ test('runEngineChain: first engine wins, no failures recorded', async () => {
 test('runEngineChain: throwing engine degrades to the next; failures carry readable errors', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const outcome = await runEngineChain({
-    chain: ['tavily', 'exa', 'bing', 'ddg'],
+    chain: ['tavily', 'exa', 'anysearch'],
     runEngine: async (engine) => {
-      if (engine === 'bing') return { sources: [{ url: 'https://x/bing' }] }
+      if (engine === 'anysearch') return { sources: [{ url: 'https://x/anysearch' }] }
       if (engine === 'tavily') throw new Error('Tavily API key is invalid (HTTP 401)')
       throw 'non-Error rejection'
     },
   })
   assert.equal(outcome.ok, true)
-  assert.equal(outcome.engine, 'bing')
+  assert.equal(outcome.engine, 'anysearch')
   assert.deepEqual(outcome.failures, [
     { engine: 'tavily', error: 'Tavily API key is invalid (HTTP 401)' },
     { engine: 'exa', error: 'non-Error rejection' },
@@ -128,22 +187,22 @@ test('runEngineChain: throwing engine degrades to the next; failures carry reada
 test('runEngineChain: zero-source results count as failure and the chain moves on', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const outcome = await runEngineChain({
-    chain: ['bing', 'ddg'],
-    runEngine: async (engine) => (engine === 'bing' ? { sources: [] } : { sources: [{ url: 'https://x/ddg' }] }),
+    chain: ['exa', 'anysearch'],
+    runEngine: async (engine) => (engine === 'exa' ? { sources: [] } : { sources: [{ url: 'https://x/anysearch' }] }),
   })
   assert.equal(outcome.ok, true)
-  assert.equal(outcome.engine, 'ddg')
+  assert.equal(outcome.engine, 'anysearch')
   assert.equal(outcome.failures[0].error.includes('0 results'), true)
 })
 
 test('runEngineChain: every engine failing RESOLVES with readable failures — never a top-level throw', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const outcome = await runEngineChain({
-    chain: ['tavily', 'exa', 'bing', 'ddg'],
+    chain: ['tavily', 'exa', 'anysearch'],
     runEngine: async () => { throw new Error('connection error: boom') },
   })
   assert.equal(outcome.ok, false)
-  assert.equal(outcome.failures.length, 4)
+  assert.equal(outcome.failures.length, 3)
   for (const failure of outcome.failures) {
     assert.equal(typeof failure.engine, 'string')
     assert.equal(failure.error.includes('connection error'), true)
@@ -153,37 +212,41 @@ test('runEngineChain: every engine failing RESOLVES with readable failures — n
 test('runEngineChain: malformed engine results are failures, not crashes', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const outcome = await runEngineChain({
-    chain: ['bing', 'ddg'],
-    runEngine: async (engine) => (engine === 'bing' ? null : undefined),
+    chain: ['exa', 'anysearch'],
+    runEngine: async (engine) => (engine === 'exa' ? null : undefined),
   })
   assert.equal(outcome.ok, false)
   assert.equal(outcome.failures.length, 2)
 })
 
-test('runEngineChain: an already-aborted external signal stops the chain with an aborted failure', async () => {
+test('runEngineChain: an already-aborted external signal stops the chain BEFORE any engine runs', async () => {
+  // 评审 P3 回归钉（0.4.183 上移版）：fetchHtml 删除后，已取消 signal 的
+  // 预检由链执行器承担——abort 事件不对已取消的 signal 重放，不预检的话
+  // 第一个引擎会带着已取消的请求跑完自己的超时。
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   const controller = new AbortController()
   controller.abort()
+  let engineCalls = 0
   const outcome = await runEngineChain({
-    chain: ['bing', 'ddg'],
+    chain: ['tavily', 'exa', 'anysearch'],
     signal: controller.signal,
-    runEngine: async () => { throw new Error('fetch failed') },
+    runEngine: async () => { engineCalls += 1; throw new Error('must not run') },
   })
   assert.equal(outcome.ok, false)
-  assert.equal(outcome.failures.length, 1)
-  assert.equal(outcome.failures[0].error, 'search aborted')
+  assert.equal(engineCalls, 0, 'an already-aborted signal must stop the chain before the first engine')
+  assert.deepEqual(outcome.failures, [{ engine: 'tavily', error: 'search aborted' }])
 })
 
 test('runEngineChain: the serial budget bounds the chain (deadline exhausted before a late engine)', async () => {
   const { runEngineChain } = await import(pathToFileURL(join(LIB_DIR, 'engines.js')).href)
   let now = 0
   const outcome = await runEngineChain({
-    chain: ['bing', 'ddg'],
+    chain: ['exa', 'anysearch'],
     budgetMs: 1000,
     now: () => now,
     runEngine: async (engine) => {
-      if (engine === 'bing') { now = 2000; throw new Error('slow') }
-      return { sources: [{ url: 'https://x/ddg' }] }
+      if (engine === 'exa') { now = 2000; throw new Error('slow') }
+      return { sources: [{ url: 'https://x/anysearch' }] }
     },
   })
   assert.equal(outcome.ok, false)
@@ -230,18 +293,33 @@ test('strip surface: no tools/ server bypass (4789, engine switcher, profile pat
   assert.equal(existsSync(join(PLUGIN_DIR, '启动搜索引擎切换器.cmd')), false)
 })
 
-test('strip surface: engine endpoints are exactly the reviewed chain; no keyless/extra engine APIs', () => {
+test('strip surface: engine endpoints are exactly the reviewed keyed chain; no keyless/extra engine APIs', () => {
   const code = libCode()
   const urls = code.match(/https:\/\/[a-z0-9.-]+/giu) ?? []
   const origins = new Set(urls.map((url) => url.slice('https://'.length)))
   assert.deepEqual(
     [...origins].sort(),
-    ['api.exa.ai', 'api.tavily.com', 'html.duckduckgo.com', 'www.bing.com'],
-    'the only https origins in lib/ are the four chain engine endpoints',
+    // the three keyed API endpoints plus the three signup portals carried in
+    // the zero-key guidance and the settings-card signup guide (inert text
+    // for the user to open — never fetched by the plugin)
+    ['anysearch.com', 'api.anysearch.com', 'api.exa.ai', 'api.tavily.com', 'exa.ai', 'tavily.com'],
+    'the only https origins in lib/ are the three chain engine endpoints and the three signup portals',
   )
-  for (const gone of ['keenable', 'anysearch', 'searxng', 'perplexity', 'deepseek-official', 'ddg-lite', 'mcp.exa.ai', 'x-tavily-access-mode', 'api.deepseek.com']) {
+  for (const gone of ['keenable', 'searxng', 'perplexity', 'deepseek-official', 'ddg-lite', 'mcp.exa.ai', 'x-tavily-access-mode', 'api.deepseek.com']) {
     assert.equal(code.toLowerCase().includes(gone), false, `lib/ must not reference the stripped engine surface (${gone})`)
   }
+})
+
+test('strip surface: the bing/ddg engines and their scraping path are gone (0.4.183 keyed-only chain)', () => {
+  // 用户拍板：不要免费抓取源。bing（质量差）与 ddg（公司网络封禁）连同
+  // fetchHtml 抓取路径整体移除——grep 断言钉死，防回潮。
+  const code = libCode()
+  for (const gone of ['BING_URL', 'DDG_HTML_URL', 'searchBing', 'searchDdgHtml', 'fetchHtml', 'fetchHtmlWithRetry', 'www.bing.com', 'html.duckduckgo.com']) {
+    assert.equal(code.includes(gone), false, `lib/ must not carry the removed free-scraping engine surface (${gone})`)
+  }
+  assert.equal(/safeSearch|bingMarket|region:\s*z\.string/u.test(code), false, 'the bing/ddg-only settings (safeSearch/bingMarket/region) are gone with their engines')
+  const pkg = JSON.parse(read(join(PLUGIN_DIR, 'package.json')))
+  assert.equal(/duckduckgo|bing/u.test(pkg.keywords.join(' ')), false, 'the package keywords drop the removed engines')
 })
 
 test('strip surface: credentials-center integration and engine preference are gone', () => {
@@ -256,7 +334,9 @@ test('coexistence patch: one insert row plus the single-key web row re-pin, noth
   const patch = read(join(PLUGIN_DIR, 'cordis.patch.yml'))
   const ids = [...patch.matchAll(/^\s*-\s+id:\s+([^\s#]+)/gmu)].map((m) => m[1])
   assert.deepEqual(ids, ['web-search-free', 'web'], 'the patch touches exactly its own insert and the web row')
-  assert.equal(/searchProvider:\s*ddg/u.test(patch), true, 'the web row is re-pinned to this plugin provider id')
+  const providerId = stripJsComments(read(join(LIB_DIR, 'index.js'))).match(/PROVIDER_ID = "([^"]+)"/u)?.[1]
+  assert.equal(providerId, 'free-search', 'lib/index.js defines the provider id once (PROVIDER_ID)')
+  assert.equal(new RegExp(`searchProvider:\\s*${providerId}\\b`, 'u').test(patch), true, 'the web row is re-pinned to exactly the plugin provider id')
   assert.equal(patch.includes('fetchProvider'), false, 'the minimal patch must not restate unrelated web config')
   assert.equal(/^\s*disabled:/mu.test(patch), false, 'the patch disables nothing')
 })
@@ -264,7 +344,7 @@ test('coexistence patch: one insert row plus the single-key web row re-pin, noth
 test('package shape: no build scripts, pure-JS deps, stable semver, workflow-convention directory name', () => {
   const pkg = JSON.parse(read(join(PLUGIN_DIR, 'package.json')))
   assert.equal(pkg.name, 'dsh-free-search')
-  assert.equal(pkg.version, '0.4.182')
+  assert.equal(pkg.version, '0.4.183')
   assert.match(pkg.version, /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u, 'the manifest signs stable semver only')
   assert.equal(pkg.scripts, undefined, 'no build scripts — pnpm build-script interception never applies')
   assert.deepEqual(Object.keys(pkg.dependencies), ['@deepseek-ai/schemastery'], 'single pure-JS dependency, no native builds')
@@ -363,6 +443,7 @@ function makeFakeCtx() {
 
 test('apply() smoke: provider registration, takeover only when unset, bridge, tools, prompt', async () => {
   const { plugin, staging } = await importPluginWithStubs()
+  const restoreEnv = isolateKeyEnv()
   try {
     const { ctx, registered } = makeFakeCtx()
     plugin.apply(ctx, { tavilyApiKey: 'tvly-test', cache: false })
@@ -372,9 +453,9 @@ test('apply() smoke: provider registration, takeover only when unset, bridge, to
     // Provider + takeover-when-unset coexistence rule
     assert.equal(registered.providers.length, 1)
     const provider = registered.providers[0]
-    assert.equal(provider.id, 'ddg')
+    assert.equal(provider.id, 'free-search', 'the provider id is the neutral plugin id (0.4.183; the "ddg" id outlived its engine)')
     assert.equal(provider.available(), true)
-    assert.equal(ctx.web.searchProviderId, 'ddg', 'unset searchProvider is taken over')
+    assert.equal(ctx.web.searchProviderId, 'free-search', 'unset searchProvider is taken over')
     const ctx2 = makeFakeCtx()
     ctx2.ctx.web.searchProviderId = 'someone-else'
     plugin.apply(ctx2.ctx, {})
@@ -400,29 +481,33 @@ test('apply() smoke: provider registration, takeover only when unset, bridge, to
     const advanced = registered.tools.find((tool) => tool.name === 'free_search_advanced')
     assert.deepEqual(advanced.parameters.required, ['query'])
     assert.equal(Object.keys(advanced.parameters.properties).includes('engine'), false, 'engine forcing is stripped (chain is policy)')
-    assert.equal(Object.keys(registered.tools.find((tool) => tool.name === 'free_search_test').parameters.properties).includes('engines'), true)
+    const test = registered.tools.find((tool) => tool.name === 'free_search_test')
+    assert.equal(Object.keys(test.parameters.properties).includes('engines'), true)
+    assert.match(test.parameters.properties.engines.description, /tavily, exa, anysearch/u)
 
     // System prompt reflects the company chain
     assert.equal(registered.promptSections.length, 1)
-    assert.match(registered.promptSections[0].text, /tavily -> exa -> bing -> ddg/u)
+    assert.match(registered.promptSections[0].text, /tavily -> exa -> anysearch/u)
+    assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily\b/u)
   } finally {
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })
 
-test('provider.search smoke: keyed tavily answers first; keyless run answers through bing; failures degrade readably', async () => {
+test('provider.search smoke: keyed tavily answers first; a 401 degrades to exa with a note; total failure stays readable', async () => {
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
-  const originalSetTimeout = globalThis.setTimeout
+  const restoreEnv = isolateKeyEnv()
   try {
-    // 1. tavily keyed: chain [tavily, bing, ddg], fake tavily JSON answers.
+    // 1. tavily keyed: chain [tavily], fake tavily JSON answers.
     {
       const { ctx, registered } = makeFakeCtx()
       plugin.apply(ctx, { tavilyApiKey: 'tvly-test', cache: false })
       globalThis.fetch = fakeFetch([
         ['https://api.tavily.com/', jsonResponse(TAVILY_JSON)],
-        ['https://www.bing.com/', jsonResponse(BING_HTML)],
-        ['https://html.duckduckgo.com/', jsonResponse(BING_HTML)],
+        ['https://api.exa.ai/', jsonResponse(EXA_JSON)],
+        ['https://api.anysearch.com/', jsonResponse(ANYSEARCH_JSON)],
       ])
       const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
       assert.equal(result.provider, 'tavily')
@@ -430,40 +515,139 @@ test('provider.search smoke: keyed tavily answers first; keyless run answers thr
       assert.equal(result.sources[0].url, 'https://result.example/tavily')
       assert.equal(result._cache, 'miss')
     }
-    // 2. zero keys: chain [bing, ddg], the faked bing HTML answers, snippet cleaning runs.
+    // 2. mixed keys, head engine 401: degrades to exa and the result carries
+    //    a note naming the failed engine and the engine that answered.
     {
       const { ctx, registered } = makeFakeCtx()
-      plugin.apply(ctx, { cache: false })
-      globalThis.fetch = fakeFetch([['https://www.bing.com/', jsonResponse(BING_HTML)]])
+      plugin.apply(ctx, { tavilyApiKey: 'tvly-bad', exaApiKey: 'exa-1', cache: false })
+      globalThis.fetch = fakeFetch([
+        ['https://api.tavily.com/', statusResponse(401, '{"detail":"bad key"}')],
+        ['https://api.exa.ai/', jsonResponse(EXA_JSON)],
+      ])
       const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
-      assert.equal(result.provider, 'bing')
+      assert.equal(result.provider, 'exa')
       assert.equal(result.sources.length, 2)
-      assert.equal(result.sources[0].snippet.includes('sign up'), false, 'snippet noise phrases are cleaned')
+      assert.match(result.content, /tavily unavailable or failed \(Tavily API key is invalid \(HTTP 401\)/u)
+      assert.match(result.content, /using exa/u)
     }
-    // 3. whole chain failing: readable content, sources [], and NO rejection.
+    // 3. every keyed engine failing: readable content, sources [], NO rejection.
     {
       const { ctx, registered } = makeFakeCtx()
-      plugin.apply(ctx, { cache: false })
-      // collapse the retry backoff so the failure path stays fast
-      globalThis.setTimeout = (fn) => { if (typeof fn === 'function') fn(); return { unref() {} } }
+      plugin.apply(ctx, { tavilyApiKey: 'tvly-x', exaApiKey: 'exa-x', anysearchApiKey: 'as-x', cache: false })
       globalThis.fetch = fakeFetch([['https://', new TypeError('fetch failed')]])
       const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
       assert.deepEqual(result.sources, [])
       assert.equal(result.truncated, false)
-      assert.match(result.content, /every engine in the company chain/u)
-      assert.match(result.content, /bing/u)
-      assert.match(result.content, /ddg/u)
+      assert.match(result.content, /every engine in the company chain \(tavily -> exa -> anysearch\) failed/u)
+      assert.match(result.content, /Failures: tavily:/u)
+      assert.match(result.content, /exa:/u)
+      assert.match(result.content, /anysearch:/u)
     }
     // 4. malformed query still fails fast through the shared guard (seam contract misuse).
     {
       const { ctx, registered } = makeFakeCtx()
-      plugin.apply(ctx, {})
+      plugin.apply(ctx, { tavilyApiKey: 'tvly-test' })
       globalThis.fetch = fakeFetch([])
       await assert.rejects(registered.providers[0].search({ query: '   ' }), /query is required/u)
     }
   } finally {
     globalThis.fetch = originalFetch
-    globalThis.setTimeout = originalSetTimeout
+    restoreEnv()
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('anysearch engine smoke: code 0 parses results (snippet + content fallback), code!==0 rejects readably, network errors degrade', async () => {
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  const restoreEnv = isolateKeyEnv()
+  try {
+    // 1. code===0, snippet 形态：直接解析 title/url/snippet。
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { anysearchApiKey: 'as-1', cache: false })
+      globalThis.fetch = fakeFetch([['https://api.anysearch.com/', jsonResponse(ANYSEARCH_JSON)]])
+      const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+      assert.equal(result.provider, 'anysearch')
+      assert.equal(result.sources.length, 1)
+      assert.equal(result.sources[0].url, 'https://result.example/anysearch')
+      assert.equal(result.sources[0].title, 'AnySearch Result')
+      assert.equal(result.sources[0].snippet, 'anysearch snippet')
+    }
+    // 2. code===0, 无 snippet：content 字段兼容回退。
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { anysearchApiKey: 'as-1', cache: false })
+      globalThis.fetch = fakeFetch([['https://api.anysearch.com/', jsonResponse(ANYSEARCH_CONTENT_JSON)]])
+      const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+      assert.equal(result.provider, 'anysearch')
+      assert.equal(result.sources[0].snippet, 'content-field snippet', 'the content field is the snippet fallback')
+    }
+    // 3. code!==0：可读错误（作为链内唯一引擎时全链失败文案携带它）。
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { anysearchApiKey: 'as-1', cache: false })
+      globalThis.fetch = fakeFetch([['https://api.anysearch.com/', jsonResponse(ANYSEARCH_ERR_JSON)]])
+      const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+      assert.deepEqual(result.sources, [])
+      assert.match(result.content, /AnySearch API error \(code 1001\): quota exceeded/u)
+    }
+    // 4. 网络错误降级：链头 tavily 网络错误 → anysearch 接管应答。
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { tavilyApiKey: 'tvly-1', anysearchApiKey: 'as-1', cache: false })
+      globalThis.fetch = fakeFetch([
+        ['https://api.tavily.com/', new TypeError('fetch failed')],
+        ['https://api.anysearch.com/', jsonResponse(ANYSEARCH_JSON)],
+      ])
+      const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+      assert.equal(result.provider, 'anysearch')
+      assert.equal(result.sources.length, 1)
+      assert.match(result.content, /using anysearch/u)
+    }
+    // 5. 未配 key：引擎自身抛可读错误（keyed-only 的引擎级表现，链外直测）。
+    {
+      await assert.rejects(plugin.searchAnysearch('q', 5, '', undefined), /AnySearch search requires ANYSEARCH_API_KEY/u)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    restoreEnv()
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('zero keys: search returns setup guidance — quotas, signup portals, config location — and issues no fetch', async () => {
+  // 0.4.183 三键制核心行为：无任何 key 时不再有静默的免费链，search 返回
+  // 配置引导（三引擎免费额度 + 注册入口 + 配置位置），且零网络调用。
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  const restoreEnv = isolateKeyEnv()
+  try {
+    const { ctx, registered } = makeFakeCtx()
+    plugin.apply(ctx, { cache: false })
+    let fetchCalls = 0
+    globalThis.fetch = async () => { fetchCalls += 1; return jsonResponse(TAVILY_JSON) }
+    const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 })
+    assert.equal(fetchCalls, 0, 'the empty chain must never reach fetch')
+    assert.deepEqual(result.sources, [])
+    assert.equal(result.truncated, false)
+    assert.match(result.content, /no engine keys are configured/u)
+    assert.match(result.content, /company chain \(tavily -> exa -> anysearch\) has no members/u)
+    assert.match(result.content, /keyed-only/u)
+    for (const portal of ['https://tavily.com', 'https://exa.ai', 'https://anysearch.com']) {
+      assert.equal(result.content.includes(portal), true, `the guidance must carry the ${portal} signup portal`)
+    }
+    assert.match(result.content, /1,000 searches\/month/u, 'tavily free tier')
+    assert.match(result.content, /\$20 signup credit plus \$10\/month/u, 'exa free tier')
+    assert.match(result.content, /1,000 searches\/day/u, 'anysearch free tier')
+    assert.match(result.content, /Settings > Plugins > Free Search/u, 'where to configure')
+    for (const envName of ['TAVILY_API_KEY', 'EXA_API_KEY', 'ANYSEARCH_API_KEY']) {
+      assert.equal(result.content.includes(envName), true, `the guidance must name the ${envName} fallback`)
+    }
+    assert.match(result.content, /Any one key is enough/u)
+  } finally {
+    globalThis.fetch = originalFetch
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })
@@ -471,34 +655,37 @@ test('provider.search smoke: keyed tavily answers first; keyless run answers thr
 test('tool execution smoke (fakes): free_search_advanced runs the chain; free_search_test reports per engine', async () => {
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
-  const originalSetTimeout = globalThis.setTimeout
+  const restoreEnv = isolateKeyEnv()
   try {
     const { ctx, registered } = makeFakeCtx()
-    plugin.apply(ctx, { cache: false })
-    // collapse the ddg retry backoff so the failing-engine report stays fast
-    globalThis.setTimeout = (fn) => { if (typeof fn === 'function') fn(); return { unref() {} } }
+    plugin.apply(ctx, { exaApiKey: 'exa-1', anysearchApiKey: 'as-1', cache: false })
     globalThis.fetch = fakeFetch([
-      ['https://www.bing.com/', jsonResponse(BING_HTML)],
-      ['https://html.duckduckgo.com/', new Error('ddg rate-limited')],
+      ['https://api.exa.ai/', jsonResponse(EXA_JSON)],
+      ['https://api.anysearch.com/', jsonResponse(ANYSEARCH_ERR_JSON)],
     ])
     const advanced = registered.tools.find((tool) => tool.name === 'free_search_advanced')
     const advancedResult = await advanced.execute({ query: 'deepseek harness', timeRange: 'week', maxResults: 2 })
-    assert.equal(advancedResult.provider, 'bing')
+    assert.equal(advancedResult.provider, 'exa')
     assert.equal(advancedResult.sources.length, 2)
     assert.equal(advancedResult.sources[0].url.startsWith('https://result.example/'), true)
 
     const test = registered.tools.find((tool) => tool.name === 'free_search_test')
-    const testResult = await test.execute({ engines: ['bing', 'ddg'] })
+    const testResult = await test.execute({ engines: ['exa', 'anysearch'] })
     assert.equal(testResult.results.length, 2)
-    assert.equal(testResult.results.find((r) => r.engine === 'bing').status, 'ok')
-    const ddg = testResult.results.find((r) => r.engine === 'ddg')
-    assert.equal(ddg.status, 'fail')
-    assert.match(ddg.error, /rate-limited|connection error/u)
+    assert.equal(testResult.results.find((r) => r.engine === 'exa').status, 'ok')
+    const anysearch = testResult.results.find((r) => r.engine === 'anysearch')
+    assert.equal(anysearch.status, 'fail')
+    assert.match(anysearch.error, /AnySearch API error \(code 1001\)/u)
+    // default engines = the whole three-engine chain (keyed engines without
+    // keys fail readably — the keyed-only behavior through the tool face)
+    const defaultResult = await test.execute({})
+    assert.deepEqual(defaultResult.results.map((r) => r.engine), ['tavily', 'exa', 'anysearch'])
+    assert.match(defaultResult.results.find((r) => r.engine === 'tavily').error, /requires TAVILY_API_KEY/u)
     const blocks = advanced.finalizeContent({}, { content: 'text' })
     assert.deepEqual(blocks, [{ type: 'text', text: 'text' }])
   } finally {
     globalThis.fetch = originalFetch
-    globalThis.setTimeout = originalSetTimeout
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })
@@ -531,20 +718,20 @@ test('i18n surface: every t.<key> referenced in client.js exists in both the zh 
     assert.ok(en.has(key), `t.${key} is referenced but missing from the en dictionary`)
   }
   assert.ok(new Set(referenced).has('unsaved'), 'the dirty-indicator key unsaved must stay referenced and defined')
+  assert.ok(new Set(referenced).has('signupRows'), 'the 0.4.183 signup guide rows must stay referenced and defined')
 })
 
 test('system prompt engine list: env-configured keys count — same resolution path and priority as the chain', async () => {
   // 评审 P2-2 回归钉：refreshPrompt 曾只看设置值，漏掉链路 resolveApiKey
-  // 的 TAVILY_API_KEY/EXA_API_KEY 环境变量回退，env 配 key 时提示词谎报
-  // 「无 keyed 引擎」。
+  // 的环境变量回退，env 配 key 时提示词谎报「无 keyed 引擎」。三键制下同
+  // 一条 resolveApiKeyValue 覆盖三个键。
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
-  const originalTavily = process.env.TAVILY_API_KEY
-  const originalExa = process.env.EXA_API_KEY
+  const snapshot = KEY_ENV_NAMES.map((name) => [name, process.env[name]])
   try {
+    for (const [name] of snapshot) delete process.env[name]
     // 1. settings 无 key、仅 env 配 TAVILY_API_KEY：提示词必须列 tavily。
     process.env.TAVILY_API_KEY = 'tvly-env'
-    delete process.env.EXA_API_KEY
     {
       const { ctx, registered } = makeFakeCtx()
       plugin.apply(ctx, { cache: false })
@@ -552,12 +739,19 @@ test('system prompt engine list: env-configured keys count — same resolution p
       assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily\b/u)
       assert.doesNotMatch(registered.promptSections[0].text, /Currently keyed engines: none/u)
     }
+    // 1b. env 再加 ANYSEARCH_API_KEY：提示词与链同序列出两引擎。
+    process.env.ANYSEARCH_API_KEY = 'as-env'
+    {
+      const { ctx, registered } = makeFakeCtx()
+      plugin.apply(ctx, { cache: false })
+      assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily, anysearch\b/u)
+    }
     // 2. 设置值与 env 同时存在：优先级与链一致（设置值 > env）——链发出的
     //    请求必须携带设置值 key，提示词与链同源。
     {
       const { ctx, registered } = makeFakeCtx()
       plugin.apply(ctx, { tavilyApiKey: 'tvly-settings', cache: false })
-      assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily\b/u)
+      assert.match(registered.promptSections[0].text, /Currently keyed engines: tavily, anysearch\b/u)
       let seenAuthorization = null
       globalThis.fetch = async (url, init) => {
         if (String(url).startsWith('https://api.tavily.com/')) {
@@ -571,7 +765,7 @@ test('system prompt engine list: env-configured keys count — same resolution p
       assert.equal(seenAuthorization, 'Bearer tvly-settings', 'the settings value must beat the env value in the actual chain')
     }
   } finally {
-    for (const [name, value] of [['TAVILY_API_KEY', originalTavily], ['EXA_API_KEY', originalExa]]) {
+    for (const [name, value] of snapshot) {
       if (value === undefined) delete process.env[name]
       else process.env[name] = value
     }
@@ -581,18 +775,16 @@ test('system prompt engine list: env-configured keys count — same resolution p
 })
 
 test('provider.search with an already-aborted signal: no fetch is issued and the abort resolves readably', async () => {
-  // 评审 P3 回归钉：fetchHtml 曾对已取消的 signal 照常发请求（abort 事件
-  // 不重放），最坏情有带一个引擎的完整重试周期。预检后 fetch 零调用。
+  // 评审 P3 回归钉（0.4.183 上移版）：fetchHtml 移除后，已取消 signal 的
+  // 预检由 runEngineChain 承担——预检缺失时最坏带一个引擎的完整超时。
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
-  const originalSetTimeout = globalThis.setTimeout
+  const restoreEnv = isolateKeyEnv()
   try {
     const { ctx, registered } = makeFakeCtx()
-    plugin.apply(ctx, { cache: false })
+    plugin.apply(ctx, { tavilyApiKey: 'tvly-test', cache: false })
     let fetchCalls = 0
     globalThis.fetch = async () => { fetchCalls += 1; return jsonResponse(TAVILY_JSON) }
-    // collapse the retry backoff so the abort path stays fast
-    globalThis.setTimeout = (fn) => { if (typeof fn === 'function') fn(); return { unref() {} } }
     const controller = new AbortController()
     controller.abort()
     const result = await registered.providers[0].search({ query: 'deepseek harness', maxResults: 5 }, controller.signal)
@@ -602,7 +794,7 @@ test('provider.search with an already-aborted signal: no fetch is issued and the
     assert.match(result.content, /search aborted/u, 'the readable outcome must say the search was aborted')
   } finally {
     globalThis.fetch = originalFetch
-    globalThis.setTimeout = originalSetTimeout
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })
@@ -612,13 +804,13 @@ test('a whole chain of true 0-results reads as “nothing matched”, not as an 
   // （per-engine 条目已带 returned 0 results 字样）。
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
+  const restoreEnv = isolateKeyEnv()
   try {
     const { ctx, registered } = makeFakeCtx()
-    plugin.apply(ctx, { cache: false })
-    const EMPTY_HTML = `<html><body><ol></ol>${'<pad>'.repeat(120)}</body></html>`
+    plugin.apply(ctx, { exaApiKey: 'exa-1', anysearchApiKey: 'as-1', cache: false })
     globalThis.fetch = fakeFetch([
-      ['https://www.bing.com/', jsonResponse(EMPTY_HTML)],
-      ['https://html.duckduckgo.com/', jsonResponse(EMPTY_HTML)],
+      ['https://api.exa.ai/', jsonResponse(JSON.stringify({ results: [] }))],
+      ['https://api.anysearch.com/', jsonResponse(JSON.stringify({ code: 0, data: { results: [] } }))],
     ])
     const result = await registered.providers[0].search({ query: 'obscure query with no matches', maxResults: 5 })
     assert.deepEqual(result.sources, [])
@@ -627,6 +819,7 @@ test('a whole chain of true 0-results reads as “nothing matched”, not as an 
     assert.doesNotMatch(result.content, /temporarily unavailable/u)
   } finally {
     globalThis.fetch = originalFetch
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })
@@ -634,10 +827,11 @@ test('a whole chain of true 0-results reads as “nothing matched”, not as an 
 test('bridge smoke: raw-search is loopback-guarded, POST-only, and answers through the provider', async () => {
   const { plugin, staging } = await importPluginWithStubs()
   const originalFetch = globalThis.fetch
+  const restoreEnv = isolateKeyEnv()
   try {
     const { ctx, registered } = makeFakeCtx()
-    plugin.apply(ctx, { cache: false })
-    globalThis.fetch = fakeFetch([['https://www.bing.com/', jsonResponse(BING_HTML)]])
+    plugin.apply(ctx, { exaApiKey: 'exa-1', cache: false })
+    globalThis.fetch = fakeFetch([['https://api.exa.ai/', jsonResponse(EXA_JSON)]])
     const rawSearch = registered.routes.find((route) => route.path.endsWith('/raw-search'))
     const makeRes = () => {
       const state = {}
@@ -665,7 +859,7 @@ test('bridge smoke: raw-search is loopback-guarded, POST-only, and answers throu
       await rawSearch.handler(makeReq('127.0.0.1', {}, { query: 'deepseek harness', maxResults: 2 }), res)
       assert.equal(res.state.status, 200)
       assert.equal(res.state.body.ok, true)
-      assert.equal(res.state.body.value.provider, 'bing')
+      assert.equal(res.state.body.value.provider, 'exa')
       assert.equal(res.state.body.value.sources.length, 2)
     }
     // engine param outside the company chain is rejected with the chain spelled out
@@ -675,10 +869,11 @@ test('bridge smoke: raw-search is loopback-guarded, POST-only, and answers throu
       assert.equal(res.state.status, 200)
       assert.equal(res.state.body.ok, false)
       assert.equal(res.state.body.code, 'engine-rejected')
-      assert.match(res.state.body.message, /tavily, exa, bing, ddg/u)
+      assert.match(res.state.body.message, /tavily, exa, anysearch/u)
     }
   } finally {
     globalThis.fetch = originalFetch
+    restoreEnv()
     rmSync(staging, { recursive: true, force: true })
   }
 })

@@ -2,24 +2,32 @@
  * Company-hardened engine chain for dsh-free-search (pure logic, no DSH
  * imports, no network): the chain order is reviewed policy, not user choice —
  *
- *   tavily (only when a key is configured) → exa (only when a key is
- *   configured) → bing (direct, keyless) → ddg (keyless last resort)
+ *   tavily → exa → anysearch, every member keyed-only
+ *
+ * 0.4.183 改版（2026-09-05 定案）：纯三键制。免费抓取引擎 bing/ddg 整体
+ * 移除（bing 抓取质量差、ddg 被公司网络封禁；公司口径=用户自注册免费
+ * 额度，不要免费抓取源）。三个引擎都在配 key 时才入链；一个 key 都没有
+ * 时链为空，lib/index.js 的 search 返回配置引导文案（免费额度、注册入口、
+ * 配置位置），不再有静默的无引擎链。
  *
  * The module exists so the selection and the fallback walk are unit-testable
  * offline (Discussion #1884 defense: every engine call is wrapped, a failure
  * degrades to the next engine, and total failure returns a readable outcome —
  * the chain executor never throws to its caller).
  *
- * 上游 v0.4.18 同位置逻辑的收编改造：引擎集合收敛为评审钉死的四引擎链，
+ * 上游 v0.4.18 同位置逻辑的收编改造：引擎集合收敛为评审钉死的三引擎链，
  * 「首选引擎」（provider 设置 / advanced_search 的 engine 参数）整体剥离——
  * 链序是公司源口径，不是运行时偏好。
  */
 
-/** The reviewed chain order (company source policy, 2026-09-03 定案). */
-export const CHAIN_ENGINES = Object.freeze(["tavily", "exa", "bing", "ddg"]);
+/** The reviewed chain order (company source policy, 2026-09-05 三键制定案). */
+export const CHAIN_ENGINES = Object.freeze(["tavily", "exa", "anysearch"]);
 
-/** Chain members that participate only when their API key is configured. */
-export const KEYED_ENGINES = Object.freeze(["tavily", "exa"]);
+/**
+ * Chain members that participate only when their API key is configured.
+ * Since 0.4.183 that is every engine — there is no keyless hop left.
+ */
+export const KEYED_ENGINES = CHAIN_ENGINES;
 
 /** Every engine id the hardened plugin accepts anywhere (tools, bridge). */
 export const ALL_ENGINES = CHAIN_ENGINES;
@@ -38,16 +46,20 @@ export const ZERO_RESULTS_ERROR = "returned 0 results";
 /**
  * Resolve the engine chain for the current configuration.
  *
- * @param {{ tavilyKey?: string, exaKey?: string }} keys configured keys
- *   (settings section value or environment fallback — resolution stays in
- *   lib/index.js; this function only sees booleans in string form).
- * @returns {string[]} the chain, e.g. ["bing","ddg"] with no keys (zero-key
- *   out-of-box behavior) or ["tavily","exa","bing","ddg"] with both keys.
+ * @param {{ tavilyKey?: string, exaKey?: string, anysearchKey?: string }} keys
+ *   configured keys (settings section value or environment fallback —
+ *   resolution stays in lib/index.js; this function only sees booleans in
+ *   string form).
+ * @returns {string[]} the chain: only keyed engines, in reviewed order, e.g.
+ *   ["tavily","exa","anysearch"] with all three keys, ["exa","anysearch"]
+ *   with two, or [] with no keys at all (the caller must answer the empty
+ *   chain with setup guidance — there is no keyless fallback since 0.4.183).
  */
 export function resolveEngineChain(keys = {}) {
   const has = {
     tavily: keyPresent(keys.tavilyKey),
     exa: keyPresent(keys.exaKey),
+    anysearch: keyPresent(keys.anysearchKey),
   };
   return CHAIN_ENGINES.filter((engine) => !KEYED_ENGINES.includes(engine) || has[engine]);
 }
@@ -77,6 +89,13 @@ export async function runEngineChain({ chain, runEngine, signal, budgetMs = CHAI
   const deadline = now() + budgetMs;
   const failures = [];
   for (const engine of chain) {
+    // 进入时外部 signal 已取消：abort 事件不会对已取消的 signal 重放，不
+    // 预检的话引擎会带着已取消的请求跑完自己的超时（fetchHtml 被移除后，
+    // 这道评审 P3 预检上移到链执行器——对所有引擎生效）。
+    if (signal?.aborted) {
+      failures.push({ engine, error: "search aborted" });
+      return { ok: false, failures };
+    }
     const remaining = deadline - now();
     if (remaining <= 0) {
       failures.push({ engine, error: `chain budget of ${String(budgetMs)}ms exhausted before ${engine}` });
@@ -147,7 +166,7 @@ export function parseTimeRange(input) {
   return undefined;
 }
 
-/** 把自定义天数映射到只支持固定档的引擎（tavily / ddg）的最近似档位。 */
+/** 把自定义天数映射到只支持固定档的引擎（tavily）的最近似档位。 */
 export function approximateTimeRange(days) {
   if (days <= 2) return "day";
   if (days <= 14) return "week";
