@@ -250,6 +250,10 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             recovery: request.recovery,
             profileDir: options.profileDir,
             invokingDir: request.invokingDir,
+            // The diverted request's audited flags ride along, so the
+            // controlled tarball install runs with exactly the options its
+            // registry twin would (the boundary re-audits them).
+            ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
             signal,
           })
           return { exitCode: 0, signal: null }

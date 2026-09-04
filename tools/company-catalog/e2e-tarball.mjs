@@ -254,11 +254,15 @@ async function main() {
     // tarball through the real staging step (the download boundary is the
     // packed artifact bytes, no socket), simulate what the market install
     // orchestration + its pnpm `file:` target leave behind in a profile
-    // (the exact pnpm 11 lockfile spelling measured on the real pnpm), and
-    // re-verify that profile through the real boot-verification functions
-    // against the same signed manifest — then break the staged file and
-    // watch the same boot step refuse the bundle with the pointed repair
-    // reason instead of silently allowing it.
+    // (a hand-written fixture of the pnpm 11 lockfile spelling — the real
+    // pinned pnpm is exercised by dsh-plugin-desktop's
+    // tests/company-market-install.spec.ts "real pinned pnpm" suite, which
+    // runs an actual `pnpm add file:<staged>` and feeds the generated
+    // lockfile through boot recognition, the market lock-record assert, and
+    // the staging GC), and re-verify that profile through the real
+    // boot-verification functions against the same signed manifest — then
+    // break the staged file and watch the same boot step refuse the bundle
+    // with the pointed repair reason instead of silently allowing it.
     const bootModule = await import(pathToFileURL(libChunk(desktopLibDir, 'boot-verification-') ?? join(desktopLibDir, 'boot-verification-CHUNK.js')).href)
     const pnpmModule = await import(pathToFileURL(libChunk(desktopLibDir, 'pnpm') ?? join(desktopLibDir, 'pnpm.js')).href)
     const stageCompanyMarketTarball = exportedFunctionFromNamespace(desktopMarketModule, 'stageCompanyMarketTarball')
@@ -287,9 +291,11 @@ async function main() {
     })
     assert(staged.integrity === integrity && readFileSync(staged.stagedPath).equals(originalBytes), 'the real staging step did not land the signed bytes at the controlled path')
     // The market orchestration's install target: the unpacked tarball under
-    // node_modules, the `file:` dependency pin, and pnpm 11's lockfile
-    // spelling of a file: install (absolute specifier, profile-relative
-    // resolution, the tarball's own sha512 as the recorded integrity).
+    // node_modules, the `file:` dependency pin, and the hand-written lockfile
+    // fixture of a file: install mirroring pnpm 11's spelling (absolute
+    // specifier, profile-relative resolution, the tarball's own sha512 as
+    // the recorded integrity — proven against the real pinned pnpm by the
+    // desktop workspace's "real pinned pnpm" integration suite).
     const packageDir = join(profileDir, 'node_modules', record.packageName)
     mkdirSync(packageDir, { recursive: true })
     for (const entry of parseTarball(originalBytes, 'the packed fixture')) {
@@ -333,7 +339,7 @@ async function main() {
     ], { trustRoots: [{ keyId: KEY_ID, fingerprint }], companyCatalogOrigin: CATALOG_ORIGIN })
     assert(bootVerdict.rejected.length === 0, `boot re-verification rejected the simulated install: ${JSON.stringify(bootVerdict.rejected)}`)
     assert(bootVerdict.allowed.length === 1 && bootVerdict.allowed[0].evidence === 'signed-tree', `boot re-verification did not allow the bundle with signed-tree evidence: ${JSON.stringify(bootVerdict.allowed)}`)
-    console.log('[6] boot:      staged tarball (real staging) + file: pin (pnpm 11 spelling) → lock-integrity = signed sha512 → boot allowed (signed-tree)')
+    console.log('[6] boot:      staged tarball (real staging) + file: pin (hand-written lockfile fixture; real-pnpm proof lives in the desktop tests) → lock-integrity = signed sha512 → boot allowed (signed-tree)')
     // Negative: the staged file no longer matches the pinned sha512 (the
     // GC/loss case) — the same boot step refuses the bundle by name with the
     // reinstall repair reason, never a silent allow.

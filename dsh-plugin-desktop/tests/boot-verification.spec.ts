@@ -1422,12 +1422,23 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
     const lockfile = readDesktopBootLockfile(profileDir)!
     expect(desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })).toBeUndefined()
     expect(desktopBootControlledTarballPinProblem(lockfile, packageName, version, { profileDir })).toBeUndefined()
-    // A staged-path basename for a different version, still inside the
-    // staging directory, is equally refused.
-    const wrongVersion = filePinLockfile(temporaryDirectory(), {
-      specifier: `file:${join(profileDir, '.dsh-market-tarballs', 'dsh-plugin-safe-9.9.9.tgz')}`,
+
+    // A staged-path basename for a different version, still inside the same
+    // profile's staging directory and hashing to the pinned bytes, is
+    // equally refused: the recognized pin is the deterministic path of
+    // exactly this (packageName, version), never a same-directory sibling.
+    const wrongVersionPath = desktopMarketTarballStagingPath(profileDir, packageName, '9.9.9')
+    writeStagedTarball(wrongVersionPath)
+    filePinLockfile(profileDir, {
+      specifier: `file:${wrongVersionPath}`,
+      resolutionSpelling: relative(profileDir, wrongVersionPath).split(sep).join('/'),
     })
-    void wrongVersion
+    const wrongVersionLock = readDesktopBootLockfile(profileDir)!
+    expect(desktopBootLockIntegrity(wrongVersionLock, packageName, version, { profileDir })).toBeUndefined()
+    expect(desktopBootLockIntegrity(wrongVersionLock, packageName, version)).toBeUndefined()
+    // Not a recognized pin of this version: the generic lockfile rejection
+    // applies, never the controlled-channel repair reason.
+    expect(desktopBootControlledTarballPinProblem(wrongVersionLock, packageName, version, { profileDir })).toBeUndefined()
   })
 
   it('fails the pin when the staged file is missing or no longer hashes to the pinned sha512', () => {

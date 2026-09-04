@@ -124,6 +124,19 @@ export function desktopMarketTarballStagingPath(profileDir: string, packageName:
 }
 
 /**
+ * One `file:` install spelling's path with its separators normalized to `/`.
+ * The real pnpm records lockfile-relative spellings portably but preserves the
+ * absolute specifier's native platform separators, so every consumer that
+ * compares or parses a `file:` path from a profile lockfile first normalizes
+ * it through this helper: the same staged path spelled with `\` or `/` is one
+ * and the same pin on every platform, while nothing outside the deterministic
+ * staging location becomes recognizable by the normalization.
+ */
+export function desktopMarketFileSpecPosixPath(path: string): string {
+  return path.split('\\').join('/')
+}
+
+/**
  * The market pipeline's controlled tarball install target (P7). This
  * descriptor is constructed in-process by the Desktop market path after the
  * signed manifest entry's `source.integrity` has been verified over the

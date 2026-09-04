@@ -39,6 +39,7 @@ import {
 } from 'dsh-community-market'
 import { fetchUpdateChannelBytes, type UpdateChannelRequest } from './update-manifest.ts'
 import {
+  desktopMarketFileSpecPosixPath,
   desktopMarketTarballStagingPath,
   DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
   type DesktopControlledMarketTarball,
@@ -1311,7 +1312,14 @@ function referencedStagedVersion(lockfile: Record<string, unknown> | undefined, 
     ? (dependency as Record<string, unknown>).specifier
     : undefined
   if (typeof specifier !== 'string' || !specifier.startsWith('file:')) return undefined
-  return parseStagedVersionForPackage(basename(specifier), packageName)
+  // The specifier may carry the platform's native separators (real pnpm
+  // preserves them in the absolute spelling), so the basename parse runs on
+  // the normalized form — a Windows-spelled pin keeps its staged file through
+  // the GC exactly like the portable spelling.
+  return parseStagedVersionForPackage(
+    basename(desktopMarketFileSpecPosixPath(specifier)),
+    packageName,
+  )
 }
 
 /** One verified manifest entry as the tarball install orchestration consumes it. */
@@ -1344,6 +1352,13 @@ export interface DesktopCompanyTarballInstallRequest {
   readonly profileDir: string
   /** Absolute caller directory anchoring the install command. */
   readonly invokingDir: string
+  /**
+   * Audited install flags forwarded verbatim to the inner `installPlugin`
+   * call — the original request's `pnpmOptions` (the market's `--save-exact`
+   * and pinned-registry flags). The boundary re-audits them, so a tarball
+   * install runs with exactly the flags its registry twin would.
+   */
+  readonly pnpmOptions?: readonly string[]
   readonly signal?: AbortSignal
   /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
   readonly measureTreeRootDigest?: (packageDir: string) => string
@@ -1468,6 +1483,7 @@ export async function installCompanyMarketTarballPlugin(
     recovery,
     marketTarball: request.tarball,
     ...(entry.approvedBuilds === undefined ? {} : { approvedBuildDependencies: [...entry.approvedBuilds] }),
+    ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   })
   const outcome = await handle.done

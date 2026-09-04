@@ -12,9 +12,11 @@
  */
 
 import { createHash, generateKeyPairSync } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Context } from '@deepseek-ai/cordis'
@@ -28,16 +30,22 @@ import {
   ed25519PublicKeyFingerprint,
 } from 'dsh-community-market'
 import { createDesktopCompanyMarketTarballInstallChannel } from '../src/company-market-install.ts'
-import { desktopCompanyManifestVerifierForMarket } from '../src/desktop-market.ts'
+import {
+  cleanCompanyMarketStagingOrphans,
+  desktopCompanyManifestVerifierForMarket,
+} from '../src/desktop-market.ts'
 import {
   collectDesktopBootBundles,
   computeDesktopBootTreeRootDigest,
+  desktopBootLockIntegrity,
   readDesktopBootLockfile,
   verifyDesktopBootBundles,
 } from '../src/boot-verification.ts'
 import { parseDesktopPolicy } from '../src/desktop-policy.ts'
 import {
   apply as applyDesktopPnpm,
+  desktopMarketFileSpecPosixPath,
+  desktopMarketTarballStagingName,
   desktopMarketTarballStagingPath,
   inject as desktopPnpmInject,
   name as desktopPnpmName,
@@ -236,7 +244,7 @@ function bootstrap(root: string, profileDir: string): DesktopPnpmBootstrap {
   }
 }
 
-/** What a real `dsh plugin add file:<tarball>` leaves behind (the pnpm 11 lockfile spelling included). */
+/** What a `dsh plugin add file:<tarball>` leaves behind; the lockfile spelling is proven against the real pinned pnpm by tests/company-tarball-real-pnpm.spec.ts. */
 function simulateSuccessfulTarballInstall(profileDir: string, stagedPath: string): void {
   writeInstalledPackage(join(profileDir, 'node_modules', PACKAGE_NAME))
   const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
@@ -464,6 +472,11 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
       })
       const argv = composition.spawn.mock.calls[0]?.[0].argv as string[]
       expect(argv.slice(-1)[0]).toBe(`file:${stagedPath}`)
+      // The diversion forwards the request's audited pnpmOptions, so the
+      // controlled tarball install runs with exactly the flags its registry
+      // twin would (P7 2c review fix: they must not silently vanish).
+      expect(argv).toContain('--save-exact')
+      expect(argv).toContain('--registry=https://registry.npmjs.org/')
       expect(readFileSync(stagedPath)).toEqual(TARBALL_BYTES)
       expect(existsSync(join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, `${PACKAGE_NAME}-2.0.0.tgz`))).toBe(false)
       const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
@@ -703,4 +716,299 @@ describe('npm-channel install path stays byte-identical', () => {
       await harness.dispose()
     }
   })
+})
+
+// ---------------------------------------------------------------------------
+// Real pinned pnpm proof (P7 2c review fix): every other fixture in this
+// suite hand-writes the lockfile pnpm produces. These tests instead run the
+// workspace-pinned pnpm — the same package the desktop bundles — through a
+// real `pack` and a real `add file:<desktopMarketTarballStagingPath(…)>`,
+// then feed the GENERATED pnpm-lock.yaml through every production consumer:
+// boot lock-integrity recognition, the market install route's lock-record
+// assert (execute fails closed unless assertProfileLockRecord accepts the
+// real lockfile), and the staging GC's referenced-version scan. The
+// Windows-separator twin below proves recognition is separator-independent,
+// which is what the native Windows CI run exercises for real.
+// ---------------------------------------------------------------------------
+
+/** The workspace-pinned pnpm the desktop bundles (absent only before `corepack yarn install`). */
+const PINNED_PNPM = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'node_modules',
+  'pnpm',
+  'bin',
+  'pnpm.mjs',
+)
+const PINNED_PNPM_VERSION = (() => {
+  if (!existsSync(PINNED_PNPM)) return undefined
+  const manifest = JSON.parse(readFileSync(join(dirname(PINNED_PNPM), '..', 'package.json'), 'utf8')) as {
+    version?: unknown
+  }
+  return typeof manifest.version === 'string' ? manifest.version : undefined
+})()
+
+describe.skipIf(!existsSync(PINNED_PNPM))('real pinned pnpm: the generated file: lockfile spelling', () => {
+  const FIXTURE_VERSION = '1.2.3'
+  const FIXTURES = [
+    { label: 'plain npm name', name: 'company-plugin-fixture', packName: 'company-plugin-fixture-1.2.3.tgz' },
+    { label: 'scoped npm name', name: '@company/plugin-fixture', packName: 'company-plugin-fixture-1.2.3.tgz' },
+  ] as const
+
+  /** Run the real pinned pnpm (the controlled invocation shape: spawned binary, pinned registry, CI env). */
+  function runPinnedPnpm(args: readonly string[], cwd: string): ReturnType<typeof spawnSync> {
+    return spawnSync(process.execPath, [PINNED_PNPM, ...args], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 180_000,
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, CI: 'true', npm_config_store_dir: join(cwd, '..', 'pnpm-store') },
+    })
+  }
+
+  function expectPinnedPnpmSuccess(args: readonly string[], cwd: string): string {
+    const probe = runPinnedPnpm(args, cwd)
+    const output = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`
+    expect(
+      probe.status === 0,
+      `real pnpm ${args.join(' ')} exited ${String(probe.status)}:\n${output.trim().split('\n').slice(-12).join('\n')}`,
+    ).toBe(true)
+    return output
+  }
+
+  /** A minimal plugin source the real `pnpm pack` turns into the install tarball. */
+  function writeFixtureSource(sourceDir: string, packageName: string): void {
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(join(sourceDir, 'package.json'), `${JSON.stringify({
+      name: packageName,
+      version: FIXTURE_VERSION,
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    })}\n`)
+    writeFileSync(join(sourceDir, 'cordis.patch.yml'), '[]\n')
+  }
+
+  /** One real install's ground truth: packed bytes staged at the controlled path inside a fresh profile. */
+  function stageRealFixture(
+    root: string,
+    packageName: string,
+    packName: string,
+  ): { readonly profileDir: string; readonly stagedPath: string; readonly bytes: Buffer; readonly integrity: string } {
+    const sourceDir = join(root, 'src')
+    writeFixtureSource(sourceDir, packageName)
+    expectPinnedPnpmSuccess(['pack', '--pack-destination', root], sourceDir)
+    const bytes = readFileSync(join(root, packName))
+    const profileDir = join(root, 'profiles', 'web')
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, packageName, FIXTURE_VERSION)
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, bytes)
+    writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
+      name: 'profile',
+      private: true,
+      dependencies: {},
+    })}\n`)
+    return { profileDir, stagedPath, bytes, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` }
+  }
+
+  /** The controlled add the desktop constructs: audited flags plus the one `file:` target. */
+  function realControlledAdd(
+    profileDir: string,
+    stagedPath: string,
+    options: readonly string[] = ['--save-exact', '--registry=https://registry.npmjs.org/'],
+  ): string {
+    return expectPinnedPnpmSuccess(['add', ...options, `file:${stagedPath}`], profileDir)
+  }
+
+  /** The parsed root-importer dependency record of one package in a lockfile. */
+  function lockfileDependencyRecord(lockfile: Record<string, unknown>, packageName: string): {
+    readonly specifier: string
+    readonly version: string
+  } {
+    const importer = (lockfile.importers as Record<string, Record<string, unknown>> | undefined)?.['.']
+    const dependencies = importer?.dependencies as Record<string, { specifier?: unknown; version?: unknown }> | undefined
+    const dependency = dependencies?.[packageName]
+    expect(typeof dependency?.specifier).toBe('string')
+    expect(typeof dependency?.version).toBe('string')
+    return dependency as { specifier: string; version: string }
+  }
+
+  it.each(FIXTURES)(
+    'a real add file:<staged> lockfile passes boot recognition, the market lock-record assert, and the staging GC (%s)',
+    async ({ name, packName }) => {
+      const root = temporaryDirectory('real-pnpm')
+      const { profileDir, stagedPath, bytes, integrity } = stageRealFixture(root, name, packName)
+      const normalizedStaged = desktopMarketFileSpecPosixPath(stagedPath)
+
+      // The real controlled install, then the generated lockfile verbatim.
+      realControlledAdd(profileDir, stagedPath)
+      const lockText = readFileSync(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+      // Archive the spelling the real pnpm produced (suite output doubles as
+      // the evidence record the P7 2c review asked for).
+      const keyLines = lockText.split('\n').filter(line =>
+        line.includes(name) || line.includes('specifier:') || line.includes('integrity:'))
+      console.log(`[real-pnpm] pnpm ${String(PINNED_PNPM_VERSION)} generated (${name}):\n${keyLines.join('\n')}`)
+
+      // The spelling itself: absolute `file:` specifier, profile-relative
+      // `file:` resolution, packages/snapshots keyed by the resolution, and
+      // the tarball's own sha512 as the recorded integrity. The comparisons
+      // run separator-normalized so the native Windows run (backslashed
+      // absolute specifier) asserts the same facts.
+      const lockfile = readDesktopBootLockfile(profileDir)!
+      expect(lockfile).toBeDefined()
+      const dependency = lockfileDependencyRecord(lockfile as Record<string, unknown>, name)
+      // The absolute specifier is preserved (platform-native separators
+      // either way), and the resolution spelling resolves back onto the same
+      // staged file — asserted semantically so the native Windows run, whose
+      // real pnpm writes its own separator conventions, asserts the same
+      // facts.
+      expect(desktopMarketFileSpecPosixPath(dependency.specifier)).toBe(`file:${normalizedStaged}`)
+      expect(dependency.version.startsWith('file:')).toBe(true)
+      expect(desktopMarketFileSpecPosixPath(
+        resolve(profileDir, desktopMarketFileSpecPosixPath(dependency.version.slice('file:'.length))),
+      )).toBe(normalizedStaged)
+      const packages = lockfile.packages as Record<string, unknown>
+      const snapshots = lockfile.snapshots as Record<string, unknown>
+      expect(packages[`${name}@${dependency.version}`]).toBeDefined()
+      expect(snapshots[`${name}@${dependency.version}`]).toBeDefined()
+      const resolution = (packages[`${name}@${dependency.version}`] as { resolution?: { integrity?: unknown } }).resolution
+      expect(resolution?.integrity).toBe(integrity)
+
+      // Boot recognition over the generated lockfile, strict and structural.
+      expect(desktopBootLockIntegrity(lockfile, name, FIXTURE_VERSION, { profileDir })).toBe(integrity)
+      expect(desktopBootLockIntegrity(lockfile, name, FIXTURE_VERSION)).toBe(integrity)
+      const bundles = collectDesktopBootBundles(profileDir, [name])
+      expect(bundles[0]?.version).toBe(FIXTURE_VERSION)
+      expect(bundles[0]?.lockIntegrity).toBe(integrity)
+      expect(bundles[0]?.lockProblem).toBeUndefined()
+
+      // The staging GC's reference scan reads the generated lockfile: the
+      // referenced staged file stays, a superseded same-package sibling goes.
+      const orphanPath = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, desktopMarketTarballStagingName(name, '2.0.0'))
+      writeFileSync(orphanPath, 'superseded')
+      await expect(cleanCompanyMarketStagingOrphans(profileDir, name)).resolves.toEqual([orphanPath])
+      expect(readFileSync(stagedPath)).toEqual(bytes)
+      expect(existsSync(orphanPath)).toBe(false)
+
+      // The market install route over the real package manager: the spawned
+      // CLI argv is translated 1:1 into a real pinned-pnpm invocation (the
+      // flags after `add` are exactly what installPlugin audited), and the
+      // route only settles 200 when its post-install reconciliation —
+      // assertProfileLockRecord included — accepts the GENERATED lockfile.
+      const treeDigest = computeDesktopBootTreeRootDigest(bundles[0]!.packageDir!)
+      const manifestText = signedManifestText([tarballEntry({
+        packageName: name,
+        version: FIXTURE_VERSION,
+        integrity,
+        treeDigest,
+        source: { kind: 'tarball', url: TARBALL_URL, integrity },
+      })])
+      const spawnedAdds: string[][] = []
+      const composition = await composeMarketDesktop(root, {
+        manifestText,
+        tarballBytes: bytes,
+        spawn: vi.fn<(spec: SubprocessSpawnSpec) => SubprocessHandle>((spec: SubprocessSpawnSpec) => {
+          const child = controlledSubprocess()
+          void Promise.resolve().then(() => {
+            const argv = [...spec.argv]
+            const addArgs = argv.slice(argv.indexOf('add'))
+            spawnedAdds.push(addArgs)
+            const probe = runPinnedPnpm(addArgs, profileDir)
+            if ((probe.status ?? 1) !== 0) {
+              ;(child.stderr as PassThrough).write(`real pnpm ${addArgs.join(' ')} exited ${String(probe.status)}:\n${probe.stdout ?? ''}\n${probe.stderr ?? ''}`)
+              child.resolveDone({ exitCode: probe.status ?? 1, signal: null })
+            } else {
+              // The dsh CLI's own bookkeeping around pnpm: declare the bundle.
+              const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+              manifest.dsh = { profile: { bundles: [name] } }
+              writeFileSync(join(profileDir, 'package.json'), JSON.stringify(manifest))
+              child.resolveDone({ exitCode: 0, signal: null })
+            }
+            child.resolveTree()
+          })
+          return child
+        }),
+      })
+      try {
+        await expect(composition.installable()).resolves.toMatchObject({ status: 200 })
+        const preview = await composition.preview({
+          action: 'install',
+          sourceRecordId: COMPANY_SOURCE_ID,
+          itemId: `npm:${name}@${FIXTURE_VERSION}`,
+        })
+        expect(preview.status).toBe(200)
+        const executed = await composition.execute({ previewId: preview.body.previewId })
+        expect(executed.status).toBe(200)
+        expect((executed.body as { receipt?: Record<string, unknown> }).receipt).toMatchObject({
+          packageName: name,
+          version: FIXTURE_VERSION,
+          integrity,
+          manifestSequence: 42,
+        })
+        // The real pinned pnpm ran the exact audited argv: forwarded options
+        // included (the P7 2c review fix), the controlled file: target last.
+        expect(spawnedAdds).toHaveLength(1)
+        expect(spawnedAdds[0]!.slice(-1)[0]).toBe(`file:${stagedPath}`)
+        expect(spawnedAdds[0]).toContain('--save-exact')
+        expect(spawnedAdds[0]).toContain('--registry=https://registry.npmjs.org/')
+        if (name.startsWith('@')) {
+          expect(spawnedAdds[0]).toContain(`--${name.split('/', 1)[0]}:registry=https://registry.npmjs.org/`)
+        }
+
+        // Boot re-verification over the same profile after the market route:
+        // the real lockfile still pins the staged sha512 and the installed
+        // tree still matches the signed digest.
+        const rebundled = collectDesktopBootBundles(profileDir, [name])
+        const verdict = verifyDesktopBootBundles(manifestText, rebundled, {
+          trustRoots: policy.trustRoots,
+          companyCatalogOrigin: CATALOG_ORIGIN,
+        })
+        expect(verdict.rejected).toEqual([])
+        expect(verdict.allowed).toEqual([
+          { packageName: name, evidence: 'signed-tree', manifestSequence: 42, keyId },
+        ])
+      } finally {
+        await composition.dispose()
+      }
+    },
+    240_000,
+  )
+
+  it.each(FIXTURES)(
+    'recognizes the Windows-separator spelling of the same real pin, and the GC scan keeps its staged file (%s)',
+    async ({ name, packName }) => {
+      const root = temporaryDirectory('real-pnpm-sep')
+      const { profileDir, stagedPath, integrity } = stageRealFixture(root, name, packName)
+      realControlledAdd(profileDir, stagedPath)
+      const lockfile = readDesktopBootLockfile(profileDir) as unknown as Record<string, unknown>
+      const dependency = lockfileDependencyRecord(lockfile, name)
+
+      // The Windows twin of the real spelling: pnpm preserves native
+      // separators in the absolute specifier and keeps the relative
+      // spelling portable, so the twin flips both to backslashes — on a
+      // Windows host the real add produces this natively for the specifier.
+      const windowsSpecifier = `file:${desktopMarketFileSpecPosixPath(stagedPath).split('/').join('\\')}`
+      const windowsResolution = `file:${relative(profileDir, stagedPath).split(sep).join('/').split('/').join('\\')}`
+      const windowsKey = `${name}@${windowsResolution}`
+      const twin = structuredClone(lockfile) as Record<string, unknown>
+      const twinImporter = ((twin.importers as Record<string, Record<string, unknown>>)['.']!).dependencies as Record<string, unknown>
+      twinImporter[name] = { specifier: windowsSpecifier, version: windowsResolution }
+      const twinPackages = twin.packages as Record<string, unknown>
+      const twinSnapshots = twin.snapshots as Record<string, unknown>
+      twinPackages[windowsKey] = twinPackages[`${name}@${dependency.version}`]
+      delete twinPackages[`${name}@${dependency.version}`]
+      twinSnapshots[windowsKey] = twinSnapshots[`${name}@${dependency.version}`]
+      delete twinSnapshots[`${name}@${dependency.version}`]
+
+      expect(desktopBootLockIntegrity(twin, name, FIXTURE_VERSION, { profileDir })).toBe(integrity)
+
+      // The GC's reference scan reads the twin lockfile from disk and keeps
+      // exactly the referenced staged file.
+      writeFileSync(join(profileDir, 'pnpm-lock.yaml'), stringifyYaml(twin))
+      const orphanPath = join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, desktopMarketTarballStagingName(name, '2.0.0'))
+      writeFileSync(orphanPath, 'superseded')
+      await expect(cleanCompanyMarketStagingOrphans(profileDir, name)).resolves.toEqual([orphanPath])
+      expect(existsSync(stagedPath)).toBe(true)
+      expect(existsSync(orphanPath)).toBe(false)
+    },
+    240_000,
+  )
 })

@@ -103,6 +103,7 @@ import {
 } from './desktop-market.ts'
 import {
   DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
+  desktopMarketFileSpecPosixPath,
   desktopMarketTarballStagingName,
   desktopMarketTarballStagingPath,
 } from './pnpm.ts'
@@ -770,14 +771,23 @@ function controlledTarballSpecifierStagedPath(
   profileDir: string | undefined,
 ): string | undefined {
   if (typeof specifier !== 'string' || !specifier.startsWith('file:')) return undefined
-  const stagedPath = specifier.slice('file:'.length)
+  // Real pnpm preserves the absolute specifier's native platform separators
+  // (Windows `\`) while the lockfile-relative spellings are portable, so the
+  // comparison runs in one separator-normalized form: the same staged path
+  // written with either separator is the same recognized pin, and the
+  // normalization cannot make a path outside the deterministic staging
+  // location match it.
+  const stagedPath = desktopMarketFileSpecPosixPath(specifier.slice('file:'.length))
   try {
     // With the profile directory the pin must be the exact deterministic
     // staging path inside it; without one (direct unit use) the structural
     // shape — absolute, inside the staging directory, exact deterministic
     // file name for this (packageName, version) — still has to match.
     if (profileDir !== undefined) {
-      return stagedPath === desktopMarketTarballStagingPath(profileDir, packageName, version) ? stagedPath : undefined
+      const expected = desktopMarketFileSpecPosixPath(
+        desktopMarketTarballStagingPath(profileDir, packageName, version),
+      )
+      return stagedPath === expected ? stagedPath : undefined
     }
     if (!isAbsolute(stagedPath) || basename(dirname(stagedPath)) !== DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY) {
       return undefined
@@ -846,8 +856,13 @@ function desktopBootTarballLockIntegrity(
   if (stagedPath === undefined) return undefined
   const resolvedSpelling = typeof dependency.version === 'string' ? dependency.version : undefined
   if (resolvedSpelling === undefined || !resolvedSpelling.startsWith('file:')) return undefined
+  // The pnpm-relative resolution spelling points back at the same staged
+  // file; it is resolved in the normalized form so a native-separator
+  // spelling still lands on the normalized staged path above.
   if (options.profileDir !== undefined
-    && resolve(options.profileDir, resolvedSpelling.slice('file:'.length)) !== stagedPath) {
+    && desktopMarketFileSpecPosixPath(
+      resolve(options.profileDir, desktopMarketFileSpecPosixPath(resolvedSpelling.slice('file:'.length))),
+    ) !== stagedPath) {
     return undefined
   }
   const packages = record(lockfile.packages) ?? {}
