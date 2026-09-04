@@ -305,6 +305,35 @@
     padding:0 5px;
   }
 
+  /* ---------- 考卷卡片（05 章） ---------- */
+  .exam-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:14px;
+    margin:16px 0 4px;
+  }
+  .exam{
+    border:1px solid var(--line);
+    border-top:4px solid var(--navy);
+    border-radius:10px;
+    background:#fbfcfe;
+    padding:13px 15px 11px;
+    font-size:14.5px;line-height:1.68;
+  }
+  .exam .eno{
+    display:inline-block;
+    color:#fff;font-size:14px;font-weight:700;
+    border-radius:999px;
+    padding:1px 12px;
+    margin-bottom:8px;
+    background:var(--navy);
+  }
+  .exam p{margin:6px 0;}
+  .exam .ekey{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  .exam.e1{border-top-color:var(--steel);}   .exam.e1 .eno{background:var(--steel);}
+  .exam.e2{border-top-color:var(--red);}     .exam.e2 .eno{background:var(--red);}
+  .exam.e3{border-top-color:var(--orange);}  .exam.e3 .eno{background:var(--orange);}
+
   /* ---------- 收尾 ---------- */
   .verdict{
     text-align:center;
@@ -355,7 +384,7 @@
     .hero .meta b{color:var(--navy);}
     section{box-shadow:none;border:1px solid #c9ced6;border-radius:6px;padding:14px 16px 12px;break-inside:auto;margin-bottom:12px;}
     h2,h3{break-after:avoid;}
-    figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case,.bypass{break-inside:avoid;}
+    figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case,.bypass,.exam{break-inside:avoid;}
     figure svg{max-width:100%;}
     .pipe-summary{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .pipe-summary b{color:var(--navy);}
@@ -853,8 +882,44 @@
   </div>
 </section>
 
-<!-- ======================= 五、收尾 ======================= -->
+<!-- ======================= 五、防线的考卷 ======================= -->
 <section id="s5">
+  <h2><span class="chip">05</span>防线的考卷：我们如何证明防护真的有效<span class="h2sub">三张考卷 · 全绿才放行</span></h2>
+  <hr class="h2rule">
+
+  <p class="lead">画在纸上的防线不算数，<b>考得过才算数</b>。这套系统给自己出了一张不停更新的考卷：
+  考题怎么出、怎么保证考题本身不作假——三张卡讲清楚。</p>
+
+  <div class="exam-grid">
+    <div class="exam e1">
+      <span class="eno">考卷一 · 每次发版前，全自动考试</span>
+      <p>任何一版发布前，必须通过 <b>1700+ 项自动化测试</b>全部全绿——从单元、集成，
+      一直到打包链路上<b>真实 Windows 安装冒烟（13 步）</b>。</p>
+      <p class="ekey">任何一项不绿，发布流程<b>自动中止</b>——不靠人记得检查，<b>靠机器不放过</b>。</p>
+    </div>
+    <div class="exam e2">
+      <span class="eno">考卷二 · 专门有人扮演攻击者</span>
+      <p>考题里有一批「攻击者视角」的题：模拟真实绕过手段，逐个验证全部被挡——命令行私装插件、
+      篡改插件文件、伪造市场清单、签名不符、内容指纹不符、下载途中被换字节……</p>
+      <p class="ekey">前文每张「绕过尝试」卡背后都有对应考题——<b>全部红灯，才算通过</b>。</p>
+    </div>
+    <div class="exam e3">
+      <span class="eno">考卷三 · 考题本身也要被考试（负向验证）</span>
+      <p>我们定期做一种特殊验证：<b>故意把某道防线拆掉，确认对应考题立刻亮红灯</b>。
+      拆了防线测试还绿 = 考题是假的——这种考题不允许存在。</p>
+      <p class="ekey">签名核验、启动复验、下载校验、监听清理等关键防线均已做过拆除验证，<b>全部当场红灯</b>。</p>
+    </div>
+  </div>
+
+  <div class="metric-grid">
+    <div class="metric"><div class="num">1700+ 项</div><div class="lbl">自动化测试<br>任何一版发布前全量全绿</div></div>
+    <div class="metric"><div class="num">8 类</div><div class="lbl">攻击场景实测：手动装 · 改文件 · 改配置 · 伪造清单<br>绕界面 · 旧版本 · AI 帮装 · 看清单</div></div>
+    <div class="metric"><div class="num">关键防线全组</div><div class="lbl">负向拆除验证覆盖<br>拆掉防线，考题必亮红灯</div></div>
+  </div>
+</section>
+
+<!-- ======================= 六、收尾 ======================= -->
+<section id="s6">
   <div class="verdict">
     <div class="big">AI 能力全部经由公司可控通道交付 —— 可审计、可撤销、可追溯。</div>
     <div class="small">谁能用，看登录；能干什么，看权限；用了多少，有台账；出问题，能撤销。</div>
