@@ -250,6 +250,61 @@
   .case .step.last b{color:var(--green);}
   .case .arr{align-self:center;color:var(--faint);font-size:15px;font-weight:700;flex:none;}
 
+  /* ---------- 子节标题 + 绕过尝试卡（03 章） ---------- */
+  h3{
+    display:flex;align-items:center;gap:10px;
+    font-size:17.5px;color:var(--navy);
+    margin:24px 0 4px;line-height:1.5;
+  }
+  h3::before{
+    content:"";flex:none;width:9px;height:9px;border-radius:2px;
+    background:var(--red);
+  }
+  h3 .h3sub{font-size:13.5px;color:var(--faint);font-weight:400;}
+  .bypass-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:14px;
+    margin:14px 0 4px;
+  }
+  .bypass{
+    border:1px solid var(--line);
+    border-top:4px solid var(--red);
+    border-radius:10px;
+    background:#fbfcfe;
+    padding:12px 14px 11px;
+    font-size:14.5px;line-height:1.68;
+  }
+  .bypass .bno{
+    display:inline-block;
+    color:#fff;font-size:14px;font-weight:700;
+    border-radius:999px;
+    padding:1px 12px;
+    margin-bottom:8px;
+    background:var(--red);
+  }
+  .bypass .brow{display:flex;gap:8px;align-items:flex-start;}
+  .bypass .brow p{margin:0;}
+  .bypass .bl{
+    flex:none;
+    font-size:12.5px;font-weight:700;letter-spacing:1px;
+    color:var(--muted);background:#e6ebf3;
+    border-radius:5px;
+    padding:1px 8px;
+    margin-top:4px;
+  }
+  .bypass .bhit{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  .bypass .bhit .bl{color:#fff;background:var(--steel);}
+  .bypass .bout{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  .bypass .bout .bl{color:#fff;background:var(--red);}
+  .bypass .bout p{font-weight:700;color:var(--red);}
+  .bypass code{
+    font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;
+    font-size:12.5px;color:var(--navy);
+    background:#eef1f6;border:1px solid var(--line);border-radius:4px;
+    padding:0 5px;
+  }
+
   /* ---------- 收尾 ---------- */
   .verdict{
     text-align:center;
@@ -300,7 +355,7 @@
     .hero .meta b{color:var(--navy);}
     section{box-shadow:none;border:1px solid #c9ced6;border-radius:6px;padding:14px 16px 12px;break-inside:auto;margin-bottom:12px;}
     h2,h3{break-after:avoid;}
-    figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case{break-inside:avoid;}
+    figure,.defense,.metric,.flowitem,.callout,.pipe-summary,.guard,.case,.bypass{break-inside:avoid;}
     figure svg{max-width:100%;}
     .pipe-summary{background:#eef1f6 !important;color:var(--navy) !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .pipe-summary b{color:var(--navy);}
@@ -601,25 +656,26 @@
   <hr class="h2rule">
 
   <p class="lead">上一章八步流水线里，「公司盖章」四个字反复出现——这枚章到底厉害在哪？
-  这一章把插件防护背后的<b>双锁体系</b>单独拆开讲透：一把<b>公司印章</b>管「是不是公司发布的」，
+  这一章把插件防护背后的<b>双锁体系</b>单独拆开讲透：一把<b>公司印章（Ed25519 数字签名）</b>管「是不是公司发布的」，
   一把<b>指纹清单</b>管「内容有没有被中途换过」。两把锁各管一件事，缺一不可。</p>
 
   <div class="guard-grid">
     <div class="guard gseal">
-      <span class="gno">锁一 · 公司印章 = 数字签名</span>
+      <span class="gno">锁一 · 公司印章 = Ed25519 数字签名</span>
       <p>公司持有一把<b>唯一的私人印章</b>，存放在公司构建系统的保险库里：不随产品分发，任何员工电脑上都没有。</p>
       <p>每个插件上架前，必须先盖上这枚章。造假者手里没有印章，就盖不出一枚能通过验证的章。</p>
-      <p class="gkey">员工电脑上配备的只是「验章器」——好比放大镜：<b>验章器人人可以有，刻章刀只有公司有</b>。谁能验、谁能刻，一开始就分开，这正是数字签名在数学上给出的保证。</p>
+      <p class="gkey">员工电脑上配备的只是「验章器」（公钥）——好比放大镜：<b>验章器人人可以有，刻章刀（私钥）只有公司有</b>。谁能验、谁能刻，一开始就分开，这正是数字签名在数学上给出的保证。</p>
     </div>
     <div class="guard gdigest">
       <span class="gno">锁二 · 全文件指纹清单</span>
       <p>盖章只证明「这是公司发布的」，还不能证明「内容没在半路被换掉」。</p>
-      <p>所以公司发布每个插件时，同时记下它<b>每一个文件的指纹</b>，汇总成一个<b>总指纹</b>，钉在这份插件的签名清单里、随插件一起发布。</p>
+      <p>所以公司发布每个插件时，同时记下它<b>每一个文件的指纹（SHA-512 内容摘要）</b>，
+      再汇总成一个<b>树形总指纹（树摘要 treeDigest）</b>，钉在这份插件的签名清单里、随插件一起发布。</p>
       <p class="gkey">任何一个文件被改动一个字节，总指纹就对不上——<b>换内容 = 换锁</b>，当场识破。</p>
     </div>
   </div>
 
-  <p>两把锁造好了，什么时候验？<b>三个时机，一次不落</b>——同一套核验动作（验章、验指纹），
+  <p>两把锁造好了，什么时候验？<b>三个时机，一次不落</b>——同一套核验动作（验章、验指纹：Ed25519 验签＋树摘要复验），
   在插件进店之前、落机之时、每天开机之后，反复执行：</p>
 
   <figure>
@@ -702,6 +758,46 @@
     </div>
     连「插件自己给自己升级」的暗门都被拆掉、多余的网络出口全部收拢，剥离得彻不彻底还有自动化检查持续把关——盖过章的版本，与开源原版早已不是同一份代码。这款插件的收编已经完成（见 <b>02 章「首个实战案例」</b>）：<b>再好的社区插件，也必须过完这套锁，才能进公司的门。</b>
   </div>
+
+  <h3>常见绕过尝试与结果<span class="h3sub">每一条都经实机验证 · 每种尝试都撞墙</span></h3>
+
+  <p>防线不能只画在纸上——真有人铁了心要绕过去，会怎么样？
+  下面五种最常见的尝试，以及系统的真实响应，全部经<b>攻防实测（实机验证）</b>，每种尝试都撞墙：</p>
+
+  <div class="bypass-grid">
+    <div class="bypass">
+      <span class="bno">尝试 1 · 从命令行直接装</span>
+      <div class="brow"><span class="bl">尝试</span><p>绕开市场，用命令行 <code>dsh plugin add</code> 装任意的外部插件。</p></div>
+      <div class="brow bhit"><span class="bl">撞上的防线</span><p>锁定版命令行入口被收紧：安装参数只认公司源，任何指向外部的参数直接拒绝——命令行与界面同一套锁，绕不过。</p></div>
+      <div class="brow bout"><span class="bl">结果</span><p>安装被拒。</p></div>
+    </div>
+    <div class="bypass">
+      <span class="bno">尝试 2 · 手动改插件文件</span>
+      <div class="brow"><span class="bl">尝试</span><p>改掉已装插件的文件、植入自己的代码，再启动应用。</p></div>
+      <div class="brow bhit"><span class="bl">撞上的防线</span><p>启动时全树指纹复验：改一个字节，总指纹就对不上。</p></div>
+      <div class="brow bout"><span class="bl">结果</span><p>插件拒绝加载。</p></div>
+    </div>
+    <div class="bypass">
+      <span class="bno">尝试 3 · 从别处拷插件文件夹</span>
+      <div class="brow"><span class="bl">尝试</span><p>把 U 盘拷来或网上下载的插件文件夹，直接塞进插件目录。</p></div>
+      <div class="brow bhit"><span class="bl">撞上的防线</span><p>没有公司印章（Ed25519 签名），塞进目录也过不了启动验章。</p></div>
+      <div class="brow bout"><span class="bl">结果</span><p>装了也白装。</p></div>
+    </div>
+    <div class="bypass">
+      <span class="bno">尝试 4 · 仿冒公司市场地址</span>
+      <div class="brow"><span class="bl">尝试</span><p>搭一个长得像公司市场的站点，诱使应用从那里拉插件清单。</p></div>
+      <div class="brow bhit"><span class="bl">撞上的防线</span><p>插件来源地址必须与公司内网市场地址<b>一字不差</b>（精确匹配，不是「长得像」），且清单本身盖有公司印章。</p></div>
+      <div class="brow bout"><span class="bl">结果</span><p>仿冒清单整份作废。</p></div>
+    </div>
+    <div class="bypass">
+      <span class="bno">尝试 5 · 绕过界面调内部接口强开</span>
+      <div class="brow"><span class="bl">尝试</span><p>跳过界面，直接调用程序的内部接口强行开启插件。</p></div>
+      <div class="brow bhit"><span class="bl">撞上的防线</span><p>安装/启用的写路径在服务层被管制，「手动添加插件」的接口根本不存在。</p></div>
+      <div class="brow bout"><span class="bl">结果</span><p>无路可走。</p></div>
+    </div>
+  </div>
+
+  <div class="pipe-summary">所有入口收敛到同一把锁：<b>公司签名</b>。没有它，<b>任何路径都走不通</b>。</div>
 </section>
 
 <!-- ======================= 四、防线卡片（措施 → 防什么） ======================= -->
