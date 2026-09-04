@@ -154,6 +154,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **P7 尾巴自动化**：ci-digest-measure worker 进行中（Windows runner 测 treeDigest 替代人工）。
 **待办快照**：P8/P7 本地 commit 链等 push 决策 · free-search 真发布（等 treeDigest 落值+fleet 升级 #47+）· 上游 0.1.2 正式版升级专项 · 自有更新源 · P6/logo 搁置。
 
+### P7 首单上线（2026-09-04 全天）
+**free-search 0.4.182 真机安装+搜索可用**——tarball 通道全链闭环（收编→签名→GitLab 分发→受控安装→boot 复验→运行）。发布 sequence 12。真机排障四坑全修：CLI 闸门误伤（受信交接 env）/EPERM 原子写竞态（yarn 补丁退避重试）/吞错误裸 catch/patch 前缀失配（0.4.182+管线一致性断言）。构建线 #47 smoke 修复→#48 闸门修复→#49→#50 EPERM+日志（客户端停在 #50 即可装 0.4.182，后续修复均目录/清单侧）。老板页 2026-09-04-boss-architecture-overview.html 六轮迭代完成（8 卡成对防线/加密细解章 Ed25519+SHA-512+绕过 5 卡/考卷节 8 道真题）等用户终审 push。**既定发布顺序下一步=用户确认搜索稳定后 P8 发版翻 policy 真机测试**。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
