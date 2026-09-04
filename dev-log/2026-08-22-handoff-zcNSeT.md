@@ -157,6 +157,11 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### P7 首单上线（2026-09-04 全天）
 **free-search 0.4.182 真机安装+搜索可用**——tarball 通道全链闭环（收编→签名→GitLab 分发→受控安装→boot 复验→运行）。发布 sequence 12。真机排障四坑全修：CLI 闸门误伤（受信交接 env）/EPERM 原子写竞态（yarn 补丁退避重试）/吞错误裸 catch/patch 前缀失配（0.4.182+管线一致性断言）。构建线 #47 smoke 修复→#48 闸门修复→#49→#50 EPERM+日志（客户端停在 #50 即可装 0.4.182，后续修复均目录/清单侧）。老板页 2026-09-04-boss-architecture-overview.html 六轮迭代完成（8 卡成对防线/加密细解章 Ed25519+SHA-512+绕过 5 卡/考卷节 8 道真题）等用户终审 push。**既定发布顺序下一步=用户确认搜索稳定后 P8 发版翻 policy 真机测试**。
 
+### P7 交接与设计边界讨论（2026-09-04 晚）
+**发布流程口径定稿（用户复述确认+三精确化）**：审源码入库（plugin-sources 真身）→ 构建打指纹（tgz sha512+树摘要）→ 签**清单**（非逐包签，指纹入清单整体 Ed25519）→ GitLab 分发 → 客户端三验。自动步骤：CI Windows 参考环境测树摘要入清单；manifest sequence 单调+fleet 门禁。无人工搬运字节环节。
+**运行时不可变边界（用户提问定案）**：树摘要对包目录全量哈希零排除——插件运行时写自身包目录（配置/缓存）= 下次启动复验拒绝（与篡改不可区分，fail-closed 刻意为之）。正确姿势：状态走 ctx 设置节（settings.yaml，free-search 引擎 key 范例）/userData/~/.dsh；且 pnpm 装卸本会重置包目录，生态约定如此，摘要机制将其变强制。**已入上架审查清单与交接指南**。
+**市场子系统交接启动**：market-handover-doc worker 撰写八节双语指南（.agents/notes/implemented/process/2026-09-04-company-market-owner-handover.md）：所有权地图/信任模型红线/上架全流程/客户端五道关卡/真机四坑战例/测试/运维速查/冷启动清单。交接三非文档项：仓库与 GitLab 权限、CI secrets 所有权（签名钥 c469…/GITLAB_TOKEN）、fleet 纪律口头强调。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
