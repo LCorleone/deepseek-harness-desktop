@@ -268,14 +268,17 @@ function measureEntry({ target, profileDir, pnpm, lib, electronTarget }) {
   // The profile's dependency must be pinned exactly, exactly like the
   // desktop CLI's audited install. A tarball install pins the staged file:
   // `file:<tarball>` (the desktop's controlled install spelling) with the
-  // lockfile carrying the tarball's own sha512.
+  // lockfile carrying the tarball's own sha512. pnpm normalizes the saved
+  // spec to forward slashes on every platform while the local path carries
+  // the platform separator, so compare the separator-aware basename — a
+  // '/' split would fail on Windows runners.
   const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
   const pin = profileManifest.dependencies?.[target.packageName]
   if (target.tarballPath === undefined) {
     if (pin !== target.version) {
       throw new Error(`profile dependency pin for ${target.packageName} is ${JSON.stringify(pin)}, expected ${target.version}`)
     }
-  } else if (typeof pin !== 'string' || !pin.startsWith('file:') || !pin.endsWith(target.tarballPath.split('/').pop())) {
+  } else if (typeof pin !== 'string' || !pin.startsWith('file:') || !pin.endsWith(basename(target.tarballPath))) {
     throw new Error(`profile dependency pin for ${target.packageName} is ${JSON.stringify(pin)}, expected a file:<tarball> pin on ${target.tarballPath}`)
   }
   return digest

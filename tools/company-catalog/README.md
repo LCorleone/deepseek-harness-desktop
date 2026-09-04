@@ -214,7 +214,12 @@ manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名�
   deploys), then review the measured value into the allowlist entry and
   reissue. Entries without the field keep the receipt-anchored behavior
   (receipt present → tree measured against it; receipt absent → manifest-only
-  load, advisory) until the field lands.
+  load, advisory) until the field lands. Windows reference values are
+  produced by the `company-catalog-digest` workflow
+  (`.github/workflows/company-catalog-digest.yml`, manual dispatch on a
+  `windows-latest` runner): it packs the tarball-channel artifacts and
+  measures each through the same reference install — no manual measurement
+  on a company Windows machine.
 - **`treeDigest`** ——插件**安装后文件树**的期望根摘要（64 位小写十六进制
   SHA-256），按 market 安装树摘要契约计算（`computeInstallTreeDigest`：包内
   相对 POSIX 路径、逐文件 SHA-256、记录按路径排序、根摘要覆盖
@@ -223,7 +228,11 @@ manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名�
   安装环境的 pnpm 布局**，管线绝不自行推导：在与部署机一致的标准环境中实
   测安装后的树，把实测值评审入 allowlist 条目并重发清单。没有该字段的条目
   维持 receipt 锚定行为（有 receipt → 实测树比对 receipt；无 receipt →
-  manifest-only 放行，advisory）直至字段落地。
+  manifest-only 放行，advisory）直至字段落地。Windows 参考值由
+  `company-catalog-digest` workflow
+  （`.github/workflows/company-catalog-digest.yml`，手动触发，
+  `windows-latest` runner）产出：打包 tarball 通道工件并逐一走同一参考
+  安装实测——不再依赖人工在装机机上测量。
 - **`approvedBuilds`** — the plugin's signed build-script approval list
   (`string[]`, npm names, scoped allowed, non-empty, unique). Desktop
   pre-approves a small built-in triple (`node-pty`, `esbuild`, `protobufjs`)
