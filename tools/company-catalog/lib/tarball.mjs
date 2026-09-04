@@ -78,7 +78,10 @@ function runNpmPack({ cwd, spec, packDestination, log }) {
     '--pack-destination', packDestination,
     ...(spec === undefined ? [] : [spec]),
   ]
-  const probe = spawnSync('npm', args, { encoding: 'utf8', cwd, timeout: 300_000 })
+  const isWindows = process.platform === 'win32'
+  const probe = spawnSync(isWindows ? 'npm.cmd' : 'npm', args, {
+    encoding: 'utf8', cwd, timeout: 300_000, ...(isWindows ? { shell: true } : {}),
+  })
   if (probe.error !== undefined) {
     throw new Error(`npm pack could not be executed (${probe.error.message}) — is npm on PATH?`)
   }
