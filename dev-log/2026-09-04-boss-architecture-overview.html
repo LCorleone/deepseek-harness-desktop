@@ -156,10 +156,10 @@
   }
   .callout .ct{font-weight:700;color:var(--navy);display:block;margin-bottom:2px;}
 
-  /* ---------- 五道防线卡片 ---------- */
+  /* ---------- 防线卡片：做了什么 → 防住什么 ---------- */
   .defense-grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(196px,1fr));
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
     gap:14px;
     margin:16px 0 4px;
   }
@@ -168,23 +168,36 @@
     border-top:4px solid var(--navy);
     border-radius:10px;
     background:#fbfcfe;
-    padding:14px 15px 12px;
+    padding:12px 14px 11px;
     font-size:14.5px;line-height:1.68;
   }
   .defense .dno{
     display:inline-block;
-    background:var(--navy);color:#fff;
-    font-size:14px;font-weight:700;
+    color:#fff;font-size:14px;font-weight:700;
     border-radius:999px;
-    padding:1px 12px;
+    padding:1px 11px;
     margin-bottom:8px;
   }
-  .defense .dt{font-size:16px;font-weight:700;color:var(--navy);line-height:1.45;margin-bottom:6px;}
+  .defense .drow{display:flex;gap:8px;align-items:flex-start;}
+  .defense .drow p{margin:0;}
+  .defense .dl{
+    flex:none;
+    font-size:12.5px;font-weight:700;letter-spacing:1px;
+    color:var(--muted);background:#e6ebf3;
+    border-radius:5px;
+    padding:1px 8px;
+    margin-top:4px;
+  }
+  .defense .drisk{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+  .defense .drisk .dl{color:#fff;background:var(--green);}
   .defense.d1{border-top-color:var(--steel);}  .defense.d1 .dno{background:var(--steel);}
   .defense.d2{border-top-color:var(--green);}  .defense.d2 .dno{background:var(--green);}
   .defense.d3{border-top-color:var(--orange);} .defense.d3 .dno{background:var(--orange);}
-  .defense.d4{border-top-color:var(--purple);} .defense.d4 .dno{background:var(--purple);}
-  .defense.d5{border-top-color:var(--navy);}   .defense.d5 .dno{background:var(--navy);}
+  .defense.d4{border-top-color:var(--navy);}   .defense.d4 .dno{background:var(--navy);}
+  .defense.d5{border-top-color:var(--orange);} .defense.d5 .dno{background:var(--orange);}
+  .defense.d6{border-top-color:var(--purple);} .defense.d6 .dno{background:var(--purple);}
+  .defense.d7{border-top-color:var(--navy);}   .defense.d7 .dno{background:var(--navy);}
+  .defense.d8{border-top-color:var(--red);}    .defense.d8 .dno{background:var(--red);}
 
   /* ---------- 收尾 ---------- */
   .verdict{
@@ -531,39 +544,55 @@
   </div>
 </section>
 
-<!-- ======================= 三、五道防线 ======================= -->
+<!-- ======================= 三、防线卡片（措施 → 防什么） ======================= -->
 <section id="s3">
-  <h2><span class="chip">03</span>五道防线：层层设卡，不靠单点<span class="h2sub">就算一道被绕过，下一道照样拦得住</span></h2>
+  <h2><span class="chip">03</span>防线层层设卡，不靠单点<span class="h2sub">每道防线成对写明：做了什么 · 防住什么</span></h2>
   <hr class="h2rule">
 
-  <p class="lead">安全不押注在某一道关卡上。下面五道防线各自独立、层层叠扣——
-  这套「层层设卡」的做法，行业里叫<b>纵深防御</b>。</p>
+  <p class="lead">安全不押注在某一道关卡上。下面每道防线各自独立、层层叠扣——
+  这套「层层设卡」的做法，行业里叫<b>纵深防御</b>。每张卡片上半句写<b>我们做了什么</b>，
+  下半句写<b>因此挡住了什么风险</b>，一一成对。</p>
 
   <div class="defense-grid">
     <div class="defense d1">
       <span class="dno">第 1 道</span>
-      <div class="dt">只装公司审过的</div>
-      插件唯一来源是公司市场。没有公司盖章的插件，连安装入口都不存在。
+      <div class="drow"><span class="dl">做了什么</span><p>启动必须登录公司账号（SSO 门禁），未登录进不了应用。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防非员工使用、账号借用；界面上始终显示当前登录人。</p></div>
     </div>
     <div class="defense d2">
       <span class="dno">第 2 道</span>
-      <div class="dt">装了也每次重验</div>
-      不是装完就一劳永逸：每次打开应用，所有插件重新验一遍；文件被动过手脚，立即停用。
+      <div class="drow"><span class="dl">做了什么</span><p>AI 对话只走公司统一模型网关（应用里唯一模型通道，官方外部入口已关闭）。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防公司数据出境到外部 AI、防私自接私人模型。</p></div>
     </div>
     <div class="defense d3">
       <span class="dno">第 3 道</span>
-      <div class="dt">危险动作先点头</div>
-      AI 要做有后果的操作——比如在网页上提交表单——必须先弹窗征得员工本人同意，可一键否决。
+      <div class="drow"><span class="dl">做了什么</span><p>插件只能从公司插件市场安装，每个插件经公司数字签名。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防来路不明的插件、防被篡改的插件进入员工电脑。</p></div>
     </div>
     <div class="defense d4">
       <span class="dno">第 4 道</span>
-      <div class="dt">文件出不了授权范围</div>
-      AI 读写文件被限定在授权范围内，越界即被拦下；「全部放开」的最高权限已从产品中移除。
+      <div class="drow"><span class="dl">做了什么</span><p>每次打开应用重新核验全部插件签名（不只装的时候验一次）。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防事后被偷偷替换/修改的插件——装了也白装。</p></div>
     </div>
     <div class="defense d5">
       <span class="dno">第 5 道</span>
-      <div class="dt">每次调用都有台账</div>
-      每一次 AI 调用都自动记账：谁在用、用哪个模型、用了多少——按人按模型随时可查，账里没有对话内容。
+      <div class="drow"><span class="dl">做了什么</span><p>AI 的文件操作被限制在授权工作区内；越界操作（改动工作区外的文件、执行高风险命令）必须弹窗征得员工本人同意，可一键否决。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防 AI 误删/误改重要文件、防未经授权的敏感操作。</p></div>
+    </div>
+    <div class="defense d6">
+      <span class="dno">第 6 道</span>
+      <div class="drow"><span class="dl">做了什么</span><p>每一次 AI 调用自动记录用量台账（按人、按模型、按日可查；只记数字不记对话内容）。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防用量失控无人知晓、出问题无法追溯。</p></div>
+    </div>
+    <div class="defense d7">
+      <span class="dno">第 7 道</span>
+      <div class="drow"><span class="dl">做了什么</span><p>命令行入口同样受管控（无法通过命令行绕过界面限制装东西）。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防技术人员无意或有意绕过全部上述防线。</p></div>
+    </div>
+    <div class="defense d8">
+      <span class="dno">第 8 道</span>
+      <div class="drow"><span class="dl">做了什么</span><p>发现问题可远程一键下架任意插件，全员修复版发布为分钟级全自动。</p></div>
+      <div class="drow drisk"><span class="dl">防住什么</span><p>防小问题拖成大事故，出事响应慢。</p></div>
     </div>
   </div>
 </section>
@@ -575,7 +604,7 @@
     <div class="small">谁能用，看登录；能干什么，看权限；用了多少，有台账；出问题，能撤销。</div>
   </div>
   <div class="metric-grid">
-    <div class="metric"><div class="num">5 层</div><div class="lbl">安全防线<br>层层设卡 · 不靠单点</div></div>
+    <div class="metric"><div class="num">层层设卡</div><div class="lbl">安全防线<br>做了什么 · 防住什么 成对可查</div></div>
     <div class="metric"><div class="num">1700+ 项</div><div class="lbl">自动化测试<br>每次发布前全量通过</div></div>
     <div class="metric"><div class="num">分钟级</div><div class="lbl">新版发布全链路<br>全自动 · 零人工</div></div>
   </div>
