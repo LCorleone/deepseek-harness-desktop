@@ -148,6 +148,12 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **其他**：univer 遥测深挖（匿名计数可关，降级非阻断）；free-search 源定案（tavily/exa 可选→bing→ddg，key 不阻塞）；pi-web-access 调查（DDG 零 key 兜底先例）；模型 quota 中断一次（glm-5.3 503，deepseek 接续）。
 **明日入口**：P7 遗留（filename 绑定 P2/GitLab 真推送演练/free-search 收编实装）；P8 B3/B4；全部本地 commit 等用户决定 push 时机。
 
+### P8 完结 + #47 验收（2026-09-03 夜~09-04 晨）
+**#47 构建成功并装机验收**（smoke 13/0/0；usage 上报 10:07 两行实收入库；用户报告 skill-catalog 注入=上游 dsh-tool-skill 原生技能目录，良性，即 P6 研究面）。
+**P8 agent-browser 四批全部闭环**（夜间自主：做一批评审一批）：B1 只读（已 push）→ B2 动作（提交按钮 ask 含子元素 closest/协议门/隔离世界）→ B3 人机协作+登录态（claim 竞态/persist policy 执法）→ B4 策略执法（双路 will-navigate/redirect/链终检/下载取消/label 转发）。终态 check **1745+7skip**、真浏览器 smoke **17/17**、xvfb 组合 14/14。设计文档翻 Implemented。B4 前任 worker 死于 quota（进度保留+resume 接力模式跑通）。
+**P7 尾巴自动化**：ci-digest-measure worker 进行中（Windows runner 测 treeDigest 替代人工）。
+**待办快照**：P8/P7 本地 commit 链等 push 决策 · free-search 真发布（等 treeDigest 落值+fleet 升级 #47+）· 上游 0.1.2 正式版升级专项 · 自有更新源 · P6/logo 搁置。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。

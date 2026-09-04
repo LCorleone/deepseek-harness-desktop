@@ -1,6 +1,6 @@
 # Agent Note: P8 Agent browser capability (agent-browser)
 
-Status: Proposed
+Status: Implemented (2026-09-04, B1–B4 landed and reviewed)
 
 Revised 2026-09-03 per the P8 design review — guest-partition mounting
 (P0), redirect enforcement points, screenshot-retention stance, persist-UUID

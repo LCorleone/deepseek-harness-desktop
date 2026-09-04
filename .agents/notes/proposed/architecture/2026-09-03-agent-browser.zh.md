@@ -1,6 +1,6 @@
 # Agent 笔记：P8 Agent 网页操作能力（agent-browser）
 
-状态：Proposed
+状态：Implemented（2026-09-04，B1–B4 落地并过审）
 
 2026-09-03 按 P8 设计评审修订：guest partition 落点（P0）、重定向执法点、截图保留口径、persist UUID 生命周期、快照成本与 generation 纪律；改动处标 *(rev: 2026-09-03 review)*。
 
