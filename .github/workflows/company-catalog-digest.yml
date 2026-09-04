@@ -114,11 +114,15 @@ jobs:
           }
           $lines += @('digest.json:', '', '```json', (Get-Content run/digest.json -Raw).Trim(), '```', '')
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
-      - name: Upload digest.json
+      - name: Upload digest.json and the packed artifacts
         uses: actions/upload-artifact@v4
         with:
           name: company-catalog-digest
           # upload-artifact strips the shared run/ prefix: the artifact root
           # carries digest.json (the measure-and-publish --digest-file shape).
-          path: run/digest.json
+          # The packed .tgz files ride along for cross-platform byte forensics
+          # (Windows-packed vs Linux-packed content diffs).
+          path: |
+            run/digest.json
+            tools/company-catalog/out/packages/*.tgz
           if-no-files-found: error
