@@ -110,6 +110,13 @@ export interface AgentBrowserLiveState {
   readonly title: string
   readonly phase: AgentBrowserPhase
   readonly generation: number
+  /**
+   * Recent policy-enforcement notices (B4 §5.1/§5.5): denied guest
+   * navigations, broken redirect chains, cancelled downloads — newest last,
+   * bounded, omitted while empty. The prompt context renders them so the
+   * model learns a page-initiated action was refused without any tool call.
+   */
+  readonly policyNotices?: readonly string[]
 }
 
 /** Page identity returned by `browser_open` / `browser_navigate`. */

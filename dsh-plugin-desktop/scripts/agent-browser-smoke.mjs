@@ -28,7 +28,13 @@
  *      the guest rides `persist:dsh-agent-browser-<uuid>`, the partition
  *      directory survives close (the one-shot form leaves none), a fresh
  *      session over the same document reuses the token, and the clear action
- *      removes the directory and rotates the UUID.
+ *      removes the directory and rotates the UUID;
+ *   6. the §5.1 classifier against REAL Chromium (B4): a `<button>` with no
+ *      type attribute reports the IDL default `type=submit` — so it raises
+ *      the form-submission ask — and a trusted click on a `<label>` forwards
+ *      to the label's associated control (`for=` id first, first nested
+ *      control otherwise), so a label whose control submits raises the same
+ *      ask as the control itself.
  *
  * Run it headless exactly like the B1 spike did:
  *   xvfb-run -a node_modules/electron/dist/electron --no-sandbox \
@@ -71,6 +77,14 @@ const FIXTURE_HTML = `<!doctype html>
   <input type="password" name="pass" value="hunter2-smoke" autocomplete="current-password">
   <button type="button" id="act-btn" onclick="document.getElementById('act-out').textContent='clicked-ok'">Act target</button>
   <p id="act-out">idle</p>
+  <!-- B4 classifier fixtures: untyped button (IDL default type=submit),
+       typed submit control, and the label-forwarding shapes. -->
+  <button id="plain-submit-btn">Plain submit</button>
+  <button type="submit" id="typed-submit-btn">Typed submit</button>
+  <label id="label-for-submit" for="typed-submit-btn">Label for the submit control</label>
+  <label id="label-wrapping-submit"><span id="label-wrapping-inner">Wrapped submit</span><button type="submit" id="wrapped-submit-btn">Go</button></label>
+  <label id="label-for-text" for="wrapped-input">Label for a text field</label>
+  <input type="text" id="wrapped-input" value="">
 </form>
 <div id="tall" style="height:4000px; background:linear-gradient(#222,#888)">tall content</div>
 <p id="footer">footer marker</p>
@@ -224,6 +238,30 @@ async function main() {
       const ref = refFor(snapshot.tree, 'id="act-btn"')
       const clicked = await session_.click({ ref, generation: snapshot.generation })
       assert(clicked.performed === true, 'the post-scroll click failed')
+    })
+
+    // ── B4: the §5.1 classifier against real Chromium ──
+
+    await step('classifies an untyped button as submit (real IDL default)', async () => {
+      // <button> with no type attribute reports type=submit in Chromium —
+      // the fake-DOM unit mirror assumes it, this pins it in a real browser.
+      const snapshot = await session_.snapshot(undefined)
+      const ref = refFor(snapshot.tree, 'id="plain-submit-btn"')
+      assert(await session_.isSubmitControl(ref) === true, 'an untyped <button> was not classified as submit')
+    })
+
+    await step('follows label forwarding to the associated control', async () => {
+      const snapshot = await session_.snapshot(undefined)
+      // for= resolves the control directly…
+      assert(await session_.isSubmitControl(refFor(snapshot.tree, 'id="label-for-submit"')) === true,
+        'a label[for=submit-control] was not classified as submit')
+      // …and the click may land on the label's inner text while the control
+      // is nested inside the label.
+      assert(await session_.isSubmitControl(refFor(snapshot.tree, 'id="label-wrapping-inner"')) === true,
+        'the inner text of a label wrapping a submit control was not classified as submit')
+      // A label whose associated control does not submit never raises the ask.
+      assert(await session_.isSubmitControl(refFor(snapshot.tree, 'id="label-for-text"')) === false,
+        'a label[for=text-field] was misclassified as submit')
     })
 
     await step('default session storage gains zero entries across the cycle', async () => {

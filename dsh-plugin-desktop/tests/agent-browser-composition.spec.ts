@@ -6,7 +6,10 @@
  * `xvfb-run -a electron --no-sandbox`, exactly the day-1 spike invocation)
  * and asserts the composition the headless fakes can only model — guest
  * session identity (`guest.session === session.fromPartition(token)`), the
- * P0 default-session zero-entry isolation, and snapshot secret masking.
+ * P0 default-session zero-entry isolation, snapshot secret masking, and
+ * (B4) the §5.1 classifier's real-Chromium behavior: an untyped `<button>`
+ * reports the IDL default `type=submit`, and a label click forwards to the
+ * label's associated control (`for=` or first nested control).
  *
  * The suite runs ONLY under `DSH_XVFB=1` (a desktop/Xvfb is a hard
  * prerequisite for a BrowserWindow); everywhere else it is the visible
@@ -30,7 +33,7 @@ const smokeScript = `${packageRoot}scripts/agent-browser-smoke.mjs`
 
 describe.runIf(process.env.DSH_XVFB !== undefined)('agent-browser real composition (DSH_XVFB)', () => {
   it(
-    'boots the real Electron smoke: partition identity, default-session zero entries, secret masking',
+    'boots the real Electron smoke: partition identity, default-session zero entries, secret masking, real-IDL submit classification',
     () => {
       expect(existsSync(electronBinary)).toBe(true)
       expect(existsSync(smokeScript)).toBe(true)

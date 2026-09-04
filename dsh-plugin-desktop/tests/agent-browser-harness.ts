@@ -16,7 +16,6 @@ import type {
 } from '../src/agent-browser-session.ts'
 import { DesktopAgentBrowserSession } from '../src/agent-browser-session.ts'
 import type { AgentBrowserDebuggerTarget } from '../src/agent-browser-cdp.ts'
-
 /** Fake debugger with scripted responses and event emission. */
 export function fakeGuestDebugger(responses: Record<string, unknown> = {}) {
   const listeners = new Map<string, Set<(params: unknown) => void>>()
@@ -90,6 +89,74 @@ export function fakeGuest(target: AgentBrowserDebuggerTarget, url = 'https://exa
   }
 }
 
+/**
+ * Guard-aware fake guest (B4 §5.5/§5.1): the guest seams the session's
+ * policy enforcement installs on, plus emitters that replay the exact
+ * Electron event shape. Each emitter reports whether the listener called
+ * `preventDefault` (the deny signal); the download emitter reports the
+ * `cancel()` call through the fake item.
+ */
+export function guardedFakeGuest(
+  target: AgentBrowserDebuggerTarget,
+  url = 'https://example.test/',
+): {
+  readonly guest: AgentBrowserGuestWebContents
+  /** Replay one renderer-initiated main-frame navigation; true when denied. */
+  emitWillNavigate(url: string): boolean
+  /** Replay one server-side redirect hop; true when the chain was broken. */
+  emitWillRedirect(url: string): boolean
+  /** Replay one page-initiated download; true when it was cancelled. */
+  emitWillDownload(url: string, filename?: string): boolean
+} {
+  const willNavigate = new Set<(event: { preventDefault(): void }, url: string) => void>()
+  const willRedirect = new Set<(event: { preventDefault(): void }, url: string) => void>()
+  const willDownload = new Set<(event: unknown, item: { cancel(): void, getURL(): string, getFilename(): string }) => void>()
+  type GuardListener = (event: { preventDefault(): void }, url: string) => void
+  const guest: AgentBrowserGuestWebContents = {
+    debugger: target,
+    getURL: () => url,
+    getTitle: () => 'Example',
+    setWindowOpenHandler: vi.fn(),
+    on: (event: 'will-navigate' | 'will-redirect', listener: GuardListener) => {
+      (event === 'will-navigate' ? willNavigate : willRedirect).add(listener)
+      return () => { (event === 'will-navigate' ? willNavigate : willRedirect).delete(listener) }
+    },
+    session: {
+      on: (event: 'will-download', listener: (event: unknown, item: { cancel(): void, getURL(): string, getFilename(): string }) => void) => {
+        if (event !== 'will-download') return
+        willDownload.add(listener)
+        return () => { willDownload.delete(listener) }
+      },
+    },
+  }
+  const emitGuard = (
+    listeners: ReadonlySet<(event: { preventDefault(): void }, url: string) => void>,
+    targetUrl: string,
+  ): boolean => {
+    let prevented = false
+    for (const listener of [...listeners]) {
+      listener({ preventDefault: () => { prevented = true } }, targetUrl)
+    }
+    return prevented
+  }
+  return {
+    guest,
+    emitWillNavigate: targetUrl => emitGuard(willNavigate, targetUrl),
+    emitWillRedirect: targetUrl => emitGuard(willRedirect, targetUrl),
+    emitWillDownload: (targetUrl, filename = 'payload.bin') => {
+      let cancelled = false
+      for (const listener of [...willDownload]) {
+        listener(undefined, {
+          cancel: () => { cancelled = true },
+          getURL: () => targetUrl,
+          getFilename: () => filename,
+        })
+      }
+      return cancelled
+    },
+  }
+}
+
 /** Fake window host recording pushed view models; guest attach is scripted. */
 export interface FakeWindowHost extends AgentBrowserWindowHost {
   readonly states: Array<Record<string, unknown>>
@@ -120,6 +187,8 @@ export function createHarness(options: {
   settleQuietMs?: number
   pollMs?: number
   login?: AgentBrowserSessionOptions['login']
+  navigationPolicy?: AgentBrowserSessionOptions['navigationPolicy']
+  logError?: (message: string) => void
 } = {}) {
   const hosts: FakeWindowHost[] = []
   const tokens: string[] = []
@@ -148,6 +217,8 @@ export function createHarness(options: {
       return token
     },
     ...(options.login === undefined ? {} : { login: options.login }),
+    ...(options.navigationPolicy === undefined ? {} : { navigationPolicy: options.navigationPolicy }),
+    ...(options.logError === undefined ? {} : { logError: options.logError }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.settleQuietMs === undefined ? {} : { settleQuietMs: options.settleQuietMs }),
     ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),

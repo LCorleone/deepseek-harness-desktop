@@ -45,6 +45,13 @@ import type {
   AgentBrowserWaitRequest,
   DesktopAgentBrowser,
 } from './agent-browser-contract.ts'
+import type { DesktopPolicyAgentBrowser } from './desktop-policy.ts'
+import {
+  agentBrowserAllowsUrl,
+  agentBrowserDownloadCancelledNotice,
+  agentBrowserNavigationBackstopNotice,
+  agentBrowserNavigationDeniedNotice,
+} from './agent-browser-policy.ts'
 import {
   AGENT_BROWSER_PERSIST_PARTITION_PREFIX,
   DEFAULT_AGENT_BROWSER_LOGIN,
@@ -63,6 +70,21 @@ import {
   type AgentBrowserDebuggerTarget,
 } from './agent-browser-cdp.ts'
 
+/** One guest-initiated download as the enforcement point sees it (§5.1). */
+export interface AgentBrowserDownloadItem {
+  /** Cancel the download outright (v1 posture: cancel + report). */
+  cancel(): void
+  /** The URL that initiated the download. */
+  getURL(): string
+  /** The suggested file name (report text only). */
+  getFilename(): string
+}
+
+/** Guest session surface the download refusal consumes (§5.1, B4). */
+export interface AgentBrowserGuestSession {
+  on(event: 'will-download', listener: (event: unknown, item: AgentBrowserDownloadItem) => void): unknown
+}
+
 /** Guest webContents surface the session consumes (structural Electron subset). */
 export interface AgentBrowserGuestWebContents {
   /** CDP transport for the automation session. */
@@ -80,6 +102,19 @@ export interface AgentBrowserGuestWebContents {
    * before the isolated-world focus helper runs (B2 smoke finding).
    */
   focus?(): void
+  /**
+   * B4 §5.5 enforcement points, both PRE-commit on the guest webContents:
+   * `will-navigate` (renderer-initiated MAIN-FRAME navigation — link clicks,
+   * form submits, `location.assign` timers; Electron never emits it for
+   * iframes or in-page navigations) and `will-redirect` (each server-side
+   * 30x hop; `preventDefault()` cancels the NAVIGATION, not merely the hop,
+   * so an off-allowlist chain is broken before the target origin receives a
+   * request). Optional only so pre-B4 fakes keep compiling — the real guest
+   * always carries the seam.
+   */
+  on?(event: 'will-navigate' | 'will-redirect', listener: (event: { preventDefault(): void }, url: string) => void): unknown
+  /** B4 §5.1 enforcement point: the guest session's download channel. */
+  readonly session?: AgentBrowserGuestSession
 }
 
 /** Window host surface the session consumes (implemented in agent-browser-window). */
@@ -121,6 +156,8 @@ export const AGENT_BROWSER_SETTLE_QUIET_MS = 500
 export const AGENT_BROWSER_WAIT_DEFAULT_TIMEOUT_MS = 30_000
 /** Poll interval while waiting for `settle`. */
 const SETTLE_POLL_MS = 100
+/** How many recent policy-enforcement notices `describe()` keeps (B4 §5.5). */
+const POLICY_NOTICE_BUDGET = 5
 
 /**
  * Audited isolated-world helper snippets (design §3/§5.3b) — the ONLY
@@ -140,8 +177,12 @@ export const AUDITED_SNIPPET_READ_VALUE = 'function(){ return (this instanceof H
  * refs every element, and a trusted click on a submit control's inner
  * span/icon activates the control itself (P8 B2-review residual P1). Form
  * ancestors are deliberately NOT consulted: only a button/input decides.
+ * B4 label semantics: a trusted click on a `<label>` (or its inner text)
+ * forwards to the label's associated control exactly as Chromium does — a
+ * `for=` id wins over a nested control — so a label whose control submits
+ * raises the same ask as the control itself (B2-fix2 review P2).
  */
-export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const el = this && typeof this.closest === "function" ? this.closest("button, input") : null; if (!el) return false; const tag = String(el.tagName).toLowerCase(); if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }'
+export const AUDITED_SNIPPET_IS_SUBMIT_CONTROL = 'function(){ const classify = el => { if (!el) return false; const tag = String(el.tagName).toLowerCase(); if (tag !== "button" && tag !== "input") return false; if (!el.form) return false; const t = String(el.type || "").toLowerCase(); if (tag === "input") return t === "submit" || t === "image"; return t === "submit"; }; const self = this && typeof this.closest === "function" ? this : null; if (!self) return false; const control = self.closest("button, input"); if (control) return classify(control); const label = self.closest("label"); if (!label) return false; const forId = label.getAttribute("for"); if (forId !== null && forId !== "" && label.ownerDocument) { const target = label.ownerDocument.getElementById(forId); return target ? classify(target) : false; } const nested = label.querySelector("button, input"); return nested ? classify(nested) : false; }'
 
 /** Audited `scrollBy` snippet; only a rounded finite number is interpolated. */
 export function auditedSnippetScrollBy(deltaY: number): string {
@@ -459,6 +500,15 @@ export interface AgentBrowserSessionOptions {
      */
     readonly policyAllowsPersist?: boolean
   }
+  /**
+   * URL policy behind the B4 §5.5 guest enforcement points: `will-navigate`
+   * and `will-redirect` deny off-allowlist (and non-http(s)) navigations
+   * BEFORE commit, `will-download` cancels every guest download (§5.1), and
+   * `frameNavigated` surfaces post-commit violations as backstop notices.
+   * Absent keeps the pre-B4 behavior (tests, compositions without the
+   * launcher); the desktop launcher always binds the live policy here.
+   */
+  readonly navigationPolicy?: DesktopPolicyAgentBrowser
   /** Clock used for waits (injectable for tests). */
   readonly now?: () => number
   /** Quiet window required by `until: "settle"` (injectable for tests). */
@@ -477,6 +527,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private readonly createWindowHost: AgentBrowserWindowHostFactory
   private readonly mintPartitionToken: () => string
   private readonly login: AgentBrowserSessionOptions['login'] | undefined
+  private readonly navigationPolicy: DesktopPolicyAgentBrowser | undefined
   private readonly now: () => number
   private readonly settleQuietMs: number
   private readonly pollMs: number
@@ -505,11 +556,14 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
   private readonly frameListeners = new Set<(frame: AgentBrowserEventFrame) => void>()
   /** Whether a coalesced `stale` frame is still pending (§2: no per-mutation flood). */
   private staleFramePending = false
+  /** Recent policy-enforcement notices (B4 §5.1/§5.5), newest last, bounded. */
+  private policyNotices: string[] = []
 
   constructor(options: AgentBrowserSessionOptions) {
     this.createWindowHost = options.createWindowHost
     this.mintPartitionToken = options.mintPartitionToken
     this.login = options.login
+    this.navigationPolicy = options.navigationPolicy
     this.now = options.now ?? (() => Date.now())
     this.settleQuietMs = options.settleQuietMs ?? AGENT_BROWSER_SETTLE_QUIET_MS
     this.pollMs = options.pollMs ?? SETTLE_POLL_MS
@@ -548,6 +602,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       const guest = await host.open()
       guest.setWindowOpenHandler(() => ({ action: 'deny' }))
       this.guest = guest
+      this.installPolicyGuards(guest)
       const client = new AgentBrowserCdpClient(guest.debugger)
       client.attach()
       this.client = client
@@ -596,6 +651,21 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       this.counter.noteMainFrameNavigation()
       this.cachedSnapshot = undefined
       this.isolatedWorld = undefined
+      // B4 §5.5 post-commit backstop: the pre-commit points (will-navigate /
+      // will-redirect) already denied what they could see; anything that
+      // still committed outside the allowlist is only SURFACED here — the
+      // event fires after commit, when the target may already have run
+      // script. `about:blank` is the surface's own mount document, not a
+      // navigation target, so it never counts as a violation. Iframe
+      // navigations never reach here either (the parentId filter above is
+      // the declared main-frame boundary: iframes and subresources may
+      // reach non-allowlisted origins — page behavior, outside §5.5).
+      if (this.navigationPolicy !== undefined && params.frame.url !== 'about:blank'
+        && !agentBrowserAllowsUrl(params.frame.url, this.navigationPolicy)) {
+        const notice = agentBrowserNavigationBackstopNotice(params.frame.url)
+        this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
+        this.recordPolicyNotice(notice)
+      }
       this.pushViewModel()
       this.broadcastFrame({ kind: 'navigation', url: this.url, generation: this.counter.current })
     }))
@@ -624,6 +694,76 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     ] as const) {
       this.unsubscribers.push(client.on(event, markDirty))
     }
+  }
+
+  /**
+   * Install the B4 §5.5/§5.1 guest enforcement points (pre-commit):
+   *
+   * - `will-navigate` — renderer-initiated MAIN-FRAME navigation (link
+   *   clicks, form submits, `location.assign` timers; Electron never emits
+   *   it for iframes), denied with `preventDefault()` before commit;
+   * - `will-redirect` — every server-side 30x hop; `preventDefault()` there
+   *   cancels the NAVIGATION (not just the hop), so an off-allowlist chain
+   *   — including one whose FINAL target is off-list while every earlier
+   *   hop was on-list — is broken before the target origin receives a
+   *   request (the redirect-chain terminal check);
+   * - `will-download` — every guest download cancelled outright and
+   *   reported (§5.1 v1 posture; a pre-ask remains a possible later
+   *   refinement). `.crdownload` residue: Chromium may already have flushed
+   *   partial bytes, so an inert temp file can remain — residual temp
+   *   cleanup, not a persistence mechanism.
+   *
+   * Every denial records a policy notice (`describe().policyNotices`, the
+   * model-facing report surface) and an audit line through `logError` — the
+   * desktop log sinks mask secret-shaped query values out of the URL. With
+   * no `navigationPolicy` bound (pre-B4 compositions) nothing installs.
+   */
+  private installPolicyGuards(guest: AgentBrowserGuestWebContents): void {
+    const policy = this.navigationPolicy
+    if (policy === undefined) return
+    const denyNavigation = (
+      point: { preventDefault(): void },
+      url: string,
+      kind: 'will-navigate' | 'will-redirect',
+    ): void => {
+      // Pre-commit: preventing the default cancels the navigation before
+      // the target origin receives anything (§5.5).
+      point.preventDefault()
+      const notice = agentBrowserNavigationDeniedNotice(kind, url)
+      this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
+      this.recordPolicyNotice(notice)
+    }
+    guest.on?.('will-navigate', (event, url) => {
+      if (!agentBrowserAllowsUrl(url, policy)) denyNavigation(event, url, 'will-navigate')
+    })
+    guest.on?.('will-redirect', (event, url) => {
+      if (!agentBrowserAllowsUrl(url, policy)) denyNavigation(event, url, 'will-redirect')
+    })
+    guest.session?.on('will-download', (_event, item) => {
+      let url = ''
+      let filename = ''
+      try {
+        url = item.getURL()
+        filename = item.getFilename()
+      } catch {
+        // The report degrades to the cancel fact when the item is torn down.
+      }
+      item.cancel()
+      const notice = agentBrowserDownloadCancelledNotice(url, filename)
+      this.logError?.(`dsh-plugin-desktop: agent browser ${notice}`)
+      this.recordPolicyNotice(notice)
+    })
+  }
+
+  /** Record one policy-enforcement notice (bounded, newest last). */
+  private recordPolicyNotice(notice: string): void {
+    this.policyNotices.push(notice)
+    if (this.policyNotices.length > POLICY_NOTICE_BUDGET) {
+      this.policyNotices = this.policyNotices.slice(-POLICY_NOTICE_BUDGET)
+    }
+    // The state frame rides the push: loopback observers and the window
+    // toolbar refresh without a dedicated frame kind.
+    this.pushViewModel()
   }
 
   private pushViewModel(actionDescription?: string): void {
@@ -1460,6 +1600,11 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
       title: this.title,
       phase: this.phase,
       generation: this.counter.current,
+      // B4 §5.5 report surface: the recent enforcement lines (denied
+      // navigations, blocked redirect chains, cancelled downloads). Omitted
+      // while empty so the loopback state read stays byte-stable for B3
+      // consumers; the model-facing prompt context renders them verbatim.
+      ...(this.policyNotices.length === 0 ? {} : { policyNotices: [...this.policyNotices] }),
     }
   }
 
@@ -1482,6 +1627,7 @@ export class DesktopAgentBrowserSession implements DesktopAgentBrowser {
     this.claimReason = undefined
     this.overlay = undefined
     this.staleFramePending = false
+    this.policyNotices = []
     this.agentEpoch = new AbortController()
     const host = this.windowHost
     this.windowHost = undefined

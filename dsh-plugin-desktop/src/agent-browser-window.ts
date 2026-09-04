@@ -11,6 +11,38 @@
  * session. The same guard scrubs any preload/node flags, exactly like
  * Electron's security guidance.
  *
+ * ── WebContentsView fallback (§7) — adaptation points, NOT implemented ──
+ *
+ * Electron's `<webview>` posture is "not recommended"; if the tag is ever
+ * dropped from Electron, the contained fallback is a `WebContentsView`-hosted
+ * guest. The day-1 B1 spike verified the webview composition works under our
+ * pinned 43.4.0, so this record exists purely so the swap stays a one-file,
+ * ~one-day change. Adaptation points, all inside this module plus the window
+ * document's mount layer:
+ *
+ *   1. MOUNTING — replace the `<webview>` tag the renderer creates in
+ *      `App.tsx`'s `WebviewHost` with `new WebContentsView({ webPreferences })`
+ *      added via `window.contentView.addChildView(view)`; sizing moves from
+ *      CSS (`h-full w-full`) to `view.setBounds(bounds)` driven by a
+ *      resize listener, because a WebContentsView is not a DOM element.
+ *   2. GUEST ACQUISITION — the guest `webContents` is the view's own
+ *      `webContents` property, available synchronously at construction;
+ *      `did-attach-webview` (and the attach timeout race) disappear, and
+ *      `open()` resolves after `loadURL('about:blank')` instead.
+ *   3. PREFERENCE GUARD — `will-attach-webview` no longer exists; the scrub
+ *      currently done by `guardAgentBrowserWebviewAttachment` is applied to
+ *      the literal `webPreferences` object passed to the WebContentsView
+ *      constructor (same field set: partition asserted, preload/node flags
+ *      deleted, sandbox/isolation on).
+ *   4. SESSION/POLICY SEAMS UNCHANGED — the guest handed to the session keeps
+ *      the `AgentBrowserGuestWebContents` shape (debugger/getURL/getTitle/
+ *      setWindowOpenHandler/on(will-navigate|will-redirect)/session), so the
+ *      CDP client, the claim state machine, and the B4 policy guards carry
+ *      over verbatim.
+ *   5. VIEW-MODEL CONTRACT SHRINKS — `partition` no longer needs to ride the
+ *      pushed view model (the token is host-side only); the native-ui
+ *      remount-on-token-change logic and the preload bridge stay as they are.
+ *
  * @module dsh-plugin-desktop/agent-browser-window
  */
 

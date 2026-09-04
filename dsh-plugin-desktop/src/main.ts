@@ -1144,6 +1144,12 @@ async function start(): Promise<void> {
             // — not just when the settings UI happens to be closed.
             policyAllowsPersist: policy.agentBrowser.allowPersistLogin,
           },
+          // B4 §5.5 enforcement binding: the guest-side pre-commit guards
+          // (will-navigate / will-redirect deny, §5.5) and the download
+          // refusal (§5.1) read the SAME embedded policy the tool-level
+          // open/navigate gate reads, so every enforcement point flips
+          // together with the company config.
+          navigationPolicy: policy.agentBrowser,
           ...(electronLogger === undefined ? {} : {
             logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
           }),
