@@ -46,12 +46,22 @@ import {
 export const name = 'desktop-agent-browser'
 
 /**
- * The launcher constructs the executor and provides the policy before the
- * Host tree loads; both stay probed (not injected) so a composition without
- * the desktop launcher — profile smokes, CLI-side boots — keeps booting with
- * the browser surface simply absent (the `desktop-shell` probe precedent).
+ * `systemPrompt` and `tools` are read DIRECTLY on this fiber's context
+ * (`ctx.systemPrompt.section`, `ctx.tools.register`), and in the host tree
+ * both are provided by SIBLING loader entries — the context proxy resolves
+ * a sibling service only through a declared inject, so an empty array made
+ * `ctx.systemPrompt` throw `cannot get property "systemPrompt" without
+ * inject` and took the whole plugin tree down with it (#52's boot crash).
+ *
+ * Everything else stays deliberately softer so a composition without the
+ * desktop launcher — profile smokes, CLI-side boots — keeps booting with the
+ * browser surface simply absent (the `desktop-shell` probe precedent): the
+ * launcher constructs the executor and provides the policy before the Host
+ * tree loads, both probed through `ctx.get`, the loopback routes mount
+ * through a runtime `ctx.inject(['webServer'], …)` child, and screenshots
+ * probe `ctx.get('attachments')` at tool-call time.
  */
-export const inject = []
+export const inject = ['systemPrompt', 'tools']
 
 /** Cooperative budget per tool call, in milliseconds. */
 const TOOL_TIMEOUT_MS = 60_000
