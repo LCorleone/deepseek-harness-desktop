@@ -287,6 +287,28 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **用户拍板**：要实现 agent 可操作网页。调研背书（scout-minke）：同门 Minke 验证了「Electron 内嵌 webview + webContents.debugger 手写 CDP」路线可行（免装外部浏览器/免下载 Chromium/登录态可控）。**我们不照搬**：Minke 把插件烧进 vendored 子模块（踩我们红线）且 4838 行手写 CDP；我们走动态 host 插件 + 最小 CDP 面（快照/隔离求值/真实输入/截图四域，目标 <1000 行）。
 **安全要求（设计红线）**：①危险动作（导航/表单提交/下载）走现有审批门 ②一次性 partition token 隔离+登录态持久化需显式开 ③密码框/凭据对 agent 不可读 ④人机协作：claimControl 随时接管+可视化光标 ⑤URL 策略可配（公司代理/域名白名单）。全部实现在 dsh-plugin-desktop（不动子模块）。
 **状态（2026-09-03 晚）**：设计已定稿（2026-09-03-agent-browser.md 双语，评审修订：P0 partition 落点/P1 重定向执法 will-navigate+will-redirect/截图保留口径/persist UUID 时机）；**B1 只读闭环已 push**（50629c9f1f，37 文件，xvfb 组合冒烟 9/9，评审通过）；**B2 动作闭环完成未 push**（cae3bcdad1 + 0f0f40069c + f87568b10b：click/type/scroll+normalizer 别名矩阵+STALE 回灌+审批 ask+claim 状态机+overlay+隔离世界全路径；评审三轮修复：提交按钮 ask（含子元素 closest 祖先分类）/通配符前验协议 file:/data: 拒/click·scroll 隔离世界；check 1659+7skip）。B1 冒烟实弹发现已固化：pierced getDocument 会从密码框 UA shadow 树带出明文→敏感输入整棵子树封死。
+### P9 卡：插件预发双通道（设计定案 2026-09-05 晚，未实现）
+
+**问题**：单一 manifest=发布即全公司。需要小范围浸泡再推广。
+
+**定案设计（签名名单制，与 fleet 锁定姿态一致）**：
+- `dsh-desktop-config` 增发 `catalog-manifest.beta.json`，同一密钥签名；
+  schema 增 `testers` 字段=SSO 邮箱白名单（小写规范化，精确匹配）。
+- 客户端**无开关无 UI**：照常拉 stable 清单；额外拉 beta 清单→核签→
+  本机 SSO 邮箱 ∈ testers 才让 beta 条目生效，否则无视（fail-closed：
+  SSO 身份未解析=非测试者）。测试者零配置。
+- 发布流：`publish -f channel=beta` 先发 beta → 测试组真机浸泡 →
+  `promote`（同字节同 digest 进 stable 清单，sequence 单调共享，零重验）。
+  名单增删=发一版 beta 清单，秒级生效/收回。
+- 完整性等级不降：beta 条目同样过 verify-handoff+签名+treeDigest；
+  名单只控浸泡期可见性。
+
+**验收**：非名单机器无视 beta 条目（测试钉死）；名单机器生效；
+promote 后全员可见同 digest；beta 清单损坏/缺失=回退 stable 现状行为。
+
+**估时**：~1-1.5 天（beta schema+客户端拉取判定+管线 channel/promote+测试入链）。
+**前置**：市场交接演练（free-search 换手全链）跑通后启动。
+
 **真机首航成功（2026-09-05 #55）**：四枪拔雷（inject→CORS 误诊→同源结构→fuse 翻 true 雷根），三扇窗（agent-browser/recovery/sso-gate）一类锁死风险消除，浏览器功能真机可用。P8 进入真机测试期。
 **完结（2026-09-04 上午，用户授权夜间自主推进「做一项评审一项」）**：B3 人机协作+登录态（3f020fdc20+评审修复 50c6b2ff98：claim 竞态三连修/persist 挂载执法+残留可清；真组合冒烟 14/14）；B4 策略+打磨（242347d69f：will-navigate/will-redirect 提交前执法+重定向链终检+下载取消+label 转发+fallback 注释；跟进修 a953e18353：will-download 监听器生命周期【实证 Electron session.on 返回 emitter 非 disposer】+真执法 smoke 步+chrome-error 豁免+label-hidden 边角；smoke 17/17）。设计文档状态已翻 Implemented。check 终态 **1745+7skip**。四批全过评审（B1 通过/B2 三修/B3 两修/B4 通过+跟进）。**全部本地未 push**。夜间事故：B4 前任 worker 死于 glm-5.3 quota 503（进度保留 70%，p8-b4-resume 接力无损续完）。
 **后续触发项**：locked policy agentBrowser.enabled:false → 上线需发版翻 policy；装机验收面=设置无痕迹（休眠验证）。
