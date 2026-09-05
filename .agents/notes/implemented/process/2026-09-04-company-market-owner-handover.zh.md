@@ -97,6 +97,41 @@ Status: Implemented（2026-09-04，P7 闭环：dsh-free-search 0.4.182 经 tarba
 
 **非文档交接项**：仓库与 GitLab 权限、CI secrets 所有权（签名钥 `c469…`/GITLAB_TOKEN）、fleet 升级纪律（门禁是机械的，「fleet 是否真升级了」是人的判断）。
 
+## staging 交接通道（同事自建 tarball，2026-09-05）
+
+源码审计通道（§3）之外的第二条上架通道，面向低权限插件：同事自己 `npm pack`
+构建、自行验证兼容性，提交到 GitLab `julu/dsh-desktop-plugins`（internal）。
+所有者对每个提交做字节级验证，是进入签名清单的唯一路径。信任链不变：
+签名私钥永远只在所有者的 GitHub Secrets；正式仓 `julu/dsh-desktop-config`
+仍仅所有者可写。
+
+拓扑与契约文件（权威副本在 `tools/company-catalog/docs/handoff/`，staging 仓
+根目录为镜像——同事勿改，所有者变更后重同步）：
+
+- `README.md` —— 提交指南：一次提交一个目录（`submissions/<name>-<version>/`
+  含 `handoff.json` + tgz）、三步流程、agent 自验指令模板。
+- `handoff.schema.json` —— 提交单 schema（`additionalProperties: false`；
+  包名/版本/目录名三方绑定；`artifact.sha256` 钉死 tarball 字节）。
+- `compat.json` —— 「兼容」的唯一事实源：钉死的 dsh 版本+commit
+  （2026-09-05 时点 0.1.1-rc.2 / b150a551…）、桌面构建（2.0.3）、目录
+  sequence。上游升级时由所有者更新；提交方 agent 必须重读、不得硬编码。
+- `example/handoff.json` —— 填写示例。
+
+流程：同事按 `compat.json` 自验（agent 检出钉死的 dsh commit、在该 workspace
+安装插件、冒烟）→ 推提交目录 → 所有者跑
+`node tools/company-catalog/cli.mjs verify-handoff <dir>`（schema → sha256 →
+带 symlink 逃逸防御的安全解包 → 三方绑定 → compat 断言 → 内容审计报告 →
+实测 treeDigest → 可选冒烟）→ 命令在提交目录旁写 `verdict.md`（通过=摘要+
+digest+可直接采用的 allowlist 条目片段；失败=失败步+retest 指引），通过时把
+tgz 备料到 `out/packages/`——现有发布流原样消费，所有者把片段贴进
+`allowlist.json` 后按既有流程发布（见下节）。
+
+边界：同版本不可变（内容变=升版本）；高权限插件（系统权限/敏感域名）仍走
+源码审计通道；桌面客户端从不读 staging 仓——员工只见签名清单。
+
+访问注意：staging 仓为 GitLab internal——同事需成员权限（Developer 起步才能
+push）；agent 读契约走 `git clone`（raw 端点对窄 scope token 会 302——实测踩过）。
+
 ## 上传件发布（当前手工路径）
 
 审核通过的 .tgz 上传件（未来网页市场入口）今天无需管线改动：

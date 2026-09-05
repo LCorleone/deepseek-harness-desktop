@@ -386,6 +386,54 @@ How to run the pieces:
   file catches up via the post-publish bump. Never hand-edit a sequence
   down.
 
+## The staging handoff channel (colleague-built tarballs, 2026-09-05)
+
+A second listing track for low-privilege plugins, beside the source-audit
+track (§3): colleagues build their own `npm pack` tarballs, self-validate
+compatibility, and stage them on GitLab `julu/dsh-desktop-plugins`
+(internal). The owner verifies each submission byte-for-byte and is the
+only path into the signed catalog. Nothing here weakens the trust chain:
+the signing key never leaves the owner's GitHub Secrets, and the official
+`julu/dsh-desktop-config` repo stays owner-written only.
+
+Topology and contract files (authoritative copies live in
+`tools/company-catalog/docs/handoff/`; the staging repo mirrors them at
+its root — do not edit the staging copies, owner re-syncs on change):
+
+- `README.md` — the submitter guide: one directory per submission
+  (`submissions/<name>-<version>/` with `handoff.json` + the tarball), the
+  three-step flow, and the agent instruction template for self-validation.
+- `handoff.schema.json` — the submission manifest schema
+  (`additionalProperties: false`; package name / version / directory name
+  are bound three ways; `artifact.sha256` pins the tarball bytes).
+- `compat.json` — the single source of truth for "compatible": pinned dsh
+  version + commit (`0.1.1-rc.2` / `b150a551…` as of 2026-09-05), desktop
+  build (`2.0.3`), catalog sequence. Updated by the owner on every upstream
+  bump; submitter agents must re-read it, never hardcode.
+- `example/handoff.json` — a filled example.
+
+Flow: colleague self-validates against `compat.json` (their agent checks
+out the pinned dsh commit, installs the plugin in that workspace, smoke
+tests) → pushes the submission directory → owner runs
+`node tools/company-catalog/cli.mjs verify-handoff <dir>` (schema →
+sha256 → safe unpack with symlink-escape defenses → three-way name
+binding → compat assertions → content audit report → measured
+treeDigest → optional smoke) → the command writes `verdict.md` beside the
+submission (pass: digest + a ready allowlist entry snippet; fail: the
+failing step + retest guidance) and, on pass, stages the tarball into
+`out/packages/` so the EXISTING publish flow consumes it unchanged —
+owner pastes the snippet into `allowlist.json` and publishes as usual
+(§Publishing below).
+
+Boundaries: same-version-immutable (content change ⇒ version bump);
+high-privilege plugins (system permissions / sensitive domains) stay on
+the source-audit track; the desktop client never reads the staging repo —
+employees only ever see the signed catalog.
+
+Access notes: the staging repo is GitLab `internal` — colleagues need
+membership (Developer+ to push); agents read the contract via `git clone`
+(the raw endpoint 302s for narrow-scope tokens — verified the hard way).
+
 ## Publishing an approved uploaded tarball (current manual path)
 
 For plugins that arrive as reviewed `.tgz` uploads (future web-market
