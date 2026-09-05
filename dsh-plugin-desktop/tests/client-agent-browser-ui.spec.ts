@@ -491,7 +491,7 @@ describe('agent-browser surface styles', () => {
   })
 
   it('is idempotent: a second install never appends another sheet', () => {
-    let installed: { id?: string } | undefined
+    let installed: { id?: string, remove?: () => void } | undefined
     const appendChild = vi.fn()
     vi.stubGlobal('document', {
       getElementById: () => installed ?? null,
