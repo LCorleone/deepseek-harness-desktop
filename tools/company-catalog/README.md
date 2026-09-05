@@ -26,6 +26,7 @@ node tools/company-catalog/cli.mjs <command> [options]
 | `build` | Fetch each allowlist entry's `dist.integrity` from `registry.npmjs.org`, assemble, sign, verify, and publish `out/catalog-manifest.json` (sequence = persisted + 1). 从官方 registry 抓取 integrity，组装→签名→round-trip 验证→发布清单。 |
 | `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence. 标记吊销并递增 sequence 重发；条目保留（吊销是状态不是删除）。 |
 | `verify [path]` | Verify a manifest file end to end (default `out/catalog-manifest.json`). 全链验证一个清单文件。 |
+| `verify-handoff <dir>` | Owner-side mechanical gate for a staged plugin submission (`submissions/<name>-<version>`: handoff.json + tgz): ten fail-fast checks against the handoff contract, `verdict.md` always written, and on pass the tgz staged into `out/packages/` plus the paste-ready allowlist entry (measured treeDigest included). Verifies and stages only — never signs, never publishes. 所有者侧暂存提交验证：十步机械检查、必写 verdict.md、通过即备料（tgz 入 out/packages + allowlist 片段），不签名不发布。 |
 | `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build (sequence floor: `--sequence-from` or the local state file), verify, and write the manifest + `--meta-out` metadata for the workflow artifact. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，构建、验证并产出清单与元数据供 workflow 产物化；绝不修改评审入库的 `allowlist.json`。 |
 | `selftest` | CI smoke with an ephemeral key: build → sign → round-trip verify → sequence monotonicity → revocation reissue → expiry. 临时密钥全流程冒烟，绝不发布、绝不改 `state/`、`out/`、`allowlist.json`。 |
 
@@ -627,6 +628,49 @@ fleet 升级门禁生效：不带 `--confirm-fleet-upgraded` 拒发并打印升�
 （优先用 `NODE_EXTRA_CA_CERTS` 挂企业根）。所有失败均 fail-closed。master
 发布成功后，把 GitHub 侧 state bump（`state/last-sequence.json` → 已发布
 sequence）commit 入库。
+
+## Staged handoff verification · 暂存提交验证（verify-handoff）
+
+```sh
+node tools/company-catalog/cli.mjs verify-handoff <staging-clone>/submissions/<name>-<version> [--smoke] [--json]
+```
+
+The owner-side half of the staging channel (the submitter guide lives at
+`docs/handoff/README.zh.md`; the authoritative contract copies are
+`docs/handoff/{handoff.schema.json,compat.json,example.handoff.json}`).
+Every field of the contract becomes one mechanical check, fail-fast, in the
+order the README promises the submitter:
+
+| # | step · 步骤 | gate · 门 |
+| --- | --- | --- |
+| 1 | `schema` | handoff.json against `handoff.schema.json` (hand-rolled subset validator, `additionalProperties:false` enforced, unknown schema keywords fail closed). |
+| 2 | `artifact-integrity` | tgz exists next to handoff.json; sha256 + sizeBytes recomputed equal — before anything is unpacked. |
+| 3 | `safe-unpack` | the `lib/tarball.mjs` three-layer containment (lexical entry/link check + creation-time realpath assertion + final walk) — the same defense the client install chain uses; plus a gzip-bomb decompression bound and an entry-count bound. |
+| 4 | `identity-binding` | directory name == `handoff.plugin` == the tarball's own `package.json`, character for character; `artifact.file` must be the npm pack spelling (`@scope/name` flattens); the version must be a stable three-segment release — prerelease/build segments are refused with a pointed reason (the schema pattern refuses them at step 1; this check says the same thing for any schema copy that still permits them). |
+| 5 | `compat` | `dshCommit`/`desktopVersion` equal to the pinned `compat.json` values (exact); `dshRuntimeVersion` must intersect the pinned `dsh.runtimeRange` (hand-written range grammar: exact, `^`, `~`, comparators, hyphen ranges, `\|\|`; anything else is refused loudly — never guessed). Mismatches say **retest against** the pinned value. |
+| 6 | `audit` | a report, never a gate: dependency inventory, install-time lifecycle scripts, `dsh` injection surface, URL hosts observed in shipped files, and the same-name catalog delta (with the same-version immutability note). |
+| 7 | `tree-digest` | the real reference install (`measure.mjs --tarball`, timeout-bounded child). |
+| 8 | `smoke-remeasure` | `--smoke` only: a second independent measurement, both digests must be equal. Default off — the desktop e2e install smoke is a separate drill: `yarn e2e:install-smoke` (`dsh-plugin-desktop/scripts/e2e-install-smoke.mjs`). |
+| 9 | `verdict` | `verdict.md` written into the submission directory whether the run passed or failed (pass = summary + measured digest + the adoptable snippet; fail = the failing step + reason + retest guidance). |
+| 10 | `accept-prep` | on pass: the tgz copied to `out/packages/<name>-<version>.tgz` — the exact form the existing fill step consumes — plus the printed allowlist entry (validated through `validateAllowlistEntry` before anything is staged). Same-version immutability mirrors publish-local's hosted-tarball rule: restaging a `<name>-<version>.tgz` that already sits there with **different** bytes is refused (bump the version); identical bytes are an idempotent pass. |
+
+`--json` prints the machine-readable result document (steps, identity,
+artifact facts, audit, digest, entry, paths). The snippet's `source.url` is
+derived from `--catalog-origin` / `COMPANY_CATALOG_ORIGIN`, falling back to
+the origin of `compat.json`'s `catalog.manifestUrl`; `--project` overrides
+the default repo path (`julu/dsh-desktop-config`). Zero pipeline change
+downstream: paste the entry into `allowlist.json` after review and run the
+existing `measure-and-publish` / `publish-local` flow. Every submitter-
+controlled value is control-character-escaped at the render boundary before
+it reaches `verdict.md` or the terminal step log (a `\n[ok] …` inside any
+field can never forge a verdict line); the offline unit
+suite is `tests/verify-handoff.test.mjs` (part of `yarn test:company-catalog`).
+
+暂存通道的所有者侧闭环（提交方指南见 `docs/handoff/README.zh.md`）：十步机械
+检查对应契约每个字段，fail-fast；`verdict.md` 无论成败都写在提交目录内；通过
+后 tgz 就位 `out/packages/`、allowlist 片段（含实测 treeDigest）过自身校验后
+打印——所有者贴入 `allowlist.json` 走既有发布流，零管线改动。本命令永不持
+钥、永不发布。
 
 ## Selftest and CI · 自测与 CI
 

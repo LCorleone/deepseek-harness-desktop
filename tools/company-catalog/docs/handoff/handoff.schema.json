@@ -28,8 +28,8 @@
         },
         "version": {
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[a-z0-9.-]+)?$",
-          "description": "Must equal the tarball's package.json version and the submission directory's version segment."
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$",
+          "description": "Stable three-segment version, and it must equal the tarball's package.json version and the submission directory's version segment. The catalog only lists stable releases: prerelease (-rc.1) and build (+meta) segments are refused — publish the stable release instead."
         }
       }
     },
@@ -40,7 +40,8 @@
       "properties": {
         "dshRuntimeVersion": {
           "type": "string",
-          "description": "SemVer range the plugin was tested against. Must intersect the version pinned in compat.json at verification time."
+          "pattern": "^[\\w^~><=| .*-]+$",
+          "description": "SemVer range the plugin was tested against, spelled with the characters the range grammar implements (digits, letters, . - ^ ~ > < = | space, *). Must intersect the version pinned in compat.json at verification time."
         },
         "dshCommit": {
           "type": "string",
@@ -61,8 +62,8 @@
       "properties": {
         "file": {
           "type": "string",
-          "pattern": "^[^/\\\\]+$",
-          "description": "Bare filename of the tarball sitting next to handoff.json (npm pack output)."
+          "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f-\\u009f`]+$",
+          "description": "Bare filename of the tarball sitting next to handoff.json (npm pack output). No path separators, no control characters, no backticks."
         },
         "sha256": {
           "type": "string",

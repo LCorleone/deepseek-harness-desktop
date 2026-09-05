@@ -45,6 +45,7 @@ import {
   verifyManifestText,
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
+import { verifyHandoffSubmission } from './lib/verify-handoff.mjs'
 import {
   assertBundlePatchDeclaration,
   declaredBundlePatchOfTarball,
@@ -78,6 +79,15 @@ Commands:
                                manifest with a higher sequence (entries are kept).
   verify [path]                Verify a manifest file end to end
                                (default: out/catalog-manifest.json).
+  verify-handoff <dir>         Owner-side mechanical verification of a staged
+                               plugin submission (submissions/<name>-<version>:
+                               handoff.json + tgz): schema, sha256/size, safe
+                               unpack, three-way identity binding, compat pins,
+                               dependency/domain audit, measured treeDigest;
+                               writes verdict.md into the submission directory, stages
+                               the tgz into out/packages/, and prints the
+                               paste-ready allowlist entry. Verifies and stages
+                               only — never signs, never publishes.
   keygen                       Generate an ed25519 key pair and print the pipeline
                                environment values (private material — handle with care).
   selftest                     End-to-end smoke test with an ephemeral key; never
@@ -115,6 +125,18 @@ pack-tarball options:
   --pack-out <dir>       Artifact output (default: tools/company-catalog/out/packages)
   --no-measure           Skip the treeDigest reference install (integrity still
                          computed; measure.mjs can measure the artifact later)
+
+verify-handoff options:
+  --smoke                Re-run the reference install a second time and require
+                         both treeDigests equal (re-verification; default off —
+                         the desktop e2e install smoke is a separate drill:
+                         yarn e2e:install-smoke)
+  --json                 Print the machine-readable result document as JSON
+  --catalog-origin <o>   Origin of the snippet's source.url (default: the
+                         COMPANY_CATALOG_ORIGIN env value, else the origin of
+                         compat.json's catalog.manifestUrl)
+  --project <p>          Formal repo path of the snippet's source.url
+                         (default: julu/dsh-desktop-config)
 
 Signing environment:
   COMPANY_CATALOG_SIGNING_KEY       base64 PKCS#8 DER ed25519 private key, single line;
@@ -543,6 +565,35 @@ async function commandVerify(positionals, flags) {
   }
 }
 
+/**
+ * `verify-handoff`: the owner-side gate for staged plugin submissions. Every
+ * field of the handoff contract becomes one mechanical check (fail-fast,
+ * verdict.md always written); a pass stages the artifact plus the allowlist
+ * entry for the existing publishing flow — this command never signs.
+ */
+async function commandVerifyHandoff(positionals, flags) {
+  if (positionals.length !== 1) {
+    throw new Error("verify-handoff takes exactly one argument: <submission-dir> (the staging clone's submissions/<name>-<version> directory)")
+  }
+  const json = flags.json === true
+  const result = await verifyHandoffSubmission({
+    submissionDir: resolve(process.cwd(), positionals[0]),
+    smoke: flags.smoke === true,
+    catalogOrigin: resolveCatalogOrigin(flags),
+    ...(flags.project === undefined ? {} : { project: flags.project }),
+    log: json ? undefined : console.log,
+  })
+  if (json) {
+    console.log(JSON.stringify(result, null, 2))
+  } else {
+    console.log('')
+    console.log(`verify-handoff: ${result.ok ? 'PASS' : `FAIL at ${String(result.failedStep.index)}/10 ${result.failedStep.step}`}`)
+    console.log(`  verdict: ${result.verdictPath}`)
+    if (result.ok) console.log(`  staged:  ${result.packageRepoPath}`)
+  }
+  if (!result.ok) process.exitCode = 1
+}
+
 async function commandKeygen() {
   const material = generateSigningMaterial()
   console.log('company catalog signing key (ed25519) — PRIVATE MATERIAL below; store it in a secret manager.')
@@ -594,6 +645,7 @@ async function main() {
     else if (command === 'measure-and-publish') await commandMeasureAndPublish(flags)
     else if (command === 'revoke') await commandRevoke(positionals, flags)
     else if (command === 'verify') await commandVerify(positionals, flags)
+    else if (command === 'verify-handoff') await commandVerifyHandoff(positionals, flags)
     else if (command === 'keygen') await commandKeygen()
     else if (command === 'selftest') await commandSelftest(flags)
     else fail(`unknown command '${command}'\n\n${USAGE}`)

@@ -161,11 +161,21 @@ function safeLinkTarget(entryPath, linkName) {
 }
 
 /** Parse a .tgz into normalized entries; every violation of the npm layout fails loudly. */
-export function parseTarball(bytes, what = 'the tarball') {
+export function parseTarball(bytes, what = 'the tarball', options = {}) {
   let tar
+  const maxUnpackedBytes = options.maxUnpackedBytes
   try {
-    tar = gunzipSync(bytes)
+    // `maxUnpackedBytes` bounds the decompression of untrusted archives
+    // (verify-handoff unpacks submitter tgz files): without it a few-KiB
+    // gzip bomb would expand into memory before any entry-level check
+    // could run. Packed pipeline output keeps the unbounded default.
+    tar = maxUnpackedBytes === undefined
+      ? gunzipSync(bytes)
+      : gunzipSync(bytes, { maxOutputLength: maxUnpackedBytes })
   } catch (error) {
+    if (error.code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(`${what} expands beyond the ${String(maxUnpackedBytes)}-byte unpacked bound (gzip bomb defense) — refusing to decompress it`)
+    }
     throw new Error(`${what} is not valid gzip (${error.message})`)
   }
   if (tar.length === 0 || tar.length % BLOCK !== 0) {
