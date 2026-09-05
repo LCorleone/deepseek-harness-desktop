@@ -193,6 +193,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **四枪拔雷全链**：#52 inject 崩（Cordis sibling 语义）→#53 模块 CORS 误诊（挂死 worker 遗产复盘纠偏）→#54 同源结构修复（必要不充分，纵深保留）→**#55 fuse 翻 true=真雷根**（P4 加固期按 Electron 安全清单钉 grantFileProtocolExtraPrivileges:false → 打包态 file:// 页全部不透明源 → 全部本地窗口 module 挂）。**三扇窗一类锁死风险消除**：agent-browser（每个用户可见）/recovery（#52 黑屏实为同 bug）/sso-gate（silent auth 掩盖+用户独立证实 silent 失败时黑屏——token 过期锁死场景）。用户确认 #55 浏览器可用。发布顺序终段完成：P8 进入真机测试期（审批门/接管/截图等剧本逐步走查）。
 **教训沉淀**：①打包态 fuse/权限面=开发态差异的头号来源，dev 二进制验不出——产物级断言（fuse 读回/结构守门）才是真门；②「能跑的窗口」未必健康（sso-gate 假象）——罕见路径窗口要有显式验证；③挂死 worker 的遗产先复盘再重启（本次省一次返工）。
 
+### P8 后续优化批 + v0.3.1-p8-first-flight（2026-09-05 晚）
+用户三指令全闭环：①横幅/工具卡样式补齐（B3 类名从无 CSS——裸 div 观感差的根源；修复=新增 agent-browser-styles.ts 独立安装器双 shell 覆盖+全设计令牌 16 变量，advanced-shell 的 styles.ts 只覆盖 advanced 模式故不能复用）；②fuse 翻 true 安全账=净风险≈零（评审员代码级核实五重边界：file 页仅四自有窗+guest 对 file: 一律拒且 will-navigate 双前置+摘要门+asar 完整性原样+vite 守门纵深；当初 false=P4 照抄 Electron 默认的误伤）；③三增量评审 APPROVED 零 P1（fuse 钉值=afterPack 真读回三处断言），唯一 P2（样式安装幂等/headless 分支零覆盖）已补测试 18/18。**#56 构建失败教训**：我补测试只跑了 vitest 没跑 typecheck（vitest 不查类型，CI tsc 抓到 TS2353）——本地验收必须 typecheck+spec 双跑。#57 绿=tag 最终点 335deec513（tag 在 #56 失败时已强制重指）。沙箱越界 ask 语义定案（上游矩阵：首拒不弹/模型升级重试才弹/读不设限）与 P8 架构 note §9 真机四雷节同日入档。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
