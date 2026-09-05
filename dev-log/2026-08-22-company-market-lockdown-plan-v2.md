@@ -308,6 +308,10 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **验收**：非名单机器无视 beta 条目（测试钉死）；名单机器生效；
 promote 后全员可见同 digest；beta 清单损坏/缺失=回退 stable 现状行为。
 
+**首批测试组名单（用户 2026-09-05 指定，实现时写入首版 beta 清单）**：
+`julu@deloittecn.com.cn`、`sebtang@deloittecn.com.cn`、`lizywu@deloittecn.com.cn`
+（明文小写，SSO 邮箱精确匹配）。
+
 **估时**：~1-1.5 天（beta schema+客户端拉取判定+管线 channel/promote+测试入链）。
 **前置**：市场交接演练（free-search 换手全链）跑通后启动。
 
