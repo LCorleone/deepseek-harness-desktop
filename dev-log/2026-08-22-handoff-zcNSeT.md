@@ -179,6 +179,10 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### P8 上线：release 翻 agentBrowser policy（2026-09-05 午后）
 **用户拍板真机测试**（既定发布顺序末段启动）。desktop-policy.release.json 翻亮：`agentBrowser = {enabled:true, allowOrigins:["*"], allowPersistLogin:false}`——测试期口径全放开 http(s) 源，审批门仍护（跨源导航 ask/表单提交 ask/下载取消），persist 登录态暂不开=一次性 partition token。断言同步：desktop-policy.spec 双形态各补 agentBrowser 终值断言（dev/release 均 enabled+通配，persistLogin 关）；agent-browser-tools.spec「locked 零暴露」负向断言翻向=新增读真 release 资产验「release 默认注册九工具+段+live context」，负向面保留为注入显式 disabled policy 验零暴露（零暴露归因 enabled:false，不再归因 locked）；agent-browser-policy.spec inert 子策略变量更名 disabled。e2e-install-smoke/composition 冒烟核实零硬编码 release 期望（全动态读内嵌资产）无需动。架构 note 状态行维持 Implemented。check 终态 **1816+7skip**（+1 即新 release 默认注册断言）/market 400，全绿。单 commit `feat(desktop): enable the agent browser in release builds for the field test`，不 push。
 
+### P8 首亮机事故与修复（2026-09-05 午后）
+**#52 fleet 破坏性构建**：policy 翻亮激活 agent-browser → `ctx.systemPrompt` 访问即抛（inject 数组漏声明）→ 插件树加载失败 → boot 失败循环 → 恢复窗黑屏。用户日志实锤（13:48 装 #52 首启即崩）。**根因深层语义（fix-inject worker 实证 Cordis reflect.ts/fiber.ts）**：provide() 写提供方 fiber 自己的 store，代理 walk 只走**祖先** fiber——祖先服务裸访问合法，**sibling 服务必须 inject**；systemPrompt/tools 正是 sibling 条目。fake ctx 非严格 Proxy 是测试漏网原因。**修复（880959924b）**：inject=['systemPrompt','tools'] + 全 ctx 访问面审计 + 严格 Proxy 守门测试（变异验证：去任一 inject 即红——单测可抓此类错）+ xvfb 组合冒烟。语义注记：无模型面组合中该 fiber 由早退变 PENDING（同 tool-web 契约，boot 不受影响）。**#53 已触发（run 33949239700）修复版**。教训：policy 翻亮=激活，激活路径必须有真语义测试覆盖。
+**同批确认**：corp-net-inject 真机工作（"corporate network environment injected" 日志行）；usage 健康含 retry 自愈实证。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
