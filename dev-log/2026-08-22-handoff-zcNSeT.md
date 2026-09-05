@@ -183,6 +183,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **#52 fleet 破坏性构建**：policy 翻亮激活 agent-browser → `ctx.systemPrompt` 访问即抛（inject 数组漏声明）→ 插件树加载失败 → boot 失败循环 → 恢复窗黑屏。用户日志实锤（13:48 装 #52 首启即崩）。**根因深层语义（fix-inject worker 实证 Cordis reflect.ts/fiber.ts）**：provide() 写提供方 fiber 自己的 store，代理 walk 只走**祖先** fiber——祖先服务裸访问合法，**sibling 服务必须 inject**；systemPrompt/tools 正是 sibling 条目。fake ctx 非严格 Proxy 是测试漏网原因。**修复（880959924b）**：inject=['systemPrompt','tools'] + 全 ctx 访问面审计 + 严格 Proxy 守门测试（变异验证：去任一 inject 即红——单测可抓此类错）+ xvfb 组合冒烟。语义注记：无模型面组合中该 fiber 由早退变 PENDING（同 tool-web 契约，boot 不受影响）。**#53 已触发（run 33949239700）修复版**。教训：policy 翻亮=激活，激活路径必须有真语义测试覆盖。
 **同批确认**：corp-net-inject 真机工作（"corporate network environment injected" 日志行）；usage 健康含 retry 自愈实证。
 
+### 沙箱越界「不弹窗」定案（2026-09-05 傍晚，investigate-ask）
+用户疑问：workspace-write 下 agent 越界（写 /tmp EACCES）不弹审批窗。**结论=上游本如此，非 bug**：①首次越界=执行器直接拒+提示模型带 sandbox_permissions+justification 重试（不弹）；②弹窗在模型的升级重试（ApprovalPanel，上游 e2e 自证）；③我们审批链路逐行等价未动（compatibility 原版 client+钳制钉 approval='ask'）。特例：越界目标 ~/.dsh/应用自身→persona 明令拒绝不升级（预期防护）。排查口诀：看越界工具结果有无 denial marker+escalation hint（有=链路健康）；模型不重试=纯模型行为。**P8 webview 同源修复（#54）**：真因=agent-browser.html 嵌套子目录引用 ../assets/* 逃出 file:// 同源子树（Chromium 边界=同目录及以下）+打包态 grantFileProtocolExtraPrivileges fuse 显式关（开发态默认开→xvfb 冒烟过真机挂）。修=html 挪 native-ui 根与 sso-gate 同构（ca8d6239dd）+vite closeBundle 逃层守门插件。挂死 worker 遗产复盘纠偏一次（我给错假设、worker 实证推翻——读遗书的价值）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
