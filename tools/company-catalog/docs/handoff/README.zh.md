@@ -19,7 +19,8 @@ submissions/
 
 ## 自验兼容（agent 指令模板，可直接给你的 agent）
 
-> 读取 https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-plugins/-/raw/master/compat.json 。
+> 读取 https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-plugins/-/raw/master/compat.json
+> （本仓 internal：用你的 GitLab 凭据——浏览器登录态、或 curl 头 `PRIVATE-TOKEN: <你的token>`，匿名读会 302）。
 > 按 `dsh.commit` 检出 deepseek-harness 到该 commit，安装我方插件（pnpm，workspace 内），
 > 启动 client/host 双面验证插件功能。对照 `desktop.version` 用该版桌面端做一次冒烟
 > （插件经 dev workspace 侧载，不走市场通道——锁定桌面端不接受未签名安装，这是设计）。
