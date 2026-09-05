@@ -489,4 +489,36 @@ describe('agent-browser surface styles', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('is idempotent: a second install never appends another sheet', () => {
+    let installed: { id?: string } | undefined
+    const appendChild = vi.fn()
+    vi.stubGlobal('document', {
+      getElementById: () => installed ?? null,
+      createElement: () => { installed = { remove: vi.fn() }; return installed },
+      head: { appendChild },
+    })
+
+    try {
+      installAgentBrowserStyles()()
+      expect(appendChild).toHaveBeenCalledOnce()
+      installAgentBrowserStyles()()
+      // The second call saw the first sheet by id and appended nothing.
+      expect(appendChild).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('tolerates a headless boot without document', () => {
+    vi.stubGlobal('document', undefined)
+    try {
+      const dispose = installAgentBrowserStyles()
+      expect(() => dispose()).not.toThrow()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })
