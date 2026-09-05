@@ -22,6 +22,7 @@
       "kind": "tarball",
       "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.183.tgz",
       "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.183.tgz"
-    }
+    },
+    "treeDigest": "648b218888dce4f35b4ab642273f808089e81b5c3bd93e8b42e605117b824237"
   }
 ]
