@@ -25,6 +25,7 @@ import {
   zh,
   type AgentBrowserSurfaceState,
 } from '../src/client/agent-browser-ui.tsx'
+import { installAgentBrowserStyles } from '../src/client/agent-browser-styles.ts'
 
 type Translate = TranslateNS<'desktop.agentBrowser'>
 
@@ -451,5 +452,41 @@ describe('agent-browser tool cards', () => {
     expect(markup).toContain('3 lines')
     expect(agentBrowserToolLabel('browser_open', t)).toBe('Opened page')
     expect(agentBrowserToolLabel('browser_something_new', t)).toBe('browser_something_new')
+  })
+})
+
+describe('agent-browser surface styles', () => {
+  it('installs the banner and tool-card stylesheet with token-only colors', () => {
+    let css = ''
+    const style = {
+      get textContent() { return css },
+      set textContent(value: string) { css = value },
+      remove: vi.fn(),
+    }
+    const appendChild = vi.fn()
+    vi.stubGlobal('document', {
+      getElementById: () => null,
+      createElement: () => style,
+      head: { appendChild },
+    })
+
+    try {
+      const dispose = installAgentBrowserStyles()
+      // Both class families land in one sheet installed from the mode-neutral
+      // client apply() — the seats render in compatibility mode too.
+      expect(css).toContain('.dshAgentBrowserBanner')
+      expect(css).toContain('.dshAgentBrowserBannerAction')
+      expect(css).toContain('.dshAgentBrowserToolCard')
+      expect(css).toContain(".dshAgentBrowserToolCard[data-failed='true']")
+      // Theme adaptation rides the upstream aliases only: no literal colors.
+      expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i)
+      expect(css).not.toMatch(/rgba?\(/)
+      expect(appendChild).toHaveBeenCalledWith(style)
+      dispose()
+      expect(style.remove).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

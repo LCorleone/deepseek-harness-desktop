@@ -17,6 +17,7 @@ import {
   en as agentBrowserEn,
   zh as agentBrowserZh,
 } from './agent-browser-ui.tsx'
+import { installAgentBrowserStyles } from './agent-browser-styles.ts'
 import { applyDesktopSettings } from './desktop-settings.ts'
 import { installDesktopDirectoryPickerBridge, requestDesktopDirectoryValidation } from './directory-picker.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
@@ -169,6 +170,14 @@ export function apply(ctx: ClientContext): void {
       en: agentBrowserEn,
     }),
     'dsh-plugin-desktop: agent-browser dictionaries',
+  )
+  // The banner/tool-card CSS rides its own installer instead of ADVANCED_STYLES
+  // on purpose: that sheet loads only with the advanced shell, while these
+  // seats render in compatibility mode too — this effect sits before the
+  // mode branch, so both shells see the styles.
+  ctx.effect(
+    () => installAgentBrowserStyles(),
+    'dsh-plugin-desktop: agent-browser surface styles',
   )
   const agentBrowserApi = createAgentBrowserSurfaceApi()
   const agentBrowserConnect = createAgentBrowserEventConnection()
