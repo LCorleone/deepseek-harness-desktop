@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-plugins/handoff.schema.json",
+  "title": "DSH desktop plugin handoff submission",
+  "description": "One submission directory per plugin version: handoff.json (this schema) plus the npm-pack tarball it describes. The desktop owner verifies every field against the artifact and the pinned compatibility contract (compat.json) before the version can enter the signed catalog.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "plugin",
+    "compat",
+    "artifact",
+    "submitter",
+    "evidence",
+    "changes"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packageName", "version"],
+      "properties": {
+        "packageName": {
+          "type": "string",
+          "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*/)?[a-z0-9-~][a-z0-9-._~]*$",
+          "description": "Must equal the tarball's package.json name, character for character."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[a-z0-9.-]+)?$",
+          "description": "Must equal the tarball's package.json version and the submission directory's version segment."
+        }
+      }
+    },
+    "compat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dshRuntimeVersion", "dshCommit", "desktopVersion"],
+      "properties": {
+        "dshRuntimeVersion": {
+          "type": "string",
+          "description": "SemVer range the plugin was tested against. Must intersect the version pinned in compat.json at verification time."
+        },
+        "dshCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "The deepseek-harness commit you tested against. Must equal compat.json dsh.commit exactly."
+        },
+        "desktopVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "The DSH Desktop build you smoke-tested with. Must equal compat.json desktop.version exactly."
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "sha256", "sizeBytes"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[^/\\\\]+$",
+          "description": "Bare filename of the tarball sitting next to handoff.json (npm pack output)."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the tarball bytes. Recomputed by the owner; a mismatch fails the handoff before anything is unpacked."
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 52428800
+        }
+      }
+    },
+    "submitter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "gitlabHandle", "submittedAt"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "gitlabHandle": { "type": "string", "pattern": "^@[a-z0-9_.-]+$" },
+        "submittedAt": { "type": "string", "format": "date" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "checks"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 1000,
+          "description": "What you actually exercised: the scenarios run and the observed result, in your own words."
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 20,
+          "items": { "type": "string", "enum": [
+            "install-in-dev-workspace",
+            "client-face-renders",
+            "host-face-works",
+            "market-page-loads",
+            "settings-save-restart",
+            "long-run-stability",
+            "other-described-in-summary"
+          ] }
+        }
+      }
+    },
+    "changes": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 500,
+      "description": "One-paragraph changelog versus the newest version already listed in the catalog (or 'initial submission')."
+    }
+  }
+}

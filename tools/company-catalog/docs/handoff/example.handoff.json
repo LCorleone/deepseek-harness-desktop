@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "plugin": {
+    "packageName": "dsh-free-search",
+    "version": "0.4.184"
+  },
+  "compat": {
+    "dshRuntimeVersion": "^0.1.1-rc.2",
+    "dshCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+    "desktopVersion": "2.0.3"
+  },
+  "artifact": {
+    "file": "dsh-free-search-0.4.184.tgz",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sizeBytes": 12345
+  },
+  "submitter": {
+    "name": "张三",
+    "gitlabHandle": "@zhangsan",
+    "submittedAt": "2026-09-05"
+  },
+  "evidence": {
+    "summary": "在 dshCommit 指出的 rc.2 检出与桌面 2.0.3 上：dev workspace 安装无错，设置页三引擎键位保存与重启后保持，tavily/exa/anysearch 各跑 3 个真实查询全部返回结构化结果。",
+    "checks": [
+      "install-in-dev-workspace",
+      "client-face-renders",
+      "host-face-works",
+      "settings-save-restart"
+    ]
+  },
+  "changes": "0.4.183 → 0.4.184：anysearch 超时从 10s 调至 15s 并修复空 key 时的引导文案；无依赖变化。"
+}
