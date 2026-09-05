@@ -103,6 +103,8 @@ const ARTIFACTS_BRANCH = 'catalog-artifacts'
 const DEFAULT_GITLAB_ORIGIN = 'gitlab.s.dai.deloitte.cn'
 const DEFAULT_GITLAB_PROJECT = 'julu/dsh-desktop-config'
 const MANIFEST_FILE = 'catalog-manifest.json'
+/** The beta channel's manifest file (P9): hosted beside the stable manifest. */
+const BETA_MANIFEST_FILE = 'catalog-manifest.beta.json'
 const META_FILE = 'publish-meta.json'
 /** Hard cap on the manifest an artifact may carry (the pipeline bound is 1 MiB). */
 const MANIFEST_MAX_BYTES = 2_097_152
@@ -136,6 +138,14 @@ Options:
                         file or URL instead of the GitLab raw url (requires
                         --dry-run — a drill never pushes against an overridden
                         ratchet source)
+  --channel <stable|beta>
+                        which catalog file this artifact publishes (default:
+                        stable). beta pushes ${BETA_MANIFEST_FILE} — the signed
+                        small-area soak manifest whose top-level testers roster
+                        the field-aware clients apply — and ratchets against
+                        the deployed BETA file; stable pushes ${MANIFEST_FILE}
+                        exactly as before. Old clients never fetch the beta
+                        file, so its testers key needs no fleet-upgrade gate.
   --policy <path>       Trust-root policy file the fleet check pins against
                         (default: the desktop release policy in this repo —
                         drills may point at a staged policy instead)
@@ -175,7 +185,7 @@ const tempDirs = []
 /** Minimal hand-rolled parser: `--flag value`, `--flag=value`, no positionals. */
 function parseArgs(argv) {
   const flags = {}
-  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'from-git', 'branch', 'deployed', 'policy', 'token', 'gitlab', 'project'])
+  const valueFlags = new Set(['run', 'repo', 'artifact-dir', 'from-git', 'branch', 'deployed', 'policy', 'token', 'gitlab', 'project', 'channel'])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (!argument.startsWith('--')) throw new Error(`unexpected argument '${argument}'`)
@@ -378,13 +388,14 @@ function latestSuccessfulRun(repo) {
 }
 
 /** Byte caps the artifact path already enforces, applied before writing mirror blobs. */
-const MIRROR_FILE_CAPS = { [MANIFEST_FILE]: MANIFEST_MAX_BYTES, [META_FILE]: 65_536 }
+const MIRROR_FILE_CAPS = { [MANIFEST_FILE]: MANIFEST_MAX_BYTES, [BETA_MANIFEST_FILE]: MANIFEST_MAX_BYTES, [META_FILE]: 65_536 }
 /** Headroom over a cap when a subprocess must emit the whole capped file on stdout. */
 const SPAWN_BUFFER_HEADROOM_BYTES = 64 * 1024
 
 /** Per-path byte cap of any file the git mirror may carry (run dir layout). */
 const mirrorCapFor = (path) => {
   if (path === MANIFEST_FILE || path.endsWith(`/${MANIFEST_FILE}`)) return MIRROR_FILE_CAPS[MANIFEST_FILE]
+  if (path === BETA_MANIFEST_FILE || path.endsWith(`/${BETA_MANIFEST_FILE}`)) return MIRROR_FILE_CAPS[BETA_MANIFEST_FILE]
   if (path === META_FILE || path.endsWith(`/${META_FILE}`)) return MIRROR_FILE_CAPS[META_FILE]
   if (path.startsWith('packages/') && path.endsWith('.tgz')) return TARBALL_MAX_BYTES
   return undefined
@@ -413,7 +424,7 @@ function failureReason(error) {
  * them, each under its byte cap before touching disk. Returns the directory
  * carrying the two files, laid out like the artifact download.
  */
-function fetchArtifactsFromGitBranch(repo, runId) {
+function fetchArtifactsFromGitBranch(repo, runId, manifestFile) {
   const repositoryUrl = `https://github.com/${repo}.git`
   const branchDir = mkdtempSync(join(tmpdir(), 'company-catalog-git-'))
   tempDirs.push(branchDir)
@@ -442,9 +453,9 @@ function fetchArtifactsFromGitBranch(repo, runId) {
   const runPrefix = `${runId}/`
   const listing = run('git', ['-C', branchDir, 'ls-tree', '-r', '--name-only', `HEAD:${runId}`])
     .toString('utf8').split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
-  if (!listing.includes(MANIFEST_FILE) || !listing.includes(META_FILE)) {
+  if (!listing.includes(manifestFile) || !listing.includes(META_FILE)) {
     throw new Error(
-      `run ${runId} on the ${ARTIFACTS_BRANCH} branch does not carry ${MANIFEST_FILE} + ${META_FILE} at its root — ` +
+      `run ${runId} on the ${ARTIFACTS_BRANCH} branch does not carry ${manifestFile} + ${META_FILE} at its root — ` +
       'the mirror carries only runs of non-dry-run workflows since the mirror step existed; pass the run id of such a run, or use --artifact-dir',
     )
   }
@@ -453,7 +464,7 @@ function fetchArtifactsFromGitBranch(repo, runId) {
   for (const file of listing) {
     const cap = mirrorCapFor(file)
     if (cap === undefined) {
-      throw new Error(`run ${runId} on the ${ARTIFACTS_BRANCH} branch carries '${file}', which is not part of the artifact layout (catalog-manifest.json, publish-meta.json, packages/*.tgz) — refusing to replay it`)
+      throw new Error(`run ${runId} on the ${ARTIFACTS_BRANCH} branch carries '${file}', which is not part of the artifact layout (catalog-manifest.json, catalog-manifest.beta.json, publish-meta.json, packages/*.tgz) — refusing to replay it`)
     }
     const blobRef = `HEAD:${runId}/${file}`
     let sizeBytes
@@ -505,12 +516,22 @@ async function main() {
   const branch = typeof flags.branch === 'string' && flags.branch.length > 0 ? flags.branch : 'master'
   const repo = typeof flags.repo === 'string' && flags.repo.length > 0 ? flags.repo : DEFAULT_GITHUB_REPO
   const dryRun = flags['dry-run'] === true
+  // The publication channel (P9): stable pushes catalog-manifest.json exactly
+  // as before; beta pushes catalog-manifest.beta.json — the signed soak
+  // manifest whose top-level testers roster the field-aware clients apply.
+  // The ratchet, trust, and integrity gauntlets are identical; only the file
+  // name, the ratchet source URL, and the verification channel differ.
+  const channel = flags.channel === undefined ? 'stable' : flags.channel
+  if (channel !== 'stable' && channel !== 'beta') {
+    throw new Error(`--channel must be 'stable' or 'beta' (got '${String(flags.channel)}')`)
+  }
+  const manifestFile = channel === 'beta' ? BETA_MANIFEST_FILE : MANIFEST_FILE
   if (flags['insecure-tls'] === true) {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
     console.log('publish-local: WARNING — --insecure-tls: TLS verification disabled for this run (pilot parity); prefer NODE_EXTRA_CA_CERTS with the corporate root')
   }
 
-  const masterRawUrl = `https://${gitlabOrigin}/${project}/-/raw/master/${MANIFEST_FILE}`
+  const masterRawUrl = `https://${gitlabOrigin}/${project}/-/raw/master/${manifestFile}`
 
   // --- 1. acquire the artifact -------------------------------------------------
   let artifactDir
@@ -528,7 +549,7 @@ async function main() {
     if (!/^[0-9]+$/.test(flags['from-git'])) throw new Error(`--from-git must be a numeric GitHub Actions run id (got '${flags['from-git']}')`)
     runId = flags['from-git']
     run('git', ['--version'])
-    artifactDir = fetchArtifactsFromGitBranch(repo, runId)
+    artifactDir = fetchArtifactsFromGitBranch(repo, runId, manifestFile)
     acquireChannel = `${ARTIFACTS_BRANCH} git branch (--from-git)`
     console.log(`artifact: fetched run ${runId} from the ${ARTIFACTS_BRANCH} branch of ${repo} (--from-git — skipping gh)`)
   } else {
@@ -560,7 +581,7 @@ async function main() {
       // the transport, never any downstream check.
       console.log(`artifact: gh run download failed (${failureReason(downloadError)}) — falling back to the ${ARTIFACTS_BRANCH} git branch (same run ${runId})`)
       try {
-        artifactDir = fetchArtifactsFromGitBranch(repo, runId)
+        artifactDir = fetchArtifactsFromGitBranch(repo, runId, manifestFile)
       } catch (mirrorError) {
         const dryRunHint = runSource === 'run-list'
           ? ` — note: the latest successful ${DEFAULT_WORKFLOW} run may be a dry-run (dry-run is the workflow's default input and uploads no artifact): pick a run that produced the ${ARTIFACT_NAME} artifact and pass --run <id>`
@@ -575,41 +596,51 @@ async function main() {
   }
 
   // --- 2. integrity: bytes must hash to the sidecar's manifestSha256 -----------
-  const manifestPath = join(artifactDir, MANIFEST_FILE)
+  const manifestPath = join(artifactDir, manifestFile)
   let manifestStat
   try {
     manifestStat = statSync(manifestPath)
   } catch (error) {
-    throw new Error(`${MANIFEST_FILE} is missing from the artifact (${error.code ?? error.message}) — the artifact is incomplete`)
+    throw new Error(`${manifestFile} is missing from the artifact (${error.code ?? error.message}) — the artifact is incomplete (a beta artifact requires --channel beta)`)
   }
   if (manifestStat.size > MANIFEST_MAX_BYTES) {
-    throw new Error(`${MANIFEST_FILE} is ${String(manifestStat.size)} bytes, over the ${String(MANIFEST_MAX_BYTES)}-byte bound`)
+    throw new Error(`${manifestFile} is ${String(manifestStat.size)} bytes, over the ${String(MANIFEST_MAX_BYTES)}-byte bound`)
   }
   const manifestBytes = readFileSync(manifestPath)
   const meta = loadMeta(join(artifactDir, META_FILE))
+  // The sidecar declares which channel it was built for (P9): a beta
+  // artifact must never land on the stable slot or the reverse — the file
+  // names alone make the mistake unlikely, the check makes it impossible.
+  const metaChannel = meta.channel ?? 'stable'
+  if (metaChannel !== channel) {
+    throw new Error(
+      `${META_FILE} declares channel '${metaChannel}' but this run publishes the ${channel} slot (${manifestFile}) — ` +
+      'pass the matching --channel, or publish an artifact built for it',
+    )
+  }
   const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
   if (manifestSha256 !== meta.manifestSha256) {
     throw new Error(
-      `artifact integrity failure: ${MANIFEST_FILE} hashes to ${manifestSha256} but ${META_FILE} pins ${meta.manifestSha256} — ` +
+      `artifact integrity failure: ${manifestFile} hashes to ${manifestSha256} but ${META_FILE} pins ${meta.manifestSha256} — ` +
       'the bytes changed between signing and download; re-run the workflow',
     )
   }
   const manifestText = manifestBytes.toString('utf8')
   const manifest = JSON.parse(manifestText)
   if (manifest.sequence !== meta.sequence) {
-    throw new Error(`${MANIFEST_FILE} carries sequence ${String(manifest.sequence)} but ${META_FILE} says ${String(meta.sequence)} — the sidecar does not describe these bytes`)
+    throw new Error(`${manifestFile} carries sequence ${String(manifest.sequence)} but ${META_FILE} says ${String(meta.sequence)} — the sidecar does not describe these bytes`)
   }
   if (manifest.signature?.keyId !== meta.keyId) {
-    throw new Error(`${MANIFEST_FILE} signature.keyId '${String(manifest.signature?.keyId)}' does not match ${META_FILE} keyId '${meta.keyId}'`)
+    throw new Error(`${manifestFile} signature.keyId '${String(manifest.signature?.keyId)}' does not match ${META_FILE} keyId '${meta.keyId}'`)
   }
   const packages = Array.isArray(manifest.packages) ? manifest.packages : []
   if (meta.entries.length !== packages.length) {
-    throw new Error(`${META_FILE} lists ${String(meta.entries.length)} entries but ${MANIFEST_FILE} signs ${String(packages.length)} — the sidecar does not describe these bytes`)
+    throw new Error(`${META_FILE} lists ${String(meta.entries.length)} entries but ${manifestFile} signs ${String(packages.length)} — the sidecar does not describe these bytes`)
   }
   for (const entry of meta.entries) {
     const signed = packages.find((candidate) => candidate.packageName === entry.packageName && candidate.version === entry.version)
     if (signed === undefined) {
-      throw new Error(`${META_FILE} entry ${entry.packageName}@${entry.version} is not signed in ${MANIFEST_FILE}`)
+      throw new Error(`${META_FILE} entry ${entry.packageName}@${entry.version} is not signed in ${manifestFile}`)
     }
     if ((signed.treeDigest ?? undefined) !== entry.treeDigest) {
       throw new Error(`${META_FILE} treeDigest for ${entry.packageName}@${entry.version} does not match the signed manifest entry`)
@@ -658,6 +689,7 @@ async function main() {
     keyId: meta.keyId,
     lastSeenSequence: deployed.sequence,
     companyCatalogOrigin: `https://${gitlabOrigin}`,
+    channel,
   })
   if (!verification.ok) {
     throw new Error(`signature verification failed (${verification.code}): ${verification.reason}`)
@@ -717,12 +749,12 @@ async function main() {
   }
 
   // --- 5. the push plan (dry-run stops here) ------------------------------------
-  const commitMessage = `catalog: sequence ${String(meta.sequence)} via GitHub run ${runId} (keyId ${meta.keyId}, fingerprint ${meta.fingerprint}, publish-local${tarballPushes.length > 0 ? `, ${String(tarballPushes.length)} tarball(s)` : ''})`
+  const commitMessage = `catalog${channel === 'beta' ? ' beta' : ''}: sequence ${String(meta.sequence)} via GitHub run ${runId} (keyId ${meta.keyId}, fingerprint ${meta.fingerprint}, publish-local${tarballPushes.length > 0 ? `, ${String(tarballPushes.length)} tarball(s)` : ''})`
   const planLines = [
     'push plan:',
     `  target:      https://${gitlabOrigin}/${project}.git → ${branch}`,
-    `  file:        ${MANIFEST_FILE} (${String(manifestBytes.byteLength)} bytes, canonical single line, sha256 ${manifestSha256})`,
-    `  sequence:    ${String(deployed.sequence)} → ${String(meta.sequence)}`,
+    `  file:        ${manifestFile} (${String(manifestBytes.byteLength)} bytes, canonical single line, sha256 ${manifestSha256})`,
+    `  sequence:    ${String(deployed.sequence)} → ${String(meta.sequence)}${channel === 'beta' ? ` (beta channel; the stable ${MANIFEST_FILE} is not touched by this push)` : ''}`,
     `  commit:      ${commitMessage}`,
     `  entries:     ${meta.entries.map((entry) => `${entry.packageName}@${entry.version}${entry.treeDigest === undefined ? '' : ` treeDigest ${entry.treeDigest.slice(0, 12)}…`}${entry.sourceKind === 'tarball' ? ' [tarball]' : ''}`).join(', ')}`,
   ]
@@ -747,8 +779,8 @@ async function main() {
     const repositoryUrl = `https://${gitlabOrigin}/${project}.git`
     run('git', ['clone', '--quiet', '--depth', '1', repositoryUrl, cloneDir], { env: gitEnv, timeoutMs: 300_000 })
     console.log(`clone: ${repositoryUrl} (default branch → pushing to ${branch})`)
-    writeFileSync(join(cloneDir, MANIFEST_FILE), manifestBytes)
-    run('git', ['-C', cloneDir, 'add', MANIFEST_FILE], { env: gitEnv })
+    writeFileSync(join(cloneDir, manifestFile), manifestBytes)
+    run('git', ['-C', cloneDir, 'add', manifestFile], { env: gitEnv })
     // Tarball channel (P7 2b): host the artifacts at the paths the signed
     // urls address. Immutability is the contract: a file that already exists
     // with different bytes is refused (a published name@version never
@@ -776,7 +808,7 @@ async function main() {
     const diff = spawnSync('git', ['-C', cloneDir, 'diff', '--cached', '--quiet'], { encoding: 'utf8', env: gitEnv })
     if (diff.status === 0) {
       throw new Error(
-        `catalog-manifest.json is unchanged on ${branch} at sequence ${String(meta.sequence)} — impossible when the sequence ratchet advanced; ` +
+        `${manifestFile} is unchanged on ${branch} at sequence ${String(meta.sequence)} — impossible when the sequence ratchet advanced; ` +
         'inspect the GitLab repository before retrying (fail closed; nothing was pushed)',
       )
     }
@@ -785,14 +817,14 @@ async function main() {
     }
     run('git', ['-C', cloneDir, '-c', 'user.name=DSH catalog pipeline', '-c', 'user.email=catalog-pipeline@dsh-desktop.local', 'commit', '--quiet', '-m', commitMessage], { env: gitEnv })
     run('git', ['-C', cloneDir, 'push', 'origin', `HEAD:refs/heads/${branch}`], { env: gitEnv, timeoutMs: 300_000 })
-    console.log(`push: ${MANIFEST_FILE}${tarballPushes.length > 0 ? ` + ${String(tarballPushes.length)} tarball(s)` : ''} at sequence ${String(meta.sequence)} → ${branch} (commit: ${commitMessage})`)
+    console.log(`push: ${manifestFile}${tarballPushes.length > 0 ? ` + ${String(tarballPushes.length)} tarball(s)` : ''} at sequence ${String(meta.sequence)} → ${branch} (commit: ${commitMessage})`)
 
     // --- 7. re-read the raw URL until it serves the pushed bytes exactly --------
     // Sequence alone is not deployment confirmation: only sha256(body) ===
     // the sidecar's manifestSha256 proves GitLab serves the exact canonical
     // bytes this artifact was verified against (a reformatted or partial
     // serve must keep failing, not pass on the matching sequence).
-    const branchRawUrl = `https://${gitlabOrigin}/${project}/-/raw/${branch}/${MANIFEST_FILE}`
+    const branchRawUrl = `https://${gitlabOrigin}/${project}/-/raw/${branch}/${manifestFile}`
     const deadline = Date.now() + RECHECK_TIMEOUT_MS
     while (true) {
       let served

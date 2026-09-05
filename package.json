@@ -84,7 +84,7 @@
     "test:architecture-gates": "node --test scripts/market-dependency-direction.test.mjs",
     "check:architecture": "yarn test:architecture-gates && node scripts/verify-market-dependency-direction.mjs",
     "check:layout": "yarn check:bilingual-docs && yarn check:architecture && node scripts/verify-layout.mjs",
-    "test:company-catalog": "node --test tools/company-catalog/tests/allowlist-tarball.test.mjs tools/company-catalog/tests/manifest-tarball.test.mjs tools/company-catalog/tests/pack-surface.test.mjs tools/company-catalog/tests/tarball-publish.test.mjs tools/company-catalog/tests/tarball.test.mjs tools/company-catalog/tests/verify-handoff.test.mjs tools/company-catalog/tests/dsh-free-search.test.mjs",
+    "test:company-catalog": "node --test tools/company-catalog/tests/allowlist-tarball.test.mjs tools/company-catalog/tests/beta-channel.test.mjs tools/company-catalog/tests/manifest-tarball.test.mjs tools/company-catalog/tests/pack-surface.test.mjs tools/company-catalog/tests/tarball-publish.test.mjs tools/company-catalog/tests/tarball.test.mjs tools/company-catalog/tests/verify-handoff.test.mjs tools/company-catalog/tests/dsh-free-search.test.mjs",
     "check:company-catalog": "yarn test:company-catalog && node tools/company-catalog/e2e-tarball.mjs",
     "check": "yarn check:layout && yarn workspace dsh-community-fabric check && yarn workspace dsh-community-market check && yarn workspace dsh-plugin-desktop check && yarn check:company-catalog",
     "catalog": "node tools/company-catalog/cli.mjs",

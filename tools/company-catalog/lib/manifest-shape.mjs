@@ -14,7 +14,11 @@
  * publication runbook documents. This module is the tool-side verifier that
  * can sign and round-trip the extended form; the desktop's
  * `verifyDesktopCompanyManifest` (dsh-plugin-desktop/src/desktop-market.ts) is
- * the client-side twin — keep the two mirrors in sync.
+ * the client-side twin — keep the two mirrors in sync. The beta channel
+ * (P9) adds the same one-extension discipline on top: `channel: 'beta'`
+ * admits an optional top-level `testers` roster (see lib/beta-roster.mjs);
+ * the stable channel keeps the exact previous key set, so a
+ * testers-carrying document never verifies as stable.
  *
  * Plain Node: canonical JSON and the ed25519 fingerprint come from the market
  * library, the node-semver grammar from the market workspace's own dependency
@@ -24,6 +28,8 @@
 import { createPublicKey, verify as cryptoVerify } from 'node:crypto'
 
 const MANIFEST_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature']
+/** The beta channel adds exactly one recognized top-level key: the `testers` roster (P9). */
+const MANIFEST_BETA_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature', 'testers']
 const ENTRY_REQUIRED_KEYS = ['bundlePatch', 'integrity', 'packageName', 'repository', 'revoked', 'runtime', 'version']
 const ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'source', 'treeDigest']
 const SIGNATURE_KEYS = ['keyId', 'publicKey', 'value']
@@ -93,6 +99,10 @@ const MAX_PACKAGES = 10_000
 const MAX_APPROVED_BUILDS = 128
 const MAX_URI_LENGTH = 2048
 const MAX_SEQUENCE = 9_007_199_254_740_991
+/** Email shape admitted to the beta `testers` roster (mirrors the desktop twin in desktop-market.ts). */
+const BETA_TESTER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u
+const MAX_BETA_TESTERS = 1_000
+const MAX_BETA_TESTER_EMAIL_LENGTH = 254
 
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const unknownFields = (value, allowed) => Object.keys(value).filter((key) => !allowed.includes(key))
@@ -162,17 +172,49 @@ function parseEntrySource(source, at, companyCatalogOrigin) {
  * the normalized manifest; anything outside the contract throws with the
  * offending path, so one unknown key rejects the whole manifest exactly like
  * the market verifier treats a `source`-free document.
+ *
+ * `channel: 'beta'` (P9) admits exactly one additional top-level key — the
+ * optional `testers` roster — whose entries must be well-formed emails and
+ * are normalized to lowercase (an uppercase entry is a spelling variant, not
+ * a forgery); duplicates reject. The stable channel keeps the exact previous
+ * key set, so a testers-carrying document never verifies as stable — the
+ * same one-channel-one-schema rule as the desktop twin
+ * (`verifyDesktopCompanyManifest`'s `channel` option). Keep the mirrors in
+ * sync.
  */
-export function validateCompanyManifestShapeWithSources(value, { companyCatalogOrigin, validRange } = {}) {
+export function validateCompanyManifestShapeWithSources(value, { companyCatalogOrigin, validRange, channel = 'stable' } = {}) {
   if (typeof validRange !== 'function') {
     throw new TypeError('validateCompanyManifestShapeWithSources requires the node-semver validRange checker (loadSemverRangeChecker)')
   }
+  if (channel !== 'stable' && channel !== 'beta') {
+    throw new TypeError(`the manifest channel must be 'stable' or 'beta' (got '${String(channel)}')`)
+  }
   if (!isPlainObject(value)) throw new Error('the company manifest must be a JSON object')
   {
-    const unknown = unknownFields(value, MANIFEST_KEYS)
+    const allowedKeys = channel === 'beta' ? MANIFEST_BETA_KEYS : MANIFEST_KEYS
+    const unknown = unknownFields(value, allowedKeys)
     if (unknown.length > 0) throw new Error(`the company manifest has unknown field(s) ${unknown.join(', ')}`)
     for (const key of MANIFEST_KEYS) {
       if (!(key in value)) throw new Error(`the company manifest is missing ${key}`)
+    }
+  }
+  let testers
+  if (channel === 'beta' && value.testers !== undefined) {
+    if (!Array.isArray(value.testers)) throw new Error('the beta company manifest testers must be an array of email addresses')
+    if (value.testers.length > MAX_BETA_TESTERS) {
+      throw new Error(`the beta company manifest testers must carry at most ${String(MAX_BETA_TESTERS)} entries`)
+    }
+    testers = []
+    const seen = new Set()
+    for (const entry of value.testers) {
+      if (typeof entry !== 'string' || entry.length === 0 || entry.length > MAX_BETA_TESTER_EMAIL_LENGTH
+        || !BETA_TESTER_EMAIL_PATTERN.test(entry)) {
+        throw new Error('the beta company manifest testers entries must be well-formed email addresses')
+      }
+      const lowered = entry.toLowerCase()
+      if (seen.has(lowered)) throw new Error(`the beta company manifest testers must not repeat ${lowered}`)
+      seen.add(lowered)
+      testers.push(lowered)
     }
   }
   if (value.manifestVersion !== '1.0.0') throw new Error('the company manifest version must be 1.0.0')
@@ -301,6 +343,7 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
     sequence: value.sequence,
     expiresAt: value.expiresAt,
     packages,
+    ...(testers === undefined ? {} : { testers }),
     signature: value.signature,
   }
 }

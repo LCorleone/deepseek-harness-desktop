@@ -13,9 +13,10 @@
  *   COMPANY_CATALOG_KEY_FINGERPRINT  optional pinned trust-root fingerprint
  */
 
+import { createPublicKey } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -33,15 +34,24 @@ import {
   validateCatalogOrigin,
   CATALOG_ORIGIN_ENV,
 } from './lib/allowlist.mjs'
-import { generateSigningMaterial, loadSigningKeyFromEnv } from './lib/keys.mjs'
+import {
+  applyBetaRosterChanges,
+  loadBetaTesters,
+  saveBetaTesters,
+} from './lib/beta-roster.mjs'
+import { generateSigningMaterial, loadSigningKeyFromEnv, fingerprintOfRawPublicKey, rawPublicKeyBytes } from './lib/keys.mjs'
 import { loadMarketLibrary } from './lib/market.mjs'
 import { fetchPackageDist } from './lib/registry.mjs'
 import {
+  assembleRepublishPackages,
+  commitVerifiedManifest,
   expiryFromDays,
   nextSequenceFromSources,
+  prepareVerifiedManifest,
   publishManifest,
   readDeployedSequence,
   readLastSequence,
+  republishManifestPackages,
   verifyManifestText,
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
@@ -74,9 +84,31 @@ Commands:
                                and verify; the signed manifest is written to --out
                                and its metadata to --meta-out for the publishing
                                workflow. The reviewed allowlist.json is never
-                               modified.
+                               modified. -f channel=beta publishes the beta
+                               manifest instead (default --out: out/catalog-
+                               manifest.beta.json): every allowlist entry plus the
+                               signed tester roster from state/beta-testers.json;
+                               the stable manifest file is not touched.
+  promote <name>@<version>     Promote one beta entry into the stable manifest:
+                               the entry's signed bytes and digest move verbatim
+                               (zero re-verification of upstream facts), both
+                               manifests are re-signed (stable first, then beta)
+                               on the shared sequence ratchet, and the allowlist
+                               entry's beta flag is flipped. Idempotent no-op when
+                               the stable manifest already pins the same entry.
+  beta-roster [-f add=<email>] [-f remove=<email>]
+                               Change the signed tester roster: state/beta-
+                               testers.json is updated (validated, lowercased), the
+                               beta manifest is re-signed with the new roster
+                               (entries verbatim), and the shared sequence ratchet
+                               advances — roster changes reach testers without a
+                               client release. A no-op change re-signs nothing.
   revoke <pkg>[@<version>]     Mark allowlist entries revoked:true and reissue the
                                manifest with a higher sequence (entries are kept).
+                               The beta manifest re-signs in the same operation
+                               (P9): the matched entry is forced revoked:true
+                               there too — the beta superset carries soak entries
+                               the stable manifest never pinned.
   verify [path]                Verify a manifest file end to end
                                (default: out/catalog-manifest.json).
   verify-handoff <dir>         Owner-side mechanical verification of a staged
@@ -150,14 +182,25 @@ const fail = (message) => {
   process.exitCode = 1
 }
 
-/** Minimal hand-rolled parser: `--flag value`, `--flag=value`, positionals. */
+/** Minimal hand-rolled parser: `--flag value`, `--flag=value`, positionals. `-f` is the single-dash alias of `--` (the runbook's `-f channel=beta` spelling). */
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project', 'channel', 'entry', 'add', 'remove'])
   for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index]
-    if (!argument.startsWith('--')) {
+    let argument = argv[index]
+    if (argument.startsWith('--')) {
+      // pass through to the flag parsing below
+    } else if (argument === '-f' || argument.startsWith('-f') ) {
+      // `-f name=value` / `-fname=value` / `-f name value` → `--name=value`
+      if (argument === '-f') {
+        index += 1
+        argument = `--${argv[index]}`
+      } else {
+        argument = `--${argument.slice(2)}`
+      }
+      if (argument === '--undefined') throw new Error('-f requires a flag name')
+    } else {
       positionals.push(argument)
       continue
     }
@@ -183,14 +226,68 @@ const integerFlag = (flags, name) => {
   return Number.parseInt(value, 10)
 }
 
+/**
+ * Resolve the next sequence above every known floor (explicit > deployed >
+ * persisted), shared by every signing path — stable and beta alike (P9: one
+ * global ratchet, so a beta publication can never collide with a stable
+ * sequence clients have already seen).
+ */
+async function resolveNextSequence(flags, stateDir) {
+  const sequenceFrom = flags['sequence-from']
+  const persistedSequence = readLastSequence(stateDir)
+  let deployedSequence
+  let deployedSource
+  if (sequenceFrom !== undefined) {
+    ;({ sequence: deployedSequence, source: deployedSource } = await readDeployedSequence(sequenceFrom))
+  }
+  return nextSequenceFromSources({
+    explicit: integerFlag(flags, 'sequence'),
+    ...(deployedSequence === undefined ? {} : { deployedSequence, deployedSource }),
+    persistedSequence,
+  })
+}
+
 function defaultPaths(flags) {
   // Explicit paths are cwd-relative (or absolute); defaults live in the tool.
   const fromCwd = (value) => resolve(process.cwd(), value)
+  const channel = resolveChannelFlag(flags)
   return {
     allowlistPath: flags.allowlist !== undefined ? fromCwd(flags.allowlist) : resolve(TOOL_DIR, 'allowlist.json'),
-    outPath: flags.out !== undefined ? fromCwd(flags.out) : resolve(TOOL_DIR, join('out', 'catalog-manifest.json')),
+    outPath: flags.out !== undefined
+      ? fromCwd(flags.out)
+      : channel === 'beta'
+        ? resolve(TOOL_DIR, join('out', 'catalog-manifest.beta.json'))
+        : resolve(TOOL_DIR, join('out', 'catalog-manifest.json')),
     stateDir: flags['state-dir'] !== undefined ? fromCwd(flags['state-dir']) : resolve(TOOL_DIR, 'state'),
   }
+}
+
+/** The publication channel flag (P9): `stable` (default) or `beta`. */
+function resolveChannelFlag(flags) {
+  const raw = flags.channel
+  if (raw === undefined) return 'stable'
+  if (raw !== 'stable' && raw !== 'beta') {
+    throw new Error(`--channel must be 'stable' or 'beta' (got '${raw}')`)
+  }
+  return raw
+}
+
+/** The two channel file names the deployment hosts side by side. */
+const STABLE_MANIFEST_FILENAME = 'catalog-manifest.json'
+const BETA_MANIFEST_FILENAME = 'catalog-manifest.beta.json'
+
+/**
+ * The paired manifest paths for the two-file operations (`promote`,
+ * `beta-roster`): they read and write BOTH channel files, so `--out` names
+ * the stable slot and the beta file is its sibling — exactly how the
+ * deployment hosts them (one directory, `catalog-manifest.json` +
+ * `catalog-manifest.beta.json`).
+ */
+function pairedManifestPaths(flags) {
+  const stableOutPath = flags.out !== undefined
+    ? resolve(process.cwd(), flags.out)
+    : resolve(TOOL_DIR, join('out', STABLE_MANIFEST_FILENAME))
+  return { stableOutPath, betaOutPath: join(dirname(stableOutPath), BETA_MANIFEST_FILENAME) }
 }
 
 /**
@@ -227,10 +324,25 @@ async function resolveDists(entries) {
 async function publishFromAllowlist(flags, allowlistPathOverride) {
   const market = await loadMarketLibrary()
   const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  const channel = resolveChannelFlag(flags)
   const { allowlistPath, outPath, stateDir } = defaultPaths(flags)
   const effectiveAllowlistPath = allowlistPathOverride ?? allowlistPath
   const companyCatalogOrigin = resolveCatalogOrigin(flags)
-  const entries = loadAllowlist(effectiveAllowlistPath, { companyCatalogOrigin })
+  const allEntries = loadAllowlist(effectiveAllowlistPath, { companyCatalogOrigin })
+  // Publication channel (P9): the stable manifest signs only stable-flagged
+  // entries; the beta manifest is the superset (stable + beta-flagged) plus
+  // the signed tester roster, so a beta soak entry is invisible to every
+  // non-roster machine until `promote` flips the allowlist flag.
+  const betaRoster = channel === 'beta' ? loadBetaTesters(stateDir) : undefined
+  if (channel === 'beta' && !betaRoster.existed) {
+    console.log(`beta roster: ${betaRoster.path} does not exist yet — using the initial first test group (${String(betaRoster.testers.length)} testers); run beta-roster --add/--remove to persist changes`)
+  }
+  const entries = channel === 'stable'
+    ? allEntries.filter((entry) => entry.channel !== 'beta')
+    : allEntries
+  if (channel === 'stable' && allEntries.length !== entries.length) {
+    console.log(`channel:  ${String(allEntries.length - entries.length)} beta-flagged entr${allEntries.length - entries.length === 1 ? 'y' : 'ies'} held back to the beta manifest (promote flips the allowlist flag) — ${String(entries.length)} stable entries published`)
+  }
   // Tarball channel, pack-artifact form: the signed sha512 comes from the
   // packed file's actual bytes (never a reviewed local value), exactly like
   // the npm channel's integrity comes from the registry response.
@@ -254,18 +366,7 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
     assertBundlePatchDeclaration({ declared, expected: entry.bundlePatch, at: entryKey(entry), source: `the packed artifact ${packed.path}` })
   }
   const dists = await resolveDists(artifacts.entries)
-  const sequenceFrom = flags['sequence-from']
-  const persistedSequence = readLastSequence(stateDir)
-  let deployedSequence
-  let deployedSource
-  if (sequenceFrom !== undefined) {
-    ;({ sequence: deployedSequence, source: deployedSource } = await readDeployedSequence(sequenceFrom))
-  }
-  const { sequence, floor, source: sequenceSource } = nextSequenceFromSources({
-    explicit: integerFlag(flags, 'sequence'),
-    ...(deployedSequence === undefined ? {} : { deployedSequence, deployedSource }),
-    persistedSequence,
-  })
+  const { sequence, floor, source: sequenceSource } = await resolveNextSequence(flags, stateDir)
   const { manifest, fingerprint } = await publishManifest({
     market,
     entries: artifacts.entries,
@@ -279,13 +380,15 @@ async function publishFromAllowlist(flags, allowlistPathOverride) {
     outPath,
     stateDir,
     ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel,
+    ...(betaRoster === undefined ? {} : { testers: betaRoster.testers }),
   })
   const revoked = manifest.packages.filter((entry) => entry.revoked).length
   const tarballChannel = manifest.packages.filter((entry) => entry.source !== undefined).length
-  console.log('published company manifest:')
-  console.log(`  sequence:    ${String(manifest.sequence)} (sequence source: ${sequenceSource})`)
+  console.log(`published company manifest${channel === 'beta' ? ' (beta channel)' : ''}:`)
+  console.log(`  sequence:    ${String(manifest.sequence)} (sequence source: ${sequenceSource}; the ratchet is shared with ${channel === 'beta' ? 'stable' : 'beta'})`)
   console.log(`  expiresAt:   ${manifest.expiresAt}`)
-  console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked, ${String(tarballChannel)} tarball channel)`)
+  console.log(`  packages:    ${String(manifest.packages.length)} (${String(revoked)} revoked, ${String(tarballChannel)} tarball channel)${manifest.testers === undefined ? '' : `, ${String(manifest.testers.length)} testers`}`)
   console.log(`  keyId:       ${keyId}`)
   console.log(`  fingerprint: ${fingerprint}`)
   console.log(`  manifest:    ${outPath}`)
@@ -414,12 +517,14 @@ async function commandPackTarball(flags) {
  * the exact bytes on disk (handoff integrity; signatures never travel
  * without one), and the per-entry digest state. CI later adds gitSha/runId.
  */
-function writePublishMeta({ metaOutPath, manifest, fingerprint, outBytes }) {
+function writePublishMeta({ metaOutPath, manifest, fingerprint, outBytes, channel = 'stable' }) {
   const meta = {
+    channel,
     sequence: manifest.sequence,
     keyId: manifest.signature.keyId,
     fingerprint,
     manifestSha256: createHash('sha256').update(outBytes).digest('hex'),
+    ...(manifest.testers === undefined ? {} : { testers: [...manifest.testers] }),
     entries: manifest.packages.map((entry) => ({
       packageName: entry.packageName,
       version: entry.version,
@@ -451,6 +556,7 @@ async function commandMeasureAndPublish(flags) {
     result = await publishFromAllowlist(flags, runtimeAllowlistPath)
     // Belt and braces: re-read the written bytes and verify them exactly the
     // way an operator audit would, before anything may push this manifest.
+    const channel = resolveChannelFlag(flags)
     const market = await loadMarketLibrary()
     const text = readFileSync(result.outPath, 'utf8')
     const reparsed = JSON.parse(text)
@@ -463,11 +569,12 @@ async function commandMeasureAndPublish(flags) {
       fingerprint,
       keyId: signature.keyId,
       ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+      channel,
     })
     if (!verification.ok) {
       throw new Error(`re-verification of the written manifest failed (${verification.code}): ${verification.reason}`)
     }
-    console.log(`re-verified manifest ${result.outPath} from disk: sequence ${String(verification.manifest.sequence)}, ${String(verification.manifest.packages.length)} packages — ready to publish`)
+    console.log(`re-verified manifest ${result.outPath} from disk: sequence ${String(verification.manifest.sequence)}, ${String(verification.manifest.packages.length)} packages${channel === 'beta' ? `, ${String(verification.manifest.testers?.length ?? 0)} testers (beta channel)` : ''} — ready to publish`)
     const metaOutPath = flags['meta-out']
     if (metaOutPath !== undefined) {
       const written = writePublishMeta({
@@ -475,6 +582,7 @@ async function commandMeasureAndPublish(flags) {
         manifest: verification.manifest,
         fingerprint,
         outBytes: readFileSync(result.outPath),
+        channel,
       })
       console.log(`publish meta: ${written}`)
     }
@@ -493,11 +601,72 @@ async function commandRevoke(positionals, flags) {
   saveAllowlist(allowlistPath, updated)
   console.log(`allowlist: ${matches.join(', ')} marked revoked:true (entry kept; revocation is a state, not a deletion)`)
   try {
-    await publishFromAllowlist(flags)
+    const stableResult = await publishFromAllowlist(flags)
+    // P9 review fix (layer 1): revocation must reach BOTH channel files in
+    // one operation. The stable reissue above derives from the just-revoked
+    // allowlist; the beta manifest — the superset, which carries the entry
+    // even when stable never pinned it (a beta-flagged soak entry) — is
+    // re-signed from its own verified packages with the revoked name@version
+    // forced revoked:true. A beta-roster or promote re-sign then keeps it
+    // there (the alignment below is the layer-2 guarantee).
+    if (resolveChannelFlag(flags) === 'stable') {
+      await reissueBetaWithRevocation(flags, { revokedKeys: matches, stablePackages: stableResult.manifest.packages })
+    }
   } catch (error) {
-    console.error('company-catalog: allowlist updated, but the reissue failed; the revocation stays recorded — run build again once the cause is fixed.')
+    console.error('company-catalog: allowlist updated, but the reissue failed; the revocation stays recorded — re-run measure-and-publish (and -f channel=beta when a beta manifest exists) once the cause is fixed.')
     fail(error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Re-sign the beta manifest so a just-recorded revocation reaches testers'
+ * machines (P9 review fix, layer 1): the verified beta packages keep moving
+ * verbatim except that every entry matching the revocation spec — and every
+ * entry the current stable manifest already pins as revoked (layer 2) — is
+ * forced revoked:true. A missing beta file simply has nothing to re-sign.
+ */
+async function reissueBetaWithRevocation(flags, { revokedKeys, stablePackages }) {
+  const { stateDir } = defaultPaths(flags)
+  const { betaOutPath } = pairedManifestPaths(flags)
+  if (!existsSync(betaOutPath)) {
+    console.log(`beta:     no beta manifest at ${betaOutPath} — nothing to re-sign (the revocation reached the stable manifest)`)
+    return
+  }
+  const market = await loadMarketLibrary()
+  const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  const fingerprint = expectedFingerprint
+    ?? fingerprintOfRawPublicKey(rawPublicKeyBytes(createPublicKey(privateKey)))
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const betaVerification = await readVerifiedManifestFile(market, betaOutPath, {
+    keyId,
+    fingerprint,
+    channel: 'beta',
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  const wanted = new Set(revokedKeys)
+  const betaPackages = alignPackagesWithStableRevocation(
+    betaVerification.manifest.packages.map((entry) => (wanted.has(entryKey(entry)) && entry.revoked !== true
+      ? { ...entry, revoked: true }
+      : entry)),
+    stablePackages,
+  )
+  const { sequence } = await resolveNextSequence(flags, stateDir)
+  const result = await republishManifestPackages({
+    market,
+    packages: betaPackages,
+    sequence,
+    expiresAt: expiryFromDays(integerFlag(flags, 'expires-days') ?? 90),
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence: sequence - 1,
+    outPath: betaOutPath,
+    stateDir,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel: 'beta',
+    testers: betaVerification.manifest.testers ?? [],
+  })
+  console.log(`beta:     re-signed ${betaOutPath} at sequence ${String(result.manifest.sequence)} — ${revokedKeys.join(', ')} revoked:true (${String(result.manifest.packages.length)} packages, ${String(result.manifest.testers?.length ?? 0)} testers)`)
 }
 
 async function commandVerify(positionals, flags) {
@@ -532,11 +701,15 @@ async function commandVerify(positionals, flags) {
   // Anti-rollback is a client-side replay concern; an operator checking an
   // artifact verifies its integrity (canonical bytes, schema, trust root,
   // signature, expiry) and is told how its sequence relates to the state.
+  // A manifest carrying a top-level `testers` roster is a beta manifest
+  // (P9): verify it under the beta channel's one-extension schema.
+  const channel = parsed?.testers !== undefined ? 'beta' : 'stable'
   const persistedSequence = readLastSequence(stateDir)
   const verification = await verifyManifestText(market, text, {
     fingerprint,
     keyId: signature.keyId,
     companyCatalogOrigin: resolveCatalogOrigin(flags),
+    channel,
   })
   if (!verification.ok) {
     throw new Error(`verification failed (${verification.code}): ${verification.reason}`)
@@ -551,6 +724,9 @@ async function commandVerify(positionals, flags) {
   console.log(`  fingerprint: ${verification.fingerprint}`)
   console.log(`  sequence:    ${String(verification.manifest.sequence)} (${sequenceRelation})`)
   console.log(`  expiresAt:   ${verification.manifest.expiresAt}`)
+  if (channel === 'beta') {
+    console.log(`  channel:     beta (${String(verification.manifest.testers?.length ?? 0)} testers: ${(verification.manifest.testers ?? []).join(', ')})`)
+  }
   const channelSummary = verification.manifest.packages.reduce(
     (counts, entry) => {
       const kind = entry.source === undefined ? 'npm' : entry.source.kind
@@ -571,6 +747,270 @@ async function commandVerify(positionals, flags) {
  * verdict.md always written); a pass stages the artifact plus the allowlist
  * entry for the existing publishing flow — this command never signs.
  */
+/** Read and verify one manifest file from disk under the operator's key. */
+async function readVerifiedManifestFile(market, path, { keyId, fingerprint, channel, companyCatalogOrigin, lastSeenSequence }) {
+  let text
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch (error) {
+    throw new Error(`cannot read manifest ${path} (${error.code ?? error.message})`)
+  }
+  const verification = await verifyManifestText(market, text, { fingerprint, keyId, channel, companyCatalogOrigin, lastSeenSequence })
+  if (!verification.ok) {
+    throw new Error(`manifest ${path} failed verification (${verification.code}): ${verification.reason}`)
+  }
+  return verification
+}
+
+/** Parse a `<name>@<version>` spec (scoped names allowed). */
+function parseEntrySpec(spec) {
+  const at = spec.lastIndexOf('@')
+  if (at <= 0 || at === spec.length - 1) {
+    throw new Error(`'${spec}' is not a <name>@<version> spec (scoped names allowed)`)
+  }
+  return { packageName: spec.slice(0, at), version: spec.slice(at + 1) }
+}
+
+/** Whether two signed manifest entries are field-for-field identical. */
+function signedEntriesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+/**
+ * Sticky revocation across channels (P9 review fix, layer 2 — defense in
+ * depth): every name@version the CURRENT stable manifest pins as
+ * revoked:true must leave any re-signed beta manifest revoked:true, even
+ * when the beta source file still carries the pre-revocation false — a
+ * stale beta publication re-signed verbatim (beta-roster, promote) would
+ * otherwise resurrect a revoked entry on testers' machines, because the
+ * beta channel is additive and the client merge lets a divergent beta
+ * entry win. Applied on every beta-side re-sign path.
+ */
+function alignPackagesWithStableRevocation(betaPackages, stablePackages) {
+  const revokedKeys = new Set(stablePackages.filter((entry) => entry.revoked === true).map(entryKey))
+  if (revokedKeys.size === 0) return betaPackages
+  return betaPackages.map((entry) =>
+    entry.revoked === true || !revokedKeys.has(entryKey(entry)) ? entry : { ...entry, revoked: true })
+}
+
+/**
+ * The verified stable packages for the beta-side revocation alignment, or
+ * `[]` when no stable manifest exists yet (the beta-first rollout order).
+ * A stable file that exists but fails verification aborts the operation:
+ * re-signing beta while unable to read stable's revocation state is exactly
+ * the resurrection window the alignment exists to close.
+ */
+async function readStablePackagesForAlignment(market, { stableOutPath, keyId, fingerprint, companyCatalogOrigin }) {
+  if (!existsSync(stableOutPath)) return []
+  const stableVerification = await readVerifiedManifestFile(market, stableOutPath, {
+    keyId,
+    fingerprint,
+    channel: 'stable',
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  return stableVerification.manifest.packages
+}
+
+/**
+ * `promote <name>@<version>` (P9): move one beta entry into the stable
+ * manifest. The entry's signed bytes and digest move verbatim — zero
+ * re-verification of upstream facts — both manifests are re-signed on the
+ * shared ratchet (stable first, then beta, two sequences), and the
+ * allowlist entry's beta flag is flipped so the next stable build keeps the
+ * entry. Idempotent when the stable manifest already pins the same entry.
+ *
+ * Prepare-then-commit (P9 review fix): both re-signed artifacts are built
+ * and verified in memory first; only after every step succeeded may the
+ * allowlist flip, the manifest files, and the sequence state be written —
+ * a failure anywhere in the re-sign path leaves zero repository residue
+ * (the allowlist beta flag, both manifest files, and the ratchet untouched).
+ */
+async function commandPromote(positionals, flags) {
+  if (positionals.length !== 1) throw new Error('promote takes exactly one argument: <name>@<version>')
+  const { packageName, version } = parseEntrySpec(positionals[0])
+  const spec = `${packageName}@${version}`
+  const market = await loadMarketLibrary()
+  const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  // The verification trust root for reading the current pair is the operator's
+  // own signing key — promote re-signs with it, so both files must already be
+  // signed by exactly this key (or the re-sign would silently change the
+  // trust identity of the catalog).
+  const fingerprint = expectedFingerprint
+    ?? fingerprintOfRawPublicKey(rawPublicKeyBytes(createPublicKey(privateKey)))
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const { allowlistPath, stateDir } = defaultPaths(flags)
+  const { stableOutPath, betaOutPath } = pairedManifestPaths(flags)
+  const stableVerification = await readVerifiedManifestFile(market, stableOutPath, {
+    keyId,
+    fingerprint,
+    channel: 'stable',
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  const betaVerification = await readVerifiedManifestFile(market, betaOutPath, {
+    keyId,
+    fingerprint,
+    channel: 'beta',
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  const betaEntry = betaVerification.manifest.packages.find((entry) => entry.packageName === packageName && entry.version === version)
+  if (betaEntry === undefined) {
+    throw new Error(`${spec} is not in the beta manifest ${betaOutPath} — publish it on the beta channel first (measure-and-publish -f channel=beta)`)
+  }
+  const stableEntry = stableVerification.manifest.packages.find((entry) => entry.packageName === packageName && entry.version === version)
+  if (stableEntry !== undefined) {
+    if (!signedEntriesEqual(stableEntry, betaEntry)) {
+      throw new Error(
+        `${spec} is already in the stable manifest with DIFFERENT signed fields — a published name@version is immutable; ` +
+        'promote cannot change it (publish changed content as a new version)',
+      )
+    }
+    console.log(`promote: ${spec} is already promoted (identical signed fields) — idempotent no-op, no sequence consumed`)
+    return
+  }
+  // The reviewed allowlist must know the entry; promote flips its beta flag
+  // so the next stable build keeps what is being promoted — but only AFTER
+  // both re-signed artifacts verified (the commit block below).
+  const entries = loadAllowlist(allowlistPath, { companyCatalogOrigin })
+  const allowlistIndex = entries.findIndex((entry) => entry.packageName === packageName && entry.version === version)
+  if (allowlistIndex === -1) {
+    throw new Error(
+      `${spec} has no allowlist entry (${allowlistPath}) — the allowlist is the reviewed source of truth; ` +
+      're-add the entry before promoting',
+    )
+  }
+  const expiresAt = expiryFromDays(integerFlag(flags, 'expires-days') ?? 90)
+  const { sequence: stableSequence } = await resolveNextSequence(flags, stateDir)
+  // Both signings are prepared before anything is written, so the beta
+  // sequence is derived up front: the shared ratchet hands stable the next
+  // sequence and beta the one after it (two signing events, stable first).
+  const betaSequence = stableSequence + 1
+  const stablePackages = [
+    ...stableVerification.manifest.packages.filter((entry) => !(entry.packageName === packageName && entry.version === version)),
+    betaEntry,
+  ]
+  // Prepare phase — nothing below may touch the allowlist, the manifest
+  // files, or the sequence state.
+  const stablePrepared = await prepareVerifiedManifest({
+    market,
+    unsigned: assembleRepublishPackages({ packages: stablePackages, sequence: stableSequence, expiresAt, channel: 'stable' }),
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence: stableSequence - 1,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel: 'stable',
+  })
+  const promoted = stablePrepared.manifest.packages.find((entry) => entry.packageName === packageName && entry.version === version)
+  if (promoted === undefined || !signedEntriesEqual(promoted, betaEntry)) {
+    throw new Error(`internal inconsistency: the promoted stable entry for ${spec} is not byte-identical to the beta entry — refusing to continue`)
+  }
+  // Sticky revocation (P9 review fix, layer 2): the beta re-sign aligns with
+  // the stable manifest being written — every entry the new stable manifest
+  // pins as revoked:true stays revoked in the beta output even when the
+  // stale beta file still said false.
+  const betaPackages = alignPackagesWithStableRevocation(betaVerification.manifest.packages, stablePrepared.manifest.packages)
+  const betaPrepared = await prepareVerifiedManifest({
+    market,
+    unsigned: assembleRepublishPackages({
+      packages: betaPackages,
+      sequence: betaSequence,
+      expiresAt,
+      channel: 'beta',
+      testers: betaVerification.manifest.testers ?? [],
+    }),
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence: betaSequence - 1,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel: 'beta',
+  })
+  // Commit phase — every artifact verified end to end. The allowlist flips
+  // FIRST (a crash between commits then converges by re-running promote,
+  // which replays the full path), then both files, then the ratchet.
+  if (entries[allowlistIndex].channel === 'beta') {
+    entries[allowlistIndex] = { ...entries[allowlistIndex] }
+    delete entries[allowlistIndex].channel
+    saveAllowlist(allowlistPath, entries)
+    console.log(`allowlist: ${spec} beta flag cleared — the next stable build keeps the promoted entry`)
+  }
+  commitVerifiedManifest({ prepared: stablePrepared, outPath: stableOutPath, stateDir })
+  commitVerifiedManifest({ prepared: betaPrepared, outPath: betaOutPath, stateDir })
+  console.log(`promoted ${spec} to the stable manifest (same digest, zero re-verification):`)
+  console.log(`  stable:  sequence ${String(stablePrepared.manifest.sequence)} → ${stableOutPath} (${String(stablePrepared.manifest.packages.length)} packages)`)
+  console.log(`  beta:    sequence ${String(betaPrepared.manifest.sequence)} → ${betaOutPath} (entries verbatim, ${String(betaPrepared.manifest.testers?.length ?? 0)} testers)`)
+  console.log(`  state:   ${resolve(stateDir, 'last-sequence.json')} (shared ratchet)`)
+  console.log('  push:    publish-local pushes both files (stable, then beta — see the README beta runbook)')
+}
+
+/**
+ * `beta-roster --add <email> --remove <email>` (P9): change the signed tester
+ * roster. The state file is validated and lowercased, the beta manifest is
+ * re-signed with the new roster (entries verbatim), and the shared ratchet
+ * advances — the roster reaches testers without a client release. A change
+ * that changes nothing re-signs nothing (no sequence consumed). Every beta
+ * re-sign also re-aligns the entries with the stable manifest's revocation
+ * state (see {@link alignPackagesWithStableRevocation}): a revoked
+ * name@version can never ride back into a signed beta manifest as
+ * installable, whatever the stale beta source file still claims.
+ */
+async function commandBetaRoster(flags) {
+  const add = flags.add
+  const remove = flags.remove
+  if (add === undefined && remove === undefined) {
+    throw new Error('beta-roster takes --add <email> and/or --remove <email> (at least one)')
+  }
+  const { stateDir } = defaultPaths(flags)
+  const current = loadBetaTesters(stateDir)
+  const { testers, changed } = applyBetaRosterChanges(current.testers, {
+    ...(add === undefined ? {} : { add }),
+    ...(remove === undefined ? {} : { remove }),
+  })
+  console.log(`beta roster: ${String(current.testers.length)} → ${String(testers.length)} testers (${current.existed ? current.path : `${current.path} (first write — the initial test group is the missing-file default)`})`)
+  if (!changed) {
+    // A change that changes nothing consumes no sequence; a missing state
+    // file is still materialized so the operator sees the effective roster.
+    if (!current.existed) saveBetaTesters(stateDir, testers)
+    console.log('beta roster: no effective change — nothing re-signed, no sequence consumed')
+    return
+  }
+  const market = await loadMarketLibrary()
+  const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  const fingerprint = expectedFingerprint
+    ?? fingerprintOfRawPublicKey(rawPublicKeyBytes(createPublicKey(privateKey)))
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const { stableOutPath, betaOutPath } = pairedManifestPaths(flags)
+  const betaVerification = await readVerifiedManifestFile(market, betaOutPath, {
+    keyId,
+    fingerprint,
+    channel: 'beta',
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  const betaPackages = alignPackagesWithStableRevocation(
+    betaVerification.manifest.packages,
+    await readStablePackagesForAlignment(market, { stableOutPath, keyId, fingerprint, companyCatalogOrigin }),
+  )
+  saveBetaTesters(stateDir, testers)
+  const { sequence } = await resolveNextSequence(flags, stateDir)
+  const result = await republishManifestPackages({
+    market,
+    packages: betaPackages,
+    sequence,
+    expiresAt: expiryFromDays(integerFlag(flags, 'expires-days') ?? 90),
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence: sequence - 1,
+    outPath: betaOutPath,
+    stateDir,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel: 'beta',
+    testers,
+  })
+  console.log(`beta roster: re-signed the beta manifest at sequence ${String(result.manifest.sequence)} (entries verbatim) → ${betaOutPath}`)
+  console.log(`  state:   ${resolve(stateDir, 'last-sequence.json')} (shared ratchet)`)
+}
+
 async function commandVerifyHandoff(positionals, flags) {
   if (positionals.length !== 1) {
     throw new Error("verify-handoff takes exactly one argument: <submission-dir> (the staging clone's submissions/<name>-<version> directory)")
@@ -644,6 +1084,8 @@ async function main() {
     else if (command === 'pack-tarball') await commandPackTarball(flags)
     else if (command === 'measure-and-publish') await commandMeasureAndPublish(flags)
     else if (command === 'revoke') await commandRevoke(positionals, flags)
+    else if (command === 'promote') await commandPromote(positionals, flags)
+    else if (command === 'beta-roster') await commandBetaRoster(flags)
     else if (command === 'verify') await commandVerify(positionals, flags)
     else if (command === 'verify-handoff') await commandVerifyHandoff(positionals, flags)
     else if (command === 'keygen') await commandKeygen()

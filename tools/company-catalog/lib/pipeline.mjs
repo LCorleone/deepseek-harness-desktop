@@ -257,11 +257,41 @@ export function nextSequenceFromSources({ explicit, deployedSequence, deployedSo
  * slipped through would otherwise sign, verify as a manifest, then brick
  * the whole catalog at `assertRepresentableEntry` on every desktop.
  */
-export function assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists }) {
+export function assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists, channel = 'stable', testers }) {
   if (market === null || typeof market !== 'object' || typeof market.normalizeRepositoryIdentity !== 'function') {
     throw new TypeError('assembleUnsignedManifest requires the market library (normalizeRepositoryIdentity) — load it with loadMarketLibrary()')
   }
-  const packages = [...entries]
+  if (channel !== 'stable' && channel !== 'beta') {
+    throw new TypeError(`the manifest channel must be 'stable' or 'beta' (got '${String(channel)}')`)
+  }
+  let normalizedTesters
+  if (channel === 'beta') {
+    // Defense in depth at sign time: every roster source (the state loader,
+    // the roster changer, a verified beta manifest) already normalizes, but
+    // the signed bytes must never carry an uppercase or malformed entry —
+    // normalize and shape-check here too, exactly like the desktop verifier.
+    const list = testers ?? []
+    if (!Array.isArray(list)) throw new TypeError('the beta testers roster must be an array of email addresses')
+    const seen = new Set()
+    normalizedTesters = list.map((entry) => {
+      const lowered = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+      if (lowered.length === 0 || lowered.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(lowered)) {
+        throw new Error(`the beta testers roster entry ${JSON.stringify(entry)} is not a usable email address — refusing to sign`)
+      }
+      if (seen.has(lowered)) throw new Error(`the beta testers roster must not repeat ${lowered}`)
+      seen.add(lowered)
+      return lowered
+    })
+  }
+  // Publication channel (P9): a beta-flagged allowlist entry is held back
+  // from every stable manifest and rides the beta manifest (a superset —
+  // the desktop's client-side merge rule is additive-only, so a beta
+  // manifest that repeats every stable entry byte-identically is a no-op on
+  // roster machines and invisible on everyone else's). Promote flips the
+  // allowlist flag, which is why the same assembly produces byte-identical
+  // entries across both channels.
+  const published = entries.filter((entry) => channel !== 'stable' || entry.channel !== 'beta')
+  const packages = [...published]
     .sort((a, b) => (a.packageName === b.packageName
       ? (a.version < b.version ? -1 : a.version > b.version ? 1 : 0)
       : (a.packageName < b.packageName ? -1 : 1)))
@@ -344,6 +374,9 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
     sequence,
     expiresAt: expiresAt instanceof Date ? expiresAt.toISOString() : expiresAt,
     packages,
+    ...(channel === 'beta'
+      ? { testers: normalizedTesters }
+      : {}),
   }
 }
 
@@ -381,9 +414,13 @@ export function signUnsignedManifest(market, unsigned, privateKey, keyId, expect
  *   silently ship a legacy-incompatible source-free manifest;
  * - a manifest that carries `source` cannot verify there by design (one
  *   unknown key rejects it whole — the fleet-upgrade publication gate), so
- *   the dual-channel mirror is its only verifier on this side.
+ *   the dual-channel mirror is its only verifier on this side. The beta
+ *   channel (`channel: 'beta'`, P9) is in the same position: its top-level
+ *   `testers` roster is a key the market verifier rejects whole, and that is
+ *   correct — the beta manifest is served at a URL only field-aware builds
+ *   ever fetch, so no legacy-invariant applies to it.
  */
-export async function verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence = 0, now, companyCatalogOrigin }) {
+export async function verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence = 0, now, companyCatalogOrigin, channel = 'stable' }) {
   if (typeof text !== 'string' || text.length === 0) {
     return { ok: false, code: 'malformed-json', reason: 'manifest text is empty' }
   }
@@ -408,6 +445,7 @@ export async function verifyManifestText(market, text, { fingerprint, keyId, las
     manifest = validateCompanyManifestShapeWithSources(parsed, {
       ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
       validRange,
+      channel,
     })
   } catch (error) {
     return { ok: false, code: 'invalid-manifest', reason: error.message }
@@ -432,7 +470,7 @@ export async function verifyManifestText(market, text, { fingerprint, keyId, las
   if (verifiedAt >= expiresAtMs) {
     return { ok: false, code: 'expired', reason: `company manifest expired at ${manifest.expiresAt}` }
   }
-  if (!manifestCarriesSource(parsed)) {
+  if (!manifestCarriesSource(parsed) && channel !== 'beta') {
     const legacy = market.verifyCompanyManifest(text, {
       trustRoots: [{ keyId, fingerprint }],
       lastSeenSequence,
@@ -473,15 +511,163 @@ export async function publishManifest({
   outPath,
   stateDir,
   companyCatalogOrigin,
+  channel = 'stable',
+  testers,
 }) {
-  const unsigned = assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists })
+  const unsigned = assembleUnsignedManifest({ market, sequence, expiresAt, entries, dists, channel, testers })
+  return await writeVerifiedManifest({
+    market,
+    unsigned,
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence,
+    outPath,
+    stateDir,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel,
+  })
+}
+
+/**
+ * Assemble the unsigned re-sign document from verbatim signed entries
+ * (P9): the entry list is only re-sorted, never re-derived, so the re-signed
+ * bytes preserve every entry field exactly (the shared body of
+ * {@link republishManifestPackages} and promote's prepare-then-commit path).
+ */
+export function assembleRepublishPackages({
+  packages,
+  sequence,
+  expiresAt,
+  channel = 'stable',
+  testers,
+}) {
+  if (channel === 'beta' && testers === undefined) {
+    throw new TypeError('a beta-channel re-sign requires the testers roster')
+  }
+  if (typeof expiresAt === 'string' ? Number.isNaN(Date.parse(expiresAt)) : !(expiresAt instanceof Date)) {
+    throw new TypeError('expiresAt must be a Date or an RFC 3339 string')
+  }
+  // Same sign-time roster normalization as assembly: the signed bytes never
+  // carry an uppercase or malformed entry, whatever the caller handed over.
+  const normalizedTesters = channel === 'beta'
+    ? [...testers].map((entry) => {
+      const lowered = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+      if (lowered.length === 0 || lowered.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(lowered)) {
+        throw new Error(`the beta testers roster entry ${JSON.stringify(entry)} is not a usable email address — refusing to sign`)
+      }
+      return lowered
+    })
+    : undefined
+  return {
+    manifestVersion: MANIFEST_VERSION,
+    sequence,
+    expiresAt: expiresAt instanceof Date ? expiresAt.toISOString() : expiresAt,
+    packages: [...packages].sort(byPackageIdentity),
+    ...(channel === 'beta' ? { testers: normalizedTesters } : {}),
+  }
+}
+
+/**
+ * Sign and fully verify one assembled unsigned manifest WITHOUT touching the
+ * disk or the sequence state (P9 review fix): the two-file operations
+ * (`promote`) prepare EVERY artifact first and commit them — and the
+ * allowlist flip — only after each one verified end to end, so a failure
+ * anywhere in the re-sign path leaves zero repository residue. The wrong-key
+ * signing failure surfaces here, before any caller state changes.
+ */
+export async function prepareVerifiedManifest({
+  market,
+  unsigned,
+  privateKey,
+  keyId,
+  expectedFingerprint,
+  lastSeenSequence,
+  companyCatalogOrigin,
+  channel,
+}) {
   const { manifest, text, fingerprint } = signUnsignedManifest(market, unsigned, privateKey, keyId, expectedFingerprint)
-  const verification = await verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence, companyCatalogOrigin })
+  const verification = await verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence, companyCatalogOrigin, channel })
   if (!verification.ok) {
     throw new Error(`verification failed before publish (${verification.code}): ${verification.reason}`)
   }
-  mkdirSync(dirname(outPath), { recursive: true })
-  writeFileSync(outPath, text, 'utf8')
-  writeLastSequence(stateDir, sequence)
   return { manifest, text, fingerprint, verification }
+}
+
+/** Commit one prepared, fully verified manifest: write the bytes, ratchet the shared sequence. */
+export function commitVerifiedManifest({ prepared, outPath, stateDir }) {
+  mkdirSync(dirname(outPath), { recursive: true })
+  writeFileSync(outPath, prepared.text, 'utf8')
+  writeLastSequence(stateDir, prepared.manifest.sequence)
+  return prepared
+}
+
+/** Sign, fully verify, write, and ratchet one already-assembled unsigned manifest. */
+async function writeVerifiedManifest({
+  market,
+  unsigned,
+  privateKey,
+  keyId,
+  expectedFingerprint,
+  lastSeenSequence,
+  outPath,
+  stateDir,
+  companyCatalogOrigin,
+  channel,
+}) {
+  const prepared = await prepareVerifiedManifest({
+    market,
+    unsigned,
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence,
+    companyCatalogOrigin,
+    channel,
+  })
+  return commitVerifiedManifest({ prepared, outPath, stateDir })
+}
+
+/** Deterministic manifest package order: (packageName, version), the assembly sort. */
+const byPackageIdentity = (left, right) => left.packageName === right.packageName
+  ? (left.version < right.version ? -1 : left.version > right.version ? 1 : 0)
+  : (left.packageName < right.packageName ? -1 : 1)
+
+/**
+ * Re-sign a manifest from verbatim signed entries (P9): `promote` merges a
+ * beta entry into the stable manifest and `beta-roster` swaps the roster —
+ * both must preserve the entries byte-for-byte (same digests, same fields;
+ * only the sequence and expiry move), so they re-sign the entries the
+ * current verified manifests already carry instead of re-deriving them
+ * from the allowlist and the registry. Zero re-verification of upstream
+ * facts by design: the signed bytes are the authority.
+ */
+export async function republishManifestPackages({
+  market,
+  packages,
+  sequence,
+  expiresAt,
+  privateKey,
+  keyId,
+  expectedFingerprint,
+  lastSeenSequence,
+  outPath,
+  stateDir,
+  companyCatalogOrigin,
+  channel = 'stable',
+  testers,
+}) {
+  const unsigned = assembleRepublishPackages({ packages, sequence, expiresAt, channel, testers })
+  return await writeVerifiedManifest({
+    market,
+    unsigned,
+    privateKey,
+    keyId,
+    expectedFingerprint,
+    lastSeenSequence,
+    outPath,
+    stateDir,
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    channel,
+  })
 }

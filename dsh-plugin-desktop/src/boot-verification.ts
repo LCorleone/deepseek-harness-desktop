@@ -94,10 +94,12 @@ import {
   type MarketInstallReceipt,
 } from 'dsh-community-market'
 import { fetchCompanyManifestText } from './company-manifest-origin.ts'
+import type { DesktopBetaChannelOverlay } from './beta-channel.ts'
 import {
   COMPANY_TARBALL_MAX_BYTES,
   DESKTOP_MARKET_IDENTITIES,
-  findDesktopCompanyManifestPackage,
+  findDesktopCompanyManifestPackageWithBeta,
+  type DesktopCompanyManifestPackage,
   verifyDesktopCompanyManifest,
   type DesktopCompanyManifest,
 } from './desktop-market.ts'
@@ -181,6 +183,20 @@ export interface DesktopBootVerificationInputs {
    * for {@link DesktopBootTreeMeasurePurpose} `'signed-tree'`.
    */
   readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
+  /**
+   * Verified, roster-admitted beta entries (P9): the host resolves the beta
+   * manifest next to the stable fetch (same trust roots, the signed
+   * `testers` roster already matched against the local SSO identity), and
+   * boot verification consults them for a `name@version` the stable
+   * manifest does not pin — a tester's installed beta plugin must not be
+   * rejected by the very manifest that allowed its install. The beta
+   * sequence must not regress below the verified stable sequence (a stale
+   * overlay is ignored); the stable manifest stays the boot's identity, so
+   * `manifestSequence`/`keyId` in the decision keep tracking stable.
+   */
+  readonly betaPackages?: readonly DesktopCompanyManifestPackage[]
+  /** Sequence of the beta manifest {@link DesktopBootVerificationOptions.betaPackages} came from. */
+  readonly betaSequence?: number
 }
 
 export interface DesktopBootVerificationOptions {
@@ -203,6 +219,10 @@ export interface DesktopBootVerificationOptions {
   readonly now?: () => number
   /** Installed-tree measurement override for focused tests; see {@link DesktopBootVerificationInputs.measureTreeRootDigest}. */
   readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
+  /** Verified, roster-admitted beta entries; see {@link DesktopBootVerificationInputs.betaPackages}. */
+  readonly betaPackages?: readonly DesktopCompanyManifestPackage[]
+  /** Sequence of the beta manifest the beta entries came from. */
+  readonly betaSequence?: number
 }
 
 /** How much evidence allowed a bundle to load. */
@@ -613,6 +633,14 @@ export interface DesktopBootVerificationInputOptions {
   ) => Promise<string>
   /** Installed-tree measurement override (the persisted fingerprint cache). */
   readonly measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
+  /**
+   * Pre-resolved beta overlay (P9): the host resolves it concurrently with
+   * the stable fetch (same SSO session, same trust roots) and passes the
+   * result through to {@link verifyDesktopBootBundles}; `undefined` (the
+   * default, and the value for every non-roster machine) keeps boot
+   * verification on the stable manifest alone.
+   */
+  readonly betaOverlay?: DesktopBetaChannelOverlay
 }
 
 /**
@@ -646,6 +674,10 @@ export async function desktopBootVerificationInputs(
     ...(options.measureTreeRootDigest === undefined
       ? {}
       : { measureTreeRootDigest: options.measureTreeRootDigest }),
+    ...(options.betaOverlay === undefined ? {} : {
+      betaPackages: options.betaOverlay.packages,
+      betaSequence: options.betaOverlay.sequence,
+    }),
   }
 }
 
@@ -1093,6 +1125,15 @@ export function verifyDesktopBootBundles(
   }
 
   const { manifest, keyId } = verified
+  // Beta overlay floor (P9): a beta sequence below the verified stable
+  // sequence is a stale publication — ignore the overlay entirely rather
+  // than letting an older beta view of the catalog shadow a newer stable
+  // one. An overlay at or above stable rides only the per-entry lookup.
+  const betaPackages = options.betaPackages !== undefined
+    && Number.isSafeInteger(options.betaSequence)
+    && (options.betaSequence as number) >= manifest.sequence
+    ? options.betaPackages
+    : undefined
   const measure: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string =
     options.measureTreeRootDigest ?? computeDesktopBootTreeRootDigest
   const allowed: DesktopBootAllowedBundle[] = []
@@ -1105,9 +1146,10 @@ export function verifyDesktopBootBundles(
       reject(`${bundle.packageName} cannot be resolved as an installed package in the active profile`)
       continue
     }
-    const entry = findDesktopCompanyManifestPackage(manifest, bundle.packageName, bundle.version)
+    const entry = findDesktopCompanyManifestPackageWithBeta(manifest, betaPackages, bundle.packageName, bundle.version)
     if (entry === undefined) {
-      const pinned = manifest.packages.find(candidate => candidate.packageName === bundle.packageName)
+      const pinned = betaPackages?.find(candidate => candidate.packageName === bundle.packageName)
+        ?? manifest.packages.find(candidate => candidate.packageName === bundle.packageName)
       reject(pinned === undefined
         ? `${bundle.packageName}@${bundle.version} is not in the signed company manifest`
         : `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`)

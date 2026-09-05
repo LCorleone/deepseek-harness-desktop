@@ -160,6 +160,37 @@ export type CompanyManifestVerifier = (
   options: VerifyCompanyManifestOptions,
 ) => CompanyManifestVerification
 
+/**
+ * Host-resolved beta-channel overlay (P9): the already-verified,
+ * already-roster-filtered signed entries of the deployment's beta catalog
+ * manifest, plus the beta manifest's own sequence. The embedding Host owns
+ * every beta decision — fetching `catalog-manifest.beta.json` from the
+ * policy-pinned origin, verifying it under the same trust roots (the
+ * field-aware verifier carrying the optional top-level `testers` roster),
+ * and matching the local SSO identity against the signed roster — and
+ * returns `undefined` for every other outcome, which keeps the provider's
+ * scan byte-for-byte on the stable manifest alone (a non-roster machine, a
+ * missing or unverified beta file, an unresolved identity). The provider
+ * only merges what arrives: beta entries are additive — a `name@version`
+ * the stable manifest already pins with identical signed fields changes
+ * nothing, a divergent or new one wins — and a beta sequence below the
+ * stable sequence is a stale overlay the provider ignores. The stable
+ * manifest's verification view (sequence, keyId, expiresAt) stays the
+ * catalog's identity, so receipts and the anti-rollback ratchet keep
+ * tracking the stable channel exactly as before.
+ */
+export interface CompanyBetaCatalogOverlay {
+  /** Signed entries of the verified beta manifest, revoked entries included. */
+  readonly packages: readonly CompanyManifestPackage[]
+  /** Sequence of the verified beta manifest; must not regress below the stable sequence. */
+  readonly sequence: number
+}
+
+/** Host-provided beta overlay resolution (see {@link CompanyBetaCatalogOverlay}). */
+export type CompanyBetaCatalogOverlayProvider = (
+  signal?: AbortSignal,
+) => Promise<CompanyBetaCatalogOverlay | undefined>
+
 export interface CompanyCatalogProviderOptions {
   /** Origin mode: credential-free HTTPS URL of the signed manifest on team static hosting. */
   readonly companyManifestUrl?: string
@@ -178,6 +209,14 @@ export interface CompanyCatalogProviderOptions {
    * byte on the library verifier.
    */
   readonly manifestVerifier?: CompanyManifestVerifier
+  /**
+   * Host-resolved beta overlay (P9, see {@link CompanyBetaCatalogOverlayProvider}).
+   * Every failure inside the provider — a thrown resolution, a stale beta
+   * sequence, an unrepresentable beta entry — drops the overlay and keeps the
+   * scan on the stable manifest alone; the stable scan itself never fails
+   * because of beta content. Standalone deployments stay overlay-free.
+   */
+  readonly betaOverlayProvider?: CompanyBetaCatalogOverlayProvider
   /**
    * Host logger for the loud same-sequence digest-mismatch warning on the
    * self-heal path in `scanCatalog` (see the module security note); the
@@ -264,6 +303,53 @@ export function companyCatalogItemId(entry: Pick<CompanyManifestPackage, 'packag
   return `npm:${entry.packageName}@${entry.version}`
 }
 
+/** Signed-entry identity key of one exact package version. */
+const companyEntryIdentity = (entry: Pick<CompanyManifestPackage, 'packageName' | 'version'>): string =>
+  `${entry.packageName}\0${entry.version}`
+
+/**
+ * Merge a host-resolved beta overlay into the stable manifest's entries
+ * (P9). Beta is additive-only visibility: entries the stable manifest does
+ * not pin are appended, and a `name@version` both manifests pin replaces the
+ * stable entry exactly when the signed fields diverge (a byte-identical
+ * entry — the post-promote steady state — changes nothing, so promotion is
+ * invisible to roster machines and non-roster machines never see beta
+ * content at all). One field never flips back: revocation is sticky — a
+ * `name@version` the stable manifest pins as revoked:true stays revoked in
+ * the merge even when a stale beta entry still says false, so a pre-
+ * revocation beta publication can never resurrect a revoked entry on a
+ * roster machine (the client-side half of the pipeline's sign-time
+ * alignment). Every beta entry must be representable in the v1 catalog
+ * contract before it may enter the merge: one that cannot be is a publish
+ * fault, and the caller drops the whole overlay rather than partially
+ * adopting signed content. The merged list keeps the pipeline's
+ * `(packageName, version)` sort so scans stay deterministic.
+ */
+export function mergeCompanyBetaPackages(
+  stablePackages: readonly CompanyManifestPackage[],
+  betaPackages: readonly CompanyManifestPackage[],
+): readonly CompanyManifestPackage[] {
+  const merged = new Map<string, CompanyManifestPackage>()
+  for (const entry of stablePackages) {
+    merged.set(companyEntryIdentity(entry), entry)
+  }
+  for (const entry of betaPackages) {
+    // The same representability gate the stable scan applies per entry;
+    // running it here keeps a publish fault from failing the whole scan
+    // downstream — the caller treats the throw as "overlay unusable".
+    assertRepresentableEntry(entry)
+    const stable = merged.get(companyEntryIdentity(entry))
+    merged.set(
+      companyEntryIdentity(entry),
+      stable?.revoked === true && entry.revoked !== true ? { ...entry, revoked: true } : entry,
+    )
+  }
+  return [...merged.values()].sort((left, right) =>
+    left.packageName === right.packageName
+      ? (left.version < right.version ? -1 : left.version > right.version ? 1 : 0)
+      : (left.packageName < right.packageName ? -1 : 1))
+}
+
 /**
  * Guard the v1 snapshot contract limits the manifest schema cannot express
  * (identifier grammar, name and version lengths). A company manifest entry
@@ -322,13 +408,15 @@ function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): 
 }
 
 function buildScan(
-  manifest: CompanyManifest,
+  packages: readonly CompanyManifestPackage[],
+  providerRevision: string,
   source: LocalSourceRecord,
   verification: Omit<CompanyCatalogVerification, 'sequence' | 'expiresAt'> & { readonly finalUrl: string },
+  manifest: Pick<CompanyManifest, 'sequence' | 'expiresAt'>,
 ): CompanyCatalogScan {
   const items: CatalogItem[] = []
   const candidates: CompanyCatalogCandidate[] = []
-  for (const entry of manifest.packages) {
+  for (const entry of packages) {
     // Revoked entries keep their signed audit trail inside the manifest but
     // never enter the catalog: no browse row, no install candidate. Exclusion
     // (instead of an "uninstallable" flag) matches the v1 candidate contract,
@@ -349,7 +437,6 @@ function buildScan(
   }
 
   const fetchedAt = new Date(verification.verifiedAt).toISOString()
-  const providerRevision = `company-manifest-${manifest.sequence}`
   const { finalUrl, ...verificationView } = verification
   const snapshots: CatalogSnapshot[] = []
   for (let offset = 0; offset < items.length; offset += COMPANY_CATALOG_PAGE_SIZE) {
@@ -392,7 +479,7 @@ function buildScan(
       expiresAt: manifest.expiresAt,
     },
     candidates,
-    signedPackages: [...manifest.packages],
+    signedPackages: [...packages],
     snapshots,
   }
 }
@@ -477,6 +564,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   private readonly sequenceStore: CompanyManifestSequenceStore | undefined
   private readonly now: () => number
   private readonly verifyManifest: CompanyManifestVerifier
+  private readonly betaOverlayProvider: CompanyBetaCatalogOverlayProvider | undefined
   private readonly logger: Pick<Context['logger'], 'warn'> | undefined
   private scan: CompanyCatalogScan | undefined
 
@@ -495,6 +583,9 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     if (options.manifestVerifier !== undefined && typeof options.manifestVerifier !== 'function') {
       throw new TypeError('manifestVerifier must be a function')
     }
+    if (options.betaOverlayProvider !== undefined && typeof options.betaOverlayProvider !== 'function') {
+      throw new TypeError('betaOverlayProvider must be a function')
+    }
     const trustRoots = normalizeCompanyManifestTrustRoots(options.trustRoots)
     if (trustRoots.length === 0) {
       throw new TypeError('company catalog provider requires at least one pinned trust root')
@@ -506,6 +597,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     this.sequenceStore = options.sequenceStore
     this.now = options.now ?? Date.now
     this.verifyManifest = options.manifestVerifier ?? verifyCompanyManifest
+    this.betaOverlayProvider = options.betaOverlayProvider
     this.logger = options.logger
   }
 
@@ -600,13 +692,48 @@ export class CompanyCatalogProvider implements CatalogAdapter {
       ...(verifiedBytesSha256 === undefined ? {} : { bytesSha256: verifiedBytesSha256 }),
     })
     context.signal.throwIfAborted()
-    const scan = buildScan(verification.manifest, context.source, {
-      mode: this.mode,
-      keyId: verification.keyId,
-      fingerprint: verification.fingerprint,
-      verifiedAt,
-      finalUrl: loaded.finalUrl,
-    })
+    // Beta overlay (P9): the Host resolves the beta manifest and the roster
+    // decision; the provider only merges. Every overlay outcome except a
+    // usable package list — no provider configured, undefined (the Host's
+    // own fail-closed decision for a non-roster machine or an unverified
+    // beta file), a thrown resolution, a beta sequence below the just-
+    // verified stable sequence (stale overlay), or an unrepresentable beta
+    // entry — keeps this scan on the stable manifest alone. The overlay
+    // never fails the stable scan and never touches the ratchet above: the
+    // persisted sequence floor stays the stable channel's, so a beta
+    // manifest published ahead of stable cannot brick the catalog.
+    let packages: readonly CompanyManifestPackage[] = verification.manifest.packages
+    let betaApplied = false
+    if (this.betaOverlayProvider !== undefined) {
+      try {
+        const overlay = await this.betaOverlayProvider(context.signal)
+        if (overlay !== undefined && overlay.sequence >= verification.manifest.sequence) {
+          packages = mergeCompanyBetaPackages(verification.manifest.packages, overlay.packages)
+          betaApplied = true
+        } else if (overlay !== undefined) {
+          this.logger?.warn(
+            `dsh-community-market: ignoring the beta catalog overlay at sequence ${String(overlay.sequence)} — below the verified stable sequence ${String(verification.manifest.sequence)} (stale beta publication)`,
+          )
+        }
+      } catch (cause) {
+        this.logger?.warn(
+          `dsh-community-market: ignoring the beta catalog overlay — resolution or merge failed (${cause instanceof Error ? cause.message : String(cause)})`,
+        )
+      }
+    }
+    const scan = buildScan(
+      packages,
+      `company-manifest-${String(verification.manifest.sequence)}${betaApplied ? '+beta' : ''}`,
+      context.source,
+      {
+        mode: this.mode,
+        keyId: verification.keyId,
+        fingerprint: verification.fingerprint,
+        verifiedAt,
+        finalUrl: loaded.finalUrl,
+      },
+      verification.manifest,
+    )
     this.scan = scan
     return scan.snapshots
   }

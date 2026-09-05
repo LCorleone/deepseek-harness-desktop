@@ -59,8 +59,9 @@ import {
 import {
   fetchCompanyManifestText,
 } from './company-manifest-origin.ts'
+import type { DesktopBetaChannelOverlay } from './beta-channel.ts'
 import {
-  findDesktopCompanyManifestPackage,
+  findDesktopCompanyManifestPackageWithBeta,
   installCompanyMarketTarballPlugin,
   stageCompanyMarketTarball,
   verifyDesktopCompanyManifest,
@@ -107,6 +108,15 @@ export interface DesktopCompanyMarketTarballInstallOptions {
   readonly lastSeenSequence?: () => number | undefined
   /** Origin-mode manifest acquisition override (the Electron `net.fetch` composition); defaults to the shared restricted fetch. */
   readonly fetchManifestText?: typeof fetchCompanyManifestText
+  /**
+   * Beta overlay resolver (P9): resolves the verified, roster-admitted beta
+   * entries next to the stable manifest (the host's shared beta resolver —
+   * same trust roots, same SSO session). A beta tarball entry the stable
+   * manifest does not pin verifies through this overlay instead of failing
+   * the registry cross-check; `undefined` (non-roster machines, beta
+   * unverified) keeps the channel on the stable manifest alone.
+   */
+  readonly betaOverlay?: () => Promise<DesktopBetaChannelOverlay | undefined>
   /** Tarball download boundary; defaults to `globalThis.fetch` (the Electron composition injects `net.fetch`). */
   readonly request?: UpdateChannelRequest
   /** Diagnostic sink for staging keepalive warnings; defaults to silence. */
@@ -146,6 +156,7 @@ export function createDesktopCompanyMarketTarballInstallChannel(
 ): DesktopCompanyMarketTarballInstallChannel {
   const policy = options.policy
   let verified: { readonly manifest: DesktopCompanyManifest } | undefined
+  let verifiedBeta: { readonly packages: readonly DesktopCompanyManifestPackage[] } | undefined
 
   const acquireManifest = async (signal: AbortSignal): Promise<DesktopCompanyManifest | undefined> => {
     // Unlocked policies and policies without trust roots have no signed
@@ -173,6 +184,19 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     })
     if (!verification.ok) return undefined
     verified = { manifest: verification.manifest }
+    // Beta overlay (P9): resolved after the stable manifest verifies, so its
+    // staleness floor is the just-verified stable sequence; every overlay
+    // outcome except an admitted package list keeps the channel stable-only.
+    if (options.betaOverlay !== undefined) {
+      try {
+        const overlay = await options.betaOverlay()
+        if (overlay !== undefined && overlay.sequence >= verification.manifest.sequence) {
+          verifiedBeta = { packages: overlay.packages }
+        }
+      } catch {
+        verifiedBeta = undefined
+      }
+    }
     return verification.manifest
   }
 
@@ -181,7 +205,10 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     packageName: string,
     version: string,
   ): DesktopCompanyManifestPackage | undefined => {
-    const entry = findDesktopCompanyManifestPackage(manifest, packageName, version)
+    // Beta first (P9): a roster-admitted beta entry wins over the stable
+    // manifest's entry for the same name@version — the market catalog's
+    // merge rule — and beta-only entries resolve here too.
+    const entry = findDesktopCompanyManifestPackageWithBeta(manifest, verifiedBeta?.packages, packageName, version)
     if (entry === undefined) return undefined
     const source = entry.source ?? { kind: 'npm' as const }
     return source.kind === 'tarball' ? entry : undefined

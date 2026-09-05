@@ -28,6 +28,7 @@ import {
   CompanyCatalogUntrustedError,
   createCompanyCatalogProvider,
   SettingsCompanyManifestSequenceStore,
+  type CompanyBetaCatalogOverlayProvider,
   type CompanyCatalogProvider,
   type CompanyManifestContentProvider,
   type CompanyManifestVerifier,
@@ -200,6 +201,18 @@ export interface CommunityMarketCompanyCatalogOptions {
    * keeps the market's field-unaware verifier byte for byte.
    */
   readonly manifestVerifier?: CompanyManifestVerifier
+  /**
+   * Host-resolved beta overlay for the catalog provider (the provider's
+   * `betaOverlayProvider` option, P9). The Host delivers it through the
+   * `desktopCompanyBetaCatalog` context capability: a function that fetches
+   * and verifies the deployment's `catalog-manifest.beta.json` under the
+   * same trust roots and returns its signed entries only when the local SSO
+   * identity is in the signed `testers` roster. Without the capability the
+   * provider scans the stable manifest alone — standalone deployments and
+   * every non-roster machine included — and overlay failures inside the
+   * provider never fail the stable scan.
+   */
+  readonly betaOverlayProvider?: CompanyBetaCatalogOverlayProvider
 }
 
 /** One-line scan failure identity: the cause's `code` when it carries one, else its constructor name. */
@@ -269,6 +282,7 @@ export function createCommunityMarketCompanyCatalog(
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.manifestVerifier === undefined ? {} : { manifestVerifier: options.manifestVerifier }),
+    ...(options.betaOverlayProvider === undefined ? {} : { betaOverlayProvider: options.betaOverlayProvider }),
   })
   const installTargetAuthority = createSignedManifestInstallTargetAuthority(
     provider,
@@ -336,6 +350,12 @@ export function apply(ctx: Context): void {
   // over one unknown key. A missing capability keeps the portable
   // field-unaware verifier — standalone deployments included.
   const companyManifestVerifier = ctx.get('desktopCompanyManifestVerifier') as CompanyManifestVerifier | undefined
+  // Beta catalog overlay (P9): the Desktop host provides
+  // `desktopCompanyBetaCatalog`, the resolver that fetches and verifies the
+  // deployment's beta manifest and applies the signed SSO tester roster.
+  // A missing capability keeps the provider on the stable manifest alone —
+  // standalone deployments included.
+  const companyBetaCatalog = ctx.get('desktopCompanyBetaCatalog') as CompanyBetaCatalogOverlayProvider | undefined
   // Tarball-channel verification injection (P7 2c): the Desktop host
   // provides `desktopMarketTarballEntryVerifier`, the seam that verifies a
   // catalog entry published as a controlled tarball against the same signed
@@ -358,6 +378,7 @@ export function apply(ctx: Context): void {
     ? createCommunityMarketCompanyCatalog(policy, scope, {
       ...(companyCatalogHttp === undefined ? {} : { originHttpClient: companyCatalogHttp }),
       ...(companyManifestVerifier === undefined ? {} : { manifestVerifier: companyManifestVerifier }),
+      ...(companyBetaCatalog === undefined ? {} : { betaOverlayProvider: companyBetaCatalog }),
       logger: ctx.logger,
     })
     : undefined
@@ -450,6 +471,8 @@ export {
   createCompanyCatalogProvider,
   SettingsCompanyManifestSequenceStore,
   type CompanyCatalogCandidate,
+  type CompanyBetaCatalogOverlay,
+  type CompanyBetaCatalogOverlayProvider,
   type CompanyCatalogProvider,
   type CompanyCatalogProviderOptions,
   type CompanyCatalogVerification,
@@ -457,6 +480,7 @@ export {
   type CompanyManifestSequenceStore,
   type CompanyManifestVerifier,
 } from './catalog/company-provider.js'
+export { mergeCompanyBetaPackages } from './catalog/company-provider.js'
 export type { MarketCompanyManifestRecord } from './catalog/source-store.js'
 export { createSignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'
 export type {

@@ -36,7 +36,7 @@ export function expectedTarballFilename(packageName, version) {
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
+const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'channel', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
 const SOURCE_KINDS = ['npm', 'tarball']
 const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'path', 'url']
 const NPM_SOURCE_FIELDS = ['kind']
@@ -352,12 +352,22 @@ export function validateAllowlistEntry(entry, at, options = {}) {
   }
   const source = validateEntrySource(entry.source, at, options)
   if (source.ok === false) return { ok: false, reason: source.reason }
+  // Publication channel (P9): absent (or 'stable') publishes with the
+  // stable manifest; 'beta' holds the entry back to the beta manifest until
+  // `promote` flips it. The channel is allowlist state, never signed — the
+  // signed manifests differ by content (testers roster, entry presence),
+  // and the entry bytes are identical across both channels.
+  const channel = entry.channel ?? 'stable'
+  if (channel !== 'stable' && channel !== 'beta') {
+    return { ok: false, reason: `${at}.channel must be 'beta' when present (absent means stable)` }
+  }
   return {
     ok: true,
     value: {
       packageName,
       version,
       bundlePatch,
+      ...(channel === 'stable' ? {} : { channel }),
       ...(repository === undefined ? {} : { repository }),
       revoked,
       runtime: normalizedRuntime,

@@ -848,6 +848,8 @@ function lockedProfileBootVerification(
       ...(inputs?.measureTreeRootDigest === undefined
         ? {}
         : { measureTreeRootDigest: inputs.measureTreeRootDigest }),
+      ...(inputs?.betaPackages === undefined ? {} : { betaPackages: inputs.betaPackages }),
+      ...(inputs?.betaSequence === undefined ? {} : { betaSequence: inputs.betaSequence }),
     },
   )
 }

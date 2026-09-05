@@ -312,6 +312,19 @@ promote 后全员可见同 digest；beta 清单损坏/缺失=回退 stable 现�
 `julu@deloittecn.com.cn`、`sebtang@deloittecn.com.cn`、`lizywu@deloittecn.com.cn`
 （明文小写，SSO 邮箱精确匹配）。
 
+**有意收窄（评审确认不修，留档）**：锁定终端 `dsh plugin add` 门禁仅验 stable 清单
+（cli-install-channel 零 beta 引用）——测试者装 beta 浸泡条目走市场 UI 路径，终端不
+感知 beta；这是刻意的攻击面收窄，不是遗漏。另一保留项：名单外机器每次扫描也多拉
+一次同源 beta 文件（内网延迟噪声级，README 已注明，不加开关）。
+
+**评审修复（2026-09-05 晚，amend 进同 commit）**：四项——①吊销跨通道传导（revoke
+同步重签 beta；beta-roster/promote 的 beta 侧重签一律与 stable revoked 对齐，防
+verbatim 重签复活）；②客户端合并 revocation 粘滞（market merge 与桌面逐条查找同规
+则：stable 已 revoked 的 name@version 不被 beta 复活）；③beta 回放加会话内 sequence
+下限（模块内存不落盘，低于已验最大值=无效回退 stable）；④重复名单错误不再把邮箱
+字面量带进日志（掩码 ***@domain）；⑤promote 改 prepare-then-commit（双清单内存验签
+全部成功后才写 allowlist/落盘/ratchet，失败零残留）。红绿证均入链。
+
 **估时**：~1-1.5 天（beta schema+客户端拉取判定+管线 channel/promote+测试入链）。
 **前置**：市场交接演练（free-search 换手全链）跑通后启动。
 

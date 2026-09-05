@@ -371,6 +371,16 @@ export const desktopMarketStateConstants = Object.freeze({
 // the market UI's catalog scan field-unaware to this day. No `source`-
 // carrying manifest may be published before the whole fleet runs builds at
 // or beyond that switch.
+//
+// The beta publication channel (P9) adds the same one-extension discipline
+// as a verifier OPTION rather than a recognized key: `channel: 'beta'`
+// admits an optional top-level `testers` roster (lowercase SSO emails,
+// format-checked, normalized) so `catalog-manifest.beta.json` verifies
+// under the same trust roots; the default `channel: 'stable'` keeps the
+// exact key set above, so a testers-carrying document never verifies as
+// stable. Beta manifests are resolved only by the beta-channel host module
+// (`beta-channel.ts`) and its consumers (the market catalog overlay, boot
+// verification, the tarball install seam) — never by boot's stable path.
 // ---------------------------------------------------------------------------
 
 /** The npm channel: install the exact public-registry version (the default). */
@@ -428,6 +438,13 @@ export interface DesktopCompanyManifest {
   readonly sequence: number
   readonly expiresAt: string
   readonly packages: readonly DesktopCompanyManifestPackage[]
+  /**
+   * Beta-channel roster (P9): the lowercase SSO emails allowed to see this
+   * manifest's entries. Present only on beta manifests, whose verification
+   * runs with `channel: 'beta'`; the stable channel rejects the key whole,
+   * so a testers-carrying document can never ride the stable URL.
+   */
+  readonly testers?: readonly string[]
   readonly signature: {
     readonly keyId: string
     readonly publicKey: string
@@ -449,6 +466,16 @@ export interface DesktopCompanyManifestVerificationOptions {
   readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * Which catalog channel the bytes claim to be (P9). `'stable'` (the
+   * default) keeps today's schema exactly: a top-level `testers` key is an
+   * unknown field and rejects the whole manifest. `'beta'` additionally
+   * admits the optional top-level `testers` roster — a string array of
+   * emails, format-checked and normalized to lowercase — so the beta
+   * manifest verifies under the same trust roots, signature, sequence, and
+   * expiry rules with exactly one recognized extension.
+   */
+  readonly channel?: 'stable' | 'beta'
 }
 
 /** Result of verifying company manifest bytes with the dual-channel schema. */
@@ -467,6 +494,12 @@ export type DesktopCompanyManifestVerification =
   }
 
 const COMPANY_MANIFEST_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature'] as const
+/** The beta channel adds exactly one recognized top-level key: the `testers` roster (P9). */
+const COMPANY_BETA_MANIFEST_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature', 'testers'] as const
+/** Email shape admitted by the beta `testers` roster: one `@`, no whitespace, a dotted domain. */
+const BETA_TESTER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u
+const MAX_BETA_TESTERS = 1_000
+const MAX_BETA_TESTER_EMAIL_LENGTH = 254
 const COMPANY_ENTRY_REQUIRED_KEYS = ['bundlePatch', 'integrity', 'packageName', 'repository', 'revoked', 'runtime', 'version'] as const
 const COMPANY_ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'source', 'treeDigest'] as const
 const COMPANY_SIGNATURE_KEYS = ['keyId', 'publicKey', 'value'] as const
@@ -625,18 +658,51 @@ function parseEntrySource(
   return { kind: 'tarball', url, integrity }
 }
 
-/** Validate one parsed manifest value against the dual-channel schema mirror and normalize it. */
+/**
+ * Validate and parse one parsed manifest value against the dual-channel
+ * schema mirror and normalize it. `channel: 'beta'` (P9) admits exactly one
+ * additional top-level key — the optional `testers` roster — whose entries
+ * must be well-formed emails and are normalized to lowercase (an uppercase
+ * roster entry is a spelling variant, not a forgery, so it normalizes
+ * instead of rejecting); duplicates reject, because a roster is a set. The
+ * stable channel keeps the exact previous key set, so a testers-carrying
+ * document never verifies as stable.
+ */
 function parseDesktopCompanyManifestValue(
   value: unknown,
   companyCatalogOrigin: string | null,
+  channel: 'stable' | 'beta',
 ): DesktopCompanyManifest {
   if (!isPlainObject(value)) throw new Error('the company manifest must be a JSON object')
   {
-    const unknown = unknownFields(value, COMPANY_MANIFEST_KEYS)
+    const allowedKeys = channel === 'beta' ? COMPANY_BETA_MANIFEST_KEYS : COMPANY_MANIFEST_KEYS
+    const unknown = unknownFields(value, allowedKeys)
     if (unknown.length > 0) throw new Error(`the company manifest has unknown field(s) ${unknown.join(', ')}`)
     for (const key of COMPANY_MANIFEST_KEYS) {
       if (!(key in value)) throw new Error(`the company manifest is missing ${key}`)
     }
+  }
+  let testers: readonly string[] | undefined
+  if (channel === 'beta' && value.testers !== undefined) {
+    if (!Array.isArray(value.testers)) {
+      throw new Error('the beta company manifest testers must be an array of email addresses')
+    }
+    if (value.testers.length > MAX_BETA_TESTERS) {
+      throw new Error(`the beta company manifest testers must carry at most ${String(MAX_BETA_TESTERS)} entries`)
+    }
+    const normalized: string[] = []
+    const seen = new Set<string>()
+    for (const entry of value.testers) {
+      if (typeof entry !== 'string' || entry.length === 0 || entry.length > MAX_BETA_TESTER_EMAIL_LENGTH
+        || !BETA_TESTER_EMAIL_PATTERN.test(entry)) {
+        throw new Error('the beta company manifest testers entries must be well-formed email addresses')
+      }
+      const lowered = entry.toLowerCase()
+      if (seen.has(lowered)) throw new Error(`the beta company manifest testers must not repeat ${lowered}`)
+      seen.add(lowered)
+      normalized.push(lowered)
+    }
+    testers = normalized
   }
   if (value.manifestVersion !== '1.0.0') throw new Error('the company manifest version must be 1.0.0')
   if (!Number.isSafeInteger(value.sequence) || (value.sequence as number) < 1 || (value.sequence as number) > MAX_SEQUENCE) {
@@ -778,6 +844,7 @@ function parseDesktopCompanyManifestValue(
     sequence: value.sequence as number,
     expiresAt: value.expiresAt,
     packages,
+    ...(testers === undefined ? {} : { testers }),
     signature: {
       keyId: value.signature.keyId as string,
       publicKey: value.signature.publicKey as string,
@@ -849,7 +916,7 @@ export function verifyDesktopCompanyManifest(
   }
   let manifest: DesktopCompanyManifest
   try {
-    manifest = parseDesktopCompanyManifestValue(parsed, options.companyCatalogOrigin)
+    manifest = parseDesktopCompanyManifestValue(parsed, options.companyCatalogOrigin, options.channel ?? 'stable')
   } catch (cause) {
     return { ok: false, code: 'invalid-manifest', reason: cause instanceof Error ? cause.message : String(cause) }
   }
@@ -944,6 +1011,34 @@ export function findDesktopCompanyManifestPackage(
   version: string,
 ): DesktopCompanyManifestPackage | undefined {
   return manifest.packages.find(entry => entry.packageName === packageName && entry.version === version)
+}
+
+/**
+ * Beta-aware exact-entry lookup (P9): a verified, roster-filtered beta
+ * overlay's entry wins over the stable manifest's entry for the same
+ * `name@version` — the same merge rule the market catalog provider applies
+ * — and a `name@version` only stable pins stays stable's. Callers pass
+ * `undefined` packages when no overlay applied (non-roster machine, beta
+ * unverified, or a beta sequence below stable), which reduces this lookup
+ * to the stable-only one byte for byte.
+ *
+ * Revocation is sticky (P9 review fix): when the stable manifest pins the
+ * same `name@version` as revoked:true, the beta entry's other signed fields
+ * may win, but the returned entry stays revoked — a stale pre-revocation
+ * beta publication must never resurrect a revoked entry on a roster
+ * machine (boot verification and the install authority both refuse on
+ * `revoked`, so the flag is the load-bearing field here).
+ */
+export function findDesktopCompanyManifestPackageWithBeta(
+  manifest: DesktopCompanyManifest,
+  betaPackages: readonly DesktopCompanyManifestPackage[] | undefined,
+  packageName: string,
+  version: string,
+): DesktopCompanyManifestPackage | undefined {
+  const beta = betaPackages?.find(entry => entry.packageName === packageName && entry.version === version)
+  if (beta === undefined) return findDesktopCompanyManifestPackage(manifest, packageName, version)
+  const stable = findDesktopCompanyManifestPackage(manifest, packageName, version)
+  return stable?.revoked === true && beta.revoked !== true ? { ...beta, revoked: true } : beta
 }
 
 /** The signed install channel of one entry; an absent `source` is the npm channel. */

@@ -73,6 +73,7 @@ import {
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
+import { resolveDesktopBetaChannelOverlay } from './beta-channel.ts'
 import {
   browserSsoLogin,
   desktopSsoGateRequired,
@@ -849,6 +850,36 @@ async function start(): Promise<void> {
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
     const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
+    // Beta catalog channel (P9): the shared host resolver — fetch
+    // `catalog-manifest.beta.json` from the policy-pinned origin beside the
+    // stable manifest, verify it under the same trust roots with the beta
+    // channel's one recognized extension (the signed `testers` roster), and
+    // admit it only when the locally authenticated SSO identity is in that
+    // roster. Origin-mode deployments only (content-mode policies pin no
+    // origin to derive the beta URL from); every failure resolves to
+    // `undefined`, and each consumer — boot verification, the market catalog
+    // provider, the tarball install channel — then keeps the stable
+    // manifest alone, exactly today's behavior. One diagnostic line per
+    // outcome; the roster contents and the identity never appear in it.
+    const resolveBetaCatalogOverlay = policy.locked && policy.companyCatalogOrigin !== null
+      ? () => {
+        const session = getSsoSession()
+        return resolveDesktopBetaChannelOverlay({
+          policy,
+          request: (url, init) => net.fetch(url, init),
+          ...(session === undefined ? {} : { session }),
+          ...(electronLogger === undefined
+            ? {}
+            : { log: (message: string) => { electronLogger.error(`${message}`) } }),
+        })
+      }
+      : undefined
+    // The boot-time resolution starts concurrently with the stable manifest
+    // fetch below, so a healthy origin adds no boot latency; a hanging one
+    // is bounded by the resolver's own whole-request timeout.
+    const bootBetaOverlayPromise = resolveBetaCatalogOverlay === undefined
+      ? undefined
+      : resolveBetaCatalogOverlay()
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings
     // document, the embedded catalog asset (content mode), or one restricted
@@ -873,6 +904,14 @@ async function start(): Promise<void> {
           measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(
             join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME),
           ),
+          // Beta overlay (P9): resolved concurrently with the stable fetch
+          // above; a rejected promise must never block the boot (the overlay
+          // is best-effort — undefined keeps boot verification stable-only).
+          ...(await (async () => {
+            if (bootBetaOverlayPromise === undefined) return {}
+            const overlay = await bootBetaOverlayPromise.catch(() => undefined)
+            return overlay === undefined ? {} : { betaOverlay: overlay }
+          })()),
         },
       )
       : undefined
@@ -1206,6 +1245,14 @@ async function start(): Promise<void> {
           'desktopCompanyManifestVerifier',
           desktopCompanyManifestVerifierForMarket(policy),
         )
+        // Beta catalog overlay (P9): the market catalog provider resolves
+        // the signed SSO tester roster through this capability — the same
+        // shared resolver boot verification and the tarball channel use. A
+        // non-roster machine resolves to undefined and the provider scans
+        // the stable manifest alone, byte-for-byte today's behavior.
+        if (resolveBetaCatalogOverlay !== undefined) {
+          hostCtx.provide('desktopCompanyBetaCatalog', resolveBetaCatalogOverlay)
+        }
         if (policy.locked) {
           // Tarball install orchestration for the market UI (P7 2c): one
           // channel object serves two capabilities. The market library
@@ -1231,6 +1278,12 @@ async function start(): Promise<void> {
             },
             fetchManifestText: fetchCompanyManifestTextOverElectronNet,
             request: (url, init) => net.fetch(url, init),
+            // Beta overlay (P9): beta tarball entries verify through the
+            // shared resolver before the registry cross-check would reject
+            // their signed sha512.
+            ...(resolveBetaCatalogOverlay === undefined
+              ? {}
+              : { betaOverlay: resolveBetaCatalogOverlay }),
             ...(electronLogger === undefined
               ? {}
               : {

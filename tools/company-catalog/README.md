@@ -24,10 +24,12 @@ node tools/company-catalog/cli.mjs <command> [options]
 | --- | --- |
 | `keygen` | Generate an ed25519 key pair; print the pipeline env values and the deployment-policy trust root. 生成密钥对并打印管线环境变量值与策略信任根。 |
 | `build` | Fetch each allowlist entry's `dist.integrity` from `registry.npmjs.org`, assemble, sign, verify, and publish `out/catalog-manifest.json` (sequence = persisted + 1). 从官方 registry 抓取 integrity，组装→签名→round-trip 验证→发布清单。 |
-| `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence. 标记吊销并递增 sequence 重发；条目保留（吊销是状态不是删除）。 |
+| `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence — both channel files (P9): the beta manifest re-signs in the same operation, the matched entry forced `revoked:true` there too. 标记吊销并递增 sequence 重发（双清单同步重签，beta 超集里命中条目强制 `revoked:true`）；条目保留（吊销是状态不是删除）。 |
 | `verify [path]` | Verify a manifest file end to end (default `out/catalog-manifest.json`). 全链验证一个清单文件。 |
 | `verify-handoff <dir>` | Owner-side mechanical gate for a staged plugin submission (`submissions/<name>-<version>`: handoff.json + tgz): ten fail-fast checks against the handoff contract, `verdict.md` always written, and on pass the tgz staged into `out/packages/` plus the paste-ready allowlist entry (measured treeDigest included). Verifies and stages only — never signs, never publishes. 所有者侧暂存提交验证：十步机械检查、必写 verdict.md、通过即备料（tgz 入 out/packages + allowlist 片段），不签名不发布。 |
-| `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build (sequence floor: `--sequence-from` or the local state file), verify, and write the manifest + `--meta-out` metadata for the workflow artifact. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，构建、验证并产出清单与元数据供 workflow 产物化；绝不修改评审入库的 `allowlist.json`。 |
+| `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build (sequence floor: `--sequence-from` or the local state file), verify, and write the manifest + `--meta-out` metadata for the workflow artifact. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，构建、验证并产出清单与元数据供 workflow 产物化；绝不修改评审入库的 `allowlist.json`。`-f channel=beta` 改发 beta 清单（默认 `--out: out/catalog-manifest.beta.json`）：全部条目 + 来自 `state/beta-testers.json` 的签名测试者名单；stable 文件不动。 |
+| `promote <name>@<version>` | Promote one beta entry into the stable manifest: the signed bytes and digest move verbatim (zero re-verification), both manifests re-sign on the shared ratchet (stable first, then beta), the allowlist beta flag flips, and an already-promoted identical entry is an idempotent no-op. 把 beta 条目原字节并入 stable 清单（零重验），双清单共享 ratchet 依次重签，翻转 allowlist 的 beta 标记；已提升且同 digest 则幂等 no-op。 |
+| `beta-roster` | Change the signed tester roster (`-f add=<email>` / `-f remove=<email>`, validated and lowercased): `state/beta-testers.json` updates, the beta manifest re-signs with the entries verbatim, and the shared ratchet advances — roster changes reach testers without a client release; a no-op change re-signs nothing. 增删签名测试者名单（校验+小写规范化）：改 state 文件、原条目重签 beta 清单、共享 ratchet 前进，不发版即生效；无实质变化不重签。 |
 | `selftest` | CI smoke with an ephemeral key: build → sign → round-trip verify → sequence monotonicity → revocation reissue → expiry. 临时密钥全流程冒烟，绝不发布、绝不改 `state/`、`out/`、`allowlist.json`。 |
 
 Options: `--allowlist`, `--out`, `--state-dir`, `--sequence` (must strictly
@@ -35,7 +37,11 @@ exceed the effective floor), `--sequence-from <url-or-path>` (the deployed
 manifest whose sequence is the floor — wins over the local state file, which
 stays the fallback when omitted), `--digest-file` and `--meta-out`
 (measure-and-publish), `--expires-days` (default 90), and `--force-offline`
-(selftest only).
+(selftest only). `-f` is the single-dash alias of `--` (the runbook spells
+`-f channel=beta`); the publication channel flag `channel` selects
+`stable` (default) or `beta`, and for the two-file operations (`promote`,
+`beta-roster`) `--out` names the stable slot with the beta file as its
+sibling.
 
 ## Allowlist and review · allowlist 与评审
 
@@ -108,6 +114,75 @@ judgment — that is the one supported migration path: `catalog revoke
 allowlist and in every reissued manifest), then land the new-channel entries.
 Two active channels for one name are refused whatever revoked history sits
 next to them.
+
+### Beta publication channel · 预发通道（P9）
+
+A single stable manifest is a company-wide release, so a new plugin soaks
+with a small test group first. The beta channel reuses the entire stable
+trust chain — same signing key, same verifier, same entry schema — and adds
+exactly one visibility rule: the deployment hosts a second file,
+`catalog-manifest.beta.json`, beside `catalog-manifest.json` on the policy-
+pinned origin, carrying an optional top-level `testers` roster (lowercase
+SSO emails, format-checked; uppercase entries normalize to lowercase). A
+beta entry takes effect on a machine only when the locally authenticated
+SSO identity is in that signed roster — no switch, no UI, zero tester
+configuration; an unresolved identity is not a tester (fail-closed), and
+non-roster machines ignore beta content entirely (their market scan, boot
+verification, and tarball installs stay byte-for-byte on the stable
+manifest).
+
+单一 stable 清单=发布即全公司，所以新插件先小范围浸泡。beta 通道复用 stable 的全部信任链
+（同钥、同验签器、同条目 schema），只加一条可见性规则：源点在 stable 清单旁托管
+`catalog-manifest.beta.json`，携带可选顶层 `testers` 名单（小写 SSO 邮箱，格式校验，大写条目
+规范化为小写）。仅当本机 SSO 身份命中签名名单时 beta 条目才生效——无开关无 UI、测试者零配
+置；身份未解析=非测试者（fail-closed），名单外机器完全无视 beta 内容（市场扫描/启动校验/
+tarball 安装与今天逐字节一致）。
+
+The mechanics:
+
+- **Roster** — `state/beta-testers.json` (missing file = the initial first
+  test group: `julu@deloittecn.com.cn`, `sebtang@deloittecn.com.cn`,
+  `lizywu@deloittecn.com.cn`). `beta-roster -f add=<email>` /
+  `-f remove=<email>` validates, lowercases, re-signs the beta manifest with
+  the entries verbatim, and advances the shared ratchet — roster changes
+  reach testers without a client release (the roster lives in the signed
+  manifest, not in policy or settings).
+- **Publish** — review the entry into the allowlist with `"channel":
+  "beta"`, then `measure-and-publish -f channel=beta` (or the workflow's
+  `channel=beta` input) signs every entry plus the roster into
+  `catalog-manifest.beta.json`; the stable file is untouched, and a stable
+  publication holds beta-flagged entries back. The beta manifest is a
+  superset (stable + beta entries) — the client merge rule is
+  additive-only, so a byte-identical entry changes nothing.
+- **Soak → promote** — `promote <name>@<version>` moves the entry into the
+  stable manifest verbatim (same bytes, same digest, zero re-verification),
+  re-signs both manifests on the shared sequence ratchet (stable first,
+  then beta — two sequences), and flips the allowlist flag so the next
+  stable build keeps it. Already promoted with identical fields → idempotent
+  no-op. After the push every machine sees the same digest.
+- **Client consumption** — field-aware builds fetch the beta file next to
+  the stable manifest on every scan (404/corrupt/bad-signature = silently
+  stable-only), verify it under the same trust roots, and check the roster
+  against the local SSO identity (`deloittecn.com.cn` ↔ `deloitte.com.cn`
+  alias spellings match). One diagnostic line per outcome; the roster
+  contents and the identity never appear in logs. Known, kept cost: every
+  machine — roster or not — makes that one extra beta request per scan
+  (same origin, same bounds as the stable fetch); on the intranet this is
+  noise-level latency and not worth a policy-visible toggle, so it stays.
+- **No fleet gate for `testers`** — older clients never fetch the beta URL
+  at all, so the roster key cannot black out any catalog: the
+  `--confirm-fleet-upgraded` gate stays about `source`/`treeDigest`/
+  `approvedBuilds` on the stable channel only.
+
+运行机理：名单住在 `state/beta-testers.json`（缺失=首批三邮箱测试组），`beta-roster` 秒级增删并
+重签 beta 清单（共享 ratchet 前进，不发版生效）；发布=allowlist 条目标 `"channel":"beta"` 后
+`measure-and-publish -f channel=beta` 签出超集清单（stable 不动，stable 发布会扣留 beta 条目）；
+浸泡后 `promote <name>@<version>` 原字节并入 stable（零重验）并双清单重签（先 stable 后 beta，
+各占一个 sequence），幂等 no-op 保护；客户端在每次扫描时顺手拉 beta 文件验签核名单（失败=静
+默回退 stable），`testers` 键不需要 fleet 门禁（老客户端根本不请求 beta URL）。已知保留成本：
+名单外机器每次扫描也多这一次同源 beta 请求（内网延迟噪声级，不为此加 policy 开关）。
+撤销跨通道传导：`revoke` 同步重签两份清单，且 beta 侧重签一律与 stable 的 revoked 状态对齐
+（beta-roster/promote 亦然），名单机器不可能复活已撤销条目。
 
 The signed `source` field is a schema extension the market verifier's
 `additionalProperties:false` rejects whole — publishing the first
@@ -410,6 +485,18 @@ sequence）commit 入库，下一次构建的下限才是对的。
 
 ## Publishing runbook · 发布运行手册
 
+0. Beta soak (optional, P9): review the entry with `"channel": "beta"`,
+   run the publish workflow with `channel=beta` (or `measure-and-publish -f
+   channel=beta`), push the artifact with `publish-local --channel beta`
+   (ratchets against the deployed BETA file; stable untouched), let the
+   roster test on real machines, then `promote <name>@<version>` and push
+   the pair (stable first, then beta). Roster changes along the way:
+   `beta-roster -f add=<email>` / `-f remove=<email>`.
+   预发浸泡（可选，P9）：条目带 `"channel": "beta"` 评审入库 → publish workflow 选
+   `channel=beta`（或 `measure-and-publish -f channel=beta`）→ `publish-local --channel
+   beta` 推 beta 文件（ratchet 对已部署 BETA 文件；stable 不动）→ 名单真机浸泡 →
+   `promote <name>@<version>` 后成对推送（先 stable 后 beta）。期间增删名单：
+   `beta-roster -f add=<email>` / `-f remove=<email>`。
 1. New plugin: add the reviewed entry to `allowlist.json` (PR + review).
    新增插件：向 `allowlist.json` 加评审条目（PR + 评审）。
 2. `keygen` once per rotation; store the private key in a secret manager,

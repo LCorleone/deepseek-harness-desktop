@@ -582,4 +582,60 @@ describe('origin-mode host HTTP client injection', () => {
       media: { register: vi.fn() },
     })).rejects.toThrow(CompanyCatalogUntrustedError)
   })
+
+  it('forwards a host-resolved beta overlay into the wired catalog scan (P9)', async () => {
+    // The wiring layer must hand the Host's beta resolver (Desktop's
+    // `desktopCompanyBetaCatalog` capability — fetch + verify + the signed
+    // SSO tester roster match, all Desktop-side) to the provider: an
+    // admitted overlay's entries join the wired chain (browsing rows and
+    // the install whitelist) while the stable manifest bytes stay the
+    // catalog's identity. An overlay resolving to undefined (a non-roster
+    // machine) keeps the wired scan exactly stable-only.
+    const stable = signedManifestText([
+      packageEntry(safePackage, safeVersion, safeIntegrity),
+    ])
+    const fixture = packagedAppFixture(stable)
+    const betaOverlay = async () => ({
+      packages: [
+        packageEntry('company-beta-plugin', '0.9.0', safeIntegrity, {
+          treeDigest: '648b218888dce4f35b4ab642273f808089e81b5c3bd93e8b42e605117b824237',
+        }),
+      ] as unknown as import('../src/catalog/company-provider.js').CompanyBetaCatalogOverlay['packages'],
+      sequence: 43,
+    })
+    const wiring = createCommunityMarketCompanyCatalog(fixture.policy, memoryScope(), {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+      betaOverlayProvider: betaOverlay,
+    })
+    const service = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(memoryScope(), { locked: true, companySource: wiring.companySource }),
+      unusedHttp,
+      { adapters: wiring.adapters },
+    )
+
+    const index = await service.scanCatalog(new AbortController().signal)
+
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
+      .toEqual(['npm:company-beta-plugin@0.9.0', `npm:${safePackage}@${safeVersion}`])
+    expect(wiring.installTargetAuthority.canInstall({
+      packageName: 'company-beta-plugin',
+      version: '0.9.0',
+      integrity: safeIntegrity,
+    })).toMatchObject({ allowed: true, evidence: { manifestSequence: 42 } })
+
+    const rosterless = createCommunityMarketCompanyCatalog(fixture.policy, memoryScope(), {
+      moduleUrl: fixture.moduleUrl,
+      now: () => verifiedAt,
+      betaOverlayProvider: async () => undefined,
+    })
+    const rosterlessService = new DefaultCatalogService(
+      new SettingsCatalogSourceStore(memoryScope(), { locked: true, companySource: rosterless.companySource }),
+      unusedHttp,
+      { adapters: rosterless.adapters },
+    )
+    const rosterlessIndex = await rosterlessService.scanCatalog(new AbortController().signal)
+    expect(rosterlessIndex?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
+      .toEqual([`npm:${safePackage}@${safeVersion}`])
+  })
 })

@@ -53,6 +53,13 @@ on:
         description: 'Dry run — measure, build, sign, and verify only (no artifact upload; publishing is always intranet-side)'
         type: boolean
         default: true
+      channel:
+        description: 'Catalog channel — stable publishes catalog-manifest.json; beta publishes catalog-manifest.beta.json (the signed testers-roster soak manifest, P9)'
+        type: choice
+        options:
+          - stable
+          - beta
+        default: stable
 
 permissions:
   contents: read
@@ -69,6 +76,14 @@ jobs:
   measure-and-publish:
     runs-on: windows-latest
     env:
+      # The manifest file this run signs (P9): the beta channel writes
+      # catalog-manifest.beta.json — the artifact, the summary, and the
+      # mirror all carry the same name; publish-local --channel beta replays
+      # it against the deployed BETA file.
+      MANIFEST_NAME: ${{ inputs.channel == 'beta' && 'catalog-manifest.beta.json' || 'catalog-manifest.json' }}
+      # The channel flag for the measure-and-publish invocation (kept as an
+      # env copy so the pwsh summary steps can echo it too).
+      CATALOG_CHANNEL: ${{ inputs.channel == 'beta' && 'beta' || 'stable' }}
       # Secret copy for the step-level `if` below (secrets cannot appear in a
       # step `if` directly; GitHub rejects the workflow file at parse time).
       PINNED_KEY_FINGERPRINT: ${{ secrets.COMPANY_CATALOG_KEY_FINGERPRINT }}
@@ -192,7 +207,8 @@ jobs:
           node tools/company-catalog/cli.mjs measure-and-publish
           --digest-file run/tree-digests.json
           --state-dir tools/company-catalog/state
-          --out run/catalog-manifest.json
+          --channel $env:CATALOG_CHANNEL
+          --out run/$env:MANIFEST_NAME
           --meta-out run/publish-meta.json
       - name: Record the build identity in publish-meta.json
         # The CLI writes sequence/keyId/fingerprint/entries/manifestSha256;
@@ -212,15 +228,17 @@ jobs:
         shell: pwsh
         run: |
           $meta = Get-Content run/publish-meta.json -Raw | ConvertFrom-Json
-          $manifest = Get-Content run/catalog-manifest.json -Raw | ConvertFrom-Json
+          $manifest = Get-Content "run/$env:MANIFEST_NAME" -Raw | ConvertFrom-Json
           $entryLines = foreach ($entry in $meta.entries) {
             $digest = if ($entry.PSObject.Properties['treeDigest']) { "``$($entry.treeDigest)``" } else { '_none (gradual enablement)_' }
             $measured = if ($entry.measured) { 'measured' } else { 'unmeasured' }
             "- $($entry.packageName)@$($entry.version) treeDigest $($digest) ($measured)"
           }
+          $channelLine = if ($env:CATALOG_CHANNEL -eq 'beta') { "- channel: **beta** ($($meta.testers.Count) testers: $($meta.testers -join ', '))" } else { '- channel: stable' }
           $summary = @(
             '## Company catalog manifest',
             '',
+            $channelLine,
             "- sequence: **$($meta.sequence)** (floor: the in-repo state file; the intranet publisher additionally requires deployed + 1)",
             "- keyId: $($meta.keyId)",
             "- fingerprint: ``$($meta.fingerprint)``",
@@ -244,7 +262,7 @@ jobs:
               'On a machine that can reach both GitHub and the intranet GitLab (gh authenticated, GITLAB_TOKEN exported):',
               '',
               '```sh',
-              "node tools/company-catalog/publish-local.mjs --run $($meta.runId)",
+              "node tools/company-catalog/publish-local.mjs --run $($meta.runId)$(if ($env:CATALOG_CHANNEL -eq 'beta') { ' --channel beta' })",
               '```',
               '',
               "The same artifact contents are also mirrored to the ``catalog-artifacts`` branch under ``$($meta.runId)/`` (signed pair + packed tarballs under ``packages/``) — publish-local falls back to that branch automatically when the artifact download is unreachable, so the command above works unchanged either way.",
@@ -262,7 +280,7 @@ jobs:
                 '**Fleet-upgrade gate**: this manifest signs `treeDigest` entries. If the deployed manifest does not yet carry `treeDigest` on the same entries, publish-local refuses the push unless `--confirm-fleet-upgraded` is passed — the first authoritative publish requires every client to already run a field-aware build (older clients reject the **entire** manifest on one unknown key; see the publication gate in `tools/company-catalog/README.md`):',
                 '',
                 '```sh',
-                "node tools/company-catalog/publish-local.mjs --run $($meta.runId) --confirm-fleet-upgraded",
+                "node tools/company-catalog/publish-local.mjs --run $($meta.runId) --confirm-fleet-upgraded$(if ($env:CATALOG_CHANNEL -eq 'beta') { ' --channel beta' })",
                 '```',
                 ''
               )
@@ -275,10 +293,11 @@ jobs:
           name: company-catalog-signed
           # run/packages/ (the packed tarballs) uploads next to the signed
           # pair: upload-artifact strips the shared run/ prefix, so the
-          # artifact root carries catalog-manifest.json, publish-meta.json,
-          # and packages/*.tgz — the layout publish-local replays and pushes.
+          # artifact root carries the channel's manifest file
+          # (${{ env.MANIFEST_NAME }}), publish-meta.json, and packages/*.tgz
+          # — the layout publish-local replays and pushes.
           path: |
-            run/catalog-manifest.json
+            run/${{ env.MANIFEST_NAME }}
             run/publish-meta.json
             run/packages/
           if-no-files-found: error
@@ -302,6 +321,10 @@ jobs:
     env:
       ARTIFACTS_BRANCH: catalog-artifacts
       KEEP_RUNS: '5'
+      # The manifest file this run mirrors (P9): beta runs carry
+      # catalog-manifest.beta.json; publish-local --from-git replays it with
+      # the matching --channel.
+      MANIFEST_NAME: ${{ inputs.channel == 'beta' && 'catalog-manifest.beta.json' || 'catalog-manifest.json' }}
     steps:
       # persist-credentials defaults to true here — the push below needs the
       # job-scoped GITHUB_TOKEN (no extra secret is involved).
@@ -352,7 +375,7 @@ jobs:
           EOF
 
           mkdir -p "${RUN_ID}"
-          cp ../incoming/catalog-manifest.json ../incoming/publish-meta.json "${RUN_ID}/"
+          cp "../incoming/${MANIFEST_NAME}" ../incoming/publish-meta.json "${RUN_ID}/"
           # Carry the packed tarballs (the third piece of the artifact): the
           # workflow's pack step stages them under packages/, and
           # publish-local's git-branch fallback replays that exact layout.
