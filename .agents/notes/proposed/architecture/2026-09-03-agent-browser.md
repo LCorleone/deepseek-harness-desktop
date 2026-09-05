@@ -456,6 +456,29 @@ package spec updates.
 | cua's danger confirmation (URL blacklist TODO) | cua | Rejected as a model — our approval gate rides `tools/pre-execute`→ApprovalService, URL policy rides the embedded policy file (§5) |
 | `human_tool` queue (human as an adapter between agent turns) | cua | Rejected — too heavy; claimControl covers the human-in-the-loop need |
 
+## 9. Field findings (first-flight incidents, 2026-09-05)
+
+Four real-machine incidents preceded the first working flight (#52–#55); durable
+lessons now live where they bite:
+
+1. **Cordis sibling-inject semantics** — a sibling service must declare `inject`
+   to consume another face's service; reads through the proxy throw otherwise.
+   Guarded by the strict-proxy mutation-red test suite (`880959924b`).
+2. **`file://` opaque-origin class** — packaged builds had
+   `grantFileProtocolExtraPrivileges: false` (P4-era Electron security default),
+   which runs every packaged `file://` document as an opaque (`null`) origin and
+   CORS-refuses its ES modules: this blanked the recovery window (first seen as
+   the #52 black screen) and every native-ui window equally; sso-gate shared the
+   fault but silent auth kept it hidden for months. The dev binary's different
+   fuse default is why xvfb smoke cannot see this class — the guards are
+   artifact-level (fuse read-back in the packaging gate, plus the vite
+   file-origin subtree guard keeping each document inside its own directory).
+   Root cause and boundary analysis: the fuse paragraph in
+   `dsh-plugin-desktop/README.md` (and `README.zh.md`).
+3. **Rare-path windows rot silently** — a window that "never shows" still needs
+   an explicit render path exercised by tests, or its breakage surfaces as a
+   user-facing lockout (SSO token expiry behind a black gate).
+
 ## File-level change list
 
 New (dsh-plugin-desktop):
