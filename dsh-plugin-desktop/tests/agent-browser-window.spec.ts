@@ -207,6 +207,12 @@ describe('agent-browser window host (fake environment)', () => {
     // event fired while the document parses is never missed (day-1 spike
     // finding); the load is in flight but unresolved when the guest arrives.
     expect(window.loadFile).toHaveBeenCalledTimes(1)
+    // #53: the document must load from the native-ui ROOT — a nested
+    // document references ../assets/* and sits outside its own file://
+    // origin, so the packaged renderer refuses its module script.
+    expect(window.loadFile).toHaveBeenCalledWith(
+      expect.stringContaining(join('native-ui', 'agent-browser.html')),
+    )
     window.webContents.emit('did-attach-webview', undefined, guest)
     await opened
 

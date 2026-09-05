@@ -60,6 +60,9 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   // The SSO startup gate window's local document (locked requireSso builds
   // load it from the unpacked mirror before any Host boot).
   'lib/native-ui/sso-gate.html',
+  // The agent-browser embedder document (field-test surface, #53) — it
+  // must sit at the native-ui root, inside its own file:// origin subtree.
+  'lib/native-ui/agent-browser.html',
   'lib/profile.js',
   'lib/profile-manager.js',
   'lib/profile-service.js',
@@ -103,6 +106,9 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
   'lib/native-ui/sso-gate.html',
+  // loadFile pins the physical mirror, so the agent-browser document must
+  // ship unpacked too (#53).
+  'lib/native-ui/agent-browser.html',
   'lib/index.js',
   'lib/profile.js',
   'lib/profile-manager.js',
