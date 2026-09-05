@@ -79,6 +79,9 @@ const PROXY_DIRECTIVE_SCHEMES: Readonly<Record<string, string>> = {
   SOCKS: 'socks5',
 }
 
+/** Proxy URL prefixes Node's environment proxy consumes; socks schemes are unsupported there. */
+const NODE_ENV_PROXY_URL_PREFIXES: readonly string[] = ['http://', 'https://']
+
 /**
  * Translate one Chromium proxy resolution — `"PROXY host:port;PROXY
  * host:port;DIRECT"` — into the proxy URL that proxy environment variables
@@ -101,16 +104,30 @@ export function parseCorporateProxyDirective(resolution: string): string | undef
  * list) appear only when a proxy was resolved; CA variables only with a
  * bundle path. Absent keys are omitted, so merging over `process.env`
  * leaves any inherited value untouched.
+ *
+ * `NODE_USE_ENV_PROXY=1` rides along only for http/https proxy URLs: the
+ * bundled Node runtime's `fetch` (undici) reads `HTTP(S)_PROXY`/`NO_PROXY`
+ * exclusively behind that flag (support landed in Node v22.21.0 and
+ * v24.0.0; the bundled v22.23.2 has it), and Node's environment proxy
+ * understands no socks scheme — a socks resolution therefore still injects
+ * the proxy variables for curl/git/npm and reports one `onNotice` line
+ * instead of the flag, leaving sandboxed Node `fetch` on its direct path.
  */
 export function buildCorporateNetworkEnvironment(
   proxyUrl: string | undefined,
   caBundlePath: string | undefined,
+  onNotice?: (message: string) => void,
 ): Readonly<Record<string, string>> {
   const environment: Record<string, string> = {}
   if (proxyUrl !== undefined) {
     environment.HTTPS_PROXY = proxyUrl
     environment.HTTP_PROXY = proxyUrl
     environment.NO_PROXY = INTRANET_NO_PROXY_ENTRIES.join(',')
+    if (NODE_ENV_PROXY_URL_PREFIXES.some(prefix => proxyUrl.startsWith(prefix))) {
+      environment.NODE_USE_ENV_PROXY = '1'
+    } else {
+      onNotice?.(`corporate proxy ${proxyUrl} is not http/https; NODE_USE_ENV_PROXY left unset (Node's environment proxy does not support socks); sandboxed Node fetch stays on its direct path`)
+    }
   }
   if (caBundlePath !== undefined) {
     environment.NODE_EXTRA_CA_CERTS = caBundlePath
@@ -150,9 +167,12 @@ function corporatePowerShellPath(
 /**
  * Export the effective Windows trust stores — LocalMachine\Root,
  * CurrentUser\Root, LocalMachine\CA, deduplicated by thumbprint — as one PEM
- * bundle (base64 DER per certificate) into the user-data directory,
- * overwriting on every launch. PowerShell is spawned by the Electron main
- * process itself, outside any sandbox, so it sees the real machine stores.
+ * bundle (base64 DER per certificate) into the user-data directory. The
+ * script writes a sibling temp file and renames it into place, so the
+ * bundle file is never observed half-written and a failed export leaves
+ * any previous launch's bundle untouched. PowerShell is spawned by the
+ * Electron main process itself, outside any sandbox, so it sees the real
+ * machine stores.
  *
  * Every failure (missing executable, non-zero exit, timeout, missing or
  * empty bundle) resolves `undefined` after one `onError` line — the caller
@@ -163,14 +183,16 @@ function corporatePowerShellPath(
 export async function exportCorporateCaBundle(options: CorporateCaExportOptions): Promise<string | undefined> {
   const onError = options.onError ?? (() => {})
   const bundlePath = options.bundlePath ?? join(options.userDataDir, CORPORATE_CA_BUNDLE_FILENAME)
+  const stagingPath = `${bundlePath}.tmp`
   const powerShellPath = corporatePowerShellPath(options.exists ?? existsSync)
   if (powerShellPath === undefined) {
     onError(`corporate CA export skipped: no PowerShell executable found (looked for pwsh 7 and Windows PowerShell 5.1)`)
     return undefined
   }
 
-  // Single-quoted PS string literal with the only escaping PS defines ('' for ').
+  // Single-quoted PS string literals with the only escaping PS defines ('' for ').
   const literalPath = bundlePath.replaceAll("'", "''")
+  const stagingLiteralPath = stagingPath.replaceAll("'", "''")
   const script = [
     '$ErrorActionPreference = \'Stop\'',
     '$seen = @{}',
@@ -184,7 +206,9 @@ export async function exportCorporateCaBundle(options: CorporateCaExportOptions)
     "    $lines.Add('-----END CERTIFICATE-----')",
     '  }',
     '}',
-    `[System.IO.File]::WriteAllLines('${literalPath}', $lines, (New-Object System.Text.UTF8Encoding($false)))`,
+    `[System.IO.File]::WriteAllLines('${stagingLiteralPath}', $lines, (New-Object System.Text.UTF8Encoding($false)))`,
+    // Same-directory rename: the destination switches atomically, never mid-write.
+    `Move-Item -LiteralPath '${stagingLiteralPath}' -Destination '${literalPath}' -Force`,
   ].join('\n')
 
   try {
@@ -263,6 +287,17 @@ function runPowerShellExport(
   })
 }
 
+/**
+ * Distinguish an unrecognized proxy resolution (worth one log line when
+ * injection goes missing) from the expected no-proxy results — an empty
+ * resolution or a `DIRECT` first directive. Mirrors the first-directive
+ * logic of {@link parseCorporateProxyDirective}.
+ */
+function hasUnrecognizedProxyDirective(resolution: string): boolean {
+  const directive = (resolution.split(';', 1)[0] ?? '').trim()
+  return directive !== '' && directive.toUpperCase() !== 'DIRECT'
+}
+
 /** Inputs for {@link resolveCorporateNetworkEnv}; every field is a test seam. */
 export interface ResolveCorporateNetworkEnvOptions {
   /** Host platform gate; defaults to the real platform. */
@@ -273,7 +308,7 @@ export interface ResolveCorporateNetworkEnvOptions {
   readonly exportCaBundle?: (options: CorporateCaExportOptions) => Promise<string | undefined>
   /** Passed through to the CA export. */
   readonly timeoutMs?: number
-  /** Failure sink for the proxy and CA skip paths. */
+  /** Failure sink for the proxy and CA skip paths (also carries the socks and unrecognized-resolution notices). */
   readonly onError?: (message: string) => void
 }
 
@@ -297,7 +332,11 @@ export async function resolveCorporateNetworkEnv(
   let proxyUrl: string | undefined
   try {
     const resolveProxy = options.resolveProxy ?? ((url: string) => session.defaultSession.resolveProxy(url))
-    proxyUrl = parseCorporateProxyDirective(await resolveProxy(CORPORATE_PROXY_PROBE_URL))
+    const resolution = await resolveProxy(CORPORATE_PROXY_PROBE_URL)
+    proxyUrl = parseCorporateProxyDirective(resolution)
+    if (proxyUrl === undefined && hasUnrecognizedProxyDirective(resolution)) {
+      onError(`corporate proxy resolution unrecognized: "${resolution.trim()}"`)
+    }
   } catch (cause) {
     onError(`corporate proxy resolution failed: ${cause instanceof Error ? cause.message : String(cause)}`)
   }
@@ -315,5 +354,5 @@ export async function resolveCorporateNetworkEnv(
     caBundlePath = undefined
   }
 
-  return buildCorporateNetworkEnvironment(proxyUrl, caBundlePath)
+  return buildCorporateNetworkEnvironment(proxyUrl, caBundlePath, onError)
 }

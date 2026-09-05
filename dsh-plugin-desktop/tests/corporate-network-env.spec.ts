@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -52,7 +52,7 @@ interface FakePowerShellSpawn {
   child: FakeChild
 }
 
-/** A PowerShell stand-in that writes `bundle` (when set) to the WriteAllLines target embedded in the script. */
+/** A PowerShell stand-in that writes `bundle` (when set) through the script's staging file and rename. */
 function fakePowerShellSpawn(options: {
   bundle?: string
   exitCode?: number
@@ -67,8 +67,13 @@ function fakePowerShellSpawn(options: {
     instance.kill = () => { instance.emit('close', null, 'SIGTERM') }
     child = instance
     if (!options.holdUntilKilled) {
-      const target = /WriteAllLines\('([^']*)'/.exec(args.at(-1) ?? '')
-      if (target !== null && options.bundle !== undefined) writeFileSync(target[1]!, options.bundle)
+      const script = args.at(-1) ?? ''
+      const staging = /WriteAllLines\('([^']*)'/.exec(script)
+      const rename = /Move-Item -LiteralPath '([^']*)' -Destination '([^']*)'/.exec(script)
+      if (staging !== null && rename !== null && options.bundle !== undefined) {
+        writeFileSync(staging[1]!, options.bundle)
+        renameSync(staging[1]!, rename[2]!)
+      }
       queueMicrotask(() => { instance.emit('close', options.exitCode ?? 0, null) })
     }
     return instance as never
@@ -110,9 +115,29 @@ describe('corporate network environment construction', () => {
   it('injects proxy variables with the intranet bypass list when a proxy resolved', () => {
     const environment = buildCorporateNetworkEnvironment('http://10.172.64.36:80', undefined)
 
-    expect(Object.keys(environment).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'])
+    expect(Object.keys(environment).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NODE_USE_ENV_PROXY', 'NO_PROXY'])
     expect(environment.HTTPS_PROXY).toBe('http://10.172.64.36:80')
     expect(environment.HTTP_PROXY).toBe('http://10.172.64.36:80')
+    expect(environment.NODE_USE_ENV_PROXY).toBe('1')
+  })
+
+  it('enables Node environment proxy for http and https proxy URLs', () => {
+    for (const proxyUrl of ['http://proxy.corp.example:8080', 'https://proxy.corp.example:8443']) {
+      expect(buildCorporateNetworkEnvironment(proxyUrl, undefined).NODE_USE_ENV_PROXY).toBe('1')
+    }
+  })
+
+  it('omits NODE_USE_ENV_PROXY for socks proxies and reports why', () => {
+    for (const proxyUrl of ['socks5://proxy.corp.example:1080', 'socks4://proxy.corp.example:1080']) {
+      const onNotice = vi.fn()
+      const environment = buildCorporateNetworkEnvironment(proxyUrl, undefined, onNotice)
+
+      expect(Object.keys(environment).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'])
+      expect(environment.HTTPS_PROXY).toBe(proxyUrl)
+      expect(onNotice).toHaveBeenCalledTimes(1)
+      expect(onNotice.mock.calls[0]![0]).toContain('NODE_USE_ENV_PROXY')
+      expect(onNotice.mock.calls[0]![0]).toContain(proxyUrl)
+    }
   })
 
   it('injects only the CA variables for a direct connection with an exported bundle', () => {
@@ -130,6 +155,7 @@ describe('corporate network environment construction', () => {
       'HTTPS_PROXY',
       'HTTP_PROXY',
       'NODE_EXTRA_CA_CERTS',
+      'NODE_USE_ENV_PROXY',
       'NO_PROXY',
       'SSL_CERT_FILE',
     ])
@@ -160,21 +186,27 @@ describe('corporate network environment construction', () => {
 describe('corporate CA bundle export', () => {
   it('writes the merged Windows trust stores as a non-empty PEM bundle', async () => {
     const userDataDir = temporaryUserDataDir()
+    // A bundle from a previous launch: a successful export must replace it via the rename.
+    writeFileSync(join(userDataDir, CORPORATE_CA_BUNDLE_FILENAME), 'stale-from-previous-launch\n')
     const powershell = fakePowerShellSpawn({ bundle: PEM_FIXTURE })
 
     const bundlePath = await exportCorporateCaBundle({ userDataDir, spawn: powershell.spawn, exists: () => true })
 
     expect(bundlePath).toBe(join(userDataDir, CORPORATE_CA_BUNDLE_FILENAME))
     expect(statSync(bundlePath!).size).toBeGreaterThan(0)
-    expect(readFileSync(bundlePath!, 'utf8')).toContain('-----BEGIN CERTIFICATE-----')
+    expect(readFileSync(bundlePath!, 'utf8')).toBe(PEM_FIXTURE)
     // The export script enumerates all three Windows trust stores, deduplicated.
     const script = powershell.invocations[0]!.args.at(-1)!
     expect(script).toContain('Cert:\\LocalMachine\\Root')
     expect(script).toContain('Cert:\\CurrentUser\\Root')
     expect(script).toContain('Cert:\\LocalMachine\\CA')
     expect(script).toContain('$seen')
-    // The bundle path is embedded as a single-quoted PowerShell literal.
-    expect(script).toContain(`WriteAllLines('${join(userDataDir, CORPORATE_CA_BUNDLE_FILENAME).replaceAll("'", "''")}'`)
+    // Both paths are embedded as single-quoted PowerShell literals: the export
+    // stages into a sibling temp file and renames it over the destination, so
+    // the bundle is never observed half-written.
+    const destination = join(userDataDir, CORPORATE_CA_BUNDLE_FILENAME).replaceAll("'", "''")
+    expect(script).toContain(`WriteAllLines('${destination}.tmp'`)
+    expect(script).toContain(`Move-Item -LiteralPath '${destination}.tmp' -Destination '${destination}' -Force`)
   })
 
   it('skips injection and reports when PowerShell exits non-zero, ignoring stale bundles', async () => {
@@ -281,13 +313,60 @@ describe('corporate network environment resolution', () => {
       'HTTPS_PROXY',
       'HTTP_PROXY',
       'NODE_EXTRA_CA_CERTS',
+      'NODE_USE_ENV_PROXY',
       'NO_PROXY',
       'SSL_CERT_FILE',
     ])
     expect(environment.HTTPS_PROXY).toBe('http://10.172.64.36:80')
+    expect(environment.NODE_USE_ENV_PROXY).toBe('1')
     expect(environment.NODE_EXTRA_CA_CERTS).toBe(join(userDataDir, CORPORATE_CA_BUNDLE_FILENAME))
     // The user-data directory and timeout flow into the export.
     expect(exportCaBundle).toHaveBeenCalledWith(expect.objectContaining({ userDataDir }))
+  })
+
+  it('omits NODE_USE_ENV_PROXY and reports once when only a socks proxy resolves', async () => {
+    const onError = vi.fn()
+
+    const environment = await resolveCorporateNetworkEnv(fakeApp(temporaryUserDataDir()), {
+      platform: 'win32',
+      resolveProxy: async () => 'SOCKS5 proxy.corp.example:1080',
+      exportCaBundle: async () => undefined,
+      onError,
+    })
+
+    expect(Object.keys(environment).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'])
+    expect(environment.HTTPS_PROXY).toBe('socks5://proxy.corp.example:1080')
+    expect(environment.NODE_USE_ENV_PROXY).toBeUndefined()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0]![0]).toContain('NODE_USE_ENV_PROXY')
+    expect(onError.mock.calls[0]![0]).toContain('socks')
+  })
+
+  it('reports an unrecognized proxy resolution with the raw directive instead of injecting silently', async () => {
+    const onError = vi.fn()
+
+    const environment = await resolveCorporateNetworkEnv(fakeApp(temporaryUserDataDir()), {
+      platform: 'win32',
+      resolveProxy: async () => 'QUIC proxy.corp.example:443;DIRECT',
+      exportCaBundle: async () => undefined,
+      onError,
+    })
+
+    expect(environment).toEqual({})
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError.mock.calls[0]![0]).toBe('corporate proxy resolution unrecognized: "QUIC proxy.corp.example:443;DIRECT"')
+
+    // DIRECT and empty resolutions are the expected no-proxy outcomes, not anomalies.
+    const quiet = vi.fn()
+    for (const resolution of ['DIRECT', '']) {
+      await resolveCorporateNetworkEnv(fakeApp(temporaryUserDataDir()), {
+        platform: 'win32',
+        resolveProxy: async () => resolution,
+        exportCaBundle: async () => undefined,
+        onError: quiet,
+      })
+    }
+    expect(quiet).not.toHaveBeenCalled()
   })
 
   it('injects only the CA variables when the connection is direct', async () => {
@@ -330,14 +409,14 @@ describe('corporate network environment resolution', () => {
       exportCaBundle: async () => { throw new Error('powershell gone') },
       onError: vi.fn(),
     })
-    expect(Object.keys(rejected).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'])
+    expect(Object.keys(rejected).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NODE_USE_ENV_PROXY', 'NO_PROXY'])
 
     const skipped = await resolveCorporateNetworkEnv(fakeApp(userDataDir), {
       platform: 'win32',
       resolveProxy: async () => 'PROXY 10.172.64.36:80',
       exportCaBundle: async () => undefined,
     })
-    expect(Object.keys(skipped).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'])
+    expect(Object.keys(skipped).sort()).toEqual(['HTTPS_PROXY', 'HTTP_PROXY', 'NODE_USE_ENV_PROXY', 'NO_PROXY'])
   })
 
   it('uses the Electron default session resolver without an injected seam', async () => {

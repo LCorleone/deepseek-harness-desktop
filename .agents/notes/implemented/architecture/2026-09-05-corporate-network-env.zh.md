@@ -35,7 +35,7 @@ resolveCorporateNetworkEnv(app)
 └── CA：    spawn PowerShell（主进程直启，非沙箱）
             → 导出 Cert:\LocalMachine\Root + Cert:\CurrentUser\Root + Cert:\LocalMachine\CA
             → 按 thumbprint 去重，PEM（每证书 base64 DER）
-            → <userData>/corporate-ca-bundle.pem（每次启动覆写）
+            → <userData>/corporate-ca-bundle.pem（每次启动经临时文件+改名重导出）
 ```
 
 ### 注入键集（终稿）
@@ -44,11 +44,19 @@ resolveCorporateNetworkEnv(app)
 |---|---|---|
 | `HTTPS_PROXY` / `HTTP_PROXY` | 解析出的代理 URL，如 `http://10.172.64.36:80` | 检测到代理（取首个指令；`DIRECT` → 不注入） |
 | `NO_PROXY` | 内网绕行清单（见下） | 检测到代理 |
+| `NODE_USE_ENV_PROXY` | `1` | 检测到代理**且** URL scheme 为 http/https（见边界） |
 | `NODE_EXTRA_CA_CERTS` | `<userData>/corporate-ca-bundle.pem` | bundle 导出成功且非空 |
 | `SSL_CERT_FILE` | 同一路径 | 同上 |
 | `CURL_CA_BUNDLE` | 同一路径 | 同上 |
 
 `NODE_EXTRA_CA_CERTS` 是**追加**（Node 保留内置根再加 bundle）；`SSL_CERT_FILE` 与 `CURL_CA_BUNDLE` 对 OpenSSL/curl 消费者是**替换**——这里恰好正确：导出的 Windows 证书库本来就含公共根 + 公司检查 CA。
+
+`NODE_USE_ENV_PROXY=1` 让代理变量对捆绑 Node 运行时真正生效：undici 的
+`fetch` **只在**该 flag 被设置时才读 `HTTP(S)_PROXY`/`NO_PROXY`（支持落地于
+Node v22.21.0 与 v24.0.0；捆绑运行时为 v22.23.2，已内置，每个沙箱 `node`
+子进程都能用上）。该 flag 只随 `http://`/`https://` 代理 URL 注入——Node 的
+环境代理不认 socks scheme，SOCKS 解析结果仍会为 curl/git/npm 注入代理变量，
+但以一条日志代替该 flag（见边界）。
 
 ### 为什么写进 `process.env` 能到沙箱
 
@@ -64,7 +72,7 @@ runtime / Host 进程
 
 唯一可能丢名字的环节是 `scrubbedParentEnv()`（`@deepseek-ai/dsh-subprocess`）：
 它只删凭证形状的名字（`KEY|PASSWORD|SECRET|TOKEN`，大小写不敏感）和所有
-`DSH_*` 名字。七个注入名**构造上全部幸存**——**零 runtime 改动**（本次工作的硬边界）。
+`DSH_*` 名字。八个注入名**构造上全部幸存**——**零 runtime 改动**（本次工作的硬边界）。
 
 ### 失败语义——条条路径都能启动
 
@@ -94,5 +102,7 @@ runtime / Host 进程
 - **绕行清单要随内网演进。** 不在 `NO_PROXY` 上的内网主机会被推给公司代理并通常死在那里；修法是 `INTRANET_NO_PROXY_ENTRIES` 加一行。
 - **NO_PROXY 通配语义因消费者而异**——所以三重拼写；若有第四种方言的工具仍可能不匹配。
 - **bundle 新鲜度按启动计。** bundle 每次启动重写；会话中途下发的新证书要等下次桌面重启生效。长会话持有启动时的信任集。
+- **bundle 篡改面：同用户=已接受。** bundle 在用户可写的 `userData` 里存留整个会话；同用户进程可在导出后换掉它，此后每个沙箱子进程都会经 `SSL_CERT_FILE`/`CURL_CA_BUNDLE`（替换语义）信任攻击者的 CA。`userData` 有按用户 ACL，且同用户攻击者本就拥有本应用（PATH、配置、DLL 预置），故这是已接受的风险而非权限越界。导出先写同目录 `.tmp` 再改名到位，子进程不会观察到写一半的 bundle，导出失败时上一次的文件原样保留；stat→注入之间的替换窗口收窄到改名本身。
+- **SOCKS-only 网络下沙箱 Node `fetch` 仍走直连。** socks 解析时不注入 `NODE_USE_ENV_PROXY`，因为 Node 的环境代理（undici）不支持任何 socks scheme；沙箱 `curl`/`git`/`pnpm` 仍会走 socks 代理，并有一条日志记录该保留。这不是回归——检查网络下直连 TLS 本就会被中间盒掐断。
 - **curl 小写 nuances**：curl 对明文 HTTP 代理只读小写 `http_proxy`；Windows OS 环境本身大小写不敏感，注入的大写对 Windows 查询可解析，但忽略 `HTTP_PROXY` 大写的、大小写敏感的 curl 移植版需要补小写拼写。
 - **范围**：不改变 Electron/Chromium 网络栈本身（它本就用 OS 服务），不改沙箱策略，不动 runtime 仓库。

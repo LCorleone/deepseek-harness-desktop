@@ -53,7 +53,7 @@ resolveCorporateNetworkEnv(app)
 └── CA:     spawn PowerShell (main process, NOT sandboxed)
             → export Cert:\LocalMachine\Root + Cert:\CurrentUser\Root + Cert:\LocalMachine\CA
             → deduplicated by thumbprint, PEM (base64 DER per certificate)
-            → <userData>/corporate-ca-bundle.pem  (overwritten every launch)
+            → <userData>/corporate-ca-bundle.pem  (re-exported every launch via temp + rename)
 ```
 
 ### The injected key set (final)
@@ -62,6 +62,7 @@ resolveCorporateNetworkEnv(app)
 |---|---|---|
 | `HTTPS_PROXY` / `HTTP_PROXY` | resolved proxy URL, e.g. `http://10.172.64.36:80` | proxy detected (first directive; `DIRECT` → omitted) |
 | `NO_PROXY` | intranet bypass list (below) | proxy detected |
+| `NODE_USE_ENV_PROXY` | `1` | proxy detected **and** its URL scheme is http/https (see boundaries) |
 | `NODE_EXTRA_CA_CERTS` | `<userData>/corporate-ca-bundle.pem` | bundle exported and non-empty |
 | `SSL_CERT_FILE` | same path | same |
 | `CURL_CA_BUNDLE` | same path | same |
@@ -71,6 +72,15 @@ bundle); `SSL_CERT_FILE` and `CURL_CA_BUNDLE` **replace** the default bundle
 for OpenSSL/curl consumers — which is correct here, because the exported
 Windows stores already contain the public roots plus the corporate
 inspection CA.
+
+`NODE_USE_ENV_PROXY=1` is what makes the proxy variables real for the
+bundled Node runtime: undici's `fetch` reads `HTTP(S)_PROXY`/`NO_PROXY`
+**only** when that flag is set (support landed in Node v22.21.0 and
+v24.0.0; the bundled runtime is v22.23.2, so every sandboxed `node` child
+has it). The flag rides along only for `http://`/`https://` proxy URLs —
+Node's environment proxy understands no socks scheme, so a SOCKS
+resolution still injects the proxy variables for curl/git/npm and records
+one log line instead of the flag (see boundaries).
 
 ### Why assignment into `process.env` reaches the sandbox
 
@@ -87,7 +97,7 @@ sandboxed pwsh / curl / node children
 The one place names could be dropped is `scrubbedParentEnv()`
 (`@deepseek-ai/dsh-subprocess`): it removes only credential-shaped names
 (`KEY|PASSWORD|SECRET|TOKEN`, case-insensitive) and every `DSH_*` name.
-All seven injected names survive by construction — the proxy bypass works
+All eight injected names survive by construction — the proxy bypass works
 with **zero runtime changes** (a hard boundary for this work).
 
 ### Failure semantics — every path boots
@@ -150,6 +160,23 @@ Redundant spellings are ignored by consumers that don't need them.
   startup; certificates pushed to the machine mid-session only take effect
   after the next desktop restart. Long-lived sessions keep the launch-time
   trust set.
+- **Bundle tamper surface: same user = accepted.** The bundle lives in
+  user-writable `userData` for the session's lifetime; a same-user process
+  could swap it after export and every sandboxed child would then trust
+  the attacker's CA via `SSL_CERT_FILE`/`CURL_CA_BUNDLE` (replacement
+  semantics). `userData` is per-user ACL-protected and a same-user attacker
+  already owns this app (PATH, config, DLL pre-placement), so this is an
+  accepted risk, not a privilege boundary crossing. The export stages
+  into a sibling `.tmp` file and renames it into place, so no child
+  observes a half-written bundle and a failed export leaves the previous
+  launch's file untouched; the stat→inject swap window shrinks to the
+  rename itself.
+- **SOCKS-only networks leave sandboxed Node `fetch` on its direct path.**
+  `NODE_USE_ENV_PROXY` is withheld for socks resolutions because Node's
+  environment proxy (undici) supports no socks scheme; sandboxed
+  `curl`/`git`/`pnpm` still route through the socks proxy, and one log line
+  records the withholding. Not a regression — direct TLS is cut by the
+  middlebox on inspected networks anyway.
 - **curl lower-case nuance**: curl reads `http_proxy` (lower case) for
   plain-HTTP proxying; on Windows the OS environment is case-insensitive so
   the upper-case injection resolves for Windows lookups, but a
