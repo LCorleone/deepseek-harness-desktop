@@ -299,7 +299,9 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
   SSO 身份未解析=非测试者）。测试者零配置。
 - 发布流：`publish -f channel=beta` 先发 beta → 测试组真机浸泡 →
   `promote`（同字节同 digest 进 stable 清单，sequence 单调共享，零重验）。
-  名单增删=发一版 beta 清单，秒级生效/收回。
+  名单增删=`beta-roster` 子命令（读现清单→改 testers→重签→sequence+1→推
+  GitLab），秒级生效/收回，**零客户端发版**——名单住在签名清单里而非
+  policy/设置，正是为了不发版可改且只有所有者能改。
 - 完整性等级不降：beta 条目同样过 verify-handoff+签名+treeDigest；
   名单只控浸泡期可见性。
 
