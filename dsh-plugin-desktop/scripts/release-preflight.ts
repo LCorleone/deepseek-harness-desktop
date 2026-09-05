@@ -344,7 +344,11 @@ export function assertCompanyReleaseConfiguration(
     ['enableEmbeddedAsarIntegrityValidation', true],
     ['onlyLoadAppFromAsar', true],
     ['loadBrowserProcessSpecificV8Snapshot', false],
-    ['grantFileProtocolExtraPrivileges', false],
+    // True for the packaged native-ui module bundles (#54): without the
+    // privilege every file:// page is an opaque null origin and its modules
+    // are refused by CORS; strict default-src 'none' CSPs, no untrusted
+    // file:// content, and isolated guest webContents keep the grant safe.
+    ['grantFileProtocolExtraPrivileges', true],
   ]
   for (const [key, expected] of REQUIRED_FUSES) {
     if (fuses?.[key] !== expected) fail(`electronFuses.${key} must be ${String(expected)}`)

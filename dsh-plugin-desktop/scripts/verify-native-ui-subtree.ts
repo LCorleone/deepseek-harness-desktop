@@ -5,21 +5,25 @@
  * everything below it. A document that references `../sibling/…` therefore
  * loads that subresource from a DIFFERENT file origin, and ES modules are
  * refused outright by the file:// CORS rules unless the app binary was
- * fused with `GrantFileProtocolExtraPrivileges`. The desktop release fuse
- * set keeps that privilege OFF (it would also hand every file:// page full
- * XHR reach — see `electronFuses` in package.json), while the dev binary
- * ships with it ON — which is exactly why the agent-browser window booted
- * under xvfb and died only on real installs: its document nested one
- * directory deeper than the others and referenced `../assets/*`, the
- * module script was refused as cross-origin, the renderer never started,
- * and the window host timed out with "guest webContents didn't attach".
+ * fused with `GrantFileProtocolExtraPrivileges`. The release fuse set now
+ * grants that privilege (#54 final fix): without it every packaged
+ * `file://` document — even one fully inside its own subtree — ran as an
+ * opaque `null` origin, so ALL native-ui module windows died on real
+ * installs (#52 recovery blank, agent-browser CORS; the sso-gate hid it
+ * behind silent auth), while the dev binary ships the fuse ON and xvfb
+ * smoke passed. The grant is deliberate and bounded: strict
+ * `default-src 'none'` CSPs, first-party-only content, guest pages in
+ * isolated webContents.
  *
- * The sso-gate window never hit this because its document sits in the
- * native-ui root next to `assets/`. This module is the machine gate that
- * keeps EVERY native-ui document — present and future — inside its own
- * file-origin subtree: a `../` hop in any script `src` or link `href` of a
- * built html is a build failure, not a field report. It runs from the vite
- * build's `closeBundle` hook (vite.native-ui.config.ts) and is asserted by
+ * This module stays as defense-in-depth now that the fuse is granted:
+ * same-directory references never DEPEND on the relaxed cross-directory
+ * reach the privilege would allow, so the windows keep the least-privilege
+ * shape and keep working even if the fuse is ever tightened again. It is
+ * the machine gate that keeps EVERY native-ui document — present and
+ * future — inside its own file-origin subtree: a `../` hop in any script
+ * `src` or link `href` of a built html is a build failure, not a field
+ * report. It runs from the vite build's `closeBundle` hook
+ * (vite.native-ui-config.ts) and is asserted by
  * tests/native-ui-file-origin.spec.ts.
  */
 

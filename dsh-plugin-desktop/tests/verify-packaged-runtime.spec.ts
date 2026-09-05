@@ -78,7 +78,7 @@ function requiredFuseWire(): Record<string, unknown> {
     [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: FUSE_ENABLED,
     [FuseV1Options.OnlyLoadAppFromAsar]: FUSE_ENABLED,
     [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: FUSE_DISABLED,
-    [FuseV1Options.GrantFileProtocolExtraPrivileges]: FUSE_DISABLED,
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: FUSE_ENABLED,
   }
 }
 
@@ -317,6 +317,11 @@ describe('packaged desktop runtime verification', () => {
   })
 
   it('reads and enforces the staged Electron fuse map', () => {
+    // grantFileProtocolExtraPrivileges must stay true (#54/#52): the packaged
+    // native-ui file:// module bundles load as opaque null origins without
+    // it, so every native-ui window fails on real installs. Strict
+    // default-src 'none' CSPs and isolated guest webContents keep the grant
+    // safe; the same-directory layout guard stays as defense-in-depth.
     expect(REQUIRED_ELECTRON_FUSES).toEqual({
       runAsNode: false,
       enableCookieEncryption: true,
@@ -325,7 +330,7 @@ describe('packaged desktop runtime verification', () => {
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
       loadBrowserProcessSpecificV8Snapshot: false,
-      grantFileProtocolExtraPrivileges: false,
+      grantFileProtocolExtraPrivileges: true,
     })
     expect(REQUIRED_RUN_AS_NODE_FUSE).toBe(false)
     expect(() => verifyElectronFuseStage(REQUIRED_ELECTRON_FUSES)).not.toThrow()
@@ -343,8 +348,8 @@ describe('packaged desktop runtime verification', () => {
       .toThrow('requires electronFuses.onlyLoadAppFromAsar=true')
     expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, loadBrowserProcessSpecificV8Snapshot: true }))
       .toThrow('requires electronFuses.loadBrowserProcessSpecificV8Snapshot=false')
-    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, grantFileProtocolExtraPrivileges: true }))
-      .toThrow('requires electronFuses.grantFileProtocolExtraPrivileges=false')
+    expect(() => verifyElectronFuseStage({ ...REQUIRED_ELECTRON_FUSES, grantFileProtocolExtraPrivileges: false }))
+      .toThrow('requires electronFuses.grantFileProtocolExtraPrivileges=true')
     // The P3-1 single-fuse verifier keeps its contract for direct callers.
     expect(() => verifyRunAsNodeFuseStage(REQUIRED_RUN_AS_NODE_FUSE)).not.toThrow()
     expect(() => verifyRunAsNodeFuseStage(!REQUIRED_RUN_AS_NODE_FUSE))

@@ -718,6 +718,13 @@ describe('published package surface', () => {
       'lib/**',
       'node_modules/**',
     ])
+    // grantFileProtocolExtraPrivileges must stay true (#54/#52): the packaged
+    // native-ui windows are file:// module bundles, and without the privilege
+    // every packaged file:// page is an opaque null origin whose modules CORS
+    // refuses — the recovery-window blank and agent-browser failure on real
+    // installs. Strict default-src 'none' CSPs, first-party-only content, and
+    // guest pages in isolated webContents make the grant safe; flipping it
+    // back to false re-breaks every native-ui window on packaged builds.
     expect(manifest.build?.electronFuses).toEqual({
       runAsNode: false,
       enableCookieEncryption: true,
@@ -726,7 +733,7 @@ describe('published package surface', () => {
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
       loadBrowserProcessSpecificV8Snapshot: false,
-      grantFileProtocolExtraPrivileges: false,
+      grantFileProtocolExtraPrivileges: true,
     })
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },

@@ -177,10 +177,20 @@ export function isArchiveOnlyRuntimeEntry(entry: string): boolean {
  * `NODE_OPTIONS`/`NODE_EXTRA_CA_CERTS` ignored, `--inspect` and `SIGUSR1`
  * inspector activation ignored. `loadBrowserProcessSpecificV8Snapshot` stays
  * explicitly false (the application ships no browser-specific V8 snapshot;
- * pinning the default keeps the map complete) and
- * `grantFileProtocolExtraPrivileges` is false: the only `file://` documents
- * are the sandboxed profile-create and recovery windows, whose CSP is
- * `connect-src 'none'` with no service workers or nested frames.
+ * pinning the default keeps the map complete). The one deliberate
+ * exception to the hardening direction is `grantFileProtocolExtraPrivileges`
+ * true (#54 root cause): every packaged `file://` document — sso-gate,
+ * recovery, profile-create, agent-browser — is a self-owned module bundle,
+ * and without the privilege Chromium runs each of them as an opaque
+ * (`null`) origin whose `<script type="module">` is refused by CORS, so
+ * the native-ui windows blank out on real installs (#52 recovery window,
+ * agent-browser CORS; the sso-gate never showed it only because silent
+ * auth keeps it hidden). Dev binaries default the fuse differently, which
+ * is why xvfb smoke passed. Safe to grant: those pages carry a strict
+ * `default-src 'none'` CSP, load no untrusted `file://` content, and guest
+ * web pages run in their own webContents/processes outside this fuse's
+ * reach; the vite file-origin subtree guard keeps every document inside
+ * its own directory as defense-in-depth.
  *
  * Development/release distinction: Electron Builder has no per-mode fuse
  * profiles, and fuses only apply to packaged binaries. `yarn dev` runs the
@@ -201,7 +211,7 @@ export const REQUIRED_ELECTRON_FUSES = Object.freeze({
   enableEmbeddedAsarIntegrityValidation: true,
   onlyLoadAppFromAsar: true,
   loadBrowserProcessSpecificV8Snapshot: false,
-  grantFileProtocolExtraPrivileges: false,
+  grantFileProtocolExtraPrivileges: true,
 })
 
 /** Back-compatible alias for the P3-1 runAsNode stage constant. */

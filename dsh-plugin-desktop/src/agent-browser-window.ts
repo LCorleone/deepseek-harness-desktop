@@ -63,11 +63,12 @@ import type { AgentBrowserGuestWebContents, AgentBrowserWindowHost } from './age
 // loadFile requires a physical file; pin to the unpacked mirror (dev paths
 // pass through unchanged) — see startup-recovery-window.ts for the rationale.
 // The document sits at the native-ui ROOT next to assets/ by build contract
-// (#53): with the release fuse GrantFileProtocolExtraPrivileges off,
-// Chromium's file:// origin is the document's own directory and below, so a
-// nested document referencing ../assets/* is cross-origin, its module script
-// is refused, and this window can only ever time out. The vite build guards
-// that shape for every native-ui entry (scripts/verify-native-ui-subtree.ts).
+// (#53): same-directory references keep every window inside its own
+// file:// origin subtree, so the native-ui module bundles never depend on
+// the GrantFileProtocolExtraPrivileges fuse's relaxed cross-directory reach
+// (the fuse itself is granted for packaged module loading — #54 fix; the
+// vite build guards the shape for every native-ui entry in
+// scripts/verify-native-ui-subtree.ts, defense-in-depth).
 const AGENT_BROWSER_DOCUMENT = unpackedAsarPath(
   fileURLToPath(new URL('./native-ui/agent-browser.html', import.meta.url)),
 )

@@ -51,7 +51,9 @@ function writeHtml(root: string, path: string, html: string): string {
 describe('the native-ui file-origin escape detector', () => {
   it('flags script and link references that hop out of the document directory (#53 shape)', () => {
     // The exact pre-fix agent-browser shape: a nested document referencing
-    // ../assets/* — cross-origin under the release file:// fuse.
+    // ../assets/* — a hop out of its own file:// origin subtree. The fuse is
+    // granted now (#54), but the guard still rejects this shape as
+    // least-privilege defense-in-depth.
     const root = mkdtempRoot()
     const nestedDocument = [
       '<script type="module" crossorigin src="../assets/agent-browser-omOf5Zul.js"></script>',
