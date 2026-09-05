@@ -42,6 +42,7 @@ import { FileExporter } from './file-exporter.ts'
 import { DESKTOP_SETTINGS_NAMESPACE, type DesktopSettings } from './index.ts'
 import { LogFileSink } from './log-files.ts'
 import { maskSecrets } from './mask-secrets.ts'
+import { resolveCorporateNetworkEnv } from './corporate-network-env.ts'
 import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } from './shell-environment.ts'
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
@@ -598,6 +599,32 @@ async function start(): Promise<void> {
       platform: process.platform,
     })
     for (const [name, value] of Object.entries(shellEnvironmentResolution.updates)) process.env[name] = value
+    // Corporate network self-injection (Windows-only): Electron/Chromium clears
+    // both corporate gates through the system proxy resolver (PAC included) and
+    // the system certificate store, but shell descendants fail both — git's
+    // libcurl against its packaged CA bundle, the bundled Node against its
+    // compiled-in roots — so TLS handshakes are cut mid-flight on inspected
+    // networks. Resolve the proxy and export the Windows trust stores into
+    // this process's environment BEFORE any child spawns (pnpm, Host,
+    // sandboxed pwsh all inherit plain env semantics; dsh-subprocess's scrub
+    // keeps proxy and CA names). Every failure logs once and boots bare —
+    // behavior identical to a non-corporate network.
+    try {
+      const corporateNetworkEnvironment = await resolveCorporateNetworkEnv(app, {
+        onError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+      })
+      Object.assign(process.env, corporateNetworkEnvironment)
+      const injectedCorporateNetworkKeys = Object.keys(corporateNetworkEnvironment)
+      if (injectedCorporateNetworkKeys.length > 0) {
+        electronLogger.error(
+          `${BIN_NAME}: corporate network environment injected (${injectedCorporateNetworkKeys.join(', ')})`,
+        )
+      }
+    } catch (cause) {
+      electronLogger.error(
+        `${BIN_NAME}: corporate network environment injection failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
     const homeDir = resolveDshHome()
     const projectionCacheRecovery = recoverOversizedSessionProjectionCache(homeDir)
     if (projectionCacheRecovery.status === 'quarantined') {
