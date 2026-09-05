@@ -168,6 +168,11 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **沙箱 shell HTTPS 发现（2026-09-05，待查小项）**：用户真机实测 DNS/Ping/TCP443 全通，但沙箱内 shell 的应用层 HTTPS（curl/Invoke-WebRequest）全部「underlying connection closed」=透明 TLS 检查掐握手。不影响插件（host 进程 fetch，tavily 已实证）与 P8 浏览器（Chromium 用系统证书库天然过）；影响 agent 用 shell 联网。待查：沙箱子进程代理 env 是否被 scrub 剥掉/需注入企业代理。
 **anysearch 实测（容器）**：key 有效，POST /v1/search 200+真实结果（上海天气命中气象局逐日温度），2.2s。0.4.183 三键制改版进行中（fs-183）。
 
+### free-search 0.4.183 + 沙箱网络修复（2026-09-05 上午双线收官）
+**free-search 0.4.183 三键制**（用户拍板）：链=tavily→exa→anysearch 纯键制（配 key 才入链），**bing/ddg 移除**（bing 质量差实测/ddg 公司封禁/抓取源全否——百度验证码、搜狗反爬、360 可行但被否）；anysearch 引擎实装（POST /v1/search Bearer，code:0/data.results 形态实测对齐）；零 key=引导文案（三引擎免费额度+注册入口）；设置页三键+注册指引卡（tavily 1,000/月、exa $20+$10/月、anysearch 1,000/天）。评审通过+修复（引擎测试 15s 超时防黑洞挂死/结果钳 20）。
+**沙箱 shell 网络自注入**（corp-net-inject）：Electron 主进程启动时自注入系统代理（resolveProxy，PAC 兼容）→HTTPS_PROXY 等+NODE_USE_ENV_PROXY=1（Node 24 才读 env 代理——评审 P1 抓的）+PowerShell 导出 Root/CA 证书 PEM→NODE_EXTRA_CA_CERTS/SSL_CERT_FILE/CURL_CA_BUNDLE+NO_PROXY 内网清单；后代继承零改 runtime，win32 gate，全失败路径降级裸启动。架构 note 双语（含 CA 投毒面评估/PAC 近似/清单维护点）。合并 master f05b981a84，合并树 check 全绿 1815+7skip/market 400。
+**待**：#51 构建（带网络修复）→用户装机验证沙箱联网；插件 sequence 13 发布（digest 对拍→落值→publish）→用户填 key 实测三引擎。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
