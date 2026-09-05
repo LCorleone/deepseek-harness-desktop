@@ -241,6 +241,28 @@ corepack yarn catalog pack-tarball \
   workflow（Windows）实测 → 评审落值 → sequence 13 重签 → publish-local
   推 GitLab。
 
+## fs-183 评审修正（2026-09-05，版本号不变）
+
+0.4.183 定稿评审的两项小修，就地修改源码、不升版本（该版 treeDigest
+尚未评审落值，未走发布流程，不触托管不可变规则）：
+
+- **P2 引擎测试超时**：`runEngineTest`（`free_search_test` 工具与 bridge
+  raw-search 带 `engine` 参数的直测路径）此前不向 `dispatchEngine` 传
+  signal——链路 `provider.search` 有 `runEngineChain` 的 30s 预算兑底，
+  直测路径没有；而 exa/anysearch 的 fetch 无 signal 即无上界，挂起的端点
+  会把测试工具整个挂死（tavily 有内部 15s controller，不受影响）。
+  修正：直测路径挂 `AbortSignal.timeout(15000)`，超时触发统一转可读失败
+  （`<engine> engine test timed out after 15s`），不直传底层 DOMException
+  文案；tavily 内部计时器改用同一常量 `ENGINE_REQUEST_TIMEOUT_MS`。
+- **P3 max_results 上界**：exa `numResults` 与 anysearch `max_results`
+  补齐 tavily 既有的上界钳制——三个引擎请求体的结果数统一钳到常量
+  `MAX_RESULTS_CAP`（20），失控的调用方参数不得一次烧光免费额度；
+  调用方自身的更小预算（bridge/advanced 钳 10、引擎测试用 2）照常生效。
+- 回归钉：两项各一条测试（`tools/company-catalog/tests/dsh-free-search.test.mjs`）
+  ——挂起端点 15s 可读超时（AbortSignal.timeout 是原生定时器，测试打桩
+  该静态方法捕获时长，abort 由 fake 全局 setTimeout 驱动）；传 100 →
+  三引擎请求体里都是 20。
+
 ## 留存与后续
 
 - 上游 LICENSE 与署名原样保留（MIT）。

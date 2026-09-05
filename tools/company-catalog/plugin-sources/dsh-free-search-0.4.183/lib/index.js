@@ -57,6 +57,22 @@ const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const ANYSEARCH_URL = "https://api.anysearch.com/v1/search";
 
 /**
+ * 单引擎请求超时上界（ms）：tavily 的内部 AbortController 计时器与引擎
+ * 测试路径（runEngineTest）共用。链路 provider.search 另有 runEngineChain
+ * 的 CHAIN_BUDGET_MS 兜底；引擎直测路径没有那层兜底，靠 runEngineTest
+ * 挂的 AbortSignal.timeout 封顶（评审 P2：exa/anysearch 的 fetch 无
+ * signal 即无上界，挂起的端点会把测试工具整个挂死）。
+ */
+const ENGINE_REQUEST_TIMEOUT_MS = 15000;
+
+/**
+ * 单请求结果数上界（评审 P3）：三个引擎的请求体统一钳到该值——失控的
+ * maxResults 不得借引擎请求一次烧光免费额度；调用方自身的更小预算
+ * （bridge/advanced 钳 10、引擎测试用 2）照常生效。
+ */
+const MAX_RESULTS_CAP = 20;
+
+/**
  * The registry id of the one provider this plugin registers. It is a
  * registry key, not an engine choice — the chain order is plugin policy.
  * Neutral on purpose (0.4.183: the old "ddg" id outlived its engine): it
@@ -125,7 +141,8 @@ async function searchExa(query, maxResults, apiKey, timeRange, signal) {
     query,
     type: "auto",
     contents: { highlights: { highlightsPerUrl: 1 } },
-    ...(maxResults !== undefined ? { numResults: maxResults } : {}),
+    // 评审 P3：numResults 与 tavily 同口径钳到上界
+    ...(maxResults !== undefined ? { numResults: Math.min(maxResults, MAX_RESULTS_CAP) } : {}),
   };
   // Exa 时间过滤：startPublishedDate（ISO 日期；支持任意天数和绝对日期）
   if (timeRange) {
@@ -172,14 +189,14 @@ async function searchExa(query, maxResults, apiKey, timeRange, signal) {
 async function searchTavily(query, maxResults, apiKey, timeRange, signal) {
   if (!apiKey) throw new Error("Tavily search requires TAVILY_API_KEY (configured in Settings > Plugins > Free Search)");
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), ENGINE_REQUEST_TIMEOUT_MS);
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort);
   let response;
   try {
     const body = {
       query,
-      max_results: Math.min(maxResults ?? 5, 20),
+      max_results: Math.min(maxResults ?? 5, MAX_RESULTS_CAP),
       search_depth: "basic",
     };
     // Tavily 时间过滤：time_range 只支持固定档，自定义天数取最近似档位
@@ -239,7 +256,8 @@ async function searchAnysearch(query, maxResults, apiKey, signal) {
     },
     body: JSON.stringify({
       query,
-      ...(maxResults !== undefined ? { max_results: maxResults } : {}),
+      // 评审 P3：max_results 与 tavily 同口径钳到上界
+      ...(maxResults !== undefined ? { max_results: Math.min(maxResults, MAX_RESULTS_CAP) } : {}),
     }),
     ...(signal !== undefined ? { signal } : {}),
   });
@@ -663,9 +681,14 @@ function apply(ctx, config) {
     const cfg = current();
     const q = query || "DeepSeek Harness";
     const tr = parseTimeRange(timeRange);
+    // 评审 P2：引擎直测必须有界——provider.search 走 runEngineChain 的预算
+    // 超时，这条路径此前不传 signal，而 exa/anysearch 的 fetch 无 signal 即
+    // 无上界。挂 15s 超时 signal；触发时统一转可读失败，不直传底层
+    // DOMException 文案。
+    const signal = AbortSignal.timeout(ENGINE_REQUEST_TIMEOUT_MS);
     try {
       if (!ALL_ENGINES.includes(engine)) return { ok: false, error: `unknown engine: ${engine}` };
-      const result = await dispatchEngine(engine, q, 2, cfg, tr);
+      const result = await dispatchEngine(engine, q, 2, cfg, tr, signal);
       return {
         ok: true,
         sources: (result.sources ?? []).map((s) =>
@@ -674,6 +697,10 @@ function apply(ctx, config) {
         truncated: result.truncated ?? false,
       };
     } catch (error) {
+      // 该 signal 唯一的 abort 来源就是上面的超时——触发即报告可读的超时失败
+      if (signal.aborted) {
+        return { ok: false, error: `${engine} engine test timed out after ${ENGINE_REQUEST_TIMEOUT_MS / 1000}s (endpoint unreachable or hanging)` };
+      }
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   };

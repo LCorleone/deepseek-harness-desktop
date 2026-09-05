@@ -29,7 +29,17 @@
  *    returns results through a faked fetch (tavily keyed path, anysearch
  *    keyed path with code!==0 readable rejection), zero keys return the
  *    setup guidance without any fetch, and a readable message — not a
- *    throw — when every engine fails.
+ *    throw — when every engine fails,
+ *  - engine test bound (fs-183 review P2): runEngineTest dispatches with
+ *    AbortSignal.timeout(15000) — a hanging endpoint fails readably at the
+ *    15s bound for every chain engine instead of hanging the tool forever
+ *    (exa/anysearch fetches have no internal bound; AbortSignal.timeout is
+ *    a native timer, so the test stubs the static and drives the abort via
+ *    fake global setTimeout),
+ *  - result-count caps (fs-183 review P3): all three engine request bodies
+ *    clamp the result count to 20 — exa numResults and anysearch max_results
+ *    join tavily max_results, so a runaway caller cannot burn the free
+ *    quota in one request.
  */
 
 import assert from 'node:assert/strict'
@@ -874,6 +884,106 @@ test('bridge smoke: raw-search is loopback-guarded, POST-only, and answers throu
   } finally {
     globalThis.fetch = originalFetch
     restoreEnv()
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('engine test bound: a hanging endpoint fails readably at the 15s bound for every chain engine (review P2)', async (t) => {
+  // fs-183 评审 P2 回归钉：runEngineTest 此前不向 dispatchEngine 传 signal
+  // ——链路 provider.search 有 runEngineChain 预算超时兑底，引擎直测路径没有，
+  // 而 exa/anysearch 的 fetch 无 signal 即无上界，挂起的端点会把测试工具整个
+  // 挂死。AbortSignal.timeout 是原生定时器，node:test 的 fake timers 驱动不
+  // 了它——这里打桩捕获时长（断言 15s 上界），abort 由 fake 全局 setTimeout
+  // 触发，假 fetch 永不自行返回、只在请求 signal abort 时拒绝（真实 fetch
+  // 语义）。timeout 选项兑底：修复缺失时测试快速失败而非挂死套件。
+  const { plugin, staging } = await importPluginWithStubs()
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const requestedMs = []
+  t.mock.method(AbortSignal, 'timeout', (ms) => {
+    requestedMs.push(ms)
+    const controller = new AbortController()
+    setTimeout(
+      () => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+      ms,
+    )
+    return controller.signal
+  })
+  const originalFetch = globalThis.fetch
+  const restoreEnv = isolateKeyEnv()
+  try {
+    const { ctx, registered } = makeFakeCtx()
+    plugin.apply(ctx, { tavilyApiKey: 'tvly-1', exaApiKey: 'exa-1', anysearchApiKey: 'as-1', cache: false })
+    let sawSignal = null
+    globalThis.fetch = (url, init) => {
+      sawSignal = init?.signal ?? null
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+      })
+    }
+    const testTool = registered.tools.find((tool) => tool.name === 'free_search_test')
+    for (const engine of ['exa', 'anysearch', 'tavily']) {
+      let settled = false
+      sawSignal = null
+      requestedMs.length = 0
+      // 发起引擎测试：dispatchEngine 内有 await resolveApiKey 的微任务跳跃，
+      // await null 排干队列后 fetch 才真正发出（signal 那时还未取消）。
+      const pending = testTool.execute({ engines: [engine] }).then((r) => { settled = true; return r })
+      await null
+      const carriedSignal = sawSignal
+      t.mock.timers.tick(14999)
+      assert.equal(settled, false, `${engine}: before the 15s bound the hanging engine test must not have settled`)
+      t.mock.timers.tick(1)
+      const result = await pending
+      assert.equal(settled, true, `${engine}: the 15s bound must fail the test`)
+      assert.deepEqual(requestedMs, [15000], `${engine}: runEngineTest must bound the dispatch with AbortSignal.timeout(15000)`)
+      assert.notEqual(carriedSignal, null, `${engine}: the engine fetch must carry the timeout signal`)
+      assert.equal(carriedSignal.aborted, true, `${engine}: the timeout signal must be the thing that fired`)
+      assert.equal(result.results.length, 1)
+      assert.equal(result.results[0].engine, engine)
+      assert.equal(result.results[0].status, 'fail')
+      assert.match(result.results[0].error, new RegExp(`${engine} engine test timed out after 15s`, 'u'), 'a readable timeout, not a raw DOMException message')
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    restoreEnv()
+    rmSync(staging, { recursive: true, force: true })
+  }
+})
+
+test('result-count caps: exa numResults and anysearch max_results clamp to 20 in the request body, like tavily (review P3)', async () => {
+  // fs-183 评审 P3 回归钉：失控的 maxResults 不得借引擎请求一次烧光免费
+  // 额度——三个引擎的请求体统一钳到上界 20（tavily 原有，exa/anysearch
+  // 评审补齐）；调用方自身的更小预算原样透传。
+  const { plugin, staging } = await importPluginWithStubs()
+  const originalFetch = globalThis.fetch
+  try {
+    const bodies = {}
+    globalThis.fetch = async (url, init) => {
+      const target = String(url)
+      const key = target.startsWith('https://api.tavily.com/') ? 'tavily'
+        : target.startsWith('https://api.exa.ai/') ? 'exa'
+          : target.startsWith('https://api.anysearch.com/') ? 'anysearch'
+            : null
+      if (key === null) throw new TypeError(`fake fetch: no route for ${target}`)
+      bodies[key] = JSON.parse(init.body)
+      return jsonResponse(key === 'tavily' ? TAVILY_JSON : key === 'exa' ? EXA_JSON : ANYSEARCH_JSON)
+    }
+    // 失控的 100：三个引擎的请求体都钳到 20
+    await plugin.searchExa('query', 100, 'exa-key', undefined, undefined)
+    await plugin.searchAnysearch('query', 100, 'as-key', undefined)
+    await plugin.searchTavily('query', 100, 'tvly-key', undefined, undefined)
+    assert.equal(bodies.exa.numResults, 20)
+    assert.equal(bodies.anysearch.max_results, 20)
+    assert.equal(bodies.tavily.max_results, 20)
+    // 正常量级原样透传（不因上界而缩水）
+    await plugin.searchExa('query', 5, 'exa-key', undefined, undefined)
+    await plugin.searchAnysearch('query', 3, 'as-key', undefined)
+    await plugin.searchTavily('query', 7, 'tvly-key', undefined, undefined)
+    assert.equal(bodies.exa.numResults, 5)
+    assert.equal(bodies.anysearch.max_results, 3)
+    assert.equal(bodies.tavily.max_results, 7)
+  } finally {
+    globalThis.fetch = originalFetch
     rmSync(staging, { recursive: true, force: true })
   }
 })
