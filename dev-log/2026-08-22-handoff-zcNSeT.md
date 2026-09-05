@@ -173,6 +173,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 **沙箱 shell 网络自注入**（corp-net-inject）：Electron 主进程启动时自注入系统代理（resolveProxy，PAC 兼容）→HTTPS_PROXY 等+NODE_USE_ENV_PROXY=1（Node 24 才读 env 代理——评审 P1 抓的）+PowerShell 导出 Root/CA 证书 PEM→NODE_EXTRA_CA_CERTS/SSL_CERT_FILE/CURL_CA_BUNDLE+NO_PROXY 内网清单；后代继承零改 runtime，win32 gate，全失败路径降级裸启动。架构 note 双语（含 CA 投毒面评估/PAC 近似/清单维护点）。合并 master f05b981a84，合并树 check 全绿 1815+7skip/market 400。
 **待**：#51 构建（带网络修复）→用户装机验证沙箱联网；插件 sequence 13 发布（digest 对拍→落值→publish）→用户填 key 实测三引擎。
 
+### #51 + free-search 0.4.183 真机验收通过（2026-09-05 午）
+用户装机全测 OK：①沙箱联网修复实证（curl 过 TLS 检查，对照上次全灭）②0.4.183 经 sequence 13 一次装成 ③anysearch key 配置后引擎实测可用。**两线闭环：沙箱 shell 网络自注入（corp-net-inject）+ free-search 三键制**。发布履历：sequence 13（0.4.183，treeDigest 648b2188…Windows/Linux 对拍一致）。构建履历：#51=corp-net-inject+NODE_USE_ENV_PROXY 修复。既定发布顺序已完成「free-search 发布→测试」段——**下一步=用户拍板 P8 发版翻 agentBrowser policy 真机测试**。#51 产物留档 tmp_sessions/dsh-desktop-asserts/（SHA256 2daa65c5…）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
