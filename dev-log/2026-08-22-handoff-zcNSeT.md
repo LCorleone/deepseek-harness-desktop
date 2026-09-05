@@ -189,6 +189,10 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### native-ui file:// fuse 翻正定案（2026-09-05 晚，fix-file-fuse）
 **#54 二轮实锤（同构修复后真机仍被 CORS 拦，origin null）→终局根因**：package.json electronFuses 钉 `grantFileProtocolExtraPrivileges:false`（P4 加固期按 Electron 安全默认设，d919d7a655/8f8b38cbbd）——打包态所有 file:// 页均为不透明源（null），module 全挂；开发态二进制默认行为不同→xvfb 冒烟过。三窗同病一家：sso-gate「正常」是假象（silent auth 从不显示），#52 恢复窗黑屏、agent-browser CORS 均此因。修=fuse 翻 true，同步断言五处：REQUIRED_ELECTRON_FUSES（verify-packaged-runtime）/ release-preflight REQUIRED_FUSES / package.spec manifest 快照 / verify-packaged-runtime.spec 快照+翻转断言翻向+线级 fixture（均加事故注释）。翻回理由与安全评估：本地 native-ui 全为自有模块化 UI，严格 CSP（default-src 'none' 系）不加载任何不可信 file:// 内容；webview guest 网页运行于独立 webContents/进程不受该 fuse 豁免影响；上批同目录结构修复与逃层守门插件原样保留为纵深（不依赖放宽特权）。#55 构建验证待触发。
 
+### P8 真机首航成功（2026-09-05 晚，#55）
+**四枪拔雷全链**：#52 inject 崩（Cordis sibling 语义）→#53 模块 CORS 误诊（挂死 worker 遗产复盘纠偏）→#54 同源结构修复（必要不充分，纵深保留）→**#55 fuse 翻 true=真雷根**（P4 加固期按 Electron 安全清单钉 grantFileProtocolExtraPrivileges:false → 打包态 file:// 页全部不透明源 → 全部本地窗口 module 挂）。**三扇窗一类锁死风险消除**：agent-browser（每个用户可见）/recovery（#52 黑屏实为同 bug）/sso-gate（silent auth 掩盖+用户独立证实 silent 失败时黑屏——token 过期锁死场景）。用户确认 #55 浏览器可用。发布顺序终段完成：P8 进入真机测试期（审批门/接管/截图等剧本逐步走查）。
+**教训沉淀**：①打包态 fuse/权限面=开发态差异的头号来源，dev 二进制验不出——产物级断言（fuse 读回/结构守门）才是真门；②「能跑的窗口」未必健康（sso-gate 假象）——罕见路径窗口要有显式验证；③挂死 worker 的遗产先复盘再重启（本次省一次返工）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
