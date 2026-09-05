@@ -6,8 +6,10 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type { DesktopPolicy } from '../src/desktop-policy.ts'
+import { parseDesktopPolicy } from '../src/desktop-policy.ts'
 import type { DesktopAgentBrowser, AgentBrowserLiveState, AgentBrowserSnapshot } from '../src/agent-browser-contract.ts'
 import {
   AGENT_BROWSER_PROMPT_SECTION,
@@ -35,7 +37,20 @@ function devPolicy(): DesktopPolicy {
   }
 }
 
-function lockedPolicy(): DesktopPolicy {
+/** The shipped release asset: the P8 field-test default (browser bright). */
+function releasePolicy(): DesktopPolicy {
+  return parseDesktopPolicy(JSON.parse(readFileSync(
+    new URL('../src/policy/desktop-policy.release.json', import.meta.url),
+    'utf8',
+  )) as unknown)
+}
+
+/**
+ * A locked build whose policy EXPLICITLY disables the browser. Since the
+ * 2026-09-05 release flip, zero exposure comes from this key alone — never
+ * from `locked` — so the negative face injects `enabled:false` directly.
+ */
+function browserDisabledPolicy(): DesktopPolicy {
   return {
     ...devPolicy(),
     locked: true,
@@ -144,7 +159,7 @@ describe('agent-browser URL gate (policy skeleton)', () => {
   })
 
   it('denies everything while the allowlist is empty, matches exact origins otherwise', () => {
-    const empty = lockedPolicy().agentBrowser
+    const empty = browserDisabledPolicy().agentBrowser
     expect(agentBrowserAllowsUrl('https://example.test/', empty)).toBe(false)
 
     const narrowed = { enabled: true, allowOrigins: ['https://docs.company.example'], allowPersistLogin: false }
@@ -164,13 +179,41 @@ describe('agent-browser host plugin registration', () => {
     expect(name).toBe('desktop-agent-browser')
   })
 
-  it('registers nothing while policy keeps the capability disabled', () => {
-    const { context, tools, sections } = fakeContext(lockedPolicy(), {})
+  it('registers nothing while the policy explicitly disables the capability', () => {
+    // The negative face of the 2026-09-05 release flip: a locked build stays
+    // at zero exposure exactly when the policy says enabled:false — no tools,
+    // no prompt section, no live context.
+    const { context, tools, sections, contexts } = fakeContext(browserDisabledPolicy(), {})
 
     apply(context)
 
     expect(tools).toHaveLength(0)
     expect(sections).toHaveLength(0)
+    expect(contexts).toHaveLength(0)
+  })
+
+  it('registers the nine browser tools under the shipped release default', () => {
+    // The release flip (P8 field test): a locked, SSO-gated, company-catalog
+    // release build registers the full browser surface — the allowlist
+    // wildcard keeps the approval gates (cross-origin ask, submit ask,
+    // download cancel) as the only line the model crosses.
+    const { context, tools, sections, contexts } = fakeContext(releasePolicy(), {})
+
+    apply(context)
+
+    expect(tools.map(tool => tool.name).sort()).toEqual([
+      'browser_claim_control',
+      'browser_click',
+      'browser_navigate',
+      'browser_open',
+      'browser_screenshot',
+      'browser_scroll',
+      'browser_snapshot',
+      'browser_type',
+      'browser_wait',
+    ])
+    expect(sections).toHaveLength(1)
+    expect(contexts).toEqual([{ name: 'agent-browser-state', order: 150 }])
   })
 
   it('registers the nine browser tools, the prompt section, and the live context', () => {

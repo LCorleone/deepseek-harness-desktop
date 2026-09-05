@@ -176,6 +176,9 @@ policy `managedModels`（严格 7 键，CLI 交接 5 键同步）；混淆 blob�
 ### #51 + free-search 0.4.183 真机验收通过（2026-09-05 午）
 用户装机全测 OK：①沙箱联网修复实证（curl 过 TLS 检查，对照上次全灭）②0.4.183 经 sequence 13 一次装成 ③anysearch key 配置后引擎实测可用。**两线闭环：沙箱 shell 网络自注入（corp-net-inject）+ free-search 三键制**。发布履历：sequence 13（0.4.183，treeDigest 648b2188…Windows/Linux 对拍一致）。构建履历：#51=corp-net-inject+NODE_USE_ENV_PROXY 修复。既定发布顺序已完成「free-search 发布→测试」段——**下一步=用户拍板 P8 发版翻 agentBrowser policy 真机测试**。#51 产物留档 tmp_sessions/dsh-desktop-asserts/（SHA256 2daa65c5…）。
 
+### P8 上线：release 翻 agentBrowser policy（2026-09-05 午后）
+**用户拍板真机测试**（既定发布顺序末段启动）。desktop-policy.release.json 翻亮：`agentBrowser = {enabled:true, allowOrigins:["*"], allowPersistLogin:false}`——测试期口径全放开 http(s) 源，审批门仍护（跨源导航 ask/表单提交 ask/下载取消），persist 登录态暂不开=一次性 partition token。断言同步：desktop-policy.spec 双形态各补 agentBrowser 终值断言（dev/release 均 enabled+通配，persistLogin 关）；agent-browser-tools.spec「locked 零暴露」负向断言翻向=新增读真 release 资产验「release 默认注册九工具+段+live context」，负向面保留为注入显式 disabled policy 验零暴露（零暴露归因 enabled:false，不再归因 locked）；agent-browser-policy.spec inert 子策略变量更名 disabled。e2e-install-smoke/composition 冒烟核实零硬编码 release 期望（全动态读内嵌资产）无需动。架构 note 状态行维持 Implemented。check 终态 **1816+7skip**（+1 即新 release 默认注册断言）/market 400，全绿。单 commit `feat(desktop): enable the agent browser in release builds for the field test`，不 push。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。

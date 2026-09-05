@@ -291,6 +291,7 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **后续触发项**：locked policy agentBrowser.enabled:false → 上线需发版翻 policy；装机验收面=设置无痕迹（休眠验证）。
 
 **发布节奏（2026-09-04 用户定案）**：P8 保持休眠不生效。顺序=①P7 free-search 真发布（treeDigest 落值→fleet≥#47 门禁→发布上架）→②用户实测搜索 →③测试通过后 P8 发版翻 policy 进真机测试。P8 代码可随线 push，但 policy 不翻。
+**上线（2026-09-05 用户拍板真机测试）**：release 翻亮——agentBrowser = `{enabled:true, allowOrigins:["*"], allowPersistLogin:false}`（allowOrigins '*' 为测试期口径全放开 http(s) 源，审批门仍护跨源 ask/提交 ask/下载取消；persistLogin 暂不开=一次性分区）。desktop-policy/agent-browser 断言同步翻向（release 默认注册九工具；负向面改注入显式 disabled policy 验零暴露）。
 
 ## 兼容模式红线汇总
 

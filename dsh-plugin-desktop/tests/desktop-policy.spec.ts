@@ -357,6 +357,8 @@ describe('shipped desktop policy assets', () => {
     expect(policy.allowHomePatch).toBe(false)
     expect(policy.allowManualPluginAdd).toBe(false)
     expect(policy.trustRoots).toEqual([])
+    // Dev posture: the browser surface ships bright with the wildcard.
+    expect(policy.agentBrowser).toEqual({ enabled: true, allowOrigins: ['*'], allowPersistLogin: false })
   })
 
   it('ships a locked release policy pinned to the company catalog trust root', () => {
@@ -385,6 +387,12 @@ describe('shipped desktop policy assets', () => {
     expect(policy.trustRoots).toEqual([
       { keyId: 'company-catalog-2026-08', fingerprint: 'c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6' },
     ])
+    // Agent browser (P8 field test, 2026-09-05): the release default flipped
+    // bright — every http(s) origin admitted for the field test window (the
+    // approval gates still guard cross-origin navigation, form submission,
+    // and downloads) while login persistence stays off: one-shot partition
+    // tokens only, so allowPersistLogin:false survives the flip.
+    expect(policy.agentBrowser).toEqual({ enabled: true, allowOrigins: ['*'], allowPersistLogin: false })
   })
 })
 

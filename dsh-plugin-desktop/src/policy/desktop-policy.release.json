@@ -1,8 +1,8 @@
 {
   "agentBrowser": {
-    "allowOrigins": [],
+    "allowOrigins": ["*"],
     "allowPersistLogin": false,
-    "enabled": false
+    "enabled": true
   },
   "allowHomePatch": false,
   "allowManualPluginAdd": false,

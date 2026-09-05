@@ -78,8 +78,11 @@ describe('agent-browser URL policy decisions (B4 home)', () => {
   })
 
   it('denies everything while the allowlist is empty, matches exact origins otherwise', () => {
-    const locked = { enabled: false, allowOrigins: [], allowPersistLogin: false }
-    expect(agentBrowserAllowsUrl('https://docs.example.test/', locked)).toBe(false)
+    // The inert sub-policy (explicitly disabled, empty allowlist): since the
+    // 2026-09-05 release flip this shape is an explicit opt-out, not the
+    // release default — and it still admits nothing.
+    const disabled = { enabled: false, allowOrigins: [], allowPersistLogin: false }
+    expect(agentBrowserAllowsUrl('https://docs.example.test/', disabled)).toBe(false)
     expect(agentBrowserAllowsUrl('https://docs.example.test/guide', ALLOWLIST_POLICY)).toBe(true)
     expect(agentBrowserAllowsUrl('https://docs.example.test:443/guide', ALLOWLIST_POLICY)).toBe(true)
     expect(agentBrowserAllowsUrl('https://evil.example/', ALLOWLIST_POLICY)).toBe(false)
