@@ -67,6 +67,11 @@
               → 客户端下次市场刷新即不可装；已装机器重启校验拦截加载
 紧急全员回退  revoke + publish-local；此路径演练过（见交接指南 §5 战例）
 想改测试名单  beta-roster --add/--remove <邮箱>（重签 beta 清单，秒级，零客户端发版）
+              ⚠ 退名单卫生：该机器若装着 beta-only 插件（stable 没钉的），
+                退出后 boot 校验找不到钉定→插件不再加载（fail-closed）。
+                先让其卸载 beta-only 插件，或先 promote 再退。
+beta 撤条目    同理：测试者还装着的 beta-only 条目不要直接从 beta 撤——
+              先 promote（stable 永久钉定）再撤，否则装机者开机加载被拦。
 ```
 
 ## 文件地图（哪份文件管什么）
