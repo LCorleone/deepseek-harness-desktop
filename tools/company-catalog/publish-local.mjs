@@ -673,12 +673,27 @@ async function main() {
   if (deployedSource !== masterRawUrl && dryRun !== true) {
     throw new Error('--deployed is a drill/e2e override of the ratchet source and requires --dry-run — a real publish must ratchet against the manifest GitLab actually serves')
   }
-  const deployed = await fetchDeployedManifest(deployedSource)
-  if (meta.sequence !== deployed.sequence + 1) {
+  // The channel's own deployed manifest. The beta channel's FIRST push has
+  // nothing deployed yet (404): bootstrap the shared monotonic ratchet against
+  // the deployed STABLE manifest instead — the beta artifact must still be
+  // exactly one past what the fleet can already see (stable), so the global
+  // sequence stays strictly increasing across both files.
+  const deployed = channel === 'beta'
+    ? await fetchDeployedManifest(deployedSource, { allowMissing: true })
+    : await fetchDeployedManifest(deployedSource)
+  let ratchetBase = deployed
+  let ratchetSource = masterRawUrl
+  if (channel === 'beta' && deployed === undefined) {
+    const stableRawUrl = `https://${gitlabOrigin}/${project}/-/raw/master/${MANIFEST_FILE}`
+    ratchetBase = await fetchDeployedManifest(stableRawUrl)
+    ratchetSource = `${masterRawUrl} (404 — first beta publish; base = deployed stable ${stableRawUrl})`
+    console.log(`ratchet: no deployed beta manifest — first beta publish, base = deployed stable sequence ${String(ratchetBase.sequence)}`)
+  }
+  if (meta.sequence !== ratchetBase.sequence + 1) {
     throw new Error(
-      `sequence ratchet failure: the artifact carries sequence ${String(meta.sequence)} but GitLab has ${String(deployed.sequence)} deployed ` +
-      `(${masterRawUrl}); required artifact.sequence == deployed + 1 (== ${String(deployed.sequence + 1)}). ` +
-      (meta.sequence <= deployed.sequence
+      `sequence ratchet failure: the artifact carries sequence ${String(meta.sequence)} but GitLab has ${String(ratchetBase.sequence)} deployed ` +
+      `(${ratchetSource}); required artifact.sequence == deployed + 1 (== ${String(ratchetBase.sequence + 1)}). ` +
+      (meta.sequence <= ratchetBase.sequence
         ? 'this artifact is stale — clients have already seen its sequence or newer; rebuild from a bumped state file'
         : 'the state file used for the build jumped ahead of the deployment — publish the pending artifact first, then rebuild'),
     )
@@ -687,7 +702,7 @@ async function main() {
   const verification = await verifyManifestText(market, manifestText, {
     fingerprint: meta.fingerprint,
     keyId: meta.keyId,
-    lastSeenSequence: deployed.sequence,
+    lastSeenSequence: ratchetBase.sequence,
     companyCatalogOrigin: `https://${gitlabOrigin}`,
     channel,
   })
@@ -695,7 +710,7 @@ async function main() {
     throw new Error(`signature verification failed (${verification.code}): ${verification.reason}`)
   }
   console.log(`signature: VERIFIED (keyId ${meta.keyId}, fingerprint ${meta.fingerprint} = fleet trust root; expiry ${String(verification.manifest?.expiresAt)})`)
-  console.log(`ratchet: artifact sequence ${String(meta.sequence)} = deployed ${String(deployed.sequence)} + 1 ✓`)
+  console.log(`ratchet: artifact sequence ${String(meta.sequence)} = deployed ${String(ratchetBase.sequence)} + 1 ✓`)
 
   // --- 4b. fleet-upgrade gate: the first authoritative publish of an optional
   // authority field must be an acknowledged one. Clients built before the
@@ -706,7 +721,10 @@ async function main() {
   // → re-sign with a higher sequence → push; the flag is the operator's
   // assertion that step one is done. "Fleet upgrade ordering (publication
   // gate)" / 「fleet 升级顺序（发布门禁）」 in tools/company-catalog/README.md.
-  const deployedPackages = Array.isArray(deployed.manifest.packages) ? deployed.manifest.packages : []
+  // The gate baseline is the same-channel deployed manifest; on the beta
+  // first push that is the deployed STABLE manifest (ratchetBase) — the
+  // fields the fleet already sees authoritatively from stable.
+  const deployedPackages = Array.isArray(ratchetBase.manifest.packages) ? ratchetBase.manifest.packages : []
   const gatedEntries = packages.flatMap((signed) => {
     const newly = ['source', 'treeDigest', 'approvedBuilds'].filter((field) => signed[field] !== undefined)
     if (newly.length === 0) return []
@@ -754,7 +772,7 @@ async function main() {
     'push plan:',
     `  target:      https://${gitlabOrigin}/${project}.git → ${branch}`,
     `  file:        ${manifestFile} (${String(manifestBytes.byteLength)} bytes, canonical single line, sha256 ${manifestSha256})`,
-    `  sequence:    ${String(deployed.sequence)} → ${String(meta.sequence)}${channel === 'beta' ? ` (beta channel; the stable ${MANIFEST_FILE} is not touched by this push)` : ''}`,
+    `  sequence:    ${String(ratchetBase.sequence)} → ${String(meta.sequence)}${channel === 'beta' ? ` (beta channel; the stable ${MANIFEST_FILE} is not touched by this push)` : ''}`,
     `  commit:      ${commitMessage}`,
     `  entries:     ${meta.entries.map((entry) => `${entry.packageName}@${entry.version}${entry.treeDigest === undefined ? '' : ` treeDigest ${entry.treeDigest.slice(0, 12)}…`}${entry.sourceKind === 'tarball' ? ' [tarball]' : ''}`).join(', ')}`,
   ]
@@ -892,7 +910,7 @@ async function main() {
 
   console.log('')
   console.log('publish complete:')
-  console.log(`  sequence:    ${String(meta.sequence)} (deployed ${String(deployed.sequence)} → ${String(meta.sequence)} on ${branch})`)
+  console.log(`  sequence:    ${String(meta.sequence)} (deployed ${String(ratchetBase.sequence)} → ${String(meta.sequence)} on ${branch})`)
   console.log(`  keyId:       ${meta.keyId}`)
   console.log(`  fingerprint: ${meta.fingerprint}`)
   console.log(`  manifest:    ${String(manifestBytes.byteLength)} bytes, sha256 ${manifestSha256}`)

@@ -125,6 +125,30 @@ function runCli(args) {
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
 
+// --- first-push bootstrap: fetchDeployedManifest allowMissing + the beta
+// ratchet falling back to the deployed stable manifest (found live when the
+// very first beta publish hit a 404 — tests had always assumed a deployed beta).
+test('fetchDeployedManifest allowMissing resolves a 404 to undefined and still rejects other statuses', async () => {
+  const { fetchDeployedManifest } = await import('../lib/pipeline.mjs')
+  const realFetch = globalThis.fetch
+  try {
+    globalThis.fetch = async () => new Response('not found', { status: 404 })
+    await assert.rejects(fetchDeployedManifest('https://catalog.test/manifest.json'), /answered HTTP 404/, 'without allowMissing a 404 stays a hard error')
+    assert.equal(await fetchDeployedManifest('https://catalog.test/manifest.json', { allowMissing: true }), undefined, 'with allowMissing a 404 resolves to undefined')
+    globalThis.fetch = async () => new Response('boom', { status: 500 })
+    await assert.rejects(fetchDeployedManifest('https://catalog.test/manifest.json', { allowMissing: true }), /answered HTTP 500/, 'allowMissing never softens a non-404')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('the beta first-push ratchet text is wired (source grep of the bootstrap branch)', () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'publish-local.mjs'), 'utf8')
+  assert.ok(source.includes('allowMissing: true'), 'the beta fetch passes allowMissing')
+  assert.ok(source.includes('first beta publish, base = deployed stable sequence'), 'the bootstrap message exists')
+  assert.ok(source.match(/lastSeenSequence: ratchetBase\.sequence/), 'verification ratchets against the resolved base')
+})
+
 test('measure-and-publish -f channel=beta signs the beta manifest (initial roster) and leaves stable alone', () => {
   const work = workspace()
   try {

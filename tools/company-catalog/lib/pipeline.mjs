@@ -144,6 +144,11 @@ function sequenceFromParsedManifest(parsed, label) {
 export async function fetchDeployedManifest(source, options = {}) {
   const maxBytes = options.maxBytes ?? DEPLOYED_MANIFEST_MAX_BYTES
   const timeoutMs = options.timeoutMs ?? DEPLOYED_MANIFEST_TIMEOUT_MS
+  // allowMissing: a 404 resolves to undefined instead of throwing — the
+  // publisher's first-push bootstrap (e.g. the beta channel's very first
+  // manifest) needs "nothing deployed yet" to be a representable state.
+  // Every other non-200 stays a hard error.
+  const allowMissing = options.allowMissing === true
   let text
   if (isHttpUrl(source)) {
     let response
@@ -158,6 +163,7 @@ export async function fetchDeployedManifest(source, options = {}) {
     } catch (error) {
       throw new Error(`the deployed manifest at ${source} could not be fetched within ${String(timeoutMs)} ms (${error.message})`)
     }
+    if (response.status === 404 && allowMissing) return undefined
     if (response.status !== 200) {
       throw new Error(`the deployed manifest at ${source} answered HTTP ${String(response.status)}`)
     }
