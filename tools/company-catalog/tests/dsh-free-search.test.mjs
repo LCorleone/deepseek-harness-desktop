@@ -30,6 +30,13 @@
  *    keyed path with code!==0 readable rejection), zero keys return the
  *    setup guidance without any fetch, and a readable message — not a
  *    throw — when every engine fails,
+ *  - settings-card copy (fs-184): the card carries only the one-line intro,
+ *    the per-engine key inputs with their "get a free key" registration
+ *    links and free-quota notes, and the functional status/buttons — the
+ *    chain explainer, the key-storage/settings-file notes, and the
+ *    cache-TTL field are gone (engine logic untouched; the setting keeps
+ *    its schema default server-side); the i18n pins follow the trimmed
+ *    surface (16 t.<key> references, engines rows pinned),
  *  - engine test bound (fs-183 review P2): runEngineTest dispatches with
  *    AbortSignal.timeout(15000) — a hanging endpoint fails readably at the
  *    15s bound for every chain engine instead of hanging the tool forever
@@ -51,7 +58,7 @@ import { test } from 'node:test'
 
 const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // tools/company-catalog/tests → tools/company-catalog → the vendored plugin source.
-const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.183')
+const PLUGIN_DIR = join(TOOL_DIR, 'plugin-sources', 'dsh-free-search-0.4.184')
 const LIB_DIR = join(PLUGIN_DIR, 'lib')
 
 // ---------------------------------------------------------------------------
@@ -354,7 +361,7 @@ test('coexistence patch: one insert row plus the single-key web row re-pin, noth
 test('package shape: no build scripts, pure-JS deps, stable semver, workflow-convention directory name', () => {
   const pkg = JSON.parse(read(join(PLUGIN_DIR, 'package.json')))
   assert.equal(pkg.name, 'dsh-free-search')
-  assert.equal(pkg.version, '0.4.183')
+  assert.equal(pkg.version, '0.4.184')
   assert.match(pkg.version, /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u, 'the manifest signs stable semver only')
   assert.equal(pkg.scripts, undefined, 'no build scripts — pnpm build-script interception never applies')
   assert.deepEqual(Object.keys(pkg.dependencies), ['@deepseek-ai/schemastery'], 'single pure-JS dependency, no native builds')
@@ -704,7 +711,9 @@ test('i18n surface: every t.<key> referenced in client.js exists in both the zh 
   // 评审 P2-1 回归钉：键集收窄曾误删仍被脏状态指示器引用的 unsaved
   // （渲染 undefined）。client.js 是 ModuleLoader 工厂包，无法在 Node 直接
   // import——对源码做结构化解析：引用侧扫 t.<key>，字典侧按 8 空格缩进的
-  // 键行收集两语言键集。
+  // 键行收集两语言键集。0.4.184 起设置卡是最小文案面（一句引导 + 每引擎
+  // key 输入/注册链接/额度句），引用面收窄到 16 处，现实规模下限同步降到
+  // 14（仍能抓出“字典删键但渲染仍引用”的回归）。
   const source = read(join(LIB_DIR, 'client.js'))
   const i18nStart = source.indexOf('const I18N = {')
   assert.notEqual(i18nStart, -1, 'client.js must define the I18N dictionaries')
@@ -722,13 +731,13 @@ test('i18n surface: every t.<key> referenced in client.js exists in both the zh 
   const en = dictionary('en')
   assert.deepEqual([...en], [...zh], 'zh and en carry the same key set (order preserved)')
   const referenced = [...source.matchAll(/\bt\.([A-Za-z_$][\w$]*)/gu)].map((m) => m[1])
-  assert.ok(referenced.length >= 20, `expected a realistic key surface, got ${String(referenced.length)}`)
+  assert.ok(referenced.length >= 14, `expected a realistic key surface, got ${String(referenced.length)}`)
   for (const key of referenced) {
     assert.ok(zh.has(key), `t.${key} is referenced but missing from the zh dictionary`)
     assert.ok(en.has(key), `t.${key} is referenced but missing from the en dictionary`)
   }
   assert.ok(new Set(referenced).has('unsaved'), 'the dirty-indicator key unsaved must stay referenced and defined')
-  assert.ok(new Set(referenced).has('signupRows'), 'the 0.4.183 signup guide rows must stay referenced and defined')
+  assert.ok(new Set(referenced).has('engines'), 'the per-engine registration rows (free-key link + quota note) must stay referenced and defined')
 })
 
 test('system prompt engine list: env-configured keys count — same resolution path and priority as the chain', async () => {

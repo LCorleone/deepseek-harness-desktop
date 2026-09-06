@@ -11,7 +11,7 @@ P7 首个上架插件：上游社区插件 `dsh-free-search` 的公司加固收�
 | 上游仓库 | https://github.com/DDDMUC/dsh-free-search |
 | 钉住版本 | **v0.4.18**（tag commit `36c6446211cd2a759cf59de87a1ba6a893c34ebd`） |
 | 为什么钉 0.4.18 | v0.4.19+ 改用 0.1.2-alpha.2 的 `sctx.settings.installSection` API；我们钉住的 harness `0.1.1-rc.2` 没有该 API，装上即崩。v0.4.18 用导出函数 `installSettingsSection`（rc.2 的 `@deepseek-ai/dsh-settings` 里有，已核对源码），兼容。 |
-| 本包版本 | 当前 `0.4.183` = 上游 `0.4.18` + 公司构建 3（构建 1 = `0.4.181`，因包内 `dsh.bundle.patch` 前缀失配真机装机全败而作废；构建 2 = `0.4.182`，首次真机装机成功，后因引擎链改版被取代——均见下方「版本推进记录」）。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182、0.4.183…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
+| 本包版本 | 当前 `0.4.184` = 上游 `0.4.18` + 公司构建 4（构建 1 = `0.4.181`，因包内 `dsh.bundle.patch` 前缀失配真机装机全败而作废；构建 2 = `0.4.182`，首次真机装机成功，后因引擎链改版被取代；构建 3 = `0.4.183`，三键制改版，后因设置页文案精简被取代——均见下方「版本推进记录」）。tarball 通道的清单只签稳定 semver（`STABLE_VERSION_PATTERN`，禁止 prerelease/build 元数据——任务原文的 `0.4.18-company.1` 拼法会被 allowlist 校验与 pack 器双重拒绝），因此用第 4 位补丁号编码「同源剥离版」：后续公司构建依次 0.4.182、0.4.183…；该号段高于上游全部已发布 0.4.x，永不与 npm 上的字节混淆。 |
 | 上游 README | 原样保留于 `docs/README-upstream.md`（不进打包产物，`files` 白名单不含 docs/）。 |
 
 ## 剥离清单（红线，逐项验证）
@@ -148,24 +148,24 @@ corepack yarn catalog pack-tarball \
   --catalog-origin https://gitlab.s.dai.deloitte.cn   # 或 COMPANY_CATALOG_ORIGIN
 ```
 
-- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.183/`
+- 源码目录落位 `tools/company-catalog/plugin-sources/dsh-free-search-0.4.184/`
   ——`--from-allowlist` 的 workflow 约定是
-  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.183`），
+  `<sources-root>/<tarball-stem>/`（stem = `dsh-free-search-0.4.184`），
   目录名即按此命名，CI 打包零管线改动。（任务原文写的
   `plugins/dsh-free-search/` 与该约定不兼容：workflow 在
   `plugin-sources/<stem>/` 找不到源会直接失败。）
-- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.183.tgz` +
+- 产物 `tools/company-catalog/out/packages/dsh-free-search-0.4.184.tgz` +
   同名 `.pack.json`（sha512 / treeDigest / signable path）。
 - allowlist 条目（`tools/company-catalog/allowlist.json`）用
   `source:{kind:'tarball', url, path}` pack-artifact 形态，
   `repository` 显式钉上游，url 指向真实源
   `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/`
   （与 `desktop-policy.release.json` 的 `companyCatalogOrigin` 一致；测试对拍
-  两文件，防示例域再混入）。**未携带 `treeDigest`**（0.4.183 现行形态：
-  与 0.4.182 首发时同口径——参考环境（Windows runner 的 digest 产出）实测
-  后按流程评审落值；本仓 Linux 环境测出的 digest 不作为评审值入库。
-  0.4.182 曾评审入 Windows 实测值 adce37b4…（双平台对拍一致），随该条目
-  被 0.4.183 取代一并移除；0.4.181 的实测值同此前惯例随作废移除。
+  两文件，防示例域再混入）。**未携带 `treeDigest`**（0.4.184 现行形态：
+  与 0.4.183/0.4.182 首发时同口径——参考环境（Windows runner 的 digest
+  产出）实测后按流程评审落值；本仓 Linux 环境测出的 digest 不作为评审值
+  入库。0.4.183 曾评审入 Windows 实测值 648b2188…，随该条目被 0.4.184
+  取代一并移除；更早版本的实测值同此前惯例随取代移除。
 - 真发布仍按 fleet 门禁顺序：全员升级 field-aware 构建 → 参考环境实测
   treeDigest → 评审落值 → 更高 sequence 重签 → publish-local 推 GitLab。
 
@@ -262,6 +262,35 @@ corepack yarn catalog pack-tarball \
   ——挂起端点 15s 可读超时（AbortSignal.timeout 是原生定时器，测试打桩
   该静态方法捕获时长，abort 由 fake 全局 setTimeout 驱动）；传 100 →
   三引擎请求体里都是 20。
+
+## 版本推进记录（0.4.183 → 0.4.184，设置页文案精简）
+
+0.4.183 三键制上线后用户反馈：设置卡说明太细——出现了「配置文件是什么」
+「密钥保存在本机哪里」类配置说明，完全没有必要（2026-09-06 用户拍板）。
+设置页只留一句引导 + 每引擎的 key 输入与注册指引，本次仅动
+`lib/client.js` 的文案与卡片结构：
+
+- **保留**：顶部一句「配置以下一个或多个 API Key，即可免费使用搜索功能。」；
+  每引擎（Tavily / Exa / AnySearch）一组：引擎名 label + key 输入框 +
+  「获取免费 Key」注册链接（沿用三个既有注册 URL，可跳转网页）+ 免费额度
+  一句话（属注册指引价值，照旧）；引擎测试按钮、保存/撤销、脏状态与测试
+  结果提示等功能件原样不动；中英两语字典同步收窄（键集一致，i18n 完整性
+  断言随面收窄校准）。
+- **删除**：「公司引擎链」整段链序说明；注册指引卡的前言段（链接与额度
+  并入各引擎行）；「API 密钥（三引擎均需）」组标题；「密钥保存在本机
+  settings.yaml……不随插件分发」的存储位置/安全说明；「结果缓存时长」
+  输入框（设置项仍在 schema 按默认 5 分钟生效，仅不再从设置卡编辑）；
+  头部的引擎链徽标。除上述保留项外，页面不剩其他说明。
+- **未动**：引擎逻辑零改动——链序/回退/超时/结果数钳制与 0.4.183 完全
+  一致（`lib/index.js`、`lib/engines.js` 本次未改）；无 key 时 search 返回
+  的配置引导文案与系统提示词照旧（那是 agent 侧输出，不是设置页）。
+- **版本号 0.4.183 → 0.4.184**：目录名、`package.json`、allowlist 条目的
+  `version`/`source.path`/`source.url` 末段同步。0.4.183 条目从 allowlist
+  删除（已被真机 fleet 安装，由更高 sequence 的 0.4.184 覆盖更新，无需
+  revoked——吊销是恶意/compromised 场景，不是版本演进）；其 treeDigest
+  （648b2188…）随条目移除，0.4.184 留空待参考环境实测评审落值。发布顺序
+  照旧：digest workflow（Windows）实测 → 评审落值 → 更高 sequence 重签 →
+  publish-local 推 GitLab。
 
 ## 留存与后续
 

@@ -14,9 +14,12 @@ window.__ModuleLoader__.load({
     // chain tavily->exa->anysearch is reviewed policy), the keyless/extra
     // engine key inputs, the credentials-center key storage toggle, the
     // platform_search toggles, and the /free-search-engine command. Since
-    // 0.4.183 the chain is keyed-only (three self-registered free keys) and
-    // the card carries a signup guide for the three free tiers; the bing/ddg
-    // engines and their safeSearch/market controls are gone with them.
+    // 0.4.183 the chain is keyed-only (three self-registered free keys);
+    // since 0.4.184 the card copy is minimal by user decision: one intro
+    // line, then per engine a key input, a "get a free key" registration
+    // link, and the free-quota note — the chain explainer, the storage/
+    // settings-file notes, and the cache-TTL field are gone (the setting
+    // keeps working server-side with its schema default).
     //#region css
     const css = [
       ".dshfs-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:8px;min-width:0;list-style:none;transition:border-color .16s,background .16s;overflow:hidden;margin-bottom:8px}",
@@ -38,19 +41,18 @@ window.__ModuleLoader__.load({
       ".dshfs-field{flex-direction:column;gap:4px;min-width:0;display:flex}",
       ".dshfs-label{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500}",
       ".dshfs-input{border:1px solid var(--dsw-alias-border-l2);font:inherit;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border-radius:6px;padding:6px 8px;font-size:13px;transition:border-color .13s,box-shadow .13s;width:100%}",
-      ".dshfs-ttl{width:88px}",
       ".dshfs-fieldRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
+      ".dshfs-note{color:var(--dsw-alias-label-secondary);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
       ".dshfs-input:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}",
       ".dshfs-input:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}",
       ".dshfs-input:disabled{opacity:.6;cursor:default}",
       ".dshfs-hint{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px}",
-      ".dshfs-link{color:var(--dsw-alias-state-business-primary);font-size:12px;text-decoration:none;align-self:flex-start;padding:2px 0}",
+      ".dshfs-link{color:var(--dsw-alias-state-business-primary);font-size:12px;text-decoration:none;padding:2px 0}",
       ".dshfs-link:hover{text-decoration:underline}",
       ".dshfs-btn{font:inherit;cursor:pointer;border-radius:6px;padding:5px 12px;font-size:13px;transition:background-color .13s,border-color .13s,color .13s}",
       ".dshfs-save{border:1px solid var(--dsw-alias-button-info-fill);background:var(--dsw-alias-button-info-fill);color:var(--dsw-alias-label-primary-foreground)}",
       ".dshfs-save:hover:not(:disabled){border-color:var(--dsw-alias-button-info-hover);background:var(--dsw-alias-button-info-hover)}",
-      ".dshfs-save:disabled{opacity:.5;cursor:default}",
-      ".dshfs-badge{background:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-state-business-primary);white-space:nowrap;border-radius:999px;flex:none;padding:1px 6px;font-size:11px}",
+
       ".dshfs-langToggle{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:transparent;flex:none;padding:2px 8px;font-size:11px;border-radius:6px}",
     ].join("");
     const tagId = "dsh-free-search/card.css";
@@ -67,24 +69,15 @@ window.__ModuleLoader__.load({
     const NS = "free-search";
     const I18N = {
       zh: {
-        description: "免费网页搜索（公司引擎链 tavily→exa→anysearch，三引擎均需自注册免费 key）",
-        chain: "公司引擎链",
-        chainSummary: "tavily → exa → anysearch",
-        chainHint: "链序为公司口径，不可在此切换。0.4.183 起纯三键制：三个引擎均需自注册免费 API key（免费抓取引擎已移除），配好任一 key 即入链，配多个可自动降级兜底；一个都没有时搜索会返回配置引导。任一引擎失败自动降级到下一个。",
-        signupTitle: "注册指引（三引擎均有免费额度）",
-        signupHint: "任配一个 key 即可搜索，配两个或三个可自动降级兜底。key 只需注册一次，免费额度见各官网：",
-        signupRows: [
-          { name: "tavily", url: "https://tavily.com", note: "免费档 1,000 次/月，无需信用卡" },
-          { name: "exa", url: "https://exa.ai", note: "注册送 $20 + 每月 $10（约 1,400 次/月）" },
-          { name: "anysearch", url: "https://anysearch.com", note: "免费 1,000 次/天" },
+        description: "免费网页搜索",
+        intro: "配置以下一个或多个 API Key，即可免费使用搜索功能。",
+        engines: [
+          { id: "tavily", name: "Tavily", url: "https://tavily.com", note: "免费 1,000 次/月，无需信用卡" },
+          { id: "exa", name: "Exa", url: "https://exa.ai", note: "注册送 $20 + 每月 $10（约 1,400 次/月）" },
+          { id: "anysearch", name: "AnySearch", url: "https://anysearch.com", note: "免费 1,000 次/天" },
         ],
-        apiKeys: "API 密钥（三引擎均需）",
-        tavilyPh: (c) => c ? "Tavily API 密钥（已配置）" : "Tavily API 密钥（未配置则不入链）",
-        exaPh: (c) => c ? "Exa API 密钥（已配置）" : "Exa API 密钥（未配置则不入链）",
-        anysearchPh: (c) => c ? "AnySearch API 密钥（已配置）" : "AnySearch API 密钥（未配置则不入链）",
-        keysHint: "密钥保存在本机 settings.yaml 的 free-search 命名空间（本插件设置节），或通过 TAVILY_API_KEY / EXA_API_KEY / ANYSEARCH_API_KEY 环境变量提供。密钥只存在本机，不随插件分发。",
-        cacheTtl: "结果缓存时长（分钟）",
-        cacheTtlHint: "0 关闭缓存，最长 5 分钟。缩短可加快时效，延长可防限流、省额度。",
+        getKey: "获取免费 Key",
+        keyPh: (name, configured) => configured ? `${name} API Key（已配置）` : `${name} API Key`,
         unavailable: "设置不可用 —— free-search 桥接未暴露。",
         saveFailed: "保存失败",
         unsaved: "未保存",
@@ -98,24 +91,15 @@ window.__ModuleLoader__.load({
         toggleLang: "EN",
       },
       en: {
-        description: "Free web search (company chain tavily→exa→anysearch; every engine needs a self-registered free key)",
-        chain: "Company engine chain",
-        chainSummary: "tavily → exa → anysearch",
-        chainHint: "The chain order is company policy and cannot be switched here. Since 0.4.183 the chain is keyed-only (the keyless bing/ddg scrapers are removed): configure any one free key below and that engine joins; more keys add automatic fallback. With no key at all, search answers with setup guidance. Any engine failure degrades to the next one automatically.",
-        signupTitle: "Signup guide (free tiers)",
-        signupHint: "Any one key is enough to search; two or three add automatic fallback. Keys are a one-time signup - free tiers per their sites:",
-        signupRows: [
-          { name: "tavily", url: "https://tavily.com", note: "Free tier 1,000 searches/month, no credit card" },
-          { name: "exa", url: "https://exa.ai", note: "$20 signup credit + $10/month free (about 1,400 searches/month)" },
-          { name: "anysearch", url: "https://anysearch.com", note: "Free 1,000 searches/day" },
+        description: "Free web search",
+        intro: "Configure one or more of the API keys below to use search for free.",
+        engines: [
+          { id: "tavily", name: "Tavily", url: "https://tavily.com", note: "1,000 free searches/month, no credit card" },
+          { id: "exa", name: "Exa", url: "https://exa.ai", note: "$20 signup credit + $10/month free (about 1,400 searches/month)" },
+          { id: "anysearch", name: "AnySearch", url: "https://anysearch.com", note: "1,000 free searches/day" },
         ],
-        apiKeys: "API keys (all three engines keyed)",
-        tavilyPh: (c) => c ? "Tavily API key (configured)" : "Tavily API key (not in the chain without one)",
-        exaPh: (c) => c ? "Exa API key (configured)" : "Exa API key (not in the chain without one)",
-        anysearchPh: (c) => c ? "AnySearch API key (configured)" : "AnySearch API key (not in the chain without one)",
-        keysHint: "Keys are stored in this machine's settings.yaml under the free-search namespace (this plugin's settings section), or provided through the TAVILY_API_KEY / EXA_API_KEY / ANYSEARCH_API_KEY environment variables. Keys never ship with the plugin.",
-        cacheTtl: "Result cache TTL (minutes)",
-        cacheTtlHint: "0 disables caching, max 5 minutes. Lower = fresher results, higher = less rate-limiting.",
+        getKey: "Get a free key",
+        keyPh: (name, configured) => configured ? `${name} API key (configured)` : `${name} API key`,
         unavailable: "Settings unavailable — the free-search bridge is not exposed.",
         saveFailed: "save failed",
         unsaved: "unsaved",
@@ -164,7 +148,6 @@ window.__ModuleLoader__.load({
       const [exaKey, setExaKey] = react.useState("");
       const [tavilyKey, setTavilyKey] = react.useState("");
       const [anysearchKey, setAnysearchKey] = react.useState("");
-      const [cacheTtl, setCacheTtl] = react.useState(5);
       const [keysConfigured, setKeysConfigured] = react.useState({});
       const [lang, setLang] = react.useState("zh");
       const [dirty, setDirty] = react.useState(false);
@@ -184,7 +167,6 @@ window.__ModuleLoader__.load({
               setExaKey(v.exaApiKey ?? "");
               setTavilyKey(v.tavilyApiKey ?? "");
               setAnysearchKey(v.anysearchApiKey ?? "");
-              setCacheTtl(v.cacheTtl === undefined ? 5 : Math.min(Math.max(Number(v.cacheTtl) ?? 5, 0), 5));
               // secrets 字段标记哪些 key 已配置（值被脱敏，仅显示"已配置"）
               const configured = {};
               for (const secret of view.secrets ?? []) {
@@ -219,7 +201,6 @@ window.__ModuleLoader__.load({
           // key 直接写入本插件设置节（settings.yaml 的 free-search 命名空间）
           const ops = [
             { op: "set", path: ["lang"], value: lang },
-            { op: "set", path: ["cacheTtl"], value: Math.min(Math.max(Number(cacheTtl) ?? 5, 0), 5) },
           ];
           if (exaKey.trim()) ops.push({ op: "set", path: ["exaApiKey"], value: exaKey.trim() });
           if (tavilyKey.trim()) ops.push({ op: "set", path: ["tavilyApiKey"], value: tavilyKey.trim() });
@@ -292,6 +273,14 @@ window.__ModuleLoader__.load({
         setFailed(false);
       };
 
+      // Per-engine wiring: the i18n rows carry the copy (name, link, quota),
+      // this map carries which state each row edits.
+      const engineFields = {
+        tavily: { value: tavilyKey, set: setTavilyKey, configured: keysConfigured.tavily },
+        exa: { value: exaKey, set: setExaKey, configured: keysConfigured.exa },
+        anysearch: { value: anysearchKey, set: setAnysearchKey, configured: keysConfigured.anysearch },
+      };
+
       return react_jsx_runtime.jsx("li", {
         className: open ? "dshfs-card dshfs-cardOpen" : "dshfs-card",
         children: [
@@ -305,7 +294,6 @@ window.__ModuleLoader__.load({
                 react_jsx_runtime.jsx("span", { className: "dshfs-name", children: title }),
                 react_jsx_runtime.jsx("span", { className: "dshfs-description", children: description }),
               ] }),
-              react_jsx_runtime.jsx("span", { className: "dshfs-badge", children: t.chainSummary }),
               dirty ? react_jsx_runtime.jsx("span", { className: "dshfs-pending", children: t.unsaved }) : null,
               react_jsx_runtime.jsx("button", {
                 type: "button",
@@ -326,120 +314,53 @@ window.__ModuleLoader__.load({
             ? react_jsx_runtime.jsx("div", {
                 className: "dshfs-body",
                 children: [
-                  react_jsx_runtime.jsx("div", {
-                    className: "dshfs-field",
-                    children: [
-                      react_jsx_runtime.jsx("div", {
-                        className: "dshfs-label",
-                        children: t.chain,
-                      }),
-                      react_jsx_runtime.jsx("p", {
-                        className: "dshfs-hint",
-                        children: t.chainHint,
-                      }),
-                    ],
+                  react_jsx_runtime.jsx("p", {
+                    className: "dshfs-hint",
+                    children: t.intro,
                   }),
-                  react_jsx_runtime.jsx("div", {
-                    className: "dshfs-field",
-                    children: [
-                      react_jsx_runtime.jsx("div", {
-                        className: "dshfs-label",
-                        children: t.signupTitle,
-                      }),
-                      react_jsx_runtime.jsx("p", {
-                        className: "dshfs-hint",
-                        children: t.signupHint,
-                      }),
-                      ...t.signupRows.map((row) =>
-                        react_jsx_runtime.jsx(
-                          "a",
-                          {
-                            className: "dshfs-link",
-                            href: row.url,
-                            target: "_blank",
-                            rel: "noreferrer noopener",
-                            children: `${row.name} (${row.url.replace(/^https:\/\//u, "")}) — ${row.note}`,
-                          },
-                          row.name
-                        )
-                      ),
-                    ],
-                  }),
-                  react_jsx_runtime.jsx("div", {
-                    className: "dshfs-field",
-                    children: [
-                      react_jsx_runtime.jsx("div", {
-                        className: "dshfs-label",
-                        children: t.apiKeys,
-                      }),
-                      react_jsx_runtime.jsx("input", {
-                        className: "dshfs-input",
-                        type: "password",
-                        placeholder: t.tavilyPh(keysConfigured.tavily),
-                        value: tavilyKey,
-                        disabled: !ready || saving,
-                        onChange: (e) => {
-                          setTavilyKey(e.target.value);
-                          setDirty(true);
-                          setFailed(false);
-                        },
-                      }),
-                      react_jsx_runtime.jsx("input", {
-                        className: "dshfs-input",
-                        type: "password",
-                        placeholder: t.exaPh(keysConfigured.exa),
-                        value: exaKey,
-                        disabled: !ready || saving,
-                        onChange: (e) => {
-                          setExaKey(e.target.value);
-                          setDirty(true);
-                          setFailed(false);
-                        },
-                      }),
-                      react_jsx_runtime.jsx("input", {
-                        className: "dshfs-input",
-                        type: "password",
-                        placeholder: t.anysearchPh(keysConfigured.anysearch),
-                        value: anysearchKey,
-                        disabled: !ready || saving,
-                        onChange: (e) => {
-                          setAnysearchKey(e.target.value);
-                          setDirty(true);
-                          setFailed(false);
-                        },
-                      }),
-                      react_jsx_runtime.jsx("p", {
-                        className: "dshfs-hint",
-                        children: t.keysHint,
-                      }),
-                    ],
-                  }),
-                  react_jsx_runtime.jsx("div", {
-                    className: "dshfs-field",
-                    children: [
-                      react_jsx_runtime.jsx("div", {
-                        className: "dshfs-label",
-                        children: t.cacheTtl,
-                      }),
-                      react_jsx_runtime.jsx("input", {
-                        className: "dshfs-input dshfs-ttl",
-                        type: "number",
-                        min: 0,
-                        max: 5,
-                        step: 1,
-                        value: cacheTtl,
-                        disabled: !ready || saving,
-                        onChange: (e) => {
-                          setCacheTtl(Number(e.target.value));
-                          setDirty(true);
-                          setFailed(false);
-                        },
-                      }),
-                      react_jsx_runtime.jsx("p", {
-                        className: "dshfs-hint",
-                        children: t.cacheTtlHint,
-                      }),
-                    ],
+                  ...t.engines.map((engine) => {
+                    const field = engineFields[engine.id];
+                    return react_jsx_runtime.jsx(
+                      "div",
+                      {
+                        className: "dshfs-field",
+                        children: [
+                          react_jsx_runtime.jsx("div", {
+                            className: "dshfs-label",
+                            children: engine.name,
+                          }),
+                          react_jsx_runtime.jsx("input", {
+                            className: "dshfs-input",
+                            type: "password",
+                            placeholder: t.keyPh(engine.name, field.configured),
+                            value: field.value,
+                            disabled: !ready || saving,
+                            onChange: (e) => {
+                              field.set(e.target.value);
+                              setDirty(true);
+                              setFailed(false);
+                            },
+                          }),
+                          react_jsx_runtime.jsx("div", {
+                            className: "dshfs-fieldRow",
+                            children: [
+                              react_jsx_runtime.jsx("a", {
+                                className: "dshfs-link",
+                                href: engine.url,
+                                target: "_blank",
+                                rel: "noreferrer noopener",
+                                children: t.getKey,
+                              }),
+                              react_jsx_runtime.jsx("span", {
+                                className: "dshfs-note",
+                                children: engine.note,
+                              }),
+                            ],
+                          }),
+                        ],
+                      },
+                      engine.id
+                    );
                   }),
                   react_jsx_runtime.jsx("div", {
                     className: "dshfs-resultRow",
