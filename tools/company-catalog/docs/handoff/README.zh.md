@@ -15,7 +15,9 @@ submissions/
 
 1. **自验兼容**——用 agent 按 `compat.json` 搭环境测试（见下节）。`compat.json` 是兼容契约的唯一事实源，每次测试前让 agent 重新读它，**不要硬编码版本**。
 2. **算指纹**——对 tgz 算 SHA-256 与字节数，填进 `handoff.json` 的 `artifact` 段。所有者会重算，不符当场拒。
-3. **填单提交**——`handoff.json` 逐字段按 `handoff.schema.json`（`additionalProperties: false`，多一个字段都过不了）；推到本仓 `master`。
+3. **开分支提 MR**——从 master 拉分支（命名 `submissions/<packageName>-<version>`），提交你的提交目录，推分支后**开 Merge Request 到 master**（标题写插件名@版本）。master 是保护分支：同事不能直推、不能改契约文件（README/schema/compat）——只能经 MR 由所有者合并。
+
+MR 就是你的提交窗口：所有者会在 MR 上回验证结果（verdict）；修好后往同一分支继续推 commit 即可重新触发验证；MR 合并≠上架——上架仍需所有者验证+签名发布。同一版本号内容不可变：改了内容必须升版本重开 MR。
 
 ## 自验兼容（agent 指令模板，可直接给你的 agent）
 
