@@ -47,10 +47,18 @@
    然后：合并同事的 MR（GitLab 上点），push desktop 仓的 accept commit。
 
 ⑤ 签名发布——先 beta 灰度（名单：你+sebtang+lizywu）
-   gh workflow run "Company catalog publish" -f dry-run=false -f channel=beta
-   （或本地 measure-and-publish -f channel=beta）
-   → 名单机器市场可见，浸泡观察（建议 ≥2 个工作日或首个真实使用反馈）
-   → 名单外机器完全不受影响（行为与无 beta 一致，有测试钉死）
+   a. CI 产签名产物：
+      gh workflow run "Company catalog publish" -f dry-run=false -f channel=beta
+   b. 下载产物并推送到 GitLab（CI 不碰内网；不推 = 名单机器看不到）：
+      gh run download <run-id>   # 得 company-catalog-signed/ 目录
+      NODE_TLS_REJECT_UNAUTHORIZED=0 GITLAB_TOKEN=<你的token> \
+        node tools/company-catalog/publish-local.mjs \
+        --artifact-dir <产物目录> --channel beta --insecure-tls
+   c. 名单机器市场刷新可见，浸泡观察（建议 ≥2 个工作日或首个真实使用反馈）；
+      名单外机器完全不受影响（行为与无 beta 一致，有测试钉死）
+   ⚠ 浸泡期禁令：此时其他插件的 stable 发布会被守卫拦（防把浸泡中的包
+      从 stable 清单抹掉）——先 promote 浸泡件，或确实要下架先 revoke，
+      有意移除用 --allow-package-removal 显式过闸。
 
 ⑥ 转正 + 部署
    node tools/company-catalog/cli.mjs promote <名>@<版本>   # 同字节进 stable 清单
@@ -98,4 +106,6 @@ desktop 仓（你）
 ```
 
 ## 修改记录
-- 2026-09-06 初版（MR 模式定稿后；accept-handoff 命令落地同日）；回执指纹本机记录闸门（out/verdict-receipts/）同日补上：回执须本机 verify 产生
+- 2026-09-06 初版（MR 模式定稿后；accept-handoff 命令落地同日）
+- 2026-09-06 晚：⑤ 补 publish-local 部署步（CI 只产产物不推送）+ 浸泡期
+  stable 发布禁令（横切评审 P1 守卫）；横幅方向校验与撤销粘滞对齐见当日 commit；回执指纹本机记录闸门（out/verdict-receipts/）同日补上：回执须本机 verify 产生

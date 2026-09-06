@@ -125,8 +125,9 @@ commit、在该 workspace 安装插件、冒烟）→ 在 `submissions/<name>-<v
 带 symlink 逃逸防御的安全解包 → 三方绑定 → compat 断言 → 内容审计报告 →
 实测 treeDigest → 可选冒烟）→ 命令在提交目录旁写 `verdict.md`（通过=摘要+
 digest+可直接采用的 allowlist 条目片段；失败=失败步+retest 指引），通过时把
-tgz 备料到 `out/packages/`——现有发布流原样消费，所有者把片段贴进
-`allowlist.json` 后按既有流程发布（见下节）。
+tgz 备料到 `out/packages/`——现有发布流原样消费，所有者用
+`accept-handoff` 一条命令受理进 `allowlist.json`（命令会把 PASS 回执
+与本机验证记录对账——不要手工贴片段）后按既有流程发布（见下节）。
 
 边界：同版本不可变（内容变=升版本）；高权限插件（系统权限/敏感域名）仍走
 源码审计通道；桌面客户端从不读 staging 仓——员工只见签名清单。

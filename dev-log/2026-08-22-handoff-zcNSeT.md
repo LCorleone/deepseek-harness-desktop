@@ -217,6 +217,14 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 **#59 真机雷：beta 安装闸门**——市场缝 beta-aware 但受控 pnpm 子进程闸门（cli-install-channel）只查 stable → 0.4.184 装不上（WAL 回滚无损）。修（4716f58a14→cb3dec5c10，评审 APPROVED）：DSH_COMPANY_TARBALL_HANDOFF 扩展 betaManifestPath/betaSequence 成对字段 → 子进程独立验签（路径 confinement+channel:'beta'+seq≥stable+TOCTOU 绑定）后 stable∪beta 查找；22 红绿证+真机报错逐字红证；P3a roster 清单装后即删（明文名单不驻留盘面）。**fleet 门禁教训重演**：新权威面（beta）必须枚举全部消费者（boot/CLI 闸门/market provider/install 缝）——P7 的三消费者纪律要变成 checklist。
 **真机五环全过（#60，21:59 用户确认）**：通知→横幅→直装（无卸载）→单次重启→0.4.184 生效+横幅消失。P9 beta 通道与 P10 端到端真机闭环。待办：0.4.184 浸泡后 promote（先群预告，SOP 纪律）。
 
+### 沙箱越界弹窗需求讨论 + Office COM 定案（2026-09-06 深夜，未实现，记录待决策）
+**Office COM 报错定案**：Word「无法创建工作环境/工作文件」=沙箱连坐——上游 Windows ACL runner 用 write-restricted token（只授工作区+临时根），COM 启动的 Word 继承受限 token，写 AppData/注册表等全被拒，报错误导性归因环境变量。出路：①升级通道（sandbox_permissions 重试出沙箱）②文件级替代（python-docx/docx 库留沙箱内）——日常文档生成选②，必须驱动 Word 本体才①。
+**「越界尽可能弹窗而非直接拒」三档方案（用户发起，先讨论后实现）**：
+- 档1 提示词规则（推荐先做，~半小时）：公司 preset 加铁律「沙箱拒绝后禁止抱怨/改道，必须带理由 sandbox_permissions 重试」——弹窗率大升且保留模型自辩链；
+- 档2 桌面特权执行工具（~2-3 天）：仿 agent-browser pre-execute ask，desktop-exec 工具确定性弹窗，常规 bash 照旧沙箱；
+- 档3 真·首拒自动弹（改上游 executor 语义）：子模块红线，列入上游升级专项需求清单。
+设计权衡记录：自动首弹会丢「模型理由」+弹窗疲劳→无脑同意→围栏失效；现有两步的审计价值要保。待用户拍板先上档1。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
