@@ -199,6 +199,13 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### P8 后续优化批 + v0.3.1-p8-first-flight（2026-09-05 晚）
 用户三指令全闭环：①横幅/工具卡样式补齐（B3 类名从无 CSS——裸 div 观感差的根源；修复=新增 agent-browser-styles.ts 独立安装器双 shell 覆盖+全设计令牌 16 变量，advanced-shell 的 styles.ts 只覆盖 advanced 模式故不能复用）；②fuse 翻 true 安全账=净风险≈零（评审员代码级核实五重边界：file 页仅四自有窗+guest 对 file: 一律拒且 will-navigate 双前置+摘要门+asar 完整性原样+vite 守门纵深；当初 false=P4 照抄 Electron 默认的误伤）；③三增量评审 APPROVED 零 P1（fuse 钉值=afterPack 真读回三处断言），唯一 P2（样式安装幂等/headless 分支零覆盖）已补测试 18/18。**#56 构建失败教训**：我补测试只跑了 vitest 没跑 typecheck（vitest 不查类型，CI tsc 抓到 TS2353）——本地验收必须 typecheck+spec 双跑。#57 绿=tag 最终点 335deec513（tag 在 #56 失败时已强制重指）。沙箱越界 ask 语义定案（上游矩阵：首拒不弹/模型升级重试才弹/读不设限）与 P8 架构 note §9 真机四雷节同日入档。
 
+### staging 交接通道+P9 beta 通道双闭环（2026-09-05 深夜～09-06 晨）
+**staging 契约**（gitlab julu/dsh-desktop-plugins，internal）：README/schema（稳定三段式版本+控制字符拒）/compat（dsh 0.1.1-rc.2@b150a551+桌面 2.0.3）/example 四件上线；agent 读契约走 git clone（raw 对窄 scope token 302）。
+**verify-handoff**（0a498d9bf3，2489 行）：十步机械闸门（schema→sha256→三层解包+gzip/条目上限→三方绑定→compat 断言（手写 range 交集，rc 预发布语义对）→审计→treeDigest→复测→verdict.md→accept 备料）。评审 NEEDS CHANGES（P1 verdict 注入）→修（esc 三层+同版本字节闸+schema 收紧）。
+**P9 beta 通道**（acad113c7e，2824 行）：签名 SSO 邮箱名单（首批 julu/sebtang/lizywu@deloittecn.com.cn，域名别名 @deloittecn↔@deloitte 双侧互认——浏览器登录路径会规范化域名，单侧必漏）；无开关无 UI；管线三子命令（channel=beta/promote/beta-roster）；红线=stable schema 字节零变化+policy 不动。评审 NEEDS CHANGES（P1 revoke 不传导 beta、verbatim 重签复活已吊销）→修（双层：revoke 同步 re签 beta+align 防御纵深；会话序列下限；掩码；promote 原子性）。
+**确认评审 CONFIRMED**（09-06 晨）：六项全 CLOSED，红证变异验证承重；残留 1×P3（repository URL C1 字符，惰性）留档。#58 构建=f03f41b6。教训：评审注入面（提交者可控内容进 verdict/日志）是所有 owner-review 工具的必修课。
+**待做**：handoff-review 标准工作流（cron 轮询+自动验证+issue 通知+accept-handoff，~1 天，方案已给用户）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
