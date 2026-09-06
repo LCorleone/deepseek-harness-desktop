@@ -412,9 +412,13 @@ its root — do not edit the staging copies, owner re-syncs on change):
   bump; submitter agents must re-read it, never hardcode.
 - `example/handoff.json` — a filled example.
 
-Flow: colleague self-validates against `compat.json` (their agent checks
-out the pinned dsh commit, installs the plugin in that workspace, smoke
-tests) → pushes the submission directory → owner runs
+Flow (MR model, 2026-09-06): colleague self-validates against
+`compat.json` (their agent checks out the pinned dsh commit, installs the
+plugin in that workspace, smoke tests) → opens a Merge Request carrying
+the submission directory on a `submissions/<name>-<version>` branch —
+master is a protected branch (Maintainer-only), so submissions, verdicts,
+and the contract files cannot clobber each other; the MR is the inbox and
+the receipt surface → owner verifies the branch by running
 `node tools/company-catalog/cli.mjs verify-handoff <dir>` (schema →
 sha256 → safe unpack with symlink-escape defenses → three-way name
 binding → compat assertions → content audit report → measured

@@ -117,8 +117,10 @@ Status: Implemented（2026-09-04，P7 闭环：dsh-free-search 0.4.182 经 tarba
   sequence。上游升级时由所有者更新；提交方 agent 必须重读、不得硬编码。
 - `example/handoff.json` —— 填写示例。
 
-流程：同事按 `compat.json` 自验（agent 检出钉死的 dsh commit、在该 workspace
-安装插件、冒烟）→ 推提交目录 → 所有者跑
+流程（MR 模型，2026-09-06）：同事按 `compat.json` 自验（agent 检出钉死的 dsh
+commit、在该 workspace 安装插件、冒烟）→ 在 `submissions/<name>-<version>`
+分支上开 MR 提交——master 为保护分支（仅 Maintainer），提交互不覆盖、
+契约文件改不动，MR 即收件箱与回执面 → 所有者在分支上跑
 `node tools/company-catalog/cli.mjs verify-handoff <dir>`（schema → sha256 →
 带 symlink 逃逸防御的安全解包 → 三方绑定 → compat 断言 → 内容审计报告 →
 实测 treeDigest → 可选冒烟）→ 命令在提交目录旁写 `verdict.md`（通过=摘要+
