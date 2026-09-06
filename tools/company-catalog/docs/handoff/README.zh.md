@@ -39,10 +39,10 @@ dshRuntimeVersion 需有交集，不符拒绝并注明 retest against 哪个版�
 通过才进签名清单（签名私钥永远只在所有者侧）
 ```
 
-任何一环失败都会在提交目录内写一个 `verdict.md`（原因+retest 指引），修好后换版本号重新提交——**同一版本号的内容不可变**，改了内容必须升版本。
+任何一环失败都会在你的 MR 上回 verdict（原因+retest 指引；验证产物也会在提交目录内写 `verdict.md` 归档），修好后升版本重开 MR——**同一版本号的内容不可变**，改了内容必须升版本。
 
 ## 边界
 
 - 本仓的提交**不是**上架成功——员工机器只认 `dsh-desktop-config` 的签名清单。
 - 高权限插件（申请系统权限/敏感域名的）不适用此快速通道，需走源码审计通道（联系所有者）。
-- `compat.json` / `handoff.schema.json` / 本 README 由所有者维护，请勿改动；改动会被回退。
+- `compat.json` / `handoff.schema.json` / 本 README 由所有者维护（在保护 master 上），MR 里携带对它们的改动会被直接拒绝。
