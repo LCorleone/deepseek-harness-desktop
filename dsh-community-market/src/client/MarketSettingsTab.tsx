@@ -37,6 +37,7 @@ import type {
   MarketStateResponse,
 } from '../api-types.js'
 import { marketMediaAssetUrl } from '../media/ref.js'
+import { compareStableVersions } from './stable-version.js'
 import {
   executeMarketOperation,
   mutateMarketSource,
@@ -78,13 +79,15 @@ interface VisibleItem {
 }
 
 /**
- * One managed installation whose source pins a different version than the
- * installed one (P10): the update banner's row. Derived from the same
+ * One managed installation whose source pins a NEWER stable version than
+ * the installed one (P10): the update banner's row. Derived from the same
  * authorities the Host enforces — the verified receipt proves the installed
  * version, the catalog item's `latestVersion` is the pinned target — so a
  * revoked plugin (never in the catalog) and a tampered install (versions
  * equal) can never appear here, exactly mirroring the boot side's class-a
- * classification.
+ * classification. The direction gate (P2-2) additionally requires
+ * pinned > installed: an equal or lower pin is an alignment (a roster
+ * machine leaving the beta overlay, a re-pin), never an update.
  */
 interface PendingPluginUpdate {
   readonly packageName: string
@@ -579,7 +582,13 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       const item = itemByPackage.get(installation.receipt.packageName)
       const pinnedVersion = item?.latestVersion
       if (item === undefined || pinnedVersion === undefined) continue
-      if (pinnedVersion === installation.receipt.version) continue
+      // Direction gate (P2-2): pinned > installed is an update; equal or
+      // lower is an alignment, not an update — the same principle as the
+      // boot side's pending-update classification
+      // (dsh-plugin-desktop/src/boot-update-prompt.ts). Without it, a roster
+      // machine leaving the beta overlay (installed 0.4.184, stable
+      // re-pinned 0.4.183) would see a downgrade advertised as "new".
+      if (compareStableVersions(pinnedVersion, installation.receipt.version) <= 0) continue
       pending.push({
         packageName: installation.receipt.packageName,
         installedVersion: installation.receipt.version,

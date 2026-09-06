@@ -45,7 +45,12 @@
  *      the provider injection keeps the market catalog scan field-unaware
  *      (the market UI's catalog would go dark even with boot alive), so it
  *      is NOT field-aware; no `source`-carrying manifest may be published
- *      before the whole fleet runs builds at or beyond that switch.
+ *      before the whole fleet runs builds at or beyond that switch. Stable
+ *      pushes additionally run the package-removal guard: a packageName
+ *      the deployed stable manifest pins unrevoked may not silently
+ *      disappear from the artifact's manifest (the beta soak window's trap
+ *      — promote first, revoke first, or pass --allow-package-removal for
+ *      a deliberate removal).
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
@@ -160,6 +165,16 @@ Options:
                         a treeDigest/approvedBuilds the deployed manifest's
                         same entry does not (older clients reject the entire
                         manifest; see the README publication gate)
+  --allow-package-removal
+                        acknowledge the package-removal guard: allow this
+                        stable artifact to drop a packageName the deployed
+                        manifest still pins unrevoked. Without the flag such
+                        a publish is refused (the soak-window trap: while a
+                        package's only allowlist entry is beta-flagged, a
+                        stable publish would silently drop it fleet-wide).
+                        Prefer promote for a soaking upgrade and revoke for
+                        a real removal — this flag is for deliberate
+                        removals only
   --dry-run             verify + ratchet-check + print the push plan; stop
                         before the clone
   --insecure-tls        pilot parity: disable TLS verification for the raw
@@ -750,7 +765,47 @@ async function main() {
     console.log(`fleet gate: --confirm-fleet-upgraded acknowledged for ${gatedEntries.join('; ')} — every client must already run a field-aware build (README publication gate)`)
   }
 
-  // --- 4c. tarball channel (P7 2b): every signed source:{kind:'tarball'} entry
+  // --- 4c. stable package-removal guard (the soak-window trap): a stable
+  // artifact whose manifest omits a packageName the deployed stable
+  // manifest still pins UNREVOKED would remove that package from every
+  // machine's catalog the moment it deploys — silently, with no revocation
+  // record and no repair path short of republishing. The canonical trap is
+  // the beta soak window: while a package's only allowlist entry carries
+  // the beta flag (e.g. free-search 0.4.184 during its soak), every stable
+  // publish assembles a stable manifest WITHOUT the package, so an
+  // unattended `publish-local --channel stable` makes it vanish fleet-wide.
+  // Fail closed on every such drop unless the deployed entries of the name
+  // are all revoked (revocation IS the supported removal path — a revoked
+  // entry disappearing from a later manifest is legal) or the operator
+  // explicitly acknowledges the removal with --allow-package-removal. The
+  // guard compares packageName sets (a version bump keeps the package and
+  // never triggers it) and runs in --dry-run too, so a drill surfaces the
+  // trap before a real push is ever attempted.
+  if (channel === 'stable') {
+    const deployedNames = [...new Set(deployedPackages
+      .map((deployedEntry) => deployedEntry?.packageName)
+      .filter((name) => typeof name === 'string' && name.length > 0))]
+    const removals = deployedNames
+      .filter((name) => !packages.some((signed) => signed?.packageName === name))
+      .filter((name) => deployedPackages.some((deployedEntry) => deployedEntry?.packageName === name && deployedEntry.revoked !== true))
+    if (removals.length > 0 && flags['allow-package-removal'] !== true) {
+      fail(
+        `package-removal guard: this stable artifact omits ${removals.join(', ')} — present and unrevoked in the deployed manifest at ${masterRawUrl} — ` +
+        'so pushing it would silently remove the package from every machine\'s catalog ' +
+        '(the soak-window trap: while a package\'s only allowlist entry is beta-flagged, every stable publish assembles a stable manifest without it). ' +
+        'If this is a version upgrade soaking in beta, promote the entry first (cli.mjs promote <name>@<version>) so stable never drops the package; ' +
+        'if the package should really go away, revoke it first (cli.mjs revoke <name> — revocation is the supported removal path and needs no flag here); ' +
+        'if the removal is deliberate and neither applies, re-run with --allow-package-removal to acknowledge it explicitly. ' +
+        'Fail closed: nothing was pushed.',
+      )
+      return
+    }
+    if (removals.length > 0) {
+      console.log(`removal guard: --allow-package-removal acknowledged for ${removals.join(', ')} — the package(s) leave the stable manifest by explicit operator decision`)
+    }
+  }
+
+  // --- 4d. tarball channel (P7 2b): every signed source:{kind:'tarball'} entry
   // must have its artifact bytes in the acquired artifact, hashing to the
   // signed source.integrity — the bytes ride the same transport the manifest
   // did (artifact download / catalog-artifacts branch / --artifact-dir) and

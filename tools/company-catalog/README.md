@@ -630,7 +630,14 @@ sidecar's `manifestSha256`; ≤ 5 min). When the artifact carries a
 `treeDigest`/`approvedBuilds` the deployed manifest's same entry does not
 (the first authoritative publish), the fleet-upgrade gate above applies:
 without `--confirm-fleet-upgraded` the push is refused with the upgrade
-guidance. `--dry-run` stops after verification with the push
+guidance. Stable pushes additionally run the **package-removal guard**: a
+packageName the deployed stable manifest still pins unrevoked may not
+silently disappear from the artifact's manifest (the beta soak window's
+trap — while a package's only allowlist entry is beta-flagged, every stable
+publish assembles a stable manifest without it). Promote the soaking
+version first, revoke for a real removal (a revoked entry leaving the
+manifest is legal), or pass `--allow-package-removal` for a deliberate
+one; the guard fires in `--dry-run` too. `--dry-run` stops after verification with the push
 plan printed; `--artifact-dir` replays a local artifact directory laid out
 like the download (tests/drills); `--branch` targets a non-master branch for
 drills; `--insecure-tls` mirrors the desktop's accepted intranet TLS posture
@@ -710,6 +717,12 @@ raw URL 直到 HTTP 200 且 sequence 一致**且字节即所推字节**（sha256
 等于边车 `manifestSha256`；≤5 分钟）。当 artifact 携带 `treeDigest`/
 `approvedBuilds` 而 GitLab 已部署清单同条目尚未携带（首个权威发布）时，上方
 fleet 升级门禁生效：不带 `--confirm-fleet-upgraded` 拒发并打印升级指引。
+stable 推送另设**包移除守卫**：已部署 stable 清单仍以未吊销条目钉住的
+packageName 不得从 artifact 清单里静默消失（beta 浸泡期陷阱——某包唯一
+allowlist 条目带 beta 旗标时，每次 stable 发布都会产出不含该包的 stable
+清单，推上去即全员静默消失）。升级浸泡请先 promote，真要下架请先 revoke
+（吊销即合法下架，不触发守卫），确属有意移除用 `--allow-package-removal`
+显式过闸；`--dry-run` 同样报出。
 `--dry-run` 验证后打印推送
 计划即停；`--artifact-dir` 回放同布局的本地产物目录（测试/演练）；`--branch`
 指向非 master 分支演练；`--insecure-tls` 与桌面已接受的内网 TLS 姿势对齐

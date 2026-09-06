@@ -1022,12 +1022,15 @@ export function findDesktopCompanyManifestPackage(
  * unverified, or a beta sequence below stable), which reduces this lookup
  * to the stable-only one byte for byte.
  *
- * Revocation is sticky (P9 review fix): when the stable manifest pins the
- * same `name@version` as revoked:true, the beta entry's other signed fields
- * may win, but the returned entry stays revoked — a stale pre-revocation
- * beta publication must never resurrect a revoked entry on a roster
- * machine (boot verification and the install authority both refuse on
- * `revoked`, so the flag is the load-bearing field here).
+ * Revocation is sticky, keyed by package name (P2-1 cross-review fix):
+ * when the stable manifest pins ANY entry of the same packageName as
+ * revoked:true, the beta entry's other signed fields may win, but the
+ * returned entry stays revoked — the same package-name key the market-side
+ * merge (`mergeCompanyBetaPackages`) applies, so a stable revocation of
+ * corp-plugin@1.0.0 must also kill a beta corp-plugin@2.0.0 (the earlier
+ * name@version key let any later beta version resurrect a revoked
+ * package). Boot verification and the install authorities refuse on
+ * `revoked`, so the flag is the load-bearing field here.
  */
 export function findDesktopCompanyManifestPackageWithBeta(
   manifest: DesktopCompanyManifest,
@@ -1037,8 +1040,10 @@ export function findDesktopCompanyManifestPackageWithBeta(
 ): DesktopCompanyManifestPackage | undefined {
   const beta = betaPackages?.find(entry => entry.packageName === packageName && entry.version === version)
   if (beta === undefined) return findDesktopCompanyManifestPackage(manifest, packageName, version)
-  const stable = findDesktopCompanyManifestPackage(manifest, packageName, version)
-  return stable?.revoked === true && beta.revoked !== true ? { ...beta, revoked: true } : beta
+  const stableRevoked = manifest.packages.some(
+    entry => entry.packageName === packageName && entry.revoked === true,
+  )
+  return stableRevoked && beta.revoked !== true ? { ...beta, revoked: true } : beta
 }
 
 /** The signed install channel of one entry; an absent `source` is the npm channel. */

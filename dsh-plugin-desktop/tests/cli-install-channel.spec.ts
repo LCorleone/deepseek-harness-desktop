@@ -1182,6 +1182,35 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     })
   })
 
+  it('package-keyed revocation stickiness: a stable revocation of an older version denies the beta target (P2-1 red)', async () => {
+    // Stable revoked company-beta-plugin@0.4.183; the beta overlay carries a
+    // later unrevoked 0.4.184. The gate must key revocation by package name
+    // — exactly the market-side merge rule — so the beta target lands in
+    // the revoked branch instead of resurrecting the package.
+    const assetPath = writeCatalog(unsignedCatalog({
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: '0.4.183',
+        revoked: true,
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+      })],
+    }))
+    const profileDir = join(roots, 'profiles', 'sticky-revoked')
+    stageBetaFixture(profileDir)
+    writeBetaManifest(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is revoked in the signed company plugin catalog`)
+    }
+  })
+
   it('still denies the beta-only target without the beta pair — the stable-only catalog is the whole decision (non-roster spawn shape)', async () => {
     const assetPath = writeCatalog(unsignedCatalog())
     const profileDir = join(roots, 'profiles', 'nonroster')

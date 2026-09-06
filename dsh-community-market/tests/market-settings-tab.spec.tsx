@@ -1634,6 +1634,32 @@ describe('MarketSettingsTab', () => {
     expect(within(confirmDialog).getByRole('button', { name: en.confirmUpdate })).toBeTruthy()
   })
 
+  it('keeps the update banner empty when the pinned version is older than the installed one (roster-exit alignment, P2-2 red)', async () => {
+    // The roster-exit shape: the machine installed 0.4.184 from the beta
+    // overlay, then left the roster (or the package was demoted) and the
+    // catalog re-pinned the stable 0.4.183. pinned < installed is an
+    // alignment, not an update — advertising it would sell a downgrade as
+    // "new" (the boot side's boot-update-prompt.ts refuses the same shape).
+    const repinned = makeInstallableItem(firstSource, 'roster-exit', 'Roster Exit Plugin', 'dsh-plugin-roster-exit', '0.4.183')
+    const betaReceipt = makeReceipt({
+      packageName: repinned.package!.name,
+      version: '0.4.184',
+      itemId: 'roster-exit-beta',
+      displayName: repinned.displayName,
+    })
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [repinned]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([repinned]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: betaReceipt }],
+    })
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    await screen.findByRole('button', { name: `${en.install}: ${repinned.displayName}` })
+    expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
+  })
+
   it('keeps the update banner empty for matching versions and catalog-absent plugins (tamper- and revoked-shaped, P10 red)', async () => {
     const pinnedSame = makeInstallableItem(firstSource, 'same-version', 'Same Version Plugin', 'dsh-plugin-same', '1.2.3')
     const revokedReceipt = makeReceipt({

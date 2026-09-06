@@ -361,6 +361,54 @@ describe('findDesktopCompanyManifestPackageWithBeta (P9)', () => {
     expect(found?.revoked).toBe(true)
     expect(found?.integrity).toBe(`sha512-${Buffer.alloc(64, 11).toString('base64')}`)
   })
+
+  it('keys revocation by package name: a stable revocation of 1.0.0 also kills the beta 2.0.0 (P2-1 red)', () => {
+    // The two-semantics trap this closes: the stable manifest revoked
+    // corp-plugin@1.0.0 while the beta overlay carries a LATER unrevoked
+    // corp-plugin@2.0.0. Keyed by name@version the beta entry would pass
+    // with revoked:false; keyed by package name — the market-side merge's
+    // rule — the beta entry returns with revoked:true and every consumer's
+    // revoked branch refuses it naturally.
+    const stable = verifyDesktopCompanyManifest(
+      signedText(unsignedManifest({ packages: [entry({ version: '1.0.0', revoked: true })] })),
+      { trustRoots, companyCatalogOrigin: origin, now },
+    )
+    expect(stable.ok).toBe(true)
+    if (!stable.ok) return
+    const betaEntry = entry({
+      version: '2.0.0',
+      revoked: false,
+      integrity: `sha512-${Buffer.alloc(64, 13).toString('base64')}`,
+    })
+    const beta = verifyDesktopCompanyManifest(
+      signedText(unsignedManifest({ sequence: 46, packages: [betaEntry] })),
+      { trustRoots, companyCatalogOrigin: origin, now, channel: 'beta' },
+    )
+    expect(beta.ok).toBe(true)
+    if (!beta.ok) return
+
+    const found = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '2.0.0')
+    expect(found?.revoked).toBe(true)
+    expect(found?.version).toBe('2.0.0')
+    expect(found?.integrity).toBe(betaEntry.integrity)
+  })
+
+  it('without a stable revocation the beta entry passes with its own revoked flag (regression)', () => {
+    const stable = verifyDesktopCompanyManifest(signedText(), { trustRoots, companyCatalogOrigin: origin, now })
+    expect(stable.ok).toBe(true)
+    if (!stable.ok) return
+    const betaEntry = entry({ version: '2.0.0', revoked: false, integrity: `sha512-${Buffer.alloc(64, 17).toString('base64')}` })
+    const beta = verifyDesktopCompanyManifest(
+      signedText(unsignedManifest({ sequence: 46, packages: [betaEntry] })),
+      { trustRoots, companyCatalogOrigin: origin, now, channel: 'beta' },
+    )
+    expect(beta.ok).toBe(true)
+    if (!beta.ok) return
+
+    const found = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '2.0.0')
+    expect(found?.revoked).toBe(false)
+    expect(found?.integrity).toBe(betaEntry.integrity)
+  })
 })
 
 describe('market tarball install channel beta overlay (P9)', () => {
@@ -700,6 +748,32 @@ describe('boot verification beta fallback (P9 scenario 2/3)', () => {
       betaSequence: 44,
     })
     expect(result.allowed).toEqual([])
+    expect(result.rejected[0]?.reason).toContain('revoked')
+  })
+
+  it('package-keyed stickiness at boot: a stable revocation of 1.0.0 refuses a roster machine\'s beta 2.0.0 (P2-1 red)', () => {
+    // Stable revoked company-plugin@1.0.0; the beta overlay carries a later
+    // unrevoked company-plugin@2.0.0 which the tester has installed. The
+    // lookup for 2.0.0 must land in the revoked class — reason 'revoked',
+    // never a resurrected allow.
+    const stable = signedText(unsignedManifest({
+      packages: [entry({ version: '1.0.0', revoked: true })],
+    }))
+    const betaTwo = entry({ version: '2.0.0', revoked: false, integrity: `sha512-${Buffer.alloc(64, 19).toString('base64')}` })
+    const result = verifyDesktopBootBundles(stable, [{
+      packageName: 'company-plugin',
+      version: '2.0.0',
+      lockIntegrity: betaTwo.integrity as string,
+      packageDir: '/plugins/company-plugin',
+    }], {
+      trustRoots,
+      companyCatalogOrigin: origin,
+      now,
+      betaPackages: [betaTwo] as unknown as readonly DesktopCompanyManifestPackage[],
+      betaSequence: 44,
+    })
+    expect(result.allowed).toEqual([])
+    expect(result.rejected[0]?.code).toBe('revoked')
     expect(result.rejected[0]?.reason).toContain('revoked')
   })
 
