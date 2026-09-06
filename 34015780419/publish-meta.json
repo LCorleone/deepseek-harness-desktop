@@ -1,0 +1,31 @@
+{
+  "channel": "beta",
+  "sequence": 15,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "abd92b6be156fc026d7c4cb62e9fdf3252b862405e861868dbaa3d641aadbe4e",
+  "testers": [
+    "julu@deloittecn.com.cn",
+    "sebtang@deloittecn.com.cn",
+    "lizywu@deloittecn.com.cn"
+  ],
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.15.2",
+      "treeDigest": "47e34732e474c20d045e74f19155d561f27950f04262bf7ac151ff3c05758d94",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-free-search",
+      "version": "0.4.184",
+      "treeDigest": "40ebd1d973371706fd434aebb22b1da4c7ce9b1b80b1c3ecf056be4b6be1d343",
+      "sourceKind": "tarball",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-09-06T06:12:16.647Z",
+  "gitSha": "ac457d097d2e24ff96e8148a5954a1ca9a61399b",
+  "runId": "34015780419",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34015780419"
+}
