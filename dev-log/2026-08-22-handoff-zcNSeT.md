@@ -211,6 +211,12 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 **beta 首推雷（真发逮到）**：publish-local 棘轮假定 beta 已存在，首推 404 直接崩；fleet 门禁第二处同病。修=fetchDeployedManifest allowMissing（仅豁免 404）+首推基线回落 deployed stable（共享单调棘轮：14=13+1）；160/160。教训：通道起点（「第一份跟谁比」）是灰度类设计的固有盲区，测试全假设通道已存在。
 **P9 真机实证**：beta v1（seq 14，stable 同集+三人名单）经 CI 干跑→真发→publish-local 部署回读字节一致；用户 #58 真机日志 `beta catalog applied (sequence 14, 2 entries, 3 testers)`×3（上线前 fetch-failed=404 fail-closed 无视，时间线自洽）。名单原文拼写 julu@deloittecn.com.cn 直接命中。**P9 卡翻真机闭环**。state 棘轮 13→14 已推。
 
+### P9 灰度首航 + P10 更新提示 + #59/#60 闸门雷（2026-09-06 全天，tag v0.3.2-beta-channel）
+**free-search 0.4.184**（ac457d097d）：设置页极简（一句+三引擎 key+注册链接+额度句，删全部配置文件/存储说明类文字）；beta-only 发布 seq 15（fleet-upgrade 门禁按既定纪律带 --confirm-fleet-upgraded 过闸——全 fleet 自 #47 起 field-aware）。
+**P10 更新提示**（12e6faa7da，评审 APPROVED+P3 修复）：boot 拒绝分类 8 码（含 'other' 兜底+全量性守门）；a 类（清单钉新版装旧版）→桌面通知+市场更新横幅+方向校验（pinned>installed 才提示）；**upgrade-in-place 缺口确认并修复**（原流对已装包 409；assertInstallOverlay 四前置放行直装替换，真 pnpm e2e 证明 lockfile 单钉新版）；beta 合并键 bug（真机报双版本）修为按 packageName 整体替换+撤销粘滞按包。
+**#59 真机雷：beta 安装闸门**——市场缝 beta-aware 但受控 pnpm 子进程闸门（cli-install-channel）只查 stable → 0.4.184 装不上（WAL 回滚无损）。修（4716f58a14→cb3dec5c10，评审 APPROVED）：DSH_COMPANY_TARBALL_HANDOFF 扩展 betaManifestPath/betaSequence 成对字段 → 子进程独立验签（路径 confinement+channel:'beta'+seq≥stable+TOCTOU 绑定）后 stable∪beta 查找；22 红绿证+真机报错逐字红证；P3a roster 清单装后即删（明文名单不驻留盘面）。**fleet 门禁教训重演**：新权威面（beta）必须枚举全部消费者（boot/CLI 闸门/market provider/install 缝）——P7 的三消费者纪律要变成 checklist。
+**真机五环全过（#60，21:59 用户确认）**：通知→横幅→直装（无卸载）→单次重启→0.4.184 生效+横幅消失。P9 beta 通道与 P10 端到端真机闭环。待办：0.4.184 浸泡后 promote（先群预告，SOP 纪律）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
