@@ -31,6 +31,26 @@
  * stays denied, so the terminal red line is unchanged: without the
  * launcher's hand-off no `file:` argument ever reaches pnpm.
  *
+ * Beta-pinned targets (#59): the market's host-side install seam is
+ * beta-aware — a roster machine's verified beta overlay can carry the entry
+ * the stable manifest does not pin — but this child previously consulted the
+ * stable manifest alone, so the beta-only market install died exactly here
+ * ("… is not in the signed company plugin catalog"). The hand-off now
+ * optionally carries the launcher-staged beta manifest bytes (at the
+ * deterministic staging path, with their sequence; the host stages them only
+ * after the roster admission). The child never trusts the transport: it
+ * re-verifies those bytes under the same trust roots and origin binding with
+ * the beta channel schema, requires the verified sequence to equal the
+ * hand-off's claim and to sit at or above the stable manifest's own sequence
+ * (anti-downgrade), and only then widens the target lookup to stable ∪ beta
+ * (the market catalog's own merge rule, revocation stickiness included). A
+ * beta entry still faces the identical tarball-channel authorization: the
+ * npm channel stays denied behind a `file:` target, the entry's signed
+ * sha512 must equal the hand-off's integrity pin, and a fresh hash of the
+ * staged bytes must match. Without the beta pair in the hand-off, or when
+ * any step of its re-verification fails, the decision runs on the stable
+ * manifest alone — byte-for-byte today's behavior, fail-closed.
+ *
  * Acquisition modes: content-mode builds read the manifest asset embedded in
  * the application bundle synchronously (milliseconds, no network); origin-
  * mode builds fetch the manifest once over the shared restricted client with
@@ -67,8 +87,9 @@
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fetchCompanyManifestText, type CompanyManifestFetchOptions } from './company-manifest-origin.ts'
+import { fetchCompanyManifestText, readStagedCompanyManifestBytes, type CompanyManifestFetchOptions } from './company-manifest-origin.ts'
 import {
+  desktopBetaManifestHandoffStagingPath,
   EXACT_VERSION_PATTERN,
   PACKAGE_NAME_PATTERN,
   desktopMarketTarballStagingPath,
@@ -77,6 +98,7 @@ import {
   type CompanyTarballHandoff,
 } from './company-tarball-handoff.ts'
 import type { DesktopPolicy } from './desktop-policy.ts'
+import type { DesktopCompanyManifestPackage } from './desktop-market.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 /** Upper bound of the embedded catalog asset; the schema caps 10000 entries (~2.5 MiB). */
@@ -136,14 +158,18 @@ export interface LockedPluginAddOptions {
    * bootstrap. When present, the one package argument must be exactly the
    * hand-off's own `file:<staged path>` target, and that target is admitted
    * only after the double verification below. Without it, every `file:`
-   * argument stays a non-exact-spec denial.
+   * argument stays a non-exact-spec denial. A hand-off for a beta-pinned
+   * target additionally carries the launcher-staged beta manifest bytes and
+   * their sequence (#59): re-verified here under the same trust roots, then
+   * the target lookup widens to stable ∪ beta — never a softer authorization.
    */
   readonly tarballHandoff?: CompanyTarballHandoff
   /**
    * Directory of the profile the add targets — anchors the hand-off's
-   * staged-path confinement (`desktopMarketTarballStagingPath`). Required
-   * whenever a hand-off is offered; an absent directory fails the hand-off
-   * closed instead of admitting an unconfined target.
+   * staged-path confinement (`desktopMarketTarballStagingPath`, and the beta
+   * manifest's `desktopBetaManifestHandoffStagingPath`). Required whenever a
+   * hand-off is offered; an absent directory fails the hand-off closed
+   * instead of admitting an unconfined target.
    */
   readonly profileDir?: string
 }
@@ -305,7 +331,7 @@ export async function authorizeLockedPluginAdd(
   if (raw.length > MAX_MANIFEST_ASSET_BYTES) {
     return denied(`the company catalog manifest exceeds ${String(MAX_MANIFEST_ASSET_BYTES)} bytes`)
   }
-  const { findDesktopCompanyManifestPackage, verifyDesktopCompanyManifest } = await import('./desktop-market.ts')
+  const { findDesktopCompanyManifestPackageWithBeta, verifyDesktopCompanyManifest } = await import('./desktop-market.ts')
   // The sequence floor rides the receipts ratchet (see module docs): a
   // rolled-back embedded asset cannot re-authorize a terminal add once a
   // newer manifest has allowed an install on this machine. The dual-channel
@@ -322,9 +348,72 @@ export async function authorizeLockedPluginAdd(
   if (!verification.ok) {
     return denied(`rejected the company catalog manifest (${verification.code}): ${verification.reason}`)
   }
-  const entry = findDesktopCompanyManifestPackage(verification.manifest, target.packageName, target.version)
+  // Beta manifest hand-off (#59): when the launcher staged the exact beta
+  // manifest bytes it verified and roster-admitted, re-verify them here —
+  // same trust roots, same origin binding, the beta channel's one recognized
+  // extension — and bind the result to the hand-off's own sequence claim.
+  // The staged path is confined to the profile's deterministic staging
+  // location (the same discipline the staged tarball target gets), and any
+  // failure — an unreadable file, a failed signature, expiry, a sequence
+  // below the just-verified stable manifest (a downgrade), a sequence other
+  // than the one the host admitted — keeps the decision on the stable
+  // manifest alone (fail closed to today's behavior). Verification codes are
+  // echoed into the denial, never raw reasons: a roster-carrying manifest's
+  // rejection text may quote roster contents the log contract keeps masked.
+  const betaHandoff = handoff?.betaManifestPath !== undefined && handoff.betaSequence !== undefined
+    ? { path: handoff.betaManifestPath, sequence: handoff.betaSequence }
+    : undefined
+  let betaPackages: readonly DesktopCompanyManifestPackage[] | undefined
+  let betaIgnoredReason: string | undefined
+  if (betaHandoff !== undefined) {
+    const stagedBetaPath = options.profileDir === undefined
+      ? undefined
+      : desktopBetaManifestHandoffStagingPath(options.profileDir)
+    if (stagedBetaPath === undefined || betaHandoff.path !== stagedBetaPath) {
+      betaIgnoredReason = `the beta manifest must be staged at ${stagedBetaPath ?? 'the profile\u2019s staging directory'}`
+    } else {
+      let betaRaw: Buffer | undefined
+      try {
+        betaRaw = await readStagedCompanyManifestBytes(betaHandoff.path, undefined)
+      } catch (cause) {
+        betaIgnoredReason = `the staged beta manifest is unusable (${messageOf(cause)})`
+      }
+      if (betaRaw !== undefined) {
+        const betaVerification = verifyDesktopCompanyManifest(betaRaw, {
+          trustRoots: policy.trustRoots,
+          companyCatalogOrigin: policy.companyCatalogOrigin,
+          channel: 'beta',
+          ...(options.now === undefined ? {} : { now: options.now }),
+        })
+        if (!betaVerification.ok) {
+          betaIgnoredReason = `verification rejected the staged beta manifest (${betaVerification.code})`
+        } else if (betaVerification.manifest.sequence < verification.manifest.sequence) {
+          betaIgnoredReason = `beta sequence ${String(betaVerification.manifest.sequence)} is below the verified stable sequence ${String(verification.manifest.sequence)} (a downgrade)`
+        } else if (betaVerification.manifest.sequence !== betaHandoff.sequence) {
+          betaIgnoredReason = `beta sequence ${String(betaVerification.manifest.sequence)} does not match the hand-off's ${String(betaHandoff.sequence)}`
+        } else {
+          betaPackages = betaVerification.manifest.packages
+        }
+      }
+    }
+  }
+  // The lookup is stable ∪ beta exactly when the beta hand-off verified —
+  // otherwise `undefined` reduces this to the stable-only search byte for
+  // byte. The merge rule (and its revocation stickiness) is the market
+  // catalog's own: a beta entry wins for its name@version, a stable-revoked
+  // name@version stays revoked, and a stable-only target is unaffected.
+  const entry = findDesktopCompanyManifestPackageWithBeta(
+    verification.manifest,
+    betaPackages,
+    target.packageName,
+    target.version,
+  )
   if (entry === undefined) {
-    return denied(`${target.packageName}@${target.version} is not in the signed company plugin catalog. ${MARKET_GUIDANCE}`)
+    return denied(
+      `${target.packageName}@${target.version} is not in the signed company plugin catalog`
+      + (betaIgnoredReason === undefined ? '' : ` (the beta manifest hand-off was ignored: ${betaIgnoredReason})`)
+      + `. ${MARKET_GUIDANCE}`,
+    )
   }
   if (entry.revoked) {
     return denied(`${target.packageName}@${target.version} is revoked in the signed company plugin catalog. ${MARKET_GUIDANCE}`)

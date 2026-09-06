@@ -13,11 +13,14 @@ import type {
 import { describe, expect, it, vi } from 'vitest'
 import {
   apply,
+  desktopBetaManifestHandoffStagingPath,
   desktopMarketTarballStagingName,
   desktopMarketTarballStagingPath,
+  DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
   inject,
   name,
+  parseCompanyTarballHandoff,
   type DesktopPnpm,
   type DesktopPnpmBootstrap,
 } from '../src/pnpm.ts'
@@ -794,6 +797,99 @@ describe('pnpm controlled market tarball install target', () => {
         recovery,
       })).rejects.toThrow('install options are restricted')
       expect(harness.spawn).not.toHaveBeenCalled()
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+  it('rides the beta manifest pair in the spawn hand-off for a beta-pinned controlled install (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-beta-'))
+    const selectedBootstrap = bootstrap(root)
+    const stagedPath = desktopMarketTarballStagingPath(selectedBootstrap.activeProfileDir, 'company-hardened-plugin', '2.1.0')
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir)
+    const tarballBytes = Buffer.from('company-hardened-plugin tarball fixture\n')
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, tarballBytes)
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const operation = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'company-hardened-plugin',
+          packageVersion: '2.1.0',
+          receiptId: 'receipt:controlled-tarball-beta-0001',
+        },
+        marketTarball: {
+          kind: 'market-tarball',
+          path: stagedPath,
+          integrity: `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`,
+        },
+        betaManifest: { path: betaManifestPath, sequence: 43 },
+      })
+
+      const spec = harness.spawn.mock.calls[0]?.[0]
+      const environment = spec?.env as Record<string, string | undefined>
+      expect(parseCompanyTarballHandoff(environment?.[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '')).toEqual({
+        packageName: 'company-hardened-plugin',
+        version: '2.1.0',
+        integrity: `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`,
+        path: stagedPath,
+        betaManifestPath,
+        betaSequence: 43,
+      })
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a beta manifest hand-off that is unconfined, unsafely sequenced, or without a controlled tarball (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-beta-bad-'))
+    const selectedBootstrap = bootstrap(root)
+    const stagedPath = desktopMarketTarballStagingPath(selectedBootstrap.activeProfileDir, 'company-hardened-plugin', '2.1.0')
+    const tarballBytes = Buffer.from('company-hardened-plugin tarball fixture\n')
+    const integrity = `sha512-${createHash('sha512').update(tarballBytes).digest('base64')}`
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, tarballBytes)
+      const harness = await createHarness([], selectedBootstrap)
+      const recovery = {
+        packageName: 'company-hardened-plugin',
+        packageVersion: '2.1.0',
+        receiptId: 'receipt:controlled-tarball-beta-bad-0001',
+      }
+      const marketTarball = { kind: 'market-tarball' as const, path: stagedPath, integrity }
+
+      // A beta manifest staged outside the profile's deterministic path.
+      await expect(harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery,
+        marketTarball,
+        betaManifest: { path: join(root, 'planted-beta.json'), sequence: 43 },
+      })).rejects.toThrow('beta manifest hand-off must name the staged beta manifest')
+      // A sequence the signed manifest schema could never carry.
+      await expect(harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery,
+        marketTarball,
+        betaManifest: { path: desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir), sequence: 0 },
+      })).rejects.toThrow('beta manifest hand-off sequence must be a safe positive integer')
+      // The pair belongs to a controlled tarball install alone.
+      await expect(harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery,
+        betaManifest: { path: desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir), sequence: 43 },
+      })).rejects.toThrow('beta manifest hand-off belongs to a controlled market tarball install')
+      expect(harness.spawn).not.toHaveBeenCalled()
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
       await harness.dispose()
     } finally {
       rmSync(root, { recursive: true, force: true })

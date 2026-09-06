@@ -29,6 +29,7 @@ import {
 import {
   DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   companyTarballHandoffText,
+  desktopBetaManifestHandoffStagingPath,
   desktopMarketTarballStagingPath,
   isSha512Integrity,
   sha512OfStagedFile,
@@ -46,10 +47,12 @@ import { assertDesktopProfileName } from './profile-manager.ts'
 // company-catalog e2e tooling import them from here).
 export {
   COMPANY_TARBALL_HANDOFF_MAX_BYTES,
+  DESKTOP_COMPANY_BETA_MANIFEST_STAGING_NAME,
   DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   DESKTOP_MARKET_TARBALL_MAX_BYTES,
   DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY,
   companyTarballHandoffText,
+  desktopBetaManifestHandoffStagingPath,
   desktopMarketTarballStagingName,
   desktopMarketTarballStagingPath,
   parseCompanyTarballHandoff,
@@ -211,6 +214,20 @@ export interface DesktopPluginInstallRequest {
    * argument surface still audits against the npm-spec-only rules.
    */
   readonly marketTarball?: DesktopControlledMarketTarball
+  /**
+   * Launcher-staged beta manifest for the packaged CLI child's locked add
+   * gate (#59): the deterministic staging path of the beta manifest bytes
+   * the market channel verified and roster-admitted, plus their sequence.
+   * Only ever constructed in-process by the Desktop market path for an
+   * install whose resolved entry came from the beta overlay, and only valid
+   * alongside a controlled `marketTarball` descriptor — it rides the same
+   * trusted spawn hand-off, and the child re-verifies the bytes against the
+   * deployment trust roots before its gate widens to stable ∪ beta.
+   */
+  readonly betaManifest?: {
+    readonly path: string
+    readonly sequence: number
+  }
   readonly signal?: AbortSignal
 }
 
@@ -623,6 +640,26 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     if (request.marketTarball !== undefined) {
       await this.assertControlledMarketTarball(request.marketTarball, request.recovery)
     }
+    // The optional beta manifest pair (#59) rides the same spawn hand-off for
+    // an install whose entry resolved from the roster-admitted beta overlay.
+    // The boundary re-validates what it injects, mirroring the tarball
+    // descriptor's own discipline: the pair exists only with a controlled
+    // tarball descriptor, the path is exactly the active profile's
+    // deterministic beta staging path, and the sequence is a safe positive
+    // integer. The child still re-verifies the staged bytes' signature and
+    // sequence binding before its gate widens to stable ∪ beta.
+    if (request.betaManifest !== undefined) {
+      if (request.marketTarball === undefined) {
+        throw new Error(`${BIN_NAME}: the beta manifest hand-off belongs to a controlled market tarball install`)
+      }
+      if (typeof request.betaManifest.path !== 'string'
+        || request.betaManifest.path !== desktopBetaManifestHandoffStagingPath(this.bootstrap.activeProfileDir)) {
+        throw new Error(`${BIN_NAME}: the beta manifest hand-off must name the staged beta manifest at the active profile's market staging path`)
+      }
+      if (!Number.isSafeInteger(request.betaManifest.sequence) || request.betaManifest.sequence < 1) {
+        throw new Error(`${BIN_NAME}: the beta manifest hand-off sequence must be a safe positive integer`)
+      }
+    }
     const installTarget = request.marketTarball === undefined
       ? `${request.recovery.packageName}@${request.recovery.packageVersion}`
       : `file:${request.marketTarball.path}`
@@ -631,15 +668,21 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     // hand-off (DSH_COMPANY_TARBALL_HANDOFF) carries the receipt's package,
     // version, the descriptor's sha512, and the staged path so the gate can
     // re-bind them to the signed catalog entry and re-hash the staged bytes
-    // before admitting exactly this target. Injected for this spawn only —
-    // never part of the generation-wide policy environment — and length-
-    // bounded on the CLI side so a hostile value can never widen the gate.
+    // before admitting exactly this target. A beta-pinned install additionally
+    // carries the staged beta manifest's path and sequence (#59), which the
+    // gate re-verifies before widening its catalog lookup to stable ∪ beta.
+    // Injected for this spawn only — never part of the generation-wide policy
+    // environment — and length-bounded on the CLI side so a hostile value can
+    // never widen the gate.
     const controlledTarballEnvironment = request.marketTarball === undefined ? undefined : {
       [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
         packageName: request.recovery.packageName,
         version: request.recovery.packageVersion,
         integrity: request.marketTarball.integrity,
         path: request.marketTarball.path,
+        ...(request.betaManifest === undefined
+          ? {}
+          : { betaManifestPath: request.betaManifest.path, betaSequence: request.betaManifest.sequence }),
       }),
     }
     // Approve the trusted builds before the recovery WAL snapshots the

@@ -18,6 +18,7 @@ import {
 } from '../src/cli-install-channel.ts'
 import {
   companyTarballHandoffText,
+  desktopBetaManifestHandoffStagingPath,
   desktopMarketTarballStagingPath,
   parseCompanyTarballHandoff,
   type CompanyTarballHandoff,
@@ -1014,5 +1015,370 @@ describe('locked plugin-add controlled tarball hand-off', () => {
     const profileDir = join(roots, 'profiles', 'deny')
     const stagedPath = stageFixture(profileDir)
     await run(assetPath, profileDir, stagedPath)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The beta manifest hand-off pair (#59): a roster machine's beta-only market
+// target crosses the child's stable-only catalog through the same trusted
+// hand-off carrying the launcher-staged beta manifest bytes. The child
+// re-verifies those bytes under the same trust roots before its lookup widens
+// to stable ∪ beta — every forgery shape below stays on stable alone, and the
+// beta entry still faces the identical tarball-channel authorization.
+// ---------------------------------------------------------------------------
+
+describe('locked plugin-add beta manifest hand-off (#59)', () => {
+  const roots = mkdtempSync(join(tmpdir(), 'dsh-desktop-cli-install-channel-beta-'))
+  // Tarball-channel entries only verify under an origin-mode policy.
+  const policy = lockedCatalogPolicy({
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/company-market/catalog-manifest.json',
+  })
+  const stranger = generateKeyPairSync('ed25519')
+  const BETA_NAME = 'company-beta-plugin'
+  const BETA_VERSION = '0.4.184'
+  const betaBytes = Buffer.from('beta-only plugin tarball fixture bytes\n', 'utf8')
+  const betaIntegrity = `sha512-${createHash('sha512').update(betaBytes).digest('base64')}`
+  const betaUrl = 'https://market.company.example/julu/dsh-desktop-config/-/packages/company-beta-plugin-0.4.184.tgz'
+  const betaStagedPath = (profileDir: string) => desktopMarketTarballStagingPath(profileDir, BETA_NAME, BETA_VERSION)
+
+  afterEach(() => {
+    rmSync(roots, { recursive: true, force: true })
+  })
+
+  function writeCatalog(manifest: Record<string, unknown>, directory = roots): string {
+    const signature = createCompanyManifestSignature(asUnsigned(manifest), privateKey, keyId)
+    const assetPath = join(directory, 'company-market', 'catalog-manifest.json')
+    mkdirSync(join(directory, 'company-market'), { recursive: true })
+    writeFileSync(assetPath, canonicalJsonText({ ...manifest, signature }))
+    return assetPath
+  }
+
+  /** The staged beta fixture tarball at its deterministic path inside one profile. */
+  function stageBetaFixture(profileDir: string): string {
+    const stagedPath = betaStagedPath(profileDir)
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, betaBytes)
+    return stagedPath
+  }
+
+  /**
+   * One signed beta manifest at the profile's deterministic staging path. The
+   * stable manifest stays the default `unsignedCatalog()` (sequence 42,
+   * example-plugin only) so `company-beta-plugin@0.4.184` is beta-only.
+   */
+  function writeBetaManifest(
+    profileDir: string,
+    overrides: {
+      readonly entry?: Record<string, unknown>
+      readonly manifest?: Record<string, unknown>
+      readonly key?: ReturnType<typeof generateKeyPairSync>['privateKey']
+    } = {},
+  ): { readonly path: string; readonly text: string; readonly sequence: number } {
+    const unsigned = unsignedCatalog({
+      sequence: 43,
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        treeDigest: 'cd'.repeat(32),
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+        approvedBuilds: ['@company/signed-beta-builder'],
+        source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+        ...overrides.entry,
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+      ...overrides.manifest,
+    })
+    const signature = createCompanyManifestSignature(asUnsigned(unsigned), overrides.key ?? privateKey, keyId)
+    const text = canonicalJsonText({ ...unsigned, signature })
+    const path = desktopBetaManifestHandoffStagingPath(profileDir)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text)
+    return { path, text, sequence: typeof unsigned.sequence === 'number' ? unsigned.sequence : 43 }
+  }
+
+  /** Serve one written catalog asset through the origin fetch seam. */
+  const serveCatalog = (assetPath: string) => async () => new Response(readFileSync(assetPath, 'utf8'))
+
+  /** The launcher's beta-carrying hand-off for one staged profile. */
+  function betaHandoff(
+    profileDir: string,
+    overrides: { readonly handoff?: Record<string, unknown>; readonly betaSequence?: number } = {},
+  ): CompanyTarballHandoff {
+    return {
+      packageName: BETA_NAME,
+      version: BETA_VERSION,
+      integrity: betaIntegrity,
+      path: betaStagedPath(profileDir),
+      betaManifestPath: desktopBetaManifestHandoffStagingPath(profileDir),
+      betaSequence: overrides.betaSequence ?? 43,
+      ...overrides.handoff,
+    } as CompanyTarballHandoff
+  }
+
+  /** The locked add exactly as the pnpm boundary spawns it for this target. */
+  const betaAddArguments = (profileDir: string): readonly string[] => [
+    '--save-exact',
+    '--registry=https://registry.npmjs.org/',
+    `file:${betaStagedPath(profileDir)}`,
+  ]
+
+  /** Set by the outside-the-staging-path forgery case: the hand-off's planted beta manifest path. */
+  let plantedBetaManifestPath: string | undefined
+
+  it('round-trips the beta pair canonically and rejects every malformed spelling', () => {
+    const profileDir = join(roots, 'profiles', 'parse')
+    const handoff = betaHandoff(profileDir)
+    const text = companyTarballHandoffText(handoff)
+    expect(text).toBe(JSON.stringify({
+      betaManifestPath: handoff.betaManifestPath,
+      betaSequence: handoff.betaSequence,
+      integrity: handoff.integrity,
+      packageName: handoff.packageName,
+      path: handoff.path,
+      version: handoff.version,
+    }))
+    expect(parseCompanyTarballHandoff(text)).toEqual(handoff)
+    // The stable-only four-field spelling is unchanged.
+    expect(companyTarballHandoffText({
+      packageName: handoff.packageName,
+      version: handoff.version,
+      integrity: handoff.integrity,
+      path: handoff.path,
+    })).toBe(JSON.stringify({
+      integrity: handoff.integrity,
+      packageName: handoff.packageName,
+      path: handoff.path,
+      version: handoff.version,
+    }))
+
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaManifestPath: undefined }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: undefined }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: 0 }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: 1.5 }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: -43 }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: '43' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaManifestPath: 'relative/beta.json' }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, extra: 1 }))).toBeUndefined()
+  })
+
+  it('admits the roster-admitted beta-only tarball target after re-verifying the staged beta manifest (#59 red→green)', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'web')
+    stageBetaFixture(profileDir)
+    writeBetaManifest(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+      approvedBuildDependencies: ['@company/signed-beta-builder'],
+    })
+  })
+
+  it('still denies the beta-only target without the beta pair — the stable-only catalog is the whole decision (non-roster spawn shape)', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'nonroster')
+    const stagedPath = stageBetaFixture(profileDir)
+
+    // Without any hand-off: the terminal red line, unchanged.
+    const typed = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      profileDir,
+    })
+    expect(typed.allowed).toBe(false)
+    if (!typed.allowed) expect(typed.reason).toContain('is not a <package>@<exact version> spec')
+
+    // With the hand-off but without the beta pair: the entry is simply not
+    // in the stable catalog — the exact #59 real-device denial.
+    const stableOnly = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: {
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        path: stagedPath,
+      },
+      profileDir,
+    })
+    expect(stableOnly.allowed).toBe(false)
+    if (!stableOnly.allowed) {
+      expect(stableOnly.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is not in the signed company plugin catalog`)
+      expect(stableOnly.reason).not.toContain('beta manifest hand-off was ignored')
+    }
+  })
+
+  it('still refuses an npm-channel beta entry behind the file: target — the hand-off never widens the npm channel (#59 red line)', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'npmbeta')
+    stageBetaFixture(profileDir)
+    // A perfectly valid beta publication whose entry is npm-channel: the
+    // controlled file: pipeline is not what the catalog signed for it.
+    const unsigned = unsignedCatalog({
+      sequence: 43,
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+    })
+    const signature = createCompanyManifestSignature(asUnsigned(unsigned), privateKey, keyId)
+    const betaPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    mkdirSync(dirname(betaPath), { recursive: true })
+    writeFileSync(betaPath, canonicalJsonText({ ...unsigned, signature }))
+
+    const decision = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is not published on the tarball channel`)
+      expect(decision.reason).toContain('the controlled file: install target is not valid for it')
+    }
+  })
+
+  it.each([
+    ['forged bytes over the company signature (bad-signature)', (profileDir: string) => {
+      const staged = writeBetaManifest(profileDir)
+      const forged = JSON.parse(staged.text) as Record<string, unknown>
+      forged.expiresAt = '2099-01-01T00:00:00Z'
+      writeFileSync(staged.path, canonicalJsonText(forged))
+      return 'verification rejected the staged beta manifest (bad-signature)'
+    }],
+    ['a manifest signed by a stranger key (key-mismatch)', (profileDir: string) => {
+      writeBetaManifest(profileDir, { key: stranger.privateKey })
+      return 'verification rejected the staged beta manifest (key-mismatch)'
+    }],
+    ['an expired beta publication (expired)', (profileDir: string) => {
+      writeBetaManifest(profileDir, { manifest: { expiresAt: '2020-01-01T00:00:00Z' } })
+      return 'verification rejected the staged beta manifest (expired)'
+    }],
+    ['a rolled-back beta sequence below the stable manifest (downgrade)', (profileDir: string) => {
+      writeBetaManifest(profileDir, { manifest: { sequence: 41 } })
+      return 'below the verified stable sequence 42 (a downgrade)'
+    }],
+    ['a different valid publication than the one the host admitted (sequence binding)', (profileDir: string) => {
+      writeBetaManifest(profileDir, { manifest: { sequence: 44 } })
+      return "does not match the hand-off's 43"
+    }],
+    ['the beta manifest staged outside the deterministic path', (profileDir: string) => {
+      const planted = join(profileDir, 'planted-beta.json')
+      mkdirSync(dirname(planted), { recursive: true })
+      writeFileSync(planted, writeBetaManifest(join(profileDir, 'unrelated')).text)
+      plantedBetaManifestPath = planted
+      return 'the beta manifest must be staged at'
+    }],
+    ['the staged beta manifest missing entirely', (_profileDir: string) => {
+      return 'the staged beta manifest is unusable'
+    }],
+  ])('denies the beta hand-off shape: %s', async (_label, corrupt) => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'forgery')
+    stageBetaFixture(profileDir)
+    plantedBetaManifestPath = undefined
+    const expected = corrupt(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir, plantedBetaManifestPath === undefined
+        ? {}
+        : { handoff: { betaManifestPath: plantedBetaManifestPath } }),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is not in the signed company plugin catalog`)
+      expect(decision.reason).toContain(expected)
+    }
+  })
+
+  it('keeps a stable-pinned target byte-identical whether or not the hand-off carries a verified beta manifest (④ zero change)', async () => {
+    // The stable catalog pins the tarball entry; the beta manifest repeats it
+    // with identical signed fields (the post-promote steady state).
+    const assetPath = writeCatalog(unsignedCatalog({
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        treeDigest: 'cd'.repeat(32),
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+        approvedBuilds: ['@company/signed-beta-builder'],
+        source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+      })],
+    }))
+    const profileDir = join(roots, 'profiles', 'promoted')
+    stageBetaFixture(profileDir)
+    writeBetaManifest(profileDir)
+
+    const withBeta = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir),
+      profileDir,
+    })
+    const withoutBeta = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: {
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        path: betaStagedPath(profileDir),
+      },
+      profileDir,
+    })
+
+    expect(withBeta).toEqual(withoutBeta)
+    expect(withBeta).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+      approvedBuildDependencies: ['@company/signed-beta-builder'],
+    })
+  })
+
+  it.each([
+    ['the beta manifest itself revoking the entry', { entry: { revoked: true } }, undefined],
+    // Revocation is sticky across channels: a stale pre-revocation beta
+    // publication must not resurrect what the stable manifest revoked.
+    ['a stable-revoked name@version with the beta manifest still saying revoked:false', undefined, { revoked: true }],
+  ])('denies a revoked beta-pinned entry: %s', async (_label, betaEntryOverride, stableEntryOverride) => {
+    const assetPath = writeCatalog(stableEntryOverride === undefined
+      ? unsignedCatalog()
+      : unsignedCatalog({
+        packages: [catalogEntry({
+          packageName: BETA_NAME,
+          version: BETA_VERSION,
+          integrity: betaIntegrity,
+          treeDigest: 'cd'.repeat(32),
+          repository: { url: 'https://github.com/example/company-beta-plugin' },
+          approvedBuilds: ['@company/signed-beta-builder'],
+          source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+          revoked: true,
+        })],
+      }))
+    const profileDir = join(roots, 'profiles', 'revoked')
+    stageBetaFixture(profileDir)
+    writeBetaManifest(profileDir, betaEntryOverride ?? {})
+
+    const decision = await authorizeLockedPluginAdd(betaAddArguments(profileDir), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: betaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is revoked in the signed company plugin catalog`)
+    }
   })
 })

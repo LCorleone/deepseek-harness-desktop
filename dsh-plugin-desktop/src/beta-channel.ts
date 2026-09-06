@@ -132,12 +132,20 @@ export function desktopBetaTesterMatch(
   return candidates.some(candidate => roster.has(normalize(candidate)))
 }
 
-/** A verified, roster-admitted beta overlay: the entries and their sequence. */
+/** A verified, roster-admitted beta overlay: the entries, their sequence, and the exact bytes. */
 export interface DesktopBetaChannelOverlay {
   /** Signed entries of the verified beta manifest, revoked entries included. */
   readonly packages: readonly DesktopCompanyManifestPackage[]
   /** Sequence of the verified beta manifest (consumers floor it at the stable sequence). */
   readonly sequence: number
+  /**
+   * The exact verified beta manifest bytes as canonical JSON text (#59): the
+   * resolver verified this text end to end, and consumers that must hand the
+   * beta channel across a process boundary (the market tarball install's CLI
+   * hand-off) stage these bytes — never bytes they fetched on their own — so
+   * what crosses the boundary is bytewise what the roster admission saw.
+   */
+  readonly manifestText: string
 }
 
 /** Why a beta resolution ended without an overlay (diagnostic categories only). */
@@ -264,5 +272,6 @@ export async function resolveDesktopBetaChannelOverlay(
   return {
     packages: verification.manifest.packages,
     sequence: verification.manifest.sequence,
+    manifestText: bytes.toString('utf8'),
   }
 }

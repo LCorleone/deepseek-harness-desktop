@@ -26,6 +26,7 @@ import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from '../src/company-manifest-origi
 import {
   DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   companyTarballHandoffText,
+  desktopBetaManifestHandoffStagingPath,
   desktopMarketTarballStagingPath,
 } from '../src/company-tarball-handoff.ts'
 import {
@@ -512,6 +513,146 @@ describe('packaged dsh bootstrap', () => {
       ])
       expect(environment[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]).toBeUndefined()
     } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a beta-pinned file: add when the hand-off carries the launcher-staged beta manifest (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-beta-handoff-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const statePath = desktopInstallRecoveryStatePath(join(root, 'user-data'))
+    const betaBytes = Buffer.from('beta handoff staged tarball\n', 'utf8')
+    const betaIntegrity = `sha512-${createHash('sha512').update(betaBytes).digest('base64')}`
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'example-beta-plugin', '0.4.184')
+    // The stable catalog (sequence 42) does not pin the beta entry — exactly
+    // the #59 real-device shape: free-search 0.4.184 beta-only, 0.4.183 stable.
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({
+      packages: [catalogEntry({ packageName: 'example-plugin', version: '0.4.183' })],
+    }))
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, betaBytes)
+      const betaUnsigned = unsignedCatalog({
+        sequence: 43,
+        packages: [catalogEntry({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          integrity: betaIntegrity,
+          treeDigest: 'ab'.repeat(32),
+          source: {
+            kind: 'tarball',
+            url: 'https://market.company.example/packages/example-beta-plugin-0.4.184.tgz',
+            integrity: betaIntegrity,
+          },
+        })],
+        testers: ['julu@deloittecn.com.cn'],
+      })
+      const betaSignature = createCompanyManifestSignature(
+        asUnsignedCatalog(betaUnsigned), catalogKey.privateKey, catalogKeyId,
+      )
+      writeFileSync(betaManifestPath, canonicalJsonText({ ...betaUnsigned, signature: betaSignature }))
+      const load = vi.fn(async () => undefined)
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`]
+      const environment = {
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_INSTALL_RECOVERY_STATE_ENV]: statePath,
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: assetPath,
+        [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          integrity: betaIntegrity,
+          path: stagedPath,
+          betaManifestPath,
+          betaSequence: 43,
+        }),
+      }
+
+      await runDesktopDshCli(environment, load, argv, companyLockedOriginPolicy(), assetPath)
+
+      // The re-verified beta manifest widened the gate's catalog: the child
+      // admitted the beta-only file: target and consumed the whole hand-off.
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`,
+      ])
+      expect(environment[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]).toBeUndefined()
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses the beta-pinned file: add when the staged beta manifest fails verification (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-beta-handoff-bad-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    const betaBytes = Buffer.from('beta handoff staged tarball\n', 'utf8')
+    const betaIntegrity = `sha512-${createHash('sha512').update(betaBytes).digest('base64')}`
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, 'example-beta-plugin', '0.4.184')
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      mkdirSync(dirname(stagedPath), { recursive: true })
+      writeFileSync(stagedPath, betaBytes)
+      // A validly-shaped beta publication whose sequence rolled back below
+      // the stable manifest the child itself just verified (42).
+      const staleBeta = unsignedCatalog({
+        sequence: 41,
+        packages: [catalogEntry({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          integrity: betaIntegrity,
+          treeDigest: 'ab'.repeat(32),
+          source: {
+            kind: 'tarball',
+            url: 'https://market.company.example/packages/example-beta-plugin-0.4.184.tgz',
+            integrity: betaIntegrity,
+          },
+        })],
+        testers: ['julu@deloittecn.com.cn'],
+      })
+      const staleSignature = createCompanyManifestSignature(
+        asUnsignedCatalog(staleBeta), catalogKey.privateKey, catalogKeyId,
+      )
+      writeFileSync(betaManifestPath, canonicalJsonText({ ...staleBeta, signature: staleSignature }))
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: assetPath,
+        [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          integrity: betaIntegrity,
+          path: stagedPath,
+          betaManifestPath,
+          betaSequence: 43,
+        }),
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`,
+      ], companyLockedOriginPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      const stderr = stderrWrite.mock.calls.flat().join('')
+      expect(stderr).toContain('example-beta-plugin@0.4.184 is not in the signed company plugin catalog')
+      expect(stderr).toContain('below the verified stable sequence 42')
+    } finally {
+      stderrWrite.mockRestore()
       process.exitCode = originalExitCode
       rmSync(root, { recursive: true, force: true })
     }

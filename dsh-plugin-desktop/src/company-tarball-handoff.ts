@@ -21,6 +21,25 @@
  * being installed into, and a fresh hash of the staged file must equal the
  * signed sha512 — content the company signed, or nothing.
  *
+ * One optional extension carries the beta channel across the same boundary
+ * (the #59 fix): when the resolved entry is beta-pinned — a roster machine's
+ * verified, roster-admitted beta manifest carries it and the stable manifest
+ * does not — the launcher also stages the exact beta manifest bytes it
+ * verified (never inline: the environment entry is size-bounded, so the bytes
+ * live at the deterministic staging path below, the byte hand-off shape of
+ * `DSH_COMPANY_MANIFEST_FILE`) and names them with their sequence. The CLI
+ * child never trusts those bytes: it re-verifies the staged beta manifest
+ * under the same trust roots and origin binding, requires its sequence to
+ * match the hand-off's claim and to sit at or above the stable manifest's
+ * own sequence (anti-downgrade), and only then widens the target lookup to
+ * stable ∪ beta — a beta entry still faces the same tarball-channel and
+ * integrity double check a stable one does. Without the beta pair, or when
+ * any step of that re-verification fails, the child decides on the stable
+ * manifest alone, exactly today's behavior. A hand-typed copy of the
+ * environment value can therefore never widen the gate beyond content the
+ * company signed on the beta channel; the roster admission itself stays a
+ * host-side visibility decision, and only the host makes it.
+ *
  * This module stays dependency-free (Node builtins only): the CLI bootstrap
  * imports it eagerly, so it must never drag the market bundle, Cordis, or
  * any other desktop composition graph into a CLI child's startup. It also
@@ -43,7 +62,7 @@ const BIN_NAME = 'dsh-plugin-desktop'
  */
 export const DESKTOP_COMPANY_TARBALL_HANDOFF_ENV = 'DSH_COMPANY_TARBALL_HANDOFF'
 
-/** Upper bound of the hand-off value: four bounded fields in canonical JSON. */
+/** Upper bound of the hand-off value: the four base fields plus the optional beta pair, canonical JSON. */
 export const COMPANY_TARBALL_HANDOFF_MAX_BYTES = 4_096
 
 /**
@@ -107,6 +126,26 @@ export function desktopMarketTarballStagingPath(profileDir: string, packageName:
   return join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, desktopMarketTarballStagingName(packageName, version))
 }
 
+/** File name of the staged beta manifest inside the market staging directory (the beta channel's own file name). */
+export const DESKTOP_COMPANY_BETA_MANIFEST_STAGING_NAME = 'catalog-manifest.beta.json'
+
+/**
+ * The one path the launcher may stage the verified beta manifest bytes at for
+ * the CLI child's gate (the #59 extension): inside the same profile staging
+ * directory as the controlled tarballs, under the beta channel's canonical
+ * file name. The child accepts no other path — the same confinement the
+ * staged tarball target gets — and re-verifies the signature over whatever
+ * bytes it reads there, so the file name pins location, never trust. The
+ * name cannot collide with a staged tarball (`<name>-<version>.tgz` always
+ * carries a dash-separated numeric version and the `.tgz` suffix).
+ */
+export function desktopBetaManifestHandoffStagingPath(profileDir: string): string {
+  if (typeof profileDir !== 'string' || !isAbsolute(profileDir) || profileDir.includes('\0')) {
+    throw new TypeError(`${BIN_NAME}: the beta manifest staging profile directory must be absolute without NUL`)
+  }
+  return join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, DESKTOP_COMPANY_BETA_MANIFEST_STAGING_NAME)
+}
+
 /**
  * The market pipeline's controlled tarball install target (P7). This
  * descriptor is constructed in-process by the Desktop market path after the
@@ -164,20 +203,34 @@ export interface CompanyTarballHandoff {
   readonly version: string
   readonly integrity: string
   readonly path: string
+  /**
+   * Staged beta manifest bytes for a beta-pinned target (#59): the absolute
+   * {@linkcode desktopBetaManifestHandoffStagingPath} of the exact manifest
+   * text the launcher verified and roster-admitted. Optional; present only
+   * for installs whose resolved entry came from the beta overlay, and always
+   * paired with {@linkcode betaSequence}.
+   */
+  readonly betaManifestPath?: string
+  /** Sequence of the verified beta manifest at {@linkcode betaManifestPath}; the child re-verifies and must observe the same value. */
+  readonly betaSequence?: number
 }
 
 /**
  * Encode one hand-off as canonical JSON: sorted keys, no whitespace, minimal
- * string escaping — for this flat, string-only document the explicit
+ * string escaping — for this flat, string-and-number document the explicit
  * construction below is exactly the market library's `canonicalJsonText`
- * serialization. The CLI side re-parses and re-validates every field against
- * the strict patterns, so a non-canonical spelling of the same values could
- * never widen what the gate admits.
+ * serialization (the optional beta pair is emitted only when present, keeping
+ * the stable-only spelling byte-identical with the original four-field one).
+ * The CLI side re-parses and re-validates every field against the strict
+ * patterns, so a non-canonical spelling of the same values could never widen
+ * what the gate admits.
  * @param handoff - the descriptor of the controlled install being launched.
  * @returns the environment value for {@linkcode DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}.
  */
 export function companyTarballHandoffText(handoff: CompanyTarballHandoff): string {
   return JSON.stringify({
+    ...(handoff.betaManifestPath === undefined ? {} : { betaManifestPath: handoff.betaManifestPath }),
+    ...(handoff.betaSequence === undefined ? {} : { betaSequence: handoff.betaSequence }),
     integrity: handoff.integrity,
     packageName: handoff.packageName,
     path: handoff.path,
@@ -185,11 +238,21 @@ export function companyTarballHandoffText(handoff: CompanyTarballHandoff): strin
   })
 }
 
+/** The manifest schema's own sequence ceiling (`verifyDesktopCompanyManifest`); the beta pair mirrors it. */
+const MAX_HANDOFF_SEQUENCE = 9_007_199_254_740_991
+
+/** Whether a value is a safe positive integer sequence the signed manifest schema admits. */
+function isHandoffSequence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_HANDOFF_SEQUENCE
+}
+
 /**
  * Strictly parse one hand-off environment value: length-bounded canonical
- * JSON with exactly the four expected keys, the strict catalog name and
- * plain-version grammars, a well-formed sha512, and an absolute path without
- * NUL. Anything else is undefined — callers fail closed on it.
+ * JSON with exactly the four base keys — or exactly those plus the beta pair
+ * (`betaManifestPath` and `betaSequence` arrive together or not at all) — the
+ * strict catalog name and plain-version grammars, a well-formed sha512, and
+ * absolute paths without NUL. Anything else is undefined — callers fail
+ * closed on it.
  * @param value - raw environment value of {@linkcode DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}.
  * @returns the validated hand-off, or undefined for every non-matching spelling.
  */
@@ -205,7 +268,12 @@ export function parseCompanyTarballHandoff(value: string): CompanyTarballHandoff
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
   const keys = Object.keys(parsed).sort()
-  if (keys.length !== 4 || keys[0] !== 'integrity' || keys[1] !== 'packageName' || keys[2] !== 'path' || keys[3] !== 'version') {
+  const withBeta = keys.length === 6 && keys[0] === 'betaManifestPath' && keys[1] === 'betaSequence'
+  if (!withBeta && keys.length !== 4) return undefined
+  if (keys[withBeta ? 2 : 0] !== 'integrity'
+    || keys[withBeta ? 3 : 1] !== 'packageName'
+    || keys[withBeta ? 4 : 2] !== 'path'
+    || keys[withBeta ? 5 : 3] !== 'version') {
     return undefined
   }
   const record = parsed as Record<string, unknown>
@@ -213,7 +281,19 @@ export function parseCompanyTarballHandoff(value: string): CompanyTarballHandoff
   if (typeof record.packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(record.packageName)) return undefined
   if (typeof record.path !== 'string' || !isAbsolute(record.path) || record.path.includes('\0')) return undefined
   if (typeof record.version !== 'string' || !EXACT_VERSION_PATTERN.test(record.version)) return undefined
-  return { packageName: record.packageName, version: record.version, integrity: record.integrity, path: record.path }
+  if (!withBeta) return { packageName: record.packageName, version: record.version, integrity: record.integrity, path: record.path }
+  if (typeof record.betaManifestPath !== 'string' || !isAbsolute(record.betaManifestPath) || record.betaManifestPath.includes('\0')) {
+    return undefined
+  }
+  if (!isHandoffSequence(record.betaSequence)) return undefined
+  return {
+    packageName: record.packageName,
+    version: record.version,
+    integrity: record.integrity,
+    path: record.path,
+    betaManifestPath: record.betaManifestPath,
+    betaSequence: record.betaSequence,
+  }
 }
 
 /**

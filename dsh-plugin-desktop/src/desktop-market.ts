@@ -1476,6 +1476,20 @@ export interface DesktopCompanyTarballInstallRequest {
   readonly logError?: (message: string) => void
   /** Installed-tree measurement override for focused tests; defaults to the boot-verification digest walk. */
   readonly measureTreeRootDigest?: (packageDir: string) => string
+  /**
+   * Launcher-staged beta manifest hand-off for the packaged CLI child's
+   * locked add gate (#59): the deterministic staging path of the exact beta
+   * manifest bytes the host verified and roster-admitted, plus their
+   * sequence. Present only when the resolved entry came from the beta
+   * overlay; forwarded into the pnpm boundary's spawn environment so the
+   * child can re-verify the bytes and widen its target lookup to
+   * stable ∪ beta. Never a trust payload — the child verifies the signature
+   * itself (see `company-tarball-handoff.ts`).
+   */
+  readonly betaManifest?: {
+    readonly path: string
+    readonly sequence: number
+  }
 }
 
 /** Result of one completed, re-verified tarball-channel install. */
@@ -1665,6 +1679,7 @@ export async function installCompanyMarketTarballPlugin(
     ...(entry.approvedBuilds === undefined ? {} : { approvedBuildDependencies: [...entry.approvedBuilds] }),
     ...(request.pnpmOptions === undefined ? {} : { pnpmOptions: [...request.pnpmOptions] }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
+    ...(request.betaManifest === undefined ? {} : { betaManifest: { ...request.betaManifest } }),
   })
   // Drain the child's streams from here on: the managed subprocess exposes
   // piped stdio without an internal reader, so an unconsumed pipe would both

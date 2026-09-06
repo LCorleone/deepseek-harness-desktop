@@ -26,7 +26,11 @@
  * instead of rejecting them, and malformed roster shapes reject.
  */
 
-import { generateKeyPairSync, type KeyObject } from 'node:crypto'
+import { createHash, generateKeyPairSync, type KeyObject } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import {
   canonicalJsonText,
@@ -53,6 +57,8 @@ import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.js
 import type { UpdateChannelRequest } from '../src/update-manifest.js'
 import type { SsoSession } from '../src/company-sso.js'
 import type { DesktopCompanyManifestPackage } from '../src/desktop-market.js'
+import type { DesktopPnpm, DesktopPnpmHandle } from '../src/pnpm.js'
+import { desktopBetaManifestHandoffStagingPath, desktopMarketTarballStagingPath } from '../src/company-tarball-handoff.js'
 
 const keyId = 'company-catalog-beta-spec'
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
@@ -373,21 +379,31 @@ describe('market tarball install channel beta overlay (P9)', () => {
   const stableText = signedText(unsignedManifest({
     packages: [entry({ source: { kind: 'tarball', url: `${origin}/packages/company-plugin-1.0.0.tgz`, integrity: entry().integrity } })],
   }))
-  const betaOverlay = async (sequence: number) => {
+  const betaOverlay = async (
+    sequence: number,
+    tarball?: { readonly bytes: Buffer; readonly integrity: string },
+  ): Promise<DesktopBetaChannelOverlay> => {
+    const text = signedText(unsignedManifest({
+      sequence,
+      packages: [entry(), entry({
+        packageName: 'company-beta-plugin',
+        version: '0.9.0',
+        treeDigest: 'ab'.repeat(32),
+        ...(tarball === undefined ? {} : { integrity: tarball.integrity }),
+        source: {
+          kind: 'tarball',
+          url: `${origin}/packages/company-beta-plugin-0.9.0.tgz`,
+          integrity: tarball === undefined ? entry().integrity : tarball.integrity,
+        },
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+    }))
     const beta = verifyDesktopCompanyManifest(
-      signedText(unsignedManifest({
-        sequence,
-        packages: [entry(), entry({
-          packageName: 'company-beta-plugin',
-          version: '0.9.0',
-          source: { kind: 'tarball', url: `${origin}/packages/company-beta-plugin-0.9.0.tgz`, integrity: entry().integrity },
-        })],
-        testers: ['julu@deloittecn.com.cn'],
-      })),
+      text,
       { trustRoots, companyCatalogOrigin: origin, now, channel: 'beta' },
     )
     if (!beta.ok) throw new Error('unreachable')
-    return { packages: beta.manifest.packages, sequence: beta.manifest.sequence }
+    return { packages: beta.manifest.packages, sequence: beta.manifest.sequence, manifestText: text }
   }
 
   it('a roster machine verifies a beta tarball entry the stable manifest does not pin', async () => {
@@ -430,6 +446,173 @@ describe('market tarball install channel beta overlay (P9)', () => {
       { packageName: 'company-beta-plugin', version: '0.9.0' },
       new AbortController().signal,
     )).resolves.toBeUndefined()
+  })
+
+  // -----------------------------------------------------------------------
+  // The #59 fix: a beta-pinned install's divert must carry the verified beta
+  // manifest bytes to the packaged CLI child's stable-only gate.
+  // -----------------------------------------------------------------------
+  const betaTarballUrl = `${origin}/packages/company-beta-plugin-0.9.0.tgz`
+  const betaTarballBytes = Buffer.from('company-beta-plugin tarball fixture bytes\n', 'utf8')
+  const betaTarballIntegrity = `sha512-${createHash('sha512').update(betaTarballBytes).digest('base64')}`
+
+  /** Capture the inner installPlugin request, then settle a failing child so the orchestration ends quickly. */
+  function capturingService(): { service: DesktopPnpm; captured(): import('../src/pnpm.js').DesktopPluginInstallRequest | undefined } {
+    let installRequest: import('../src/pnpm.js').DesktopPluginInstallRequest | undefined
+    const service = {
+      installPlugin: async (request: import('../src/pnpm.js').DesktopPluginInstallRequest): Promise<DesktopPnpmHandle> => {
+        installRequest = request
+        return {
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          done: Promise.resolve({ exitCode: 1, signal: null }),
+          cancel: () => undefined,
+        }
+      },
+      rollbackPluginInstall: async () => false,
+    } as unknown as DesktopPnpm
+    return { service, captured: () => installRequest }
+  }
+
+  it('a roster machine\u2019s diverted beta-only install rides the verified beta manifest bytes in the CLI hand-off (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-beta-channel-handoff-'))
+    try {
+      const profileDir = join(root, 'profiles', 'web')
+      const overlay = await betaOverlay(43, { bytes: betaTarballBytes, integrity: betaTarballIntegrity })
+      const channel = createDesktopCompanyMarketTarballInstallChannel({
+        policy: fullPolicy,
+        profileDir,
+        fetchManifestText: async () => stableText,
+        betaOverlay: () => Promise.resolve(overlay),
+        request: async (url: string) => url === betaTarballUrl
+          ? new Response(new Uint8Array(betaTarballBytes), { status: 200 })
+          : new Response('not found', { status: 404 }),
+      })
+      // The market flow resolves the entry first (the verification seam);
+      // only then does the pnpm boundary hand the install request over.
+      await expect(channel.verifyTarballEntry(
+        { packageName: 'company-beta-plugin', version: '0.9.0' },
+        new AbortController().signal,
+      )).resolves.toBeDefined()
+      const { service, captured } = capturingService()
+      const handle = await channel.divertCompanyTarballInstall({
+        invokingDir: root,
+        recovery: { packageName: 'company-beta-plugin', packageVersion: '0.9.0', receiptId: 'receipt:beta-handoff-0001' },
+      }, service)
+      expect(handle).toBeDefined()
+      // The double's failing child settles the diverted handle nonzero — and
+      // only after it settles has the orchestration reached installPlugin.
+      await expect(handle!.done).resolves.toEqual({ exitCode: 1, signal: null })
+
+      const request = captured()
+      expect(request).toBeDefined()
+      expect(request?.marketTarball?.path).toBe(
+        desktopMarketTarballStagingPath(profileDir, 'company-beta-plugin', '0.9.0'),
+      )
+      // The hand-off pair: the deterministic staging path of the exact
+      // verified bytes, and their sequence.
+      expect(request?.betaManifest).toEqual({
+        path: desktopBetaManifestHandoffStagingPath(profileDir),
+        sequence: 43,
+      })
+      // Hygiene (review P3): the staged beta manifest is removed once the
+      // install settles — the diverted request still carries its path and
+      // sequence, and the tarball staging is untouched by that cleanup.
+      expect(request?.betaManifest?.path).toBe(desktopBetaManifestHandoffStagingPath(profileDir))
+      expect(existsSync(request?.betaManifest?.path ?? '')).toBe(false)
+      expect(readFileSync(request?.marketTarball?.path ?? '')).toEqual(betaTarballBytes)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('a stable-pinned install never carries the beta pair, and a non-roster machine never diverts (#59)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-beta-channel-handoff-stable-'))
+    try {
+      const profileDir = join(root, 'profiles', 'web')
+      const stableTarballUrl = `${origin}/packages/company-plugin-1.0.0.tgz`
+      const stableTarballBytes = Buffer.from('company-plugin tarball fixture bytes\n', 'utf8')
+      const stableTarballIntegrity = `sha512-${createHash('sha512').update(stableTarballBytes).digest('base64')}`
+      // The stable catalog pins a real tarball entry (the divert's download
+      // gate re-hashes the served bytes against the signed sha512), while the
+      // overlay carries only the beta-only entry: the stable package resolves
+      // from the stable manifest, so its divert is beta-free.
+      const stableTarballText = signedText(unsignedManifest({
+        packages: [entry({
+          treeDigest: 'ab'.repeat(32),
+          integrity: stableTarballIntegrity,
+          source: { kind: 'tarball', url: stableTarballUrl, integrity: stableTarballIntegrity },
+        })],
+      }))
+      const betaOnlyText = signedText(unsignedManifest({
+        sequence: 43,
+        packages: [entry({
+          packageName: 'company-beta-plugin',
+          version: '0.9.0',
+          treeDigest: 'ab'.repeat(32),
+          integrity: betaTarballIntegrity,
+          source: { kind: 'tarball', url: betaTarballUrl, integrity: betaTarballIntegrity },
+        })],
+        testers: ['julu@deloittecn.com.cn'],
+      }))
+      const betaOnly = verifyDesktopCompanyManifest(betaOnlyText, {
+        trustRoots, companyCatalogOrigin: origin, now, channel: 'beta',
+      })
+      expect(betaOnly.ok).toBe(true)
+      const channel = createDesktopCompanyMarketTarballInstallChannel({
+        policy: fullPolicy,
+        profileDir,
+        fetchManifestText: async () => stableTarballText,
+        betaOverlay: async () => ({
+          packages: betaOnly.ok ? betaOnly.manifest.packages : [],
+          sequence: 43,
+          manifestText: betaOnlyText,
+        }),
+        request: async (url: string) => url === stableTarballUrl
+          ? new Response(new Uint8Array(stableTarballBytes), { status: 200 })
+          : new Response('not found', { status: 404 }),
+      })
+      await expect(channel.verifyTarballEntry(
+        { packageName: 'company-plugin', version: '1.0.0' },
+        new AbortController().signal,
+      )).resolves.toBeDefined()
+      const { service, captured } = capturingService()
+      const handle = await channel.divertCompanyTarballInstall({
+        invokingDir: root,
+        recovery: { packageName: 'company-plugin', packageVersion: '1.0.0', receiptId: 'receipt:stable-handoff-0001' },
+      }, service)
+      expect(handle).toBeDefined()
+      await expect(handle!.done).resolves.toEqual({ exitCode: 1, signal: null })
+      // The stable install's hand-off stays the plain four-field one: no beta
+      // pair, and no beta manifest staging file appears in the profile.
+      const request = captured()
+      expect(request).toBeDefined()
+      expect(request?.betaManifest).toBeUndefined()
+      expect(request?.marketTarball?.path).toBe(
+        desktopMarketTarballStagingPath(profileDir, 'company-plugin', '1.0.0'),
+      )
+      expect(existsSync(desktopBetaManifestHandoffStagingPath(profileDir))).toBe(false)
+
+      // A non-roster machine: the overlay resolves to undefined, the beta-only
+      // entry does not resolve, and the divert never happens (registry path).
+      const bare = createDesktopCompanyMarketTarballInstallChannel({
+        policy: fullPolicy,
+        profileDir,
+        fetchManifestText: async () => stableText,
+        betaOverlay: async () => undefined,
+      })
+      await expect(bare.verifyTarballEntry(
+        { packageName: 'company-beta-plugin', version: '0.9.0' },
+        new AbortController().signal,
+      )).resolves.toBeUndefined()
+      const { service: bareService } = capturingService()
+      await expect(bare.divertCompanyTarballInstall({
+        invokingDir: root,
+        recovery: { packageName: 'company-beta-plugin', packageVersion: '0.9.0', receiptId: 'receipt:beta-nonroster-0001' },
+      }, bareService)).resolves.toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

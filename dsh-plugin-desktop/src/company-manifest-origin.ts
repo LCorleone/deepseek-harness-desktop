@@ -55,8 +55,15 @@ function isAbortFailure(value: unknown): boolean {
  * whole-request abort signal — the same bound that caps the network fetch,
  * so a stalled filesystem cannot hold the request open indefinitely. Every
  * failure throws for the caller's network-fallback handling.
+ *
+ * Two consumers read staged manifest bytes through this one primitive: the
+ * origin-mode request boundary below (a launcher-staged stable manifest,
+ * `DSH_COMPANY_MANIFEST_FILE`) and the locked plugin-add gate's beta
+ * hand-off (the launcher-staged beta manifest at the deterministic market
+ * staging path, #59). Both re-verify the signature over whatever bytes they
+ * read — the read owns bounds only, never trust.
  */
-async function readStagedCompanyManifestBytes(
+export async function readStagedCompanyManifestBytes(
   manifestFile: string,
   requestSignal: AbortSignal | null | undefined,
 ): Promise<Buffer> {

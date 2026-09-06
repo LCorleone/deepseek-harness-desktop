@@ -30,9 +30,11 @@ import {
   ed25519PublicKeyFingerprint,
 } from 'dsh-community-market'
 import { createDesktopCompanyMarketTarballInstallChannel } from '../src/company-market-install.ts'
+import { authorizeLockedPluginAdd } from '../src/cli-install-channel.ts'
 import {
   cleanCompanyMarketStagingOrphans,
   desktopCompanyManifestVerifierForMarket,
+  verifyDesktopCompanyManifest,
 } from '../src/desktop-market.ts'
 import {
   collectDesktopBootBundles,
@@ -47,6 +49,7 @@ import {
   desktopMarketFileSpecPosixPath,
   desktopMarketTarballStagingName,
   desktopMarketTarballStagingPath,
+  desktopBetaManifestHandoffStagingPath,
   inject as desktopPnpmInject,
   name as desktopPnpmName,
   DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
@@ -188,6 +191,32 @@ function signedManifestText(
     sequence,
     expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
     packages,
+  }
+  return canonicalJsonText({
+    ...unsigned,
+    signature: createCompanyManifestSignature(
+      unsigned as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+      privateKey,
+      keyId,
+    ),
+  })
+}
+
+/**
+ * Sign one beta manifest fixture with the same test key (#59): the beta
+ * channel's one recognized extension being the signed `testers` roster.
+ */
+function signedBetaManifestText(
+  packages: readonly Record<string, unknown>[] = [nextTarballEntry()],
+  sequence = 43,
+  testers: readonly string[] = ['julu@deloittecn.com.cn'],
+): string {
+  const unsigned = {
+    manifestVersion: '1.0.0',
+    sequence,
+    expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+    packages,
+    testers,
   }
   return canonicalJsonText({
     ...unsigned,
@@ -406,6 +435,12 @@ interface CompositionOptions {
   readonly nextTarballBytes?: Buffer
   readonly spawn: SpawnMock
   readonly withChannel?: boolean
+  /**
+   * Signed beta manifest text; when present the composition admits it like a
+   * roster machine (the provider merges it, the tarball channel resolves
+   * through it, and boot re-verification runs with it). Omitted = non-roster.
+   */
+  readonly betaManifestText?: string
 }
 
 interface Composition {
@@ -429,6 +464,21 @@ async function composeMarketDesktop(root: string, options: CompositionOptions): 
     options.tarballBytes ?? TARBALL_BYTES,
     options.nextTarballBytes ?? NEXT_TARBALL_BYTES,
   )
+  // The roster machine's beta overlay, verified from the fixture text exactly
+  // like the host's shared resolver verifies the fetched bytes (#59).
+  const betaOverlay = options.betaManifestText === undefined ? undefined : (() => {
+    const verification = verifyDesktopCompanyManifest(options.betaManifestText, {
+      trustRoots: policy.trustRoots,
+      companyCatalogOrigin: CATALOG_ORIGIN,
+      channel: 'beta',
+    })
+    if (!verification.ok) throw new Error(`the beta fixture manifest does not verify: ${verification.code}`)
+    return async () => ({
+      packages: verification.manifest.packages,
+      sequence: verification.manifest.sequence,
+      manifestText: options.betaManifestText!,
+    })
+  })()
   const ctx = new Context()
   ctx.provide('webServer', webServer.service as never)
   ctx.provide('desktopProfiles', { current: { name: 'web', dir: profileDir } })
@@ -446,6 +496,9 @@ async function composeMarketDesktop(root: string, options: CompositionOptions): 
   ctx.provide('desktopCompanyCatalogHttp', {
     getJson: async (url: string) => ({ value: JSON.parse(options.manifestText) as unknown, finalUrl: url }),
   })
+  if (betaOverlay !== undefined) {
+    ctx.provide('desktopCompanyBetaCatalog', betaOverlay)
+  }
   ctx.provide('desktopPlugins', { list: () => [], disabledPackageNames: () => [] })
   if (options.withChannel !== false) {
     const channel = createDesktopCompanyMarketTarballInstallChannel({
@@ -453,6 +506,7 @@ async function composeMarketDesktop(root: string, options: CompositionOptions): 
       profileDir,
       fetchManifestText: doubles.fetchManifestText,
       request: doubles.request,
+      ...(betaOverlay === undefined ? {} : { betaOverlay }),
     })
     ctx.provide('desktopMarketTarballEntryVerifier', channel)
     ctx.provide('desktopCompanyMarketTarballInstall', channel)
@@ -551,6 +605,92 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
       const verdict = verifyDesktopBootBundles(manifestText, bundles, {
         trustRoots: policy.trustRoots,
         companyCatalogOrigin: CATALOG_ORIGIN,
+      })
+      expect(verdict.rejected).toEqual([])
+      expect(verdict.allowed).toEqual([
+        { packageName: PACKAGE_NAME, evidence: 'signed-tree', manifestSequence: 42, keyId },
+      ])
+    } finally {
+      await composition.dispose()
+    }
+  })
+
+  it('installs a roster machine\u2019s beta-only tarball entry end to end with the beta manifest hand-off (#59)', async () => {
+    const root = temporaryDirectory('beta-handoff-chain')
+    const profileDir = join(root, 'profiles', 'web')
+    const nextStagedPath = desktopMarketTarballStagingPath(profileDir, PACKAGE_NAME, NEXT_PACKAGE_VERSION)
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    // The #59 real-device shape: the stable manifest (42) still pins 2.1.0
+    // while the beta publication (43, roster-admitted) alone pins 2.2.0 —
+    // the update the roster user clicked.
+    const stableText = signedManifestText([tarballEntry()], 42)
+    const betaText = signedBetaManifestText([nextTarballEntry()], 43)
+    const composition = await composeMarketDesktop(root, {
+      manifestText: stableText,
+      betaManifestText: betaText,
+      spawn: installSimulatingSpawn(() => {
+        simulateSuccessfulTarballInstall(profileDir, nextStagedPath, {
+          version: NEXT_PACKAGE_VERSION,
+          integrity: NEXT_TARBALL_INTEGRITY,
+        })
+      }),
+    })
+    try {
+      // 1. The roster machine's merged catalog shows exactly the beta-only
+      // version for the package (beta precedence, single-version view).
+      const installable = await composition.installable()
+      expect(installable.status).toBe(200)
+      expect((installable.body as { items?: Array<{ id?: string }> }).items?.map(item => item.id))
+        .toEqual([`npm:${PACKAGE_NAME}@${NEXT_PACKAGE_VERSION}`])
+
+      // 2. Preview through the beta-aware verifier seam, execute through the
+      // diverted controlled channel.
+      const preview = await composition.preview({
+        action: 'install',
+        sourceRecordId: COMPANY_SOURCE_ID,
+        itemId: `npm:${PACKAGE_NAME}@${NEXT_PACKAGE_VERSION}`,
+      })
+      expect(preview.status).toBe(200)
+      const executed = await composition.execute({ previewId: preview.body.previewId })
+      expect(executed.status).toBe(200)
+      expect((executed.body as { receipt?: Record<string, unknown> }).receipt).toMatchObject({
+        packageName: PACKAGE_NAME,
+        version: NEXT_PACKAGE_VERSION,
+        integrity: NEXT_TARBALL_INTEGRITY,
+        // The market's persisted sequence ratchet stays the stable channel's.
+        manifestSequence: 42,
+      })
+      const argv = composition.spawn.mock.calls[0]?.[0].argv as string[]
+      expect(argv.slice(-1)[0]).toBe(`file:${nextStagedPath}`)
+
+      // 3. The spawn hand-off carries the beta pair, and the staged file is
+      // bytewise the manifest this composition verified and roster-admitted.
+      const environment = composition.spawn.mock.calls[0]?.[0].env as Record<string, string | undefined>
+      expect(parseCompanyTarballHandoff(environment?.[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '')).toEqual({
+        packageName: PACKAGE_NAME,
+        version: NEXT_PACKAGE_VERSION,
+        integrity: NEXT_TARBALL_INTEGRITY,
+        path: nextStagedPath,
+        betaManifestPath,
+        betaSequence: 43,
+      })
+      // Hygiene (review P3): the staged roster-bearing bytes are removed once
+      // the install settles — the child gate already verified them in-flight.
+      expect(existsSync(betaManifestPath)).toBe(false)
+
+      // 4. The roster machine's next boot: the same beta overlay admits the
+      // installed beta-only tree the stable manifest alone would reject.
+      const bundles = collectDesktopBootBundles(profileDir, [PACKAGE_NAME])
+      const beta = verifyDesktopCompanyManifest(betaText, {
+        trustRoots: policy.trustRoots,
+        companyCatalogOrigin: CATALOG_ORIGIN,
+        channel: 'beta',
+      })
+      expect(beta.ok).toBe(true)
+      const verdict = verifyDesktopBootBundles(stableText, bundles, {
+        trustRoots: policy.trustRoots,
+        companyCatalogOrigin: CATALOG_ORIGIN,
+        ...(beta.ok ? { betaPackages: beta.manifest.packages, betaSequence: beta.manifest.sequence } : {}),
       })
       expect(verdict.rejected).toEqual([])
       expect(verdict.allowed).toEqual([
@@ -1392,6 +1532,180 @@ describe.skipIf(!existsSync(PINNED_PNPM))('real pinned pnpm: the generated file:
         const verdict = verifyDesktopBootBundles(manifestText, rebundled, {
           trustRoots: policy.trustRoots,
           companyCatalogOrigin: CATALOG_ORIGIN,
+        })
+        expect(verdict.rejected).toEqual([])
+        expect(verdict.allowed).toEqual([
+          { packageName: name, evidence: 'signed-tree', manifestSequence: 42, keyId },
+        ])
+      } finally {
+        await composition.dispose()
+      }
+    },
+    240_000,
+  )
+
+  it(
+    'installs a roster machine\u2019s beta-only target through the real pinned pnpm: hand-off → child gate → add → lockfile pin → boot admission (#59)',
+    async () => {
+      const root = temporaryDirectory('real-pnpm-beta')
+      const name = 'company-plugin-fixture'
+      const betaVersion = '1.2.4'
+      const profileDir = join(root, 'profiles', 'web')
+
+      // 1. Pack the beta-only version for real and measure its installed
+      //    tree in a scratch profile, so the beta manifest can sign the
+      //    exact integrity and tree digest the real install must produce.
+      const sourceDir = join(root, 'src-beta')
+      writeFixtureSource(sourceDir, name, betaVersion)
+      expectPinnedPnpmSuccess(['pack', '--pack-destination', root], sourceDir)
+      const betaBytes = readFileSync(join(root, `company-plugin-fixture-${betaVersion}.tgz`))
+      const betaIntegrity = `sha512-${createHash('sha512').update(betaBytes).digest('base64')}`
+      const measureProfile = join(root, 'profiles', 'measure')
+      mkdirSync(measureProfile, { recursive: true })
+      writeFileSync(join(measureProfile, 'package.json'), `${JSON.stringify({ name: 'profile', private: true, dependencies: {} })}\n`)
+      const measureStaged = desktopMarketTarballStagingPath(measureProfile, name, betaVersion)
+      mkdirSync(dirname(measureStaged), { recursive: true })
+      writeFileSync(measureStaged, betaBytes)
+      expectPinnedPnpmSuccess(
+        ['add', '--save-exact', '--registry=https://registry.npmjs.org/', `file:${measureStaged}`],
+        measureProfile,
+      )
+      const betaTreeDigest = computeDesktopBootTreeRootDigest(
+        collectDesktopBootBundles(measureProfile, [name])[0]?.packageDir!,
+      )
+
+      // 2. The #59 catalog shape: the stable manifest pins an unrelated
+      //    plugin only — the fixture's beta-only version exists nowhere in
+      //    stable — while the roster-admitted beta publication (sequence 43)
+      //    alone pins it as a tarball entry.
+      const stableText = signedManifestText([npmEntry()], 42)
+      const betaText = signedBetaManifestText([{
+        packageName: name,
+        version: betaVersion,
+        integrity: betaIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        repository: { url: 'https://github.com/example/company-plugin-fixture' },
+        revoked: false,
+        runtime: { dshRuntimeVersion: '*' },
+        treeDigest: betaTreeDigest,
+        source: { kind: 'tarball', url: NEXT_TARBALL_URL, integrity: betaIntegrity },
+      }], 43)
+
+      // 3. Compose with the beta overlay and a spawn double that runs the
+      //    child's real locked-add gate over the spawned argv + hand-off
+      //    before translating the add into the real pinned pnpm.
+      const gateDecisions: string[] = []
+      const spawnedAdds: string[][] = []
+      const betaStagedPath = desktopMarketTarballStagingPath(profileDir, name, betaVersion)
+      const composition = await composeMarketDesktop(root, {
+        manifestText: stableText,
+        betaManifestText: betaText,
+        nextTarballBytes: betaBytes,
+        spawn: vi.fn<(spec: SubprocessSpawnSpec) => SubprocessHandle>((spec: SubprocessSpawnSpec) => {
+          const child = controlledSubprocess()
+          void Promise.resolve().then(async () => {
+            const argv = [...spec.argv]
+            const addArgs = argv.slice(argv.indexOf('add'))
+            spawnedAdds.push(addArgs)
+            // The packaged CLI child's locked add gate, verbatim: the spawn's
+            // own hand-off re-bound to the stable catalog the child would
+            // fetch, plus the staged profile directory. Without the #59 fix
+            // this decision is the real-device denial.
+            const handoff = parseCompanyTarballHandoff(
+              (spec.env ?? {})[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '',
+            )
+            const decision = await authorizeLockedPluginAdd(addArgs.slice(1), policy, {
+              fetch: { request: async () => new Response(stableText) },
+              ...(handoff === undefined ? {} : { tarballHandoff: handoff }),
+              profileDir,
+            })
+            gateDecisions.push(decision.allowed ? 'allowed' : `denied: ${decision.reason}`)
+            if (!decision.allowed) {
+              ;(child.stderr as PassThrough).write(`the locked add gate refused the beta-only target: ${decision.reason}\n`)
+              child.resolveDone({ exitCode: 1, signal: null })
+              child.resolveTree()
+              return
+            }
+            const probe = runPinnedPnpm(addArgs, profileDir)
+            if ((probe.status ?? 1) !== 0) {
+              ;(child.stderr as PassThrough).write(`real pnpm ${addArgs.join(' ')} exited ${String(probe.status)}:\n${probe.stdout ?? ''}\n${probe.stderr ?? ''}`)
+              child.resolveDone({ exitCode: probe.status ?? 1, signal: null })
+            } else {
+              const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+              manifest.dsh = { profile: { bundles: [name] } }
+              writeFileSync(join(profileDir, 'package.json'), JSON.stringify(manifest))
+              child.resolveDone({ exitCode: 0, signal: null })
+            }
+            child.resolveTree()
+          })
+          return child
+        }),
+      })
+      try {
+        // 4. The merged catalog shows the beta-only version for the fixture
+        //    (beta precedence) beside the stable manifest's unrelated entry;
+        //    the market flow runs preview → execute over the beta item.
+        const installable = await composition.installable()
+        expect(installable.status).toBe(200)
+        expect((installable.body as { items?: Array<{ id?: string }> }).items?.map(item => item.id))
+          .toEqual([`npm:${name}@${betaVersion}`, 'npm:example-plugin@1.0.0'])
+        const preview = await composition.preview({
+          action: 'install',
+          sourceRecordId: COMPANY_SOURCE_ID,
+          itemId: `npm:${name}@${betaVersion}`,
+        })
+        expect(preview.status).toBe(200)
+        const executed = await composition.execute({ previewId: preview.body.previewId })
+        expect(executed.status).toBe(200)
+        expect((executed.body as { receipt?: Record<string, unknown> }).receipt).toMatchObject({
+          packageName: name,
+          version: betaVersion,
+          integrity: betaIntegrity,
+          manifestSequence: 42,
+        })
+
+        // 5. The child gate admitted the beta-only target through the beta
+        //    pair, and the real pinned pnpm ran the controlled add verbatim.
+        expect(gateDecisions).toEqual(['allowed'])
+        expect(spawnedAdds).toHaveLength(1)
+        expect(spawnedAdds[0]!.slice(-1)[0]).toBe(`file:${betaStagedPath}`)
+        expect(spawnedAdds[0]).toContain('--save-exact')
+        expect(spawnedAdds[0]).toContain('--registry=https://registry.npmjs.org/')
+        const environment = composition.spawn.mock.calls[0]?.[0].env as Record<string, string | undefined>
+        expect(parseCompanyTarballHandoff(environment?.[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '')).toMatchObject({
+          packageName: name,
+          version: betaVersion,
+          integrity: betaIntegrity,
+          path: betaStagedPath,
+          betaManifestPath: desktopBetaManifestHandoffStagingPath(profileDir),
+          betaSequence: 43,
+        })
+        // Hygiene (review P3): removed post-install (verified in-flight by the child gate).
+        expect(existsSync(desktopBetaManifestHandoffStagingPath(profileDir))).toBe(false)
+
+        // 6. The GENERATED lockfile pins the beta-only version and its real
+        //    staged sha512.
+        const lockfile = readDesktopBootLockfile(profileDir) as unknown as Record<string, unknown>
+        const dependency = lockfileDependencyRecord(lockfile, name)
+        expect(desktopMarketFileSpecPosixPath(dependency.specifier)).toBe(
+          `file:${desktopMarketFileSpecPosixPath(betaStagedPath)}`,
+        )
+        expect(desktopBootLockIntegrity(lockfile, name, betaVersion, { profileDir })).toBe(betaIntegrity)
+
+        // 7. The roster machine's next boot admits the beta-only install over
+        //    the same beta overlay.
+        const rebundled = collectDesktopBootBundles(profileDir, [name])
+        expect(rebundled[0]?.version).toBe(betaVersion)
+        const beta = verifyDesktopCompanyManifest(betaText, {
+          trustRoots: policy.trustRoots,
+          companyCatalogOrigin: CATALOG_ORIGIN,
+          channel: 'beta',
+        })
+        expect(beta.ok).toBe(true)
+        const verdict = verifyDesktopBootBundles(stableText, rebundled, {
+          trustRoots: policy.trustRoots,
+          companyCatalogOrigin: CATALOG_ORIGIN,
+          ...(beta.ok ? { betaPackages: beta.manifest.packages, betaSequence: beta.manifest.sequence } : {}),
         })
         expect(verdict.rejected).toEqual([])
         expect(verdict.allowed).toEqual([

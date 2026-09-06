@@ -386,9 +386,12 @@ export async function runDesktopDshCli(
   )
   // Market-orchestrated tarball hand-off (P7 fix): when the trusted launcher
   // spawns this child for a controlled market tarball install, it names the
-  // one `file:` target the locked add gate may admit. Consumed here so the
-  // upstream CLI and its pnpm children never inherit it; strictly parsed
-  // below — a present-but-malformed value fails the add closed.
+  // one `file:` target the locked add gate may admit. A beta-pinned target
+  // (#59) additionally carries the staged beta manifest bytes' path and
+  // sequence, which the gate re-verifies before widening its catalog lookup
+  // to stable ∪ beta. Consumed here so the upstream CLI and its pnpm children
+  // never inherit it; strictly parsed below — a present-but-malformed value
+  // fails the add closed.
   const companyTarballHandoffRaw = takeEnvironmentValue(
     environment,
     DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,

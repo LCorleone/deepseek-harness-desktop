@@ -46,13 +46,21 @@
  * trusted tarball hand-off (`DSH_COMPANY_TARBALL_HANDOFF`, injected by the
  * pnpm boundary for exactly these spawns), which the gate admits only after
  * re-binding it to the signed catalog entry and re-hashing the staged bytes
- * — see `company-tarball-handoff.ts` and `cli-install-channel.ts`. Only this
+ * — see `company-tarball-handoff.ts` and `cli-install-channel.ts`.
+ * When the resolved entry is beta-pinned (#59) — a roster machine's verified
+ * beta overlay carries it and the stable manifest does not — the channel
+ * additionally stages the exact verified beta manifest bytes at the
+ * profile's deterministic staging path and rides them, with their sequence,
+ * in the same hand-off, so the child's gate can re-verify them and widen its
+ * lookup to stable ∪ beta instead of denying the beta-only target. Only this
  * in-process channel, bound to a manifest it verified itself, can divert an
  * install onto the tarball target.
  */
 
 import { readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { PassThrough } from 'node:stream'
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import {
   companyManifestAssetPath,
 } from './cli-install-channel.ts'
@@ -60,6 +68,7 @@ import {
   fetchCompanyManifestText,
 } from './company-manifest-origin.ts'
 import type { DesktopBetaChannelOverlay } from './beta-channel.ts'
+import { desktopBetaManifestHandoffStagingPath } from './company-tarball-handoff.ts'
 import {
   findDesktopCompanyManifestPackageWithBeta,
   installCompanyMarketTarballPlugin,
@@ -156,7 +165,11 @@ export function createDesktopCompanyMarketTarballInstallChannel(
 ): DesktopCompanyMarketTarballInstallChannel {
   const policy = options.policy
   let verified: { readonly manifest: DesktopCompanyManifest } | undefined
-  let verifiedBeta: { readonly packages: readonly DesktopCompanyManifestPackage[] } | undefined
+  let verifiedBeta: {
+    readonly packages: readonly DesktopCompanyManifestPackage[]
+    readonly sequence: number
+    readonly manifestText: string
+  } | undefined
 
   const acquireManifest = async (signal: AbortSignal): Promise<DesktopCompanyManifest | undefined> => {
     // Unlocked policies and policies without trust roots have no signed
@@ -191,7 +204,7 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       try {
         const overlay = await options.betaOverlay()
         if (overlay !== undefined && overlay.sequence >= verification.manifest.sequence) {
-          verifiedBeta = { packages: overlay.packages }
+          verifiedBeta = { packages: overlay.packages, sequence: overlay.sequence, manifestText: overlay.manifestText }
         }
       } catch {
         verifiedBeta = undefined
@@ -200,18 +213,34 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     return verification.manifest
   }
 
+  /** The resolved tarball-channel entry and whether the beta overlay supplied it (#59). */
+  interface ResolvedTarballEntry {
+    readonly entry: DesktopCompanyManifestPackage
+    readonly fromBeta: boolean
+  }
+
   const findTarballEntry = (
     manifest: DesktopCompanyManifest,
     packageName: string,
     version: string,
-  ): DesktopCompanyManifestPackage | undefined => {
+  ): ResolvedTarballEntry | undefined => {
     // Beta first (P9): a roster-admitted beta entry wins over the stable
     // manifest's entry for the same name@version — the market catalog's
     // merge rule — and beta-only entries resolve here too.
     const entry = findDesktopCompanyManifestPackageWithBeta(manifest, verifiedBeta?.packages, packageName, version)
     if (entry === undefined) return undefined
     const source = entry.source ?? { kind: 'npm' as const }
-    return source.kind === 'tarball' ? entry : undefined
+    if (source.kind !== 'tarball') return undefined
+    // The winning entry came from the beta overlay exactly when the overlay
+    // carries this name@version (revocation stickiness may still mark it
+    // revoked through the stable manifest — that flag refuses the install
+    // below regardless of which channel supplied the other fields).
+    return {
+      entry,
+      fromBeta: verifiedBeta?.packages.some(
+        candidate => candidate.packageName === packageName && candidate.version === version,
+      ) === true,
+    }
   }
 
   return {
@@ -219,13 +248,13 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       signal.throwIfAborted()
       const manifest = await acquireManifest(signal)
       if (manifest === undefined) return undefined
-      const entry = findTarballEntry(manifest, candidate.packageName, candidate.version)
-      if (entry === undefined || entry.revoked) return undefined
-      const source = entry.source
+      const resolved = findTarballEntry(manifest, candidate.packageName, candidate.version)
+      if (resolved === undefined || resolved.entry.revoked) return undefined
+      const source = resolved.entry.source
       if (source === undefined || source.kind !== 'tarball') return undefined
       return {
-        integrity: entry.integrity,
-        bundlePatch: entry.bundlePatch,
+        integrity: resolved.entry.integrity,
+        bundlePatch: resolved.entry.bundlePatch,
         tarball: source.url,
       }
     },
@@ -237,8 +266,9 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       const manifest = verified?.manifest
       if (manifest === undefined) return undefined
       const { packageName, packageVersion } = request.recovery
-      const entry = findTarballEntry(manifest, packageName, packageVersion)
-      if (entry === undefined) return undefined
+      const resolved = findTarballEntry(manifest, packageName, packageVersion)
+      if (resolved === undefined) return undefined
+      const { entry, fromBeta } = resolved
       const source = entry.source
       if (source === undefined || source.kind !== 'tarball') return undefined
       const cancel = new AbortController()
@@ -275,6 +305,27 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             signal,
           })
           request.signal?.throwIfAborted()
+          // Beta-pinned target (#59): stage the exact verified beta manifest
+          // bytes for the packaged CLI child's gate. The child's own catalog
+          // (the embedded asset or its own origin fetch) is stable-only, so
+          // without these bytes its gate would deny the beta-only target the
+          // market just resolved — the #59 real-device failure. The bytes are
+          // what this channel verified after the roster admission, at the one
+          // deterministic staging path the child accepts; the child re-verifies
+          // the signature, the origin binding, and the sequence binding before
+          // its lookup widens, so this staging carries location, never trust.
+          let betaManifest: { readonly path: string; readonly sequence: number } | undefined
+          if (fromBeta && verifiedBeta !== undefined) {
+            const betaManifestPath = desktopBetaManifestHandoffStagingPath(options.profileDir)
+            await writeFileAtomic(betaManifestPath, verifiedBeta.manifestText, { mode: 0o600, dirMode: 0o700 })
+            betaManifest = { path: betaManifestPath, sequence: verifiedBeta.sequence }
+          }
+          // Hygiene (review P3): the staged beta manifest carries the testers
+          // roster in cleartext. It must exist exactly for the child gate's
+          // window — remove it when the install settles either way, so the
+          // roster never lingers in a user-readable profile path (diagnostics
+          // bundles and backups would otherwise carry it).
+          try {
           await installCompanyMarketTarballPlugin({
             service,
             entry: {
@@ -299,6 +350,7 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             // tree digest) reaches the desktop log file with its assertion
             // name and expected-vs-actual detail.
             ...(options.logError === undefined ? {} : { logError: options.logError }),
+            ...(betaManifest === undefined ? {} : { betaManifest }),
             // Bridge the package-manager child's stderr into this channel's
             // stderr while the install runs, so the real failure reason — a
             // CLI gate denial, a pnpm error — reaches the market UI's error
@@ -306,6 +358,11 @@ export function createDesktopCompanyMarketTarballInstallChannel(
             forwardStderr: chunk => { stderr.write(chunk) },
             signal,
           })
+          } finally {
+            if (betaManifest !== undefined) {
+              await rm(betaManifest.path, { force: true }).catch(() => {})
+            }
+          }
           return { exitCode: 0, signal: null }
         } catch (cause) {
           emit(messageOf(cause))
