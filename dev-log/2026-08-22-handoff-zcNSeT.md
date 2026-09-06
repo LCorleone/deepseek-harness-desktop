@@ -206,6 +206,11 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 **确认评审 CONFIRMED**（09-06 晨）：六项全 CLOSED，红证变异验证承重；残留 1×P3（repository URL C1 字符，惰性）留档。#58 构建=f03f41b6。教训：评审注入面（提交者可控内容进 verdict/日志）是所有 owner-review 工具的必修课。
 **待做**：handoff-review 标准工作流（cron 轮询+自动验证+issue 通知+accept-handoff，~1 天，方案已给用户）。
 
+### P9 真机闭环 + accept-handoff 修复批（2026-09-06 午）
+**accept-handoff 评审 NEEDS CHANGES**（P1=预置回执可伪造：五闸门只验目录内自洽，同事 MR 分支预置 PASS 回执对+自算 sha tgz 即可直达 allowlist+TOCTOU）→修=回执指纹落所有者本地 out/verdict-receipts（gate 0：sha256(verdict.json) 必须命中本机记录，跨机/预制/调包一律拒）+agreement 假覆盖补真红证（md(A)+json(B) 拼接拒）+canonical 键序幂等+脏工作树拒；158/158，变异验证承重。并发事故一次（worker amend 误折入我的 SOP docs 提交）→历史完整拆分恢复+force-push。
+**beta 首推雷（真发逮到）**：publish-local 棘轮假定 beta 已存在，首推 404 直接崩；fleet 门禁第二处同病。修=fetchDeployedManifest allowMissing（仅豁免 404）+首推基线回落 deployed stable（共享单调棘轮：14=13+1）；160/160。教训：通道起点（「第一份跟谁比」）是灰度类设计的固有盲区，测试全假设通道已存在。
+**P9 真机实证**：beta v1（seq 14，stable 同集+三人名单）经 CI 干跑→真发→publish-local 部署回读字节一致；用户 #58 真机日志 `beta catalog applied (sequence 14, 2 entries, 3 testers)`×3（上线前 fetch-failed=404 fail-closed 无视，时间线自洽）。名单原文拼写 julu@deloittecn.com.cn 直接命中。**P9 卡翻真机闭环**。state 棘轮 13→14 已推。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。

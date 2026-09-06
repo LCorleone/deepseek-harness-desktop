@@ -327,6 +327,7 @@ verbatim 重签复活）；②客户端合并 revocation 粘滞（market merge �
 
 **估时**：~1-1.5 天（beta schema+客户端拉取判定+管线 channel/promote+测试入链）。
 **前置**：市场交接演练（free-search 换手全链）跑通后启动。
+**状态（2026-09-06）**：已实现+两轮评审修复+beta 首推雷修复；beta v1（seq 14）已部署，用户真机日志 `beta catalog applied (sequence 14, 2 entries, 3 testers)`——**真机闭环**。beta-only 条目首测待下一个真实预发。
 
 **真机首航成功（2026-09-05 #55）**：四枪拔雷（inject→CORS 误诊→同源结构→fuse 翻 true 雷根），三扇窗（agent-browser/recovery/sso-gate）一类锁死风险消除，浏览器功能真机可用。P8 进入真机测试期。
 **完结（2026-09-04 上午，用户授权夜间自主推进「做一项评审一项」）**：B3 人机协作+登录态（3f020fdc20+评审修复 50c6b2ff98：claim 竞态三连修/persist 挂载执法+残留可清；真组合冒烟 14/14）；B4 策略+打磨（242347d69f：will-navigate/will-redirect 提交前执法+重定向链终检+下载取消+label 转发+fallback 注释；跟进修 a953e18353：will-download 监听器生命周期【实证 Electron session.on 返回 emitter 非 disposer】+真执法 smoke 步+chrome-error 豁免+label-hidden 边角；smoke 17/17）。设计文档状态已翻 Implemented。check 终态 **1745+7skip**。四批全过评审（B1 通过/B2 三修/B3 两修/B4 通过+跟进）。**全部本地未 push**。夜间事故：B4 前任 worker 死于 glm-5.3 quota 503（进度保留 70%，p8-b4-resume 接力无损续完）。
