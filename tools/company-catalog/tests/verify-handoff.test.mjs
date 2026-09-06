@@ -135,6 +135,7 @@ async function verifyWorkspace(workspace, { measure, ...rest } = {}) {
     compatPath: workspace.compatPath,
     ...(workspace.allowlistPath === undefined ? {} : { allowlistPath: workspace.allowlistPath }),
     packagesDir: workspace.packagesDir,
+    receiptsDir: RECEIPTS_ROOT,
     measureTarball: measure ?? stubMeasure(calls),
     ...rest,
   })
@@ -144,8 +145,12 @@ async function verifyWorkspace(workspace, { measure, ...rest } = {}) {
 // source.path form signs a repo-relative path), so the shared fixture uses a
 // gitignored directory under tools/company-catalog/out/.
 const PACKAGES_ROOT = mkdtempSync(join(TOOL_DIR, 'out', 'verify-handoff-test-'))
+// The owner-local receipt records stay hermetic the same way (the real
+// channel is tools/company-catalog/out/verdict-receipts/ — gitignored).
+const RECEIPTS_ROOT = mkdtempSync(join(TOOL_DIR, 'out', 'verify-handoff-receipts-'))
 test.after(() => {
   rmSync(PACKAGES_ROOT, { recursive: true, force: true })
+  rmSync(RECEIPTS_ROOT, { recursive: true, force: true })
 })
 const withPackagesDir = (workspace) => {
   workspace.packagesDir = join(PACKAGES_ROOT, `packages-${Math.random().toString(36).slice(2, 8)}`)
@@ -186,6 +191,30 @@ test('green path: ten steps, verdict.md, staged tgz, validated allowlist entry',
     assert.match(verdict, /PASS/u)
     assert.match(verdict, new RegExp(FIXED_DIGEST, 'u'))
     assert.match(verdict, /allowlist/u)
+    // verdict.json: the machine-readable receipt of the same run (the
+    // accept-handoff channel) — same generatedAt, the artifact fingerprint
+    // (the freshness anchor), and the identical allowlist entry.
+    assert.equal(result.verdictJsonPath, join(workspace.submissionDir, 'verdict.json'))
+    const receipt = JSON.parse(readFileSync(result.verdictJsonPath, 'utf8'))
+    assert.equal(receipt.ok, true)
+    assert.equal(receipt.generatedAt, result.generatedAt)
+    assert.match(verdict, new RegExp(receipt.generatedAt.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
+    assert.deepEqual(receipt.identity, { packageName: 'fixture-hello', version: '1.0.0' })
+    assert.equal(receipt.artifact.file, 'fixture-hello-1.0.0.tgz')
+    assert.equal(receipt.artifact.sha256, result.artifact.sha256)
+    assert.equal(receipt.artifact.sizeBytes, result.artifact.sizeBytes)
+    assert.equal(receipt.treeDigest, FIXED_DIGEST)
+    assert.deepEqual(receipt.allowlistEntry, result.allowlistEntry)
+    // The owner-local receipt record (the accept-handoff trust anchor): the
+    // sha256 of the exact verdict.json bytes this run wrote, plus the run's
+    // generatedAt and the submission directory — keyed by name@version in
+    // the gitignored out/ channel, so it can never ride an MR.
+    assert.equal(result.receiptRecordPath, join(RECEIPTS_ROOT, 'fixture-hello-1.0.0.json'))
+    const record = JSON.parse(readFileSync(result.receiptRecordPath, 'utf8'))
+    assert.equal(record.generatedAt, result.generatedAt)
+    assert.equal(record.submissionDir, workspace.submissionDir)
+    assert.equal(record.fingerprint, createHash('sha256').update(readFileSync(result.verdictJsonPath), 'utf8').digest('hex'))
+    assert.equal(record.fingerprint, createHash('sha256').update(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8').digest('hex'))
     // The tgz landed in the packages dir under the pinned npm filename.
     const stagedPath = join(workspace.packagesDir, 'fixture-hello-1.0.0.tgz')
     assert.equal(result.packagePath, stagedPath)
@@ -249,6 +278,46 @@ test('scoped packages bind through the flattened npm pack spelling', async () =>
 // ---------------------------------------------------------------------------
 // The three red proofs (tamper / identity drift / compat mismatch)
 // ---------------------------------------------------------------------------
+
+test('a FAIL verdict writes no receipt record (the local channel only ever records an issued PASS)', async () => {
+  const bytes = pluginTarball()
+  const workspace = withPackagesDir(submissionWorkspace({
+    tarball: bytes,
+    recomputeArtifact: false,
+    handoff: handoffSheet({ artifact: { file: 'fixture-hello-1.0.0.tgz', sha256: 'f'.repeat(64), sizeBytes: bytes.byteLength } }),
+  }))
+  const receiptsDir = join(RECEIPTS_ROOT, `fail-only-${Math.random().toString(36).slice(2, 8)}`)
+  try {
+    const result = await verifyWorkspace(workspace, { receiptsDir })
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStep.step, 'artifact-integrity')
+    assert.equal(result.receiptRecordPath, undefined)
+    assert.equal(existsSync(receiptsDir), false, 'a FAIL run must not touch the local record channel')
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+    rmSync(receiptsDir, { recursive: true, force: true })
+  }
+})
+
+test('a re-run of the same submission updates the record to the freshest local run', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({ tarball: pluginTarball() }))
+  const receiptsDir = join(RECEIPTS_ROOT, `fresh-${Math.random().toString(36).slice(2, 8)}`)
+  try {
+    const first = await verifyWorkspace(workspace, { receiptsDir, now: new Date('2026-09-06T01:00:00.000Z') })
+    assert.equal(first.ok, true)
+    const recordPath = join(receiptsDir, 'fixture-hello-1.0.0.json')
+    assert.equal(JSON.parse(readFileSync(recordPath, 'utf8')).generatedAt, first.generatedAt)
+    const second = await verifyWorkspace(workspace, { receiptsDir, now: new Date('2026-09-06T02:00:00.000Z') })
+    assert.equal(second.ok, true)
+    assert.notEqual(second.generatedAt, first.generatedAt)
+    const record = JSON.parse(readFileSync(recordPath, 'utf8'))
+    assert.equal(record.generatedAt, second.generatedAt)
+    assert.equal(record.fingerprint, createHash('sha256').update(readFileSync(second.verdictJsonPath), 'utf8').digest('hex'))
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+    rmSync(receiptsDir, { recursive: true, force: true })
+  }
+})
 
 test('red: sha256 tamper fails step 2 with the recomputed value, verdict names the step, nothing is staged', async () => {
   const bytes = pluginTarball()
@@ -532,6 +601,12 @@ test('a missing handoff.json still writes a FAIL verdict (the README promise hol
     const verdict = readFileSync(join(workspace.submissionDir, 'verdict.md'), 'utf8')
     assert.match(verdict, /1\/10 schema/u)
     assert.match(verdict, /handoff\.json/u)
+    // The receipt half of a FAIL verdict carries the failed step.
+    const receipt = JSON.parse(readFileSync(join(workspace.submissionDir, 'verdict.json'), 'utf8'))
+    assert.equal(receipt.ok, false)
+    assert.equal(receipt.failedStep.step, 'schema')
+    assert.equal(receipt.failedStep.index, 1)
+    assert.equal(receipt.allowlistEntry, undefined)
   } finally {
     rmSync(workspace.root, { recursive: true, force: true })
   }
@@ -623,6 +698,7 @@ test('forged-line proof: artifact.file with control characters is refused by the
       schemaPath: SCHEMA_PATH,
       compatPath: workspace.compatPath,
       packagesDir,
+      receiptsDir: RECEIPTS_ROOT,
       measureTarball: stubMeasure(),
     })
     assert.equal(result.ok, false)

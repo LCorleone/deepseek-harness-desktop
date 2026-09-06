@@ -39,7 +39,7 @@ dshRuntimeVersion 需有交集，不符拒绝并注明 retest against 哪个版�
 通过才进签名清单（签名私钥永远只在所有者侧）
 ```
 
-任何一环失败都会在你的 MR 上回 verdict（原因+retest 指引；验证产物也会在提交目录内写 `verdict.md` 归档），修好后升版本重开 MR——**同一版本号的内容不可变**，改了内容必须升版本。
+任何一环失败都会在你的 MR 上回 verdict（原因+retest 指引；验证产物也会在提交目录内写 `verdict.md` 归档，另附机器可读回执 `verdict.json` 供所有者侧 `accept-handoff` 一步采纳），修好后升版本重开 MR——**同一版本号的内容不可变**，改了内容必须升版本。
 
 ## 边界
 

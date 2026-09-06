@@ -55,6 +55,7 @@ import {
   verifyManifestText,
 } from './lib/pipeline.mjs'
 import { runSelftest } from './lib/selftest.mjs'
+import { acceptHandoffVerdict } from './lib/accept-handoff.mjs'
 import { verifyHandoffSubmission } from './lib/verify-handoff.mjs'
 import {
   assertBundlePatchDeclaration,
@@ -116,10 +117,30 @@ Commands:
                                handoff.json + tgz): schema, sha256/size, safe
                                unpack, three-way identity binding, compat pins,
                                dependency/domain audit, measured treeDigest;
-                               writes verdict.md into the submission directory, stages
-                               the tgz into out/packages/, and prints the
+                               writes verdict.md (+ verdict.json, the machine-
+                               readable receipt) into the submission directory,
+                               records the receipt's sha256 in the owner-LOCAL
+                               channel out/verdict-receipts/ (gitignored — the
+                               trust anchor accept-handoff checks first),
+                               stages the tgz into out/packages/, and prints the
                                paste-ready allowlist entry. Verifies and stages
                                only — never signs, never publishes.
+  accept-handoff <dir>         Apply a verify-handoff PASS verdict to the allowlist
+                               in one command: first checks the receipt against
+                               the LOCAL record out/verdict-receipts/ (the
+                               verdict.json bytes must be the ones a
+                               verify-handoff run on THIS machine issued — run
+                               verify-handoff here first), then re-fingerprints
+                               the submitted tgz against the verdict receipt
+                               (verdict.json must agree with verdict.md),
+                               revalidates the entry, replaces the package's
+                               previous active version (one active version per
+                               plugin; revoked entries stay), and commits
+                               allowlist.json alone as
+                               'catalog: accept <name>@<version> (staging handoff)'.
+                               Only PASS verdicts; fail-closed without git or
+                               with an allowlist carrying uncommitted changes;
+                               never signs, never publishes.
   keygen                       Generate an ed25519 key pair and print the pipeline
                                environment values (private material — handle with care).
   selftest                     End-to-end smoke test with an ephemeral key; never
@@ -170,6 +191,18 @@ verify-handoff options:
   --project <p>          Formal repo path of the snippet's source.url
                          (default: julu/dsh-desktop-config)
 
+accept-handoff options:
+  --repository <url>     Pin the entry's repository when the verified snippet
+                         carries none (the tarball's package.json declared
+                         none) — required in that case: the tarball channel's
+                         build refuses an entry without the override
+  --dry-run              Print the entry and the allowlist diff; touch nothing,
+                         commit nothing
+  --catalog-origin <o>   Origin the entry's source.url must live on (default:
+                         the COMPANY_CATALOG_ORIGIN env value; the same origin
+                         every build validates against)
+  --allowlist <path>     Target allowlist (default: tools/company-catalog/allowlist.json)
+
 Signing environment:
   COMPANY_CATALOG_SIGNING_KEY       base64 PKCS#8 DER ed25519 private key, single line;
                                     read from the environment only, never from files
@@ -186,7 +219,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project', 'channel', 'entry', 'add', 'remove'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project', 'channel', 'entry', 'add', 'remove', 'repository'])
   for (let index = 0; index < argv.length; index += 1) {
     let argument = argv[index]
     if (argument.startsWith('--')) {
@@ -1028,10 +1061,51 @@ async function commandVerifyHandoff(positionals, flags) {
   } else {
     console.log('')
     console.log(`verify-handoff: ${result.ok ? 'PASS' : `FAIL at ${String(result.failedStep.index)}/10 ${result.failedStep.step}`}`)
-    console.log(`  verdict: ${result.verdictPath}`)
-    if (result.ok) console.log(`  staged:  ${result.packageRepoPath}`)
+    console.log(`  verdict: ${result.verdictPath} (receipt: ${result.verdictJsonPath})`)
+    if (result.ok) {
+      console.log(`  staged:  ${result.packageRepoPath}`)
+      console.log(`  record:  ${result.receiptRecordPath} (local sha256 of the receipt — accept-handoff verifies against it on this machine)`)
+    }
   }
   if (!result.ok) process.exitCode = 1
+}
+
+/**
+ * `accept-handoff`: apply a verify-handoff PASS verdict to the allowlist
+ * with one command — receipt pair + freshness recheck + entry revalidation
+ * + the single-active-version merge + the allowlist-only commit. Never
+ * signs, never publishes: the print ends on the two steps that remain
+ * (measure-and-publish beta first, then publish-local).
+ */
+async function commandAcceptHandoff(positionals, flags) {
+  if (positionals.length !== 1) {
+    throw new Error("accept-handoff takes exactly one argument: <submission-dir> (the staging clone's submissions/<name>-<version> directory carrying the verify-handoff verdict)")
+  }
+  const { allowlistPath } = defaultPaths(flags)
+  const result = acceptHandoffVerdict({
+    submissionDir: resolve(process.cwd(), positionals[0]),
+    allowlistPath,
+    ...(flags.repository === undefined ? {} : { repository: flags.repository }),
+    dryRun: flags['dry-run'] === true,
+    companyCatalogOrigin: resolveCatalogOrigin(flags),
+    log: console.log,
+  })
+  console.log('')
+  if (result.dryRun) {
+    console.log(`accept-handoff: dry-run — ${entryKey(result.entry)} would replace ${result.replaced.length > 0 ? result.replaced.join(', ') : 'no active entry'}; ${allowlistPath} untouched, nothing committed`)
+    return
+  }
+  if (result.alreadyAccepted) {
+    console.log(`accept-handoff: ${entryKey(result.entry)} already is the reviewed allowlist entry — nothing to change, nothing committed (idempotent no-op)`)
+    return
+  }
+  console.log(`accept-handoff: ${result.identity.packageName}@${result.identity.version} applied to the allowlist`)
+  console.log(`  allowlist: ${result.allowlistPath}`)
+  console.log(`  commit:    ${result.commitSha} ${result.message}`)
+  console.log('')
+  console.log('next:')
+  console.log('  1. measure-and-publish (beta first: -f channel=beta) — fill the measured digests, build and verify the manifest; promote <name>@<version> moves a beta soak entry to stable')
+  console.log('  2. publish-local — push the manifest and the staged tgz to the hosting repo')
 }
 
 async function commandKeygen() {
@@ -1088,6 +1162,7 @@ async function main() {
     else if (command === 'beta-roster') await commandBetaRoster(flags)
     else if (command === 'verify') await commandVerify(positionals, flags)
     else if (command === 'verify-handoff') await commandVerifyHandoff(positionals, flags)
+    else if (command === 'accept-handoff') await commandAcceptHandoff(positionals, flags)
     else if (command === 'keygen') await commandKeygen()
     else if (command === 'selftest') await commandSelftest(flags)
     else fail(`unknown command '${command}'\n\n${USAGE}`)

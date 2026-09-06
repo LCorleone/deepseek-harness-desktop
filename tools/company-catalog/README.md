@@ -26,7 +26,8 @@ node tools/company-catalog/cli.mjs <command> [options]
 | `build` | Fetch each allowlist entry's `dist.integrity` from `registry.npmjs.org`, assemble, sign, verify, and publish `out/catalog-manifest.json` (sequence = persisted + 1). 从官方 registry 抓取 integrity，组装→签名→round-trip 验证→发布清单。 |
 | `revoke <pkg>[@<version>]` | Mark allowlist entries `revoked:true` (entries are kept) and reissue with a higher sequence — both channel files (P9): the beta manifest re-signs in the same operation, the matched entry forced `revoked:true` there too. 标记吊销并递增 sequence 重发（双清单同步重签，beta 超集里命中条目强制 `revoked:true`）；条目保留（吊销是状态不是删除）。 |
 | `verify [path]` | Verify a manifest file end to end (default `out/catalog-manifest.json`). 全链验证一个清单文件。 |
-| `verify-handoff <dir>` | Owner-side mechanical gate for a staged plugin submission (`submissions/<name>-<version>`: handoff.json + tgz): ten fail-fast checks against the handoff contract, `verdict.md` always written, and on pass the tgz staged into `out/packages/` plus the paste-ready allowlist entry (measured treeDigest included). Verifies and stages only — never signs, never publishes. 所有者侧暂存提交验证：十步机械检查、必写 verdict.md、通过即备料（tgz 入 out/packages + allowlist 片段），不签名不发布。 |
+| `verify-handoff <dir>` | Owner-side mechanical gate for a staged plugin submission (`submissions/<name>-<version>`: handoff.json + tgz): ten fail-fast checks against the handoff contract, `verdict.md` + `verdict.json` (the machine-readable receipt) always written, and on pass the tgz staged into `out/packages/` plus the paste-ready allowlist entry (measured treeDigest included) — with the receipt's sha256 recorded in the owner-LOCAL channel `out/verdict-receipts/<name>-<version>.json` (gitignored — it never rides an MR), the trust anchor `accept-handoff` checks first. Verifies and stages only — never signs, never publishes. 所有者侧暂存提交验证：十步机械检查、必写 verdict.md + verdict.json、通过即备料（tgz 入 out/packages + allowlist 片段）并把回执指纹记入本机 out/verdict-receipts/（accept 的信任锚），不签名不发布。 |
+| `accept-handoff <dir>` | Apply a verify-handoff **PASS** verdict to the allowlist in one command — but only a verdict a verify-handoff run **on this machine** issued: the recomputed sha256 of the submission's `verdict.json` must match the fingerprint recorded in the owner-local `out/verdict-receipts/` channel (forged or swapped receipts refuse; this also closes the verify→accept TOCTOU window). Then: re-fingerprints the submitted tgz against the receipt (`verdict.json` must agree with `verdict.md`), revalidates the entry through `validateAllowlistEntry`, replaces the package's previous **active** version (one active version per plugin; revoked entries stay for the audit trail; same-content replays are canonical no-ops — key order is not a change — and real writes keep the reviewed key order, minimal diff), and commits `allowlist.json` alone as `catalog: accept <name>@<version> (staging handoff)` — refusing first while the allowlist carries uncommitted changes. `--repository` fills a missing repository pin; `--dry-run` prints the entry + diff and touches nothing; no git (CI) fails closed; never signs, never publishes. 把 PASS verdict 一步落进 allowlist：先验本机回执指纹（out/verdict-receipts/ 无记录即拒，预制/调包回执全拦，兼封 TOCTOU）、重算 tgz 指纹防陈旧、片段重验、同插件单活版本替换（吊销条目保留审计轨迹；同内容重受理按 canonical 判定零改动，写入保留原键序最小 diff）、脏 allowlist 即拒、单文件 commit；只接受 PASS，无 git 即拒。 |
 | `measure-and-publish` | Fill measured tree digests (`--digest-file`) into a **runtime copy** of the allowlist, build (sequence floor: `--sequence-from` or the local state file), verify, and write the manifest + `--meta-out` metadata for the workflow artifact. The reviewed `allowlist.json` is never modified. 把实测树摘要填进 allowlist **运行时副本**，构建、验证并产出清单与元数据供 workflow 产物化；绝不修改评审入库的 `allowlist.json`。`-f channel=beta` 改发 beta 清单（默认 `--out: out/catalog-manifest.beta.json`）：全部条目 + 来自 `state/beta-testers.json` 的签名测试者名单；stable 文件不动。 |
 | `promote <name>@<version>` | Promote one beta entry into the stable manifest: the signed bytes and digest move verbatim (zero re-verification), both manifests re-sign on the shared ratchet (stable first, then beta), the allowlist beta flag flips, and an already-promoted identical entry is an idempotent no-op. 把 beta 条目原字节并入 stable 清单（零重验），双清单共享 ratchet 依次重签，翻转 allowlist 的 beta 标记；已提升且同 digest 则幂等 no-op。 |
 | `beta-roster` | Change the signed tester roster (`-f add=<email>` / `-f remove=<email>`, validated and lowercased): `state/beta-testers.json` updates, the beta manifest re-signs with the entries verbatim, and the shared ratchet advances — roster changes reach testers without a client release; a no-op change re-signs nothing. 增删签名测试者名单（校验+小写规范化）：改 state 文件、原条目重签 beta 清单、共享 ratchet 前进，不发版即生效；无实质变化不重签。 |
@@ -738,7 +739,7 @@ order the README promises the submitter:
 | 6 | `audit` | a report, never a gate: dependency inventory, install-time lifecycle scripts, `dsh` injection surface, URL hosts observed in shipped files, and the same-name catalog delta (with the same-version immutability note). |
 | 7 | `tree-digest` | the real reference install (`measure.mjs --tarball`, timeout-bounded child). |
 | 8 | `smoke-remeasure` | `--smoke` only: a second independent measurement, both digests must be equal. Default off — the desktop e2e install smoke is a separate drill: `yarn e2e:install-smoke` (`dsh-plugin-desktop/scripts/e2e-install-smoke.mjs`). |
-| 9 | `verdict` | `verdict.md` written into the submission directory whether the run passed or failed (pass = summary + measured digest + the adoptable snippet; fail = the failing step + reason + retest guidance). |
+| 9 | `verdict` | `verdict.md` (the human summary) **and `verdict.json`** (the machine-readable receipt: identity, the artifact fingerprint, the measured treeDigest, the paste-ready entry — one run, one `generatedAt` tying the two files together) written into the submission directory whether the run passed or failed (pass = summary + measured digest + the adoptable snippet; fail = the failing step + reason + retest guidance). On PASS the receipt's sha256 is also recorded in the owner-LOCAL channel `out/verdict-receipts/<name>-<version>.json` (gitignored, never rides an MR) — a PASS verdict never exists without its local record. |
 | 10 | `accept-prep` | on pass: the tgz copied to `out/packages/<name>-<version>.tgz` — the exact form the existing fill step consumes — plus the printed allowlist entry (validated through `validateAllowlistEntry` before anything is staged). Same-version immutability mirrors publish-local's hosted-tarball rule: restaging a `<name>-<version>.tgz` that already sits there with **different** bytes is refused (bump the version); identical bytes are an idempotent pass. |
 
 `--json` prints the machine-readable result document (steps, identity,
@@ -747,10 +748,11 @@ derived from `--catalog-origin` / `COMPANY_CATALOG_ORIGIN`, falling back to
 the origin of `compat.json`'s `catalog.manifestUrl`; `--project` overrides
 the default repo path (`julu/dsh-desktop-config`). Zero pipeline change
 downstream: paste the entry into `allowlist.json` after review and run the
-existing `measure-and-publish` / `publish-local` flow. Every submitter-
-controlled value is control-character-escaped at the render boundary before
-it reaches `verdict.md` or the terminal step log (a `\n[ok] …` inside any
-field can never forge a verdict line); the offline unit
+existing `measure-and-publish` / `publish-local` flow — or let
+`accept-handoff` do exactly that paste-plus-commit mechanically. Every
+submitter-controlled value is control-character-escaped at the render
+boundary before it reaches `verdict.md` or the terminal step log (a `\n[ok]
+…` inside any field can never forge a verdict line); the offline unit
 suite is `tests/verify-handoff.test.mjs` (part of `yarn test:company-catalog`).
 
 暂存通道的所有者侧闭环（提交方指南见 `docs/handoff/README.zh.md`）：十步机械
@@ -758,6 +760,44 @@ suite is `tests/verify-handoff.test.mjs` (part of `yarn test:company-catalog`).
 后 tgz 就位 `out/packages/`、allowlist 片段（含实测 treeDigest）过自身校验后
 打印——所有者贴入 `allowlist.json` 走既有发布流，零管线改动。本命令永不持
 钥、永不发布。
+
+## Staging acceptance · 暂存采纳（accept-handoff）
+
+```sh
+node tools/company-catalog/cli.mjs accept-handoff <staging-clone>/submissions/<name>-<version> \
+  [--repository <https-url>] [--dry-run] [--catalog-origin <o>] [--allowlist <path>]
+```
+
+The one command that applies a verify-handoff **PASS** to the allowlist —
+the manual "paste the snippet after review" step, minus the hand-editing.
+Six gates, every one fail-closed (nothing applied on refusal):
+
+| # | gate · 门 | rule · 规则 |
+| --- | --- | --- |
+| 0 | local record | the trust anchor before every other gate: the sha256 of the submission's `verdict.json` must equal the fingerprint a verify-handoff run **on this machine** recorded in `out/verdict-receipts/<name>-<version>.json` (gitignored — the record never rides an MR), with the same `generatedAt`. A pre-forged receipt pair + matching tgz — however internally consistent — has no local record and refuses ("receipt not issued by a local verify-handoff run — run verify-handoff on this machine first"); a `verdict.json` swapped after the local verify (the verify→accept TOCTOU window) no longer hashes to the record and refuses. |
+| 1 | receipt | `verdict.json` + `verdict.md` must exist, record PASS, and agree (same pinned header, same `checked` timestamp — a mixed or forged pair is refused). No verdict, a FAIL verdict, or a verdict from an older run without the receipt → refuse with a pointer back to `verify-handoff`. |
+| 2 | freshness | the tgz is re-fingerprinted (sha256 + sizeBytes) and must equal the receipt's record — "submission changed after verification — re-run verify-handoff" (same-version content is immutable). |
+| 3 | entry | the receipt's allowlist entry is revalidated through `validateAllowlistEntry` and cross-checked against the receipt's own identity/digest. A missing `repository` pin must come from `--repository` (the tarball channel's build refuses an entry without the explicit override). |
+| 4 | merge | one **active** version per plugin (the catalog's existing shape — one entry per plugin today): the entry replaces the package's active entries; **revoked entries stay verbatim** (revocation is a state, not a deletion — the signed audit trail). Same `name@version` already listed with a different treeDigest → refused (immutability red line); a revoked same `name@version` → refused (accept-handoff never un-revokes). Idempotency is a **canonical, key-order-insensitive deep comparison** — a same-content replay of a hand-written entry whose key order differs from the normalizer's (dsh-free-search@0.4.183 lists `source` before `treeDigest`) is a no-op, never a pure key-reordering commit; when a write IS needed it stays minimal: untouched entries keep their reviewed spelling, and the applied entry inherits the key order of the entry it replaces. `--keep-both` is deliberately absent — the catalog has never carried two active versions of one plugin (YAGNI). |
+| 5 | commit | `git add` of the allowlist **alone** — refused up front while the allowlist carries uncommitted changes ("allowlist has uncommitted changes — commit or stash first": the acceptance commit must carry exactly the accepted entry, never swept-along local edits) — then a pathspec-limited commit `catalog: accept <name>@<version> (staging handoff)`. Missing git (a CI job without the checkout) fails closed; a git failure after the write restores the previous bytes — an entry is never applied without its commit. `--dry-run` prints the entry + a unified diff and touches nothing. |
+
+The terminal print names the two steps that remain: `measure-and-publish`
+(beta first: `-f channel=beta`; `promote` moves a beta soak entry to stable)
+→ `publish-local`. Idempotent: re-accepting a verdict whose entry is already
+the reviewed allowlist content is a no-op (no second commit). The offline
+unit suite is `tests/accept-handoff.test.mjs` (part of
+`yarn test:company-catalog`; its green paths run against throwaway real git
+repositories, so the commit itself — message, single-file pathspec, clean
+tree — is what's under test).
+
+把 verify-handoff 的 PASS 一步落进 allowlist 并生成 commit：先验本机回执记录
+（out/verdict-receipts/，回执须本机 verify 产生——预制或调包一律拒，兼封
+verify→accept 间的 TOCTOU）、回执对（verdict.md + verdict.json）必须同源同
+PASS、tgz 重算指纹防陈旧、片段重验并交叉核对、同插件单活版本替换（吊销条目
+保留、同版本不同 digest 即不可变红线拒绝、同内容重受理按 canonical 判定零
+改动且写入保留原键序最小 diff）、脏 allowlist 即拒（防静默卷带）、只
+commit allowlist.json 单文件；无 git 环境 fail-closed，--dry-run 零改动；结尾
+提示 measure-and-publish（beta 先行）→ publish-local。
 
 ## Selftest and CI · 自测与 CI
 

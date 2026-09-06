@@ -40,6 +40,8 @@
 
 ④ 受理落库
    node tools/company-catalog/cli.mjs accept-handoff <同一提交目录> [--repository <url>]
+   → 回执须本机 verify 产生：accept 先对照本机 out/verdict-receipts/ 的指纹记录，
+     预制回执、调包回执、别台机器验证过的回执一律拒（换机器受理前先在本机重跑 ②）
    → 自动校验 PASS+防陈旧（tgz sha 复核）→ 写 allowlist.json → 生成 commit
    （缺 repository 字段必须补 --repository；同版本不同字节会被拒——不可变红线）
    然后：合并同事的 MR（GitLab 上点），push desktop 仓的 accept commit。
@@ -88,4 +90,4 @@ desktop 仓（你）
 ```
 
 ## 修改记录
-- 2026-09-06 初版（MR 模式定稿后；accept-handoff 命令落地同日）
+- 2026-09-06 初版（MR 模式定稿后；accept-handoff 命令落地同日）；回执指纹本机记录闸门（out/verdict-receipts/）同日补上：回执须本机 verify 产生

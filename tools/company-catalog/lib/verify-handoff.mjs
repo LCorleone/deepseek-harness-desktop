@@ -23,8 +23,15 @@
  *                         both digests must be equal (default off; the
  *                         desktop e2e install smoke is a separate drill:
  *                         `yarn e2e:install-smoke`)
- *   9 verdict             verdict.md into the submission directory, pass or
- *                         fail (the README's promise to the submitter)
+ *   9 verdict             verdict.md + verdict.json (the machine-readable
+ *                         receipt accept-handoff consumes) into the
+ *                         submission directory, pass or fail; on PASS the
+ *                         receipt's sha256 is also recorded in the owner's
+ *                         LOCAL channel out/verdict-receipts/<name>-
+ *                         <version>.json (gitignored — it never rides an MR):
+ *                         the trust anchor accept-handoff checks first, so a
+ *                         PASS verdict only ever exists with a local record
+ *                         of its exact bytes
  *  10 accept-prep         on pass: stage the tgz into out/packages/ in the
  *                         exact filename the publishing flow's fill step
  *                         consumes, plus a paste-ready allowlist entry
@@ -76,6 +83,35 @@ import { compareSemver, parseSemver, rangesIntersect } from './version-range.mjs
 
 /** tools/company-catalog — the lib's TOOL_DIR is lib/ itself. */
 const CATALOG_DIR = resolve(TOOL_DIR, '..')
+
+/**
+ * The owner-LOCAL channel of issued receipt records: every PASS run
+ * fingerprints its exact verdict.json bytes into
+ * `out/verdict-receipts/<name>-<version>.json` before the verdict lands in
+ * the submission directory. `out/` is gitignored, so the record can never
+ * ride an MR — it exists only on the machine that verified, which is the
+ * point: accept-handoff (same machine, per the SOP) refuses a PASS receipt
+ * whose bytes were not issued by a local verify-handoff run. Scoped names
+ * flatten the same way npm pack filenames do (`@scope/name` → `scope-name`).
+ */
+export const DEFAULT_VERDICT_RECEIPTS_DIR = join(CATALOG_DIR, 'out', 'verdict-receipts')
+export const verdictReceiptRecordFilename = (packageName, version) =>
+  `${packageName.replace(/^@/u, '').replace(/\//gu, '-')}-${version}.json`
+export const verdictReceiptRecordPath = (receiptsDir, packageName, version) =>
+  join(receiptsDir, verdictReceiptRecordFilename(packageName, version))
+
+/**
+ * Record one issued PASS receipt in the owner-local channel: the sha256 of
+ * the exact verdict.json bytes, the run's generatedAt, and the submission
+ * directory the run verified. One record per name@version — the freshest
+ * local verify run is the one accept-handoff honors.
+ */
+function writeVerdictReceiptRecord({ receiptsDir, identity, fingerprint, generatedAt, submissionDir }) {
+  mkdirSync(receiptsDir, { recursive: true })
+  const recordPath = verdictReceiptRecordPath(receiptsDir, identity.packageName, identity.version)
+  writeFileSync(recordPath, `${JSON.stringify({ fingerprint, generatedAt, submissionDir }, null, 2)}\n`, 'utf8')
+  return recordPath
+}
 
 /** The canonical check sequence, in the order the contract README promises. */
 export const HANDOFF_STEPS = [
@@ -662,6 +698,32 @@ function renderFailVerdict({ submissionDir, generatedAt, failedStep, steps }) {
   ].join('\n')
 }
 
+/**
+ * The machine-readable verdict receipt (verdict.json), written next to
+ * verdict.md by the same run — the channel `accept-handoff` consumes. A
+ * PASS receipt carries the identity, the artifact fingerprint (the
+ * freshness anchor accept-handoff re-computes against the tgz), the
+ * measured treeDigest, and the paste-ready allowlist entry; a FAIL receipt
+ * carries the failed step. The shared generatedAt ties the two files to one
+ * run, so a mixed or forged pair is detectable downstream. Field set is
+ * append-only by contract: accept-handoff must keep reading receipts from
+ * older verify-handoff runs.
+ */
+function renderVerdictReceipt({ failure, generatedAt, state, snippet }) {
+  return {
+    ok: failure === undefined,
+    generatedAt,
+    ...(state.handoff === undefined ? {} : { identity: { packageName: state.handoff.plugin.packageName, version: state.handoff.plugin.version } }),
+    ...(state.artifact === undefined ? {} : { artifact: { file: state.artifact.file, sizeBytes: state.artifact.sizeBytes, sha256: state.artifact.sha256 } }),
+    ...(state.treeDigest === undefined ? {} : { treeDigest: state.treeDigest }),
+    ...(state.smokeDigest === undefined ? {} : { smokeDigest: state.smokeDigest }),
+    ...(snippet === undefined ? {} : { allowlistEntry: snippet.entry, allowlistWarnings: snippet.warnings }),
+    ...(failure === undefined
+      ? {}
+      : { failedStep: { index: failure.index ?? STEP_BY_NAME.get(failure.step), step: failure.step, reason: failure.message } }),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -672,12 +734,14 @@ function renderFailVerdict({ submissionDir, generatedAt, failedStep, steps }) {
  *
  *   { ok, submissionDir, verdictPath, steps, failedStep?, identity?, artifact?,
  *     compat?, audit?, treeDigest?, smokeDigest?, allowlistEntry?,
- *     allowlistWarnings?, packagePath?, packageRepoPath?, generatedAt }
+ *     allowlistWarnings?, packagePath?, packageRepoPath?, receiptRecordPath?,
+ *     generatedAt }
  *
  * Options (all paths absolute or cwd-relative): submissionDir (required),
- * schemaPath/compatPath/allowlistPath/packagesDir (the contract defaults),
- * catalogOrigin, project, smoke, measureTarball (injectable measurement),
- * maxUnpackedBytes, maxEntries, now (clock injection for tests), log.
+ * schemaPath/compatPath/allowlistPath/packagesDir/receiptsDir (the contract
+ * defaults), catalogOrigin, project, smoke, measureTarball (injectable
+ * measurement), maxUnpackedBytes, maxEntries, now (clock injection for
+ * tests), log.
  */
 export async function verifyHandoffSubmission(options) {
   const submissionDir = resolve(options.submissionDir)
@@ -693,6 +757,7 @@ export async function verifyHandoffSubmission(options) {
   const compatPath = options.compatPath !== undefined ? resolve(options.compatPath) : join(CATALOG_DIR, 'docs', 'handoff', 'compat.json')
   const allowlistPath = options.allowlistPath !== undefined ? resolve(options.allowlistPath) : join(CATALOG_DIR, 'allowlist.json')
   const packagesDir = options.packagesDir !== undefined ? resolve(options.packagesDir) : resolve(REPO_ROOT, ...DEFAULT_PACKAGES_DIR_RELATIVE.split('/'))
+  const receiptsDir = options.receiptsDir !== undefined ? resolve(options.receiptsDir) : DEFAULT_VERDICT_RECEIPTS_DIR
   const project = options.project ?? 'julu/dsh-desktop-config'
   const smoke = options.smoke === true
   const measure = options.measureTarball ?? ((tarballPath) => measureTarballViaReferenceInstall({ tarballPath }))
@@ -849,8 +914,11 @@ export async function verifyHandoffSubmission(options) {
       }
     }
 
-    // Step 9: the verdict is written whether the run passed or failed.
+    // Step 9: the verdict is written whether the run passed or failed —
+    // verdict.md for the human, verdict.json as the machine-readable receipt
+    // accept-handoff consumes (one run, one generatedAt, both files).
     const verdictPath = join(submissionDir, 'verdict.md')
+    const verdictJsonPath = join(submissionDir, 'verdict.json')
     const render = () => {
       if (failure !== undefined) {
         return renderFailVerdict({ submissionDir, generatedAt, failedStep: { index: failure.index ?? STEP_BY_NAME.get(failure.step), step: failure.step, reason: failure.message }, steps })
@@ -875,11 +943,30 @@ export async function verifyHandoffSubmission(options) {
         smoke,
       })
     }
+    let receiptRecordPath
     try {
+      const receiptText = `${JSON.stringify(renderVerdictReceipt({ failure, generatedAt, state, snippet }), null, 2)}\n`
+      // PASS only, and BEFORE the verdict files land: the exact receipt
+      // bytes are fingerprinted into the owner-local record channel
+      // (out/verdict-receipts/, gitignored) — the trust anchor
+      // accept-handoff checks first. A record that cannot be written fails
+      // the run at this step, so a PASS verdict never exists without its
+      // local record (accept-handoff would refuse the receipt anyway).
+      let recordNote = ''
+      if (failure === undefined) {
+        const fingerprint = createHash('sha256').update(receiptText, 'utf8').digest('hex')
+        try {
+          receiptRecordPath = writeVerdictReceiptRecord({ receiptsDir, identity: state.handoff.plugin, fingerprint, generatedAt, submissionDir })
+        } catch (recordError) {
+          throw new Error(`the local receipt record could not be written to ${verdictReceiptRecordPath(receiptsDir, state.handoff.plugin.packageName, state.handoff.plugin.version)} (${recordError.code ?? recordError.message}) — a PASS verdict is only ever issued together with its local record; fix the out/ directory and re-run`)
+        }
+        recordNote = `; receipt sha256 ${fingerprint} recorded locally (${receiptRecordPath})`
+      }
       writeFileSync(verdictPath, render(), 'utf8')
-      record(9, 'verdict', 'ok', `verdict.md written into the submission directory (${failure === undefined ? 'PASS' : `FAIL at ${String(failure.index ?? STEP_BY_NAME.get(failure.step))}/10 ${failure.step}`})`)
+      writeFileSync(verdictJsonPath, receiptText, 'utf8')
+      record(9, 'verdict', 'ok', `verdict.md + verdict.json written into the submission directory (${failure === undefined ? 'PASS' : `FAIL at ${String(failure.index ?? STEP_BY_NAME.get(failure.step))}/10 ${failure.step}`})${recordNote}`)
     } catch (error) {
-      const message = `verdict.md could not be written to ${verdictPath} (${error.code ?? error.message})`
+      const message = `the verdict could not be written to ${submissionDir} (${error.code ?? error.message})`
       record(9, 'verdict', 'fail', message)
       if (failure === undefined) failure = new CheckFailure('verdict', message)
     }
@@ -915,8 +1002,10 @@ export async function verifyHandoffSubmission(options) {
       ok: failure === undefined,
       submissionDir,
       verdictPath,
+      verdictJsonPath,
       generatedAt,
       steps,
+      ...(receiptRecordPath === undefined ? {} : { receiptRecordPath }),
       ...(failure === undefined ? {} : { failedStep: { index: failure.index ?? STEP_BY_NAME.get(failure.step), step: failure.step, reason: failure.message } }),
       ...(state.handoff === undefined ? {} : { identity: { packageName: state.handoff.plugin.packageName, version: state.handoff.plugin.version } }),
       ...(state.artifact === undefined ? {} : { artifact: { file: state.artifact.file, sizeBytes: state.artifact.sizeBytes, sha256: state.artifact.sha256, integrity: state.artifact.integrity } }),
