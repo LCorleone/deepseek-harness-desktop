@@ -23,7 +23,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { FileSettingsProvider } from '@deepseek-ai/dsh-settings-file'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessRuntime, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { stringify as stringifyYaml } from 'yaml'
+import { stringify as stringifyYaml, parse as parseYaml } from 'yaml'
 import {
   canonicalJsonText,
   createCompanyManifestSignature,
@@ -103,12 +103,18 @@ const TARBALL_URL = `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/pack
 
 const BUNDLE_PATCH = './cordis.patch.yml'
 
+/** A second pinned version of the same package (P10 replacement fixtures). */
+const NEXT_PACKAGE_VERSION = '2.2.0'
+const NEXT_TARBALL_BYTES = Buffer.from('company-hardened-plugin tarball fixture v2\n', 'utf8')
+const NEXT_TARBALL_INTEGRITY = `sha512-${createHash('sha512').update(NEXT_TARBALL_BYTES).digest('base64')}`
+const NEXT_TARBALL_URL = `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/packages/${PACKAGE_NAME}-${NEXT_PACKAGE_VERSION}.tgz`
+
 /** The exact installed-package tree a real tarball install materializes. */
-function writeInstalledPackage(packageDir: string): void {
+function writeInstalledPackage(packageDir: string, packageVersion: string = PACKAGE_VERSION): void {
   mkdirSync(packageDir, { recursive: true })
   writeFileSync(join(packageDir, 'package.json'), `${JSON.stringify({
     name: PACKAGE_NAME,
-    version: PACKAGE_VERSION,
+    version: packageVersion,
     dsh: { bundle: { patch: BUNDLE_PATCH } },
   })}\n`)
   writeFileSync(join(packageDir, 'cordis.patch.yml'), '[]\n')
@@ -121,6 +127,16 @@ const TREE_DIGEST = (() => {
   const scratch = mkdtempSync(join(tmpdir(), 'dsh-company-tree-digest-'))
   try {
     writeInstalledPackage(scratch)
+    return computeDesktopBootTreeRootDigest(scratch)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})()
+
+const NEXT_TREE_DIGEST = (() => {
+  const scratch = mkdtempSync(join(tmpdir(), 'dsh-company-tree-digest-next-'))
+  try {
+    writeInstalledPackage(scratch, NEXT_PACKAGE_VERSION)
     return computeDesktopBootTreeRootDigest(scratch)
   } finally {
     rmSync(scratch, { recursive: true, force: true })
@@ -149,6 +165,16 @@ function tarballEntry(overrides: Record<string, unknown> = {}): Record<string, u
     treeDigest: TREE_DIGEST,
     source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
     ...overrides,
+  })
+}
+
+/** The same package re-pinned to the next version (P10 replacement manifest). */
+function nextTarballEntry(): Record<string, unknown> {
+  return tarballEntry({
+    version: NEXT_PACKAGE_VERSION,
+    integrity: NEXT_TARBALL_INTEGRITY,
+    treeDigest: NEXT_TREE_DIGEST,
+    source: { kind: 'tarball', url: NEXT_TARBALL_URL, integrity: NEXT_TARBALL_INTEGRITY },
   })
 }
 
@@ -185,13 +211,19 @@ afterEach(() => {
 })
 
 /** Manifest/tarball serving doubles — fully offline, no sockets. */
-function servingDoubles(manifestText: string, tarballBytes: Buffer) {
+function servingDoubles(manifestText: string, tarballBytes: Buffer, nextTarballBytes: Buffer = NEXT_TARBALL_BYTES) {
   return {
     fetchManifestText: vi.fn(async () => manifestText),
     request: vi.fn(async (url: string, init: RequestInit) => {
       if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError')
       if (url === TARBALL_URL) {
         return new Response(new Uint8Array(tarballBytes), {
+          status: 200,
+          headers: { 'content-type': 'application/gzip' },
+        })
+      }
+      if (url === NEXT_TARBALL_URL) {
+        return new Response(new Uint8Array(nextTarballBytes), {
           status: 200,
           headers: { 'content-type': 'application/gzip' },
         })
@@ -247,8 +279,14 @@ function bootstrap(root: string, profileDir: string): DesktopPnpmBootstrap {
 }
 
 /** What a `dsh plugin add file:<tarball>` leaves behind; the lockfile spelling is proven against the real pinned pnpm by tests/company-tarball-real-pnpm.spec.ts. */
-function simulateSuccessfulTarballInstall(profileDir: string, stagedPath: string): void {
-  writeInstalledPackage(join(profileDir, 'node_modules', PACKAGE_NAME))
+function simulateSuccessfulTarballInstall(
+  profileDir: string,
+  stagedPath: string,
+  options: { readonly version?: string; readonly integrity?: string } = {},
+): void {
+  const packageVersion = options.version ?? PACKAGE_VERSION
+  const integrity = options.integrity ?? TARBALL_INTEGRITY
+  writeInstalledPackage(join(profileDir, 'node_modules', PACKAGE_NAME), packageVersion)
   const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
   manifest.dependencies = { ...(manifest.dependencies as Record<string, string> ?? {}), [PACKAGE_NAME]: `file:${stagedPath}` }
   manifest.dsh = { profile: { bundles: [PACKAGE_NAME] } }
@@ -265,8 +303,8 @@ function simulateSuccessfulTarballInstall(profileDir: string, stagedPath: string
     },
     packages: {
       [`${PACKAGE_NAME}@file:${relativeStaged}`]: {
-        resolution: { integrity: TARBALL_INTEGRITY, tarball: `file:${relativeStaged}` },
-        version: PACKAGE_VERSION,
+        resolution: { integrity, tarball: `file:${relativeStaged}` },
+        version: packageVersion,
       },
     },
     snapshots: { [`${PACKAGE_NAME}@file:${relativeStaged}`]: {} },
@@ -364,6 +402,8 @@ async function createWebServer() {
 interface CompositionOptions {
   readonly manifestText: string
   readonly tarballBytes?: Buffer
+  /** Bytes served at the next-version tarball URL (P10 replacement fixtures). */
+  readonly nextTarballBytes?: Buffer
   readonly spawn: SpawnMock
   readonly withChannel?: boolean
 }
@@ -384,7 +424,11 @@ async function composeMarketDesktop(root: string, options: CompositionOptions): 
   const selectedBootstrap = bootstrap(root, profileDir)
   const webServer = await createWebServer()
   const settingsPath = join(root, 'settings.yaml')
-  const doubles = servingDoubles(options.manifestText, options.tarballBytes ?? TARBALL_BYTES)
+  const doubles = servingDoubles(
+    options.manifestText,
+    options.tarballBytes ?? TARBALL_BYTES,
+    options.nextTarballBytes ?? NEXT_TARBALL_BYTES,
+  )
   const ctx = new Context()
   ctx.provide('webServer', webServer.service as never)
   ctx.provide('desktopProfiles', { current: { name: 'web', dir: profileDir } })
@@ -511,6 +555,117 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
       expect(verdict.rejected).toEqual([])
       expect(verdict.allowed).toEqual([
         { packageName: PACKAGE_NAME, evidence: 'signed-tree', manifestSequence: 42, keyId },
+      ])
+    } finally {
+      await composition.dispose()
+    }
+  })
+
+  it('replaces an installed older version directly when the manifest re-pins (P10 update path, no uninstall step)', async () => {
+    const root = temporaryDirectory('replace-chain')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const oldStagedPath = desktopMarketTarballStagingPath(profileDir, PACKAGE_NAME, PACKAGE_VERSION)
+    const nextStagedPath = desktopMarketTarballStagingPath(profileDir, PACKAGE_NAME, NEXT_PACKAGE_VERSION)
+    // The pre-update steady state: the old version is installed through the
+    // controlled channel and owned by a market receipt. The settings file
+    // exists before composition (the provider reads it at activation); the
+    // profile state lands after composition, which resets package.json and
+    // is itself read from disk per request.
+    const oldReceipt = {
+      receiptId: 'receipt:company-install-replace-0001',
+      profileName: 'web',
+      packageName: PACKAGE_NAME,
+      version: PACKAGE_VERSION,
+      integrity: TARBALL_INTEGRITY,
+      bundlePatch: BUNDLE_PATCH,
+      sourceRecordId: COMPANY_SOURCE_ID,
+      providerId: 'com.deepseek.company-catalog',
+      itemId: ITEM_ID,
+      displayName: PACKAGE_NAME,
+      installedAt: '2026-09-01T00:00:00.000Z',
+    }
+    writeFileSync(join(root, 'settings.yaml'), stringifyYaml({
+      'dsh-community-market': { sources: [], installReceipts: [oldReceipt] },
+    }))
+    // The manifest re-pins the same package to the next version: the next
+    // boot would refuse the old install (class a), and the market update is
+    // the one-step repair.
+    const manifestText = signedManifestText([nextTarballEntry()], 43)
+    const composition = await composeMarketDesktop(root, {
+      manifestText,
+      spawn: installSimulatingSpawn(() => {
+        simulateSuccessfulTarballInstall(profileDir, nextStagedPath, {
+          version: NEXT_PACKAGE_VERSION,
+          integrity: NEXT_TARBALL_INTEGRITY,
+        })
+      }),
+    })
+    try {
+      mkdirSync(join(profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY), { recursive: true })
+      writeFileSync(oldStagedPath, TARBALL_BYTES)
+      simulateSuccessfulTarballInstall(profileDir, oldStagedPath)
+      const installable = await composition.installable()
+      expect(installable.status).toBe(200)
+      expect((installable.body as { items?: Array<{ id?: string }> }).items?.map(item => item.id))
+        .toEqual([`npm:${PACKAGE_NAME}@${NEXT_PACKAGE_VERSION}`])
+
+      // The preview admits the replacement and names the version it
+      // replaces.
+      const preview = await composition.preview({
+        action: 'install',
+        sourceRecordId: COMPANY_SOURCE_ID,
+        itemId: `npm:${PACKAGE_NAME}@${NEXT_PACKAGE_VERSION}`,
+      })
+      expect(preview.status).toBe(200)
+      expect(preview.body).toMatchObject({
+        action: 'install',
+        packageName: PACKAGE_NAME,
+        version: NEXT_PACKAGE_VERSION,
+        replaces: PACKAGE_VERSION,
+      })
+
+      // One execute, no uninstall: the single spawn targets the next
+      // version's staged tarball.
+      const executed = await composition.execute({ previewId: preview.body.previewId })
+      expect(executed.status).toBe(200)
+      expect((executed.body as { receipt?: Record<string, unknown> }).receipt).toMatchObject({
+        packageName: PACKAGE_NAME,
+        version: NEXT_PACKAGE_VERSION,
+        integrity: NEXT_TARBALL_INTEGRITY,
+      })
+      expect(composition.spawn).toHaveBeenCalledTimes(1)
+      const argv = composition.spawn.mock.calls[0]?.[0].argv as string[]
+      expect(argv.slice(-1)[0]).toBe(`file:${nextStagedPath}`)
+
+      // The profile pins only the next version, and the receipt store owns
+      // exactly the replacement's receipt.
+      const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
+        dependencies: Record<string, string>
+      }
+      expect(profileManifest.dependencies[PACKAGE_NAME]).toBe(`file:${nextStagedPath}`)
+      const lockText = readFileSync(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+      expect(lockText).toContain(relative(profileDir, nextStagedPath))
+      expect(lockText).not.toContain(relative(profileDir, oldStagedPath))
+      const settings = parseYaml(readFileSync(join(root, 'settings.yaml'), 'utf8')) as {
+        'dsh-community-market'?: { installReceipts?: Array<{ version?: string }> }
+      }
+      const receipts = settings['dsh-community-market']?.installReceipts ?? []
+      expect(receipts).toHaveLength(1)
+      expect(receipts[0]?.version).toBe(NEXT_PACKAGE_VERSION)
+
+      // The next boot over the re-pinned manifest verifies the replaced
+      // install end to end: exactly the update flow's promise.
+      const bundles = collectDesktopBootBundles(profileDir, [PACKAGE_NAME])
+      expect(bundles[0]?.version).toBe(NEXT_PACKAGE_VERSION)
+      expect(bundles[0]?.lockIntegrity).toBe(NEXT_TARBALL_INTEGRITY)
+      const verdict = verifyDesktopBootBundles(manifestText, bundles, {
+        trustRoots: policy.trustRoots,
+        companyCatalogOrigin: CATALOG_ORIGIN,
+      })
+      expect(verdict.rejected).toEqual([])
+      expect(verdict.allowed).toEqual([
+        { packageName: PACKAGE_NAME, evidence: 'signed-tree', manifestSequence: 43, keyId },
       ])
     } finally {
       await composition.dispose()
@@ -829,11 +984,11 @@ describe.skipIf(!existsSync(PINNED_PNPM))('real pinned pnpm: the generated file:
   }
 
   /** A minimal plugin source the real `pnpm pack` turns into the install tarball. */
-  function writeFixtureSource(sourceDir: string, packageName: string): void {
+  function writeFixtureSource(sourceDir: string, packageName: string, packageVersion: string = FIXTURE_VERSION): void {
     mkdirSync(sourceDir, { recursive: true })
     writeFileSync(join(sourceDir, 'package.json'), `${JSON.stringify({
       name: packageName,
-      version: FIXTURE_VERSION,
+      version: packageVersion,
       dsh: { bundle: { patch: './cordis.patch.yml' } },
     })}\n`)
     writeFileSync(join(sourceDir, 'cordis.patch.yml'), '[]\n')
@@ -844,13 +999,14 @@ describe.skipIf(!existsSync(PINNED_PNPM))('real pinned pnpm: the generated file:
     root: string,
     packageName: string,
     packName: string,
+    packageVersion: string = FIXTURE_VERSION,
   ): { readonly profileDir: string; readonly stagedPath: string; readonly bytes: Buffer; readonly integrity: string } {
     const sourceDir = join(root, 'src')
-    writeFixtureSource(sourceDir, packageName)
+    writeFixtureSource(sourceDir, packageName, packageVersion)
     expectPinnedPnpmSuccess(['pack', '--pack-destination', root], sourceDir)
     const bytes = readFileSync(join(root, packName))
     const profileDir = join(root, 'profiles', 'web')
-    const stagedPath = desktopMarketTarballStagingPath(profileDir, packageName, FIXTURE_VERSION)
+    const stagedPath = desktopMarketTarballStagingPath(profileDir, packageName, packageVersion)
     mkdirSync(dirname(stagedPath), { recursive: true })
     writeFileSync(stagedPath, bytes)
     writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
@@ -1060,6 +1216,190 @@ describe.skipIf(!existsSync(PINNED_PNPM))('real pinned pnpm: the generated file:
       await expect(cleanCompanyMarketStagingOrphans(profileDir, name)).resolves.toEqual([orphanPath])
       expect(existsSync(stagedPath)).toBe(true)
       expect(existsSync(orphanPath)).toBe(false)
+    },
+    240_000,
+  )
+
+  it(
+    'replaces an installed older version in place through the real pinned pnpm: one add, the lockfile pins only the new version, and the next boot verifies (P10)',
+    async () => {
+      const root = temporaryDirectory('real-pnpm-replace')
+      const name = 'company-plugin-fixture'
+      const oldVersion = FIXTURE_VERSION
+      const nextVersion = '1.2.4'
+      const profileDir = join(root, 'profiles', 'web')
+
+      // 1. Pack both versions for real. The old version's bytes become the
+      //    pre-update install; the next version's bytes are what the market
+      //    channel will download, stage, and install as the replacement.
+      const oldSourceDir = join(root, 'src-old')
+      writeFixtureSource(oldSourceDir, name, oldVersion)
+      expectPinnedPnpmSuccess(['pack', '--pack-destination', root], oldSourceDir)
+      const oldBytes = readFileSync(join(root, `company-plugin-fixture-${oldVersion}.tgz`))
+      const oldIntegrity = `sha512-${createHash('sha512').update(oldBytes).digest('base64')}`
+      const nextSourceDir = join(root, 'src-next')
+      writeFixtureSource(nextSourceDir, name, nextVersion)
+      expectPinnedPnpmSuccess(['pack', '--pack-destination', root], nextSourceDir)
+      const nextBytes = readFileSync(join(root, `company-plugin-fixture-${nextVersion}.tgz`))
+      const nextIntegrity = `sha512-${createHash('sha512').update(nextBytes).digest('base64')}`
+
+      // 2. Measure the next version's real installed tree once in a scratch
+      //    profile, so the manifest can sign the exact tree digest the
+      //    replacement must produce (same bytes, same deterministic tree).
+      const measureProfile = join(root, 'profiles', 'measure')
+      mkdirSync(measureProfile, { recursive: true })
+      writeFileSync(join(measureProfile, 'package.json'), `${JSON.stringify({ name: 'profile', private: true, dependencies: {} })}\n`)
+      const measureStaged = desktopMarketTarballStagingPath(measureProfile, name, nextVersion)
+      mkdirSync(dirname(measureStaged), { recursive: true })
+      writeFileSync(measureStaged, nextBytes)
+      expectPinnedPnpmSuccess(
+        ['add', '--save-exact', '--registry=https://registry.npmjs.org/', `file:${measureStaged}`],
+        measureProfile,
+      )
+      const nextTreeDigest = computeDesktopBootTreeRootDigest(
+        collectDesktopBootBundles(measureProfile, [name])[0]?.packageDir!,
+      )
+
+      // 3. The pre-update receipt: the market owns the old install. Written
+      //    before composition so the settings provider reads it at activation.
+      const oldReceipt = {
+        receiptId: 'receipt:company-install-real-replace-01',
+        profileName: 'web',
+        packageName: name,
+        version: oldVersion,
+        integrity: oldIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        sourceRecordId: COMPANY_SOURCE_ID,
+        providerId: 'com.deepseek.company-catalog',
+        itemId: `npm:${name}@${oldVersion}`,
+        displayName: name,
+        installedAt: '2026-09-01T00:00:00.000Z',
+      }
+      writeFileSync(join(root, 'settings.yaml'), stringifyYaml({
+        'dsh-community-market': { sources: [], installReceipts: [oldReceipt] },
+      }))
+
+      // 4. Compose with the re-pinned manifest. The spawn double translates
+      //    the controlled add argv 1:1 into a real pinned-pnpm invocation.
+      const manifestText = signedManifestText([{
+        packageName: name,
+        version: nextVersion,
+        integrity: nextIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        repository: { url: 'https://github.com/example/company-plugin-fixture' },
+        revoked: false,
+        runtime: { dshRuntimeVersion: '*' },
+        treeDigest: nextTreeDigest,
+        source: { kind: 'tarball', url: NEXT_TARBALL_URL, integrity: nextIntegrity },
+      }], 42)
+      const spawnedAdds: string[][] = []
+      const composition = await composeMarketDesktop(root, {
+        manifestText,
+        tarballBytes: oldBytes,
+        nextTarballBytes: nextBytes,
+        spawn: vi.fn<(spec: SubprocessSpawnSpec) => SubprocessHandle>((spec: SubprocessSpawnSpec) => {
+          const child = controlledSubprocess()
+          void Promise.resolve().then(() => {
+            const argv = [...spec.argv]
+            const addArgs = argv.slice(argv.indexOf('add'))
+            spawnedAdds.push(addArgs)
+            const probe = runPinnedPnpm(addArgs, profileDir)
+            if ((probe.status ?? 1) !== 0) {
+              ;(child.stderr as PassThrough).write(`real pnpm ${addArgs.join(' ')} exited ${String(probe.status)}:\n${probe.stdout ?? ''}\n${probe.stderr ?? ''}`)
+              child.resolveDone({ exitCode: probe.status ?? 1, signal: null })
+            } else {
+              // The dsh CLI's own bookkeeping around pnpm: declare the bundle.
+              const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+              manifest.dsh = { profile: { bundles: [name] } }
+              writeFileSync(join(profileDir, 'package.json'), JSON.stringify(manifest))
+              child.resolveDone({ exitCode: 0, signal: null })
+            }
+            child.resolveTree()
+          })
+          return child
+        }),
+      })
+      try {
+        // 5. The pre-update install lands after composition (which resets the
+        //    profile manifest): a real add of the old staged tarball.
+        const oldStagedPath = desktopMarketTarballStagingPath(profileDir, name, oldVersion)
+        mkdirSync(dirname(oldStagedPath), { recursive: true })
+        writeFileSync(oldStagedPath, oldBytes)
+        realControlledAdd(profileDir, oldStagedPath)
+        // The dsh CLI's bundle reconciliation a real `dsh plugin add` runs
+        // after pnpm: the dependency joins the profile's bundle list.
+        const seeded = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+        seeded.dsh = { profile: { bundles: [name] } }
+        writeFileSync(join(profileDir, 'package.json'), JSON.stringify(seeded))
+        const oldBundles = collectDesktopBootBundles(profileDir, [name])
+        expect(oldBundles[0]?.version).toBe(oldVersion)
+        expect(oldBundles[0]?.lockIntegrity).toBe(oldIntegrity)
+
+        // 6. The market update flow over the re-pinned manifest: preview
+        //    admits the replacement and names the installed version.
+        await expect(composition.installable()).resolves.toMatchObject({ status: 200 })
+        const preview = await composition.preview({
+          action: 'install',
+          sourceRecordId: COMPANY_SOURCE_ID,
+          itemId: `npm:${name}@${nextVersion}`,
+        })
+        expect(preview.status).toBe(200)
+        expect(preview.body).toMatchObject({
+          action: 'install',
+          packageName: name,
+          version: nextVersion,
+          replaces: oldVersion,
+        })
+
+        const executed = await composition.execute({ previewId: preview.body.previewId })
+        expect(executed.status).toBe(200)
+        expect((executed.body as { receipt?: Record<string, unknown> }).receipt).toMatchObject({
+          packageName: name,
+          version: nextVersion,
+          integrity: nextIntegrity,
+        })
+
+        // One controlled add of the next version — no remove anywhere.
+        const nextStagedPath = desktopMarketTarballStagingPath(profileDir, name, nextVersion)
+        expect(spawnedAdds).toHaveLength(1)
+        expect(spawnedAdds[0]!.slice(-1)[0]).toBe(`file:${nextStagedPath}`)
+
+        // 7. The GENERATED lockfile pins only the new version: the root
+        //    importer points at the next staged tarball and the old
+        //    version's keys are gone (replacement, not accumulation).
+        const lockfile = readDesktopBootLockfile(profileDir) as unknown as Record<string, unknown>
+        const dependency = lockfileDependencyRecord(lockfile, name)
+        expect(desktopMarketFileSpecPosixPath(dependency.specifier)).toBe(
+          `file:${desktopMarketFileSpecPosixPath(nextStagedPath)}`,
+        )
+        const lockText = readFileSync(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+        expect(lockText).toContain(`file:${relative(profileDir, nextStagedPath)}`)
+        expect(lockText).not.toContain(`file:${relative(profileDir, oldStagedPath)}`)
+        expect(desktopBootLockIntegrity(lockfile, name, nextVersion, { profileDir })).toBe(nextIntegrity)
+
+        // The receipt store owns exactly the replacement's receipt.
+        const settings = parseYaml(readFileSync(join(root, 'settings.yaml'), 'utf8')) as {
+          'dsh-community-market'?: { installReceipts?: Array<{ version?: string }> }
+        }
+        const receipts = settings['dsh-community-market']?.installReceipts ?? []
+        expect(receipts).toHaveLength(1)
+        expect(receipts[0]?.version).toBe(nextVersion)
+
+        // 8. The next boot over the re-pinned manifest verifies the replaced
+        //    install against the signed tree digest.
+        const rebundled = collectDesktopBootBundles(profileDir, [name])
+        expect(rebundled[0]?.version).toBe(nextVersion)
+        const verdict = verifyDesktopBootBundles(manifestText, rebundled, {
+          trustRoots: policy.trustRoots,
+          companyCatalogOrigin: CATALOG_ORIGIN,
+        })
+        expect(verdict.rejected).toEqual([])
+        expect(verdict.allowed).toEqual([
+          { packageName: name, evidence: 'signed-tree', manifestSequence: 42, keyId },
+        ])
+      } finally {
+        await composition.dispose()
+      }
     },
     240_000,
   )

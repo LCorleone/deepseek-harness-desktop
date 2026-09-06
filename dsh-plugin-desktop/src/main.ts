@@ -99,6 +99,11 @@ import {
   desktopBootVerificationInputs,
   readDesktopBootReceiptsFromSettings,
 } from './boot-verification.ts'
+import type { DesktopBootVerification } from './boot-verification.ts'
+import {
+  desktopBootPluginUpdateNotification,
+  pendingDesktopBootPluginUpdates,
+} from './boot-update-prompt.ts'
 import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
 import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
 import { createDesktopCompanyMarketTarballInstallChannel } from './company-market-install.ts'
@@ -307,6 +312,33 @@ function notifySessionProjectionCacheRecovery(
     })
   } catch (cause) {
     logger.error(`${BIN_NAME}: failed to show session projection cache recovery notification: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+}
+
+/**
+ * Surface the class-a boot rejections as one update notification (P10): the
+ * signed manifest pins a newer version while an older one is installed, so
+ * without this prompt the plugin just disappears after the hard cutover.
+ * Every other rejection class stays log-only — a revocation or tamper
+ * refusal must never look like "a newer version is waiting". Called once
+ * per session from the post-renderer-boot notification block; the
+ * notification carries no click action because no open-market channel
+ * exists yet (the copy points at the Plugin Market instead).
+ */
+function notifyPendingBootPluginUpdates(
+  runtime: ElectronDesktopRuntime,
+  logger: DesktopLogger,
+  bootVerification: DesktopBootVerification | undefined,
+): void {
+  const notification = desktopBootPluginUpdateNotification(
+    pendingDesktopBootPluginUpdates(bootVerification),
+    runtime.locale,
+  )
+  if (notification === undefined) return
+  try {
+    runtime.updates.notify(notification)
+  } catch (cause) {
+    logger.error(`${BIN_NAME}: failed to show pending plugin update notification: ${cause instanceof Error ? cause.message : String(cause)}`)
   }
 }
 
@@ -1560,6 +1592,7 @@ async function start(): Promise<void> {
     lifecycleRecorder.completeStartup(startupStage, rendererReport)
     notifySkippedOptionalEntries(runtime, electronLogger, prepared.skippedOptionalEntries)
     notifyWindowsVolumeConcerns(runtime, electronLogger, windowsVolumeConcerns)
+    notifyPendingBootPluginUpdates(runtime, electronLogger, prepared.bootVerification)
     if (profileStartup.rolledBackFrom !== undefined) {
       notifyProfileRecovery(
         runtime,

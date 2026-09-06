@@ -99,6 +99,7 @@ function lockedBootVerification(): DesktopBootVerification {
       {
         packageName: 'dsh-plugin-tampered',
         reason: 'the installed files of dsh-plugin-tampered@1.0.0 differ from the tree recorded in its install receipt',
+        code: 'tree-mismatch',
       },
     ],
   }
@@ -111,7 +112,7 @@ function untrustedManifestBootVerification(): DesktopBootVerification {
     keyId: undefined,
     manifestFailure: { code: 'stale-sequence', reason: 'sequence 4 regressed below the last seen sequence 9' },
     allowed: [],
-    rejected: [{ packageName: 'dsh-plugin-safe', reason: 'the company manifest is not trusted (stale-sequence)' }],
+    rejected: [{ packageName: 'dsh-plugin-safe', reason: 'the company manifest is not trusted (stale-sequence)', code: 'other' }],
   }
 }
 

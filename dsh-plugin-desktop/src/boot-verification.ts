@@ -248,10 +248,35 @@ export interface DesktopBootAllowedBundle {
   readonly keyId: string
 }
 
+/**
+ * Structured classification of one boot rejection (P10). The update prompt
+ * consumes exactly `'not-pinned-newer-pinned'` (class a: the signed company
+ * manifest pins a version other than the installed one, so a newer
+ * publication is waiting); every other code stays log-only. The code is
+ * pure metadata beside the unchanged reason strings — no rejection decision
+ * reads it back, and branches without an explicit classification fall back
+ * to `'other'` so a rejected entry always carries a code.
+ */
+export type DesktopBootRejectionCode =
+  | 'not-pinned-newer-pinned'
+  | 'not-in-manifest'
+  | 'revoked'
+  | 'integrity-mismatch'
+  | 'tree-mismatch'
+  | 'unresolved'
+  | 'no-lock-integrity'
+  | 'other'
+
 /** One bundle refused for this boot, with the first failing check as the reason. */
 export interface DesktopBootRejectedBundle {
   readonly packageName: string
   readonly reason: string
+  /** Classification of {@link reason}; unclassified branches fall back to `'other'`. */
+  readonly code: DesktopBootRejectionCode
+  /** Installed version of the refused bundle; class-a entries always carry it. */
+  readonly installedVersion?: string
+  /** Version the signed company manifest pins; class-a entries always carry it. */
+  readonly pinnedVersion?: string
 }
 
 /** Why the signed manifest itself was not trusted for this boot. */
@@ -1120,7 +1145,11 @@ export function verifyDesktopBootBundles(
       keyId: undefined,
       manifestFailure: failure,
       allowed: [],
-      rejected: uniqueBundles.map(bundle => ({ packageName: bundle.packageName, reason })),
+      // No per-bundle check ran, so there is no per-bundle classification;
+      // these rejections are the manifest-level failure and fall back to
+      // 'other' (never the update prompt: an untrusted manifest must not
+      // look like "a newer version is waiting").
+      rejected: uniqueBundles.map(bundle => ({ packageName: bundle.packageName, reason, code: 'other' })),
     }
   }
 
@@ -1139,33 +1168,52 @@ export function verifyDesktopBootBundles(
   const allowed: DesktopBootAllowedBundle[] = []
   const rejected: DesktopBootRejectedBundle[] = []
   for (const bundle of uniqueBundles) {
-    const reject = (reason: string): void => {
-      rejected.push({ packageName: bundle.packageName, reason })
+    // Every rejected entry carries a classification: branches that pass no
+    // code fall back to 'other', so a future rejection branch can never
+    // produce an unclassified entry (the P10 completeness guarantee).
+    const reject = (
+      reason: string,
+      code: DesktopBootRejectionCode = 'other',
+      versions?: { readonly installedVersion?: string; readonly pinnedVersion?: string },
+    ): void => {
+      rejected.push({
+        packageName: bundle.packageName,
+        reason,
+        code,
+        ...(versions === undefined ? {} : versions),
+      })
     }
     if (bundle.packageDir === undefined || bundle.version === undefined) {
-      reject(`${bundle.packageName} cannot be resolved as an installed package in the active profile`)
+      reject(`${bundle.packageName} cannot be resolved as an installed package in the active profile`, 'unresolved')
       continue
     }
     const entry = findDesktopCompanyManifestPackageWithBeta(manifest, betaPackages, bundle.packageName, bundle.version)
     if (entry === undefined) {
       const pinned = betaPackages?.find(candidate => candidate.packageName === bundle.packageName)
         ?? manifest.packages.find(candidate => candidate.packageName === bundle.packageName)
+      // Class a (update available): the manifest pins this package at another
+      // version — for a market-managed install always a newer publication,
+      // because install authority only ever allows the pinned version. The
+      // beta lookup runs first, so a tester's stale beta install classifies
+      // against the beta pin when the overlay carries one.
       reject(pinned === undefined
         ? `${bundle.packageName}@${bundle.version} is not in the signed company manifest`
-        : `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`)
+        : `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`,
+      pinned === undefined ? 'not-in-manifest' : 'not-pinned-newer-pinned',
+      pinned === undefined ? undefined : { installedVersion: bundle.version, pinnedVersion: pinned.version })
       continue
     }
     if (entry.revoked) {
-      reject(`${bundle.packageName}@${bundle.version} is revoked in the signed company manifest`)
+      reject(`${bundle.packageName}@${bundle.version} is revoked in the signed company manifest`, 'revoked')
       continue
     }
     if (bundle.lockIntegrity === undefined) {
       reject(bundle.lockProblem
-        ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`)
+        ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`, 'no-lock-integrity')
       continue
     }
     if (bundle.lockIntegrity !== entry.integrity) {
-      reject(`the profile lockfile pins ${bundle.packageName}@${bundle.version} to integrity ${bundle.lockIntegrity}, but the signed company manifest pins ${entry.integrity}`)
+      reject(`the profile lockfile pins ${bundle.packageName}@${bundle.version} to integrity ${bundle.lockIntegrity}, but the signed company manifest pins ${entry.integrity}`, 'integrity-mismatch')
       continue
     }
     if (entry.treeDigest !== undefined) {
@@ -1184,7 +1232,7 @@ export function verifyDesktopBootBundles(
         continue
       }
       if (measured !== entry.treeDigest) {
-        reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree digest pinned in the signed company manifest`)
+        reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree digest pinned in the signed company manifest`, 'tree-mismatch')
         continue
       }
       allowed.push({
@@ -1215,7 +1263,7 @@ export function verifyDesktopBootBundles(
       continue
     }
     if (measured !== receipt.rootDigest) {
-      reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree recorded in its install receipt`)
+      reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree recorded in its install receipt`, 'tree-mismatch')
       continue
     }
     allowed.push({

@@ -77,6 +77,22 @@ interface VisibleItem {
   readonly stale: boolean
 }
 
+/**
+ * One managed installation whose source pins a different version than the
+ * installed one (P10): the update banner's row. Derived from the same
+ * authorities the Host enforces — the verified receipt proves the installed
+ * version, the catalog item's `latestVersion` is the pinned target — so a
+ * revoked plugin (never in the catalog) and a tampered install (versions
+ * equal) can never appear here, exactly mirroring the boot side's class-a
+ * classification.
+ */
+interface PendingPluginUpdate {
+  readonly packageName: string
+  readonly installedVersion: string
+  readonly pinnedVersion: string
+  readonly value: VisibleItem
+}
+
 interface CompletedOperation {
   readonly preview: MarketOperationPreviewResponse
   readonly restartToken: string
@@ -516,6 +532,17 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     }
   }, [loadInstallable, loadState])
 
+  // The update banner (P10) needs the verified-installation view beside the
+  // installable index on every view, not only Installed; load it once when
+  // the index lands so the banner can compare installed versus pinned
+  // versions. Failures stay silent here — the Installed view surfaces them.
+  useEffect(() => {
+    if (installableIndex === undefined) return
+    if (installationsLoaded || installationsLoading || installationsUnavailable) return
+    if (installationsRequest.current !== undefined) return
+    void loadInstallations()
+  }, [installableIndex, installationsLoaded, installationsLoading, installationsUnavailable, loadInstallations])
+
   const items = useMemo(() => catalog?.results.flatMap(result =>
     (result.snapshot?.items ?? []).map(item => ({ item, source: result.source, stale: result.stale }))) ?? [], [catalog])
   const installableCategoryOptions = useMemo(
@@ -539,6 +566,29 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     const cursor = result.snapshot?.page?.nextCursor
     return cursor === undefined ? [] : [{ sourceRecordId: result.source.sourceRecordId, cursor }]
   }).at(0), [catalog])
+  const pendingUpdates = useMemo<readonly PendingPluginUpdate[]>(() => {
+    if (installableIndex === undefined) return []
+    const itemByPackage = new Map<string, MarketItem>()
+    for (const item of installableIndex.items) {
+      const name = item.package?.name
+      if (name !== undefined && item.latestVersion !== undefined) itemByPackage.set(name, item)
+    }
+    const pending: PendingPluginUpdate[] = []
+    for (const installation of installations) {
+      if (installation.kind !== 'managed') continue
+      const item = itemByPackage.get(installation.receipt.packageName)
+      const pinnedVersion = item?.latestVersion
+      if (item === undefined || pinnedVersion === undefined) continue
+      if (pinnedVersion === installation.receipt.version) continue
+      pending.push({
+        packageName: installation.receipt.packageName,
+        installedVersion: installation.receipt.version,
+        pinnedVersion,
+        value: { item, source: installableIndex.source, stale: false },
+      })
+    }
+    return pending
+  }, [installableIndex, installations])
   const partialFailure = catalog?.results.some(result => result.error !== undefined) ?? false
   const currentSource = state === undefined ? undefined : selectedSource(state.sources)
   const currentSourceHref = currentSource === undefined
@@ -897,7 +947,13 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       selectedKeyRef.current = undefined
       setSelected(undefined)
       setOperationSuccess({ preview, restartToken: result.restartToken })
-      if (result.action === 'install' && viewRef.current === 'installable') void loadInstallable()
+      if (result.action === 'install') {
+        if (viewRef.current === 'installable') void loadInstallable()
+        // A completed replacement changes the verified-installation view the
+        // update banner derives from, on every view — refresh it so a
+        // completed update clears its own banner row immediately.
+        void loadInstallations()
+      }
       if ((result.action === 'uninstall' || result.action === 'disable' || result.action === 'enable')
         && viewRef.current === 'installed') {
         void loadInstallations()
@@ -956,6 +1012,35 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
             <p>{t('subtitle')}</p>
           </div>
         </header>
+      )}
+      {pendingUpdates.length > 0 && (
+        <div className="dshMarketUpdateBanner" role="status">
+          <StateDot state="warning" />
+          <div className="dshMarketUpdateBannerMain">
+            <h2>{t('updateBannerTitle')}</h2>
+            <p>{t('updateBannerBody')}</p>
+            <ul className="dshMarketUpdateList">
+              {pendingUpdates.map(update => (
+                <li key={update.packageName} className="dshMarketUpdateEntry">
+                  <span className="dshMarketUpdateName">{update.value.item.displayName}</span>
+                  <span className="dshMarketUpdateVersions">
+                    <span>{update.installedVersion}</span>
+                    <span aria-hidden="true">→</span>
+                    <span>{update.pinnedVersion}</span>
+                  </span>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    aria-label={`${t('updateAction')}: ${update.value.item.displayName} ${update.pinnedVersion}`}
+                    disabled={operationPending}
+                    icon={<IconDownloadOutline16 />}
+                    onClick={() => openItem(update.value)}
+                  >{t('updateAction')}</Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
       <div className="dshMarketViewBar">
         <div className="dshMarketViewSwitch" role="group" aria-label={t('title')}>
@@ -1858,11 +1943,13 @@ function OperationFacts({ operation, showExpiry = true, t }: {
   showExpiry?: boolean
   t: MarketSettingsTabProps['t']
 }) {
+  const updating = operation.action === 'install' && operation.replaces !== undefined
   return (
     <dl className="dshMarketOperationFacts">
       <div><dt>{t('plugin')}</dt><dd>{operation.displayName}</dd></div>
       <div><dt>{t('package')}</dt><dd>{operation.packageName}</dd></div>
       {operation.version !== undefined && <div><dt>{t('exactVersion')}</dt><dd>{operation.version}</dd></div>}
+      {updating && <div><dt>{t('replacesVersion')}</dt><dd>{operation.replaces}</dd></div>}
       <div><dt>{t('profile')}</dt><dd>{operation.profileName}</dd></div>
       {showExpiry && <div><dt>{t('previewExpires')}</dt><dd>{operation.expiresAt}</dd></div>}
     </dl>
@@ -1881,27 +1968,39 @@ function OperationConfirmModal({ preview, pending, error, onCancel, onConfirm, t
   const uninstalling = preview.action === 'uninstall'
   const disabling = preview.action === 'disable'
   const enabling = preview.action === 'enable'
-  const title = installing
-    ? t('confirmInstallTitle')
-    : uninstalling
-      ? t('confirmUninstallTitle')
-      : disabling ? t('confirmDisableTitle') : t('confirmEnableTitle')
-  const description = installing
-    ? t('confirmInstallBody')
-    : uninstalling
-      ? t('confirmUninstallBody')
-      : disabling ? t('confirmDisableBody') : t('confirmEnableBody')
-  const confirmLabel = pending
-    ? installing
-      ? t('installing')
-      : uninstalling
-        ? t('uninstalling')
-        : disabling ? t('disabling') : t('enabling')
+  // An install preview that carries `replaces` is a confirmed version
+  // replacement (P10): the copy says update, and the facts show the version
+  // being replaced beside the target.
+  const updating = installing && preview.replaces !== undefined
+  const title = updating
+    ? t('confirmUpdateTitle')
     : installing
-      ? t('confirmInstall')
+      ? t('confirmInstallTitle')
       : uninstalling
-        ? t('confirmUninstall')
-        : disabling ? t('confirmDisable') : t('confirmEnable')
+        ? t('confirmUninstallTitle')
+        : disabling ? t('confirmDisableTitle') : t('confirmEnableTitle')
+  const description = updating
+    ? t('confirmUpdateBody')
+    : installing
+      ? t('confirmInstallBody')
+      : uninstalling
+        ? t('confirmUninstallBody')
+        : disabling ? t('confirmDisableBody') : t('confirmEnableBody')
+  const confirmLabel = pending
+    ? updating
+      ? t('updating')
+      : installing
+        ? t('installing')
+        : uninstalling
+          ? t('uninstalling')
+          : disabling ? t('disabling') : t('enabling')
+    : updating
+      ? t('confirmUpdate')
+      : installing
+        ? t('confirmInstall')
+        : uninstalling
+          ? t('confirmUninstall')
+          : disabling ? t('confirmDisable') : t('confirmEnable')
   return (
     <Modal
       open
@@ -1961,7 +2060,9 @@ function OperationSuccessModal({ operation, canRestart, pending, error, onClose,
   t: MarketSettingsTabProps['t']
 }) {
   const title = operation.preview.action === 'install'
-    ? t('installComplete')
+    ? operation.preview.replaces !== undefined
+      ? t('updateComplete')
+      : t('installComplete')
     : operation.preview.action === 'uninstall'
       ? t('uninstallComplete')
       : operation.preview.action === 'disable' ? t('disableComplete') : t('enableComplete')
@@ -2038,6 +2139,7 @@ function ItemActionModal({
   t: MarketSettingsTabProps['t']
 }) {
   const checking = preview === undefined && pending && operationError === undefined
+  const updating = preview?.action === 'install' && preview.replaces !== undefined
   const footer = installation === undefined && preview !== undefined ? <>
     <Button variant="ghost" disabled={pending} onClick={onClose}>{t('cancel')}</Button>
     <Button
@@ -2045,7 +2147,7 @@ function ItemActionModal({
       disabled={pending}
       icon={<IconDownloadOutline16 />}
       onClick={onConfirm}
-    >{pending ? t('installing') : t('confirmInstall')}</Button>
+    >{pending ? (updating ? t('updating') : t('installing')) : (updating ? t('confirmUpdate') : t('confirmInstall'))}</Button>
   </> : <>
     {value.item.repository !== undefined && (
       <Button
@@ -2073,9 +2175,9 @@ function ItemActionModal({
       className="dshMarketModal dshMarketWideModal"
       contentClassName="dshMarketModalContent"
       onClose={onClose}
-      title={preview === undefined ? value.item.displayName : t('confirmInstallTitle')}
+      title={preview === undefined ? value.item.displayName : updating ? t('confirmUpdateTitle') : t('confirmInstallTitle')}
       closeLabel={t('close')}
-      {...(preview === undefined ? {} : { description: t('confirmInstallBody') })}
+      {...(preview === undefined ? {} : { description: updating ? t('confirmUpdateBody') : t('confirmInstallBody') })}
       footer={<div className="dshMarketModalActions">{footer}</div>}
     >
       <>

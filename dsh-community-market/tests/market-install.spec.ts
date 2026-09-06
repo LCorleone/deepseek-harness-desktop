@@ -1771,3 +1771,255 @@ describe('market install Host routes', () => {
     dispose()
   })
 })
+
+describe('version replacement installs (P10 update path)', () => {
+  const nextVersion = '1.3.0'
+  const nextIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`
+
+  const verificationFor = (targetVersion: string) => targetVersion === version
+    ? verification
+    : {
+        integrity: nextIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        tarball: `https://registry.npmjs.org/${packageName}/-/${packageName}-${targetVersion}.tgz`,
+      }
+
+  /** Write the exact on-disk state a real `pnpm add pkg@<version>` leaves: installed tree, package.json pin, and a lockfile pinning only that version. */
+  async function writeInstalledPluginAt(profileDir: string, installedVersion: string, pinnedIntegrity: string): Promise<void> {
+    const pluginDir = join(profileDir, 'node_modules', packageName)
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(join(pluginDir, 'cordis.patch.yml'), '[]\n')
+    await writeFile(join(pluginDir, 'package.json'), JSON.stringify({
+      name: packageName,
+      version: installedVersion,
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }))
+    await writeFile(join(profileDir, 'package.json'), JSON.stringify({
+      name: 'fixture-profile',
+      dependencies: { [packageName]: installedVersion },
+      dsh: { profile: { bundles: [packageName] } },
+    }))
+    await writeFile(join(profileDir, 'pnpm-lock.yaml'), stringifyYaml({
+      lockfileVersion: '9.0',
+      importers: {
+        '.': {
+          dependencies: {
+            [packageName]: { specifier: installedVersion, version: installedVersion },
+          },
+        },
+      },
+      packages: { [`${packageName}@${installedVersion}`]: { resolution: { integrity: pinnedIntegrity } } },
+      snapshots: { [`${packageName}@${installedVersion}`]: {} },
+    }))
+  }
+
+  /**
+   * A package-manager double that installs whichever exact version the
+   * service requests, like a real `pnpm add`, and whose rollback restores the
+   * pre-install version (the recovery-WAL shape for a replacement). The
+   * optional failure hook simulates a child that mutated the profile and then
+   * exited nonzero.
+   */
+  function replaceableRunner(
+    profileDir: string,
+    calls: Array<{ args: readonly string[]; dir: string }>,
+    options: { failAdd?: (targetVersion: string) => boolean } = {},
+  ): MarketDesktopPnpm {
+    let installed: { readonly targetVersion: string } | undefined
+    let rollbackTo: { readonly targetVersion: string } | undefined
+    const run = async (args: readonly string[], dir: string): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }> => {
+      calls.push({ args: [...args], dir })
+      if (args[0] === 'add') {
+        const targetVersion = args[args.length - 1]!.split('@').pop()!
+        if (options.failAdd?.(targetVersion) === true) {
+          // A real failing child may still have mutated the profile first.
+          await writeInstalledPluginAt(profileDir, targetVersion, verificationFor(targetVersion).integrity)
+          installed = { targetVersion }
+          return { exitCode: 1, signal: null }
+        }
+        await writeInstalledPluginAt(profileDir, targetVersion, verificationFor(targetVersion).integrity)
+        installed = { targetVersion }
+        return { exitCode: 0, signal: null }
+      }
+      if (args[0] === 'remove') {
+        await removeInstalledPlugin(profileDir)
+        installed = undefined
+        return { exitCode: 0, signal: null }
+      }
+      return { exitCode: 0, signal: null }
+    }
+    return {
+      async installPlugin(request) {
+        rollbackTo = installed
+        const targetVersion = request.recovery.packageVersion
+        const done = run([
+          'add',
+          ...(request.pnpmOptions ?? []),
+          `${request.recovery.packageName}@${targetVersion}`,
+        ], request.invokingDir)
+        return {
+          stdout: Readable.from([]),
+          stderr: Readable.from([]),
+          done,
+          cancel: vi.fn(),
+        }
+      },
+      runPlugin(args, dir) {
+        const done = run([...args], dir)
+        return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
+      },
+      async recoveredInstallReceiptIds() { return [] },
+      async acknowledgeRecoveredInstall() {},
+      async rollbackPluginInstall() {
+        if (rollbackTo === undefined) {
+          await removeInstalledPlugin(profileDir)
+          installed = undefined
+          return true
+        }
+        await writeInstalledPluginAt(
+          profileDir,
+          rollbackTo.targetVersion,
+          verificationFor(rollbackTo.targetVersion).integrity,
+        )
+        installed = rollbackTo
+        return true
+      },
+    }
+  }
+
+  function snapshotAt(itemVersion: string): CatalogSnapshot {
+    return snapshot({ latestVersion: itemVersion })
+  }
+
+  it('replaces an installed older version directly: one add, no remove, a superseded receipt, and a lockfile pinning only the new version', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, calls),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+    )
+    // Install the old version like any managed install.
+    service.observeCatalog(snapshotAt(version))
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(first.replaces).toBeUndefined()
+    const firstResult = await service.executeInstall(first.intent, new AbortController().signal)
+    expect(firstResult.receipt.version).toBe(version)
+
+    // The source re-pins the package: same item id, new latestVersion.
+    service.observeCatalog(snapshotAt(nextVersion))
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(preview).toMatchObject({ packageName, version: nextVersion, replaces: version })
+
+    const updated = await service.executePreview(preview.intent, new AbortController().signal)
+    if (updated.action !== 'install') throw new Error('expected install result')
+
+    // One controlled add of the new version; no remove, no uninstall step —
+    // the replacement is a single package-manager mutation.
+    expect(calls.map(call => call.args[0])).toEqual(['add', 'add'])
+    expect(calls[1]?.args).toMatchObject(['add', '--save-exact', '--registry=https://registry.npmjs.org/', `${packageName}@${nextVersion}`])
+    expect(updated.receipt).toMatchObject({ packageName, version: nextVersion, integrity: nextIntegrity })
+
+    // The receipt store owns exactly the new version's receipt — the old one
+    // is superseded, never kept beside the replacement.
+    expect(settings.receipts()).toHaveLength(1)
+    expect(settings.receipts()[0]).toMatchObject({ packageName, version: nextVersion })
+
+    // The profile on disk pins only the new version: root-importer
+    // specifier, lockfile package record, and no leftover old-version key.
+    const lockfile = await readFile(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+    expect(lockfile).toContain(`specifier: ${nextVersion}`)
+    expect(lockfile).toContain(`${packageName}@${nextVersion}`)
+    expect(lockfile).not.toContain(`${packageName}@${version}`)
+    expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({
+      [packageName]: nextVersion,
+    })
+
+    // The verified-install view follows the replacement, and a same-version
+    // reinstall still conflicts.
+    await expect(service.listVerifiedReceipts()).resolves.toMatchObject([{ packageName, version: nextVersion }])
+    service.observeCatalog(snapshotAt(nextVersion))
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('already installed at the selected version') })
+    service.dispose()
+  })
+
+  it('refuses to take over an install the market does not own: an unowned old version keeps conflicting', async () => {
+    const profileDir = await createProfile()
+    await writeInstalledPluginAt(profileDir, version, integrity)
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, []),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+    )
+    service.observeCatalog(snapshotAt(nextVersion))
+
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('already managed by the active profile') })
+    service.dispose()
+  })
+
+  it('refuses a replacement whose receipt no longer proves the installed bundle', async () => {
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, []),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+    )
+    service.observeCatalog(snapshotAt(version))
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(first.intent, new AbortController().signal)
+
+    // Tamper the installed state out from under the receipt (a diverging
+    // lockfile integrity): the update path must conflict, not replace.
+    const lockfileText = await readFile(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+    await writeFile(
+      join(profileDir, 'pnpm-lock.yaml'),
+      lockfileText.replace(integrity, `sha512-${Buffer.alloc(64, 21).toString('base64')}`),
+    )
+    service.observeCatalog(snapshotAt(nextVersion))
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('no longer matches its market receipt') })
+    service.dispose()
+  })
+
+  it('a failed replacement rolls back to the old version and surfaces the package-manager failure', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, calls, { failAdd: targetVersion => targetVersion === nextVersion }),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+    )
+    service.observeCatalog(snapshotAt(version))
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const firstResult = await service.executeInstall(first.intent, new AbortController().signal)
+    const oldReceiptId = firstResult.receipt.receiptId
+
+    service.observeCatalog(snapshotAt(nextVersion))
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(preview.replaces).toBe(version)
+    await expect(service.executeInstall(preview.intent, new AbortController().signal))
+      .rejects.toMatchObject({
+        code: 'operation-failed',
+        message: expect.stringContaining('rolled back'),
+      })
+
+    // The rollback restored the old version as the installed state (the
+    // replacement's rollback target is the old version, not absence), and
+    // the old receipt still verifies against it.
+    expect(JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')).dependencies).toEqual({
+      [packageName]: version,
+    })
+    await expect(service.listVerifiedReceipts()).resolves.toMatchObject([{ receiptId: oldReceiptId, version }])
+    expect(settings.receipts()).toHaveLength(1)
+    service.dispose()
+  })
+})

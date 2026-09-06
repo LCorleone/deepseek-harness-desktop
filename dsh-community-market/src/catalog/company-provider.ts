@@ -303,48 +303,69 @@ export function companyCatalogItemId(entry: Pick<CompanyManifestPackage, 'packag
   return `npm:${entry.packageName}@${entry.version}`
 }
 
-/** Signed-entry identity key of one exact package version. */
-const companyEntryIdentity = (entry: Pick<CompanyManifestPackage, 'packageName' | 'version'>): string =>
-  `${entry.packageName}\0${entry.version}`
+/** Catalog identity key of one package (any version). */
+const companyPackageKey = (entry: Pick<CompanyManifestPackage, 'packageName'>): string => entry.packageName
 
 /**
  * Merge a host-resolved beta overlay into the stable manifest's entries
- * (P9). Beta is additive-only visibility: entries the stable manifest does
- * not pin are appended, and a `name@version` both manifests pin replaces the
- * stable entry exactly when the signed fields diverge (a byte-identical
- * entry — the post-promote steady state — changes nothing, so promotion is
- * invisible to roster machines and non-roster machines never see beta
- * content at all). One field never flips back: revocation is sticky — a
- * `name@version` the stable manifest pins as revoked:true stays revoked in
- * the merge even when a stale beta entry still says false, so a pre-
- * revocation beta publication can never resurrect a revoked entry on a
- * roster machine (the client-side half of the pipeline's sign-time
- * alignment). Every beta entry must be representable in the v1 catalog
- * contract before it may enter the merge: one that cannot be is a publish
- * fault, and the caller drops the whole overlay rather than partially
- * adopting signed content. The merged list keeps the pipeline's
- * `(packageName, version)` sort so scans stay deterministic.
+ * (P9). Beta is additive-only visibility keyed by package name: a name the
+ * overlay pins replaces every stable entry of that name, so a roster
+ * machine sees exactly the beta version — the single-version view the
+ * catalog rows and the update banner's installed-versus-pinned decision
+ * both rely on — while names the stable manifest alone pins survive
+ * untouched and non-roster machines never see beta content at all. A
+ * byte-identical overlay entry (the post-promote steady state) therefore
+ * changes nothing — except that a stable manifest carrying two versions of
+ * one package (not the published shape, but schema-legal) converges to the
+ * overlay's single pin, same as any other overlay re-pin of that package. One field never flips back: revocation is sticky — a
+ * package any stable entry pins as revoked:true stays revoked in the merge
+ * even when a stale beta entry still says false, so a pre-revocation beta
+ * publication can never resurrect a revoked package on a roster machine
+ * (the client-side half of the pipeline's sign-time alignment). Every beta
+ * entry must be representable in the v1 catalog contract before it may
+ * enter the merge: one that cannot be is a publish fault, and the caller
+ * drops the whole overlay rather than partially adopting signed content.
+ * The merged list keeps the pipeline's `(packageName, version)` sort so
+ * scans stay deterministic.
  */
 export function mergeCompanyBetaPackages(
   stablePackages: readonly CompanyManifestPackage[],
   betaPackages: readonly CompanyManifestPackage[],
 ): readonly CompanyManifestPackage[] {
-  const merged = new Map<string, CompanyManifestPackage>()
-  for (const entry of stablePackages) {
-    merged.set(companyEntryIdentity(entry), entry)
-  }
+  // The overlay's per-name view: one entry per package (a multi-version
+  // overlay would be a publish fault; the last signed entry wins so the
+  // merge still yields the single-version view instead of duplicating rows).
+  const overlayByPackage = new Map<string, CompanyManifestPackage>()
   for (const entry of betaPackages) {
     // The same representability gate the stable scan applies per entry;
     // running it here keeps a publish fault from failing the whole scan
     // downstream — the caller treats the throw as "overlay unusable".
     assertRepresentableEntry(entry)
-    const stable = merged.get(companyEntryIdentity(entry))
-    merged.set(
-      companyEntryIdentity(entry),
-      stable?.revoked === true && entry.revoked !== true ? { ...entry, revoked: true } : entry,
+    overlayByPackage.set(companyPackageKey(entry), entry)
+  }
+  const merged: CompanyManifestPackage[] = []
+  const replaced = new Set<string>()
+  for (const entry of stablePackages) {
+    const overlayEntry = overlayByPackage.get(companyPackageKey(entry))
+    if (overlayEntry === undefined) {
+      merged.push(entry)
+      continue
+    }
+    // The overlay's entry wholly replaces every stable entry of the same
+    // package — the merge key is the package name, never the version, so a
+    // re-pinned plugin never shows up as two catalog rows.
+    if (replaced.has(companyPackageKey(entry))) continue
+    replaced.add(companyPackageKey(entry))
+    merged.push(
+      entry.revoked === true && overlayEntry.revoked !== true
+        ? { ...overlayEntry, revoked: true }
+        : overlayEntry,
     )
   }
-  return [...merged.values()].sort((left, right) =>
+  for (const entry of overlayByPackage.values()) {
+    if (!replaced.has(companyPackageKey(entry))) merged.push(entry)
+  }
+  return [...merged].sort((left, right) =>
     left.packageName === right.packageName
       ? (left.version < right.version ? -1 : left.version > right.version ? 1 : 0)
       : (left.packageName < right.packageName ? -1 : 1))

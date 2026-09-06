@@ -326,6 +326,34 @@ describe('company catalog provider beta overlay (P9)', () => {
       betaOverlayProvider: 'not-a-function' as unknown as CompanyBetaCatalogOverlayProvider,
     })).toThrow(TypeError)
   })
+
+  it('a re-pinned package replaces its stable row instead of adding a second version row (P10 red)', async () => {
+    // The real-machine incident shape: stable still pins 1.2.3 while the
+    // admitted beta overlay pins 1.3.0 of the same package. A roster
+    // machine must see exactly one row for the package — the beta version —
+    // never both versions side by side (the catalog's single-version view
+    // is also what the update banner's installed-versus-pinned decision
+    // relies on).
+    const betaManifest = unsignedManifest({
+      sequence: 51,
+      packages: [packageEntry({ version: '1.3.0', integrity: `sha512-${Buffer.alloc(64, 11).toString('base64')}` })],
+    })
+    const { provider, context } = betaProvider(
+      signedText(),
+      async () => ({ packages: betaPackagesOf(betaManifest), sequence: 51 }),
+    )
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    const items = snapshots.flatMap(snapshot => snapshot.items)
+    expect(items.map(item => item.id)).toEqual(['npm:dsh-plugin-safe@1.3.0'])
+    expect(items.map(item => item.latestVersion)).toEqual(['1.3.0'])
+    // The install-time authority follows the same single-version view: the
+    // beta pin is installable, the stable pin is gone.
+    expect(provider.findSignedPackage('dsh-plugin-safe', '1.3.0')?.version).toBe('1.3.0')
+    expect(provider.findSignedPackage('dsh-plugin-safe', '1.2.3')).toBeUndefined()
+    expect(provider.verifiedPackages().map(candidate => candidate.version)).toEqual(['1.3.0'])
+  })
 })
 
 describe('mergeCompanyBetaPackages (P9)', () => {
@@ -363,5 +391,78 @@ describe('mergeCompanyBetaPackages (P9)', () => {
     const merged = mergeCompanyBetaPackages(stable, beta)
     expect(merged.find(entry => entry.packageName === '@deepseek-ai/cool-plugin')?.revoked).toBe(true)
     expect(merged).toHaveLength(2)
+  })
+
+  it('a re-pinned package replaces the stable entry by name — never a second version row (P10 red)', () => {
+    // The real-machine bug shape: dedup by name@version kept both versions,
+    // so the roster machine's catalog showed 0.4.183 and 0.4.184 side by
+    // side. The merge key is the package name: one entry survives, the
+    // overlay's, whatever the versions are.
+    const stable = betaPackagesOf(unsignedManifest())
+    const beta = betaPackagesOf(unsignedManifest({
+      sequence: 52,
+      packages: [packageEntry({ version: '1.3.0', integrity: `sha512-${Buffer.alloc(64, 13).toString('base64')}` })],
+    }))
+    const merged = mergeCompanyBetaPackages(stable, beta)
+    expect(merged.map(entry => `${entry.packageName}@${entry.version}`)).toEqual([
+      '@deepseek-ai/cool-plugin@2.0.0',
+      'dsh-plugin-safe@1.3.0',
+    ])
+    expect(merged.find(entry => entry.packageName === 'dsh-plugin-safe')?.integrity)
+      .toBe(`sha512-${Buffer.alloc(64, 13).toString('base64')}`)
+  })
+
+  it('revocation stays sticky across a re-pin: a stable-revoked package cannot be un-revoked by a newer beta version', () => {
+    const stable = betaPackagesOf(unsignedManifest()) // pins @deepseek-ai/cool-plugin@2.0.0 revoked:true
+    const beta = betaPackagesOf(unsignedManifest({
+      sequence: 53,
+      packages: [
+        packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '2.1.0', revoked: false }),
+      ],
+    }))
+    const merged = mergeCompanyBetaPackages(stable, beta)
+    const resurrected = merged.find(entry => entry.packageName === '@deepseek-ai/cool-plugin')
+    expect(resurrected?.version).toBe('2.1.0')
+    expect(resurrected?.revoked).toBe(true)
+    // The untouched stable plugin survives beside the re-pinned one.
+    expect(merged).toHaveLength(2)
+  })
+
+  it('a stable manifest pinning two versions of one package keeps both when the overlay does not re-pin it', () => {
+    // The signed schema requires unique (packageName, version) pairs, not
+    // unique package names; the merge must only collapse a name the overlay
+    // actually re-pins.
+    const stable = betaPackagesOf(unsignedManifest({
+      packages: [
+        packageEntry({ version: '1.2.3' }),
+        packageEntry({ version: '1.3.0', integrity: `sha512-${Buffer.alloc(64, 17).toString('base64')}` }),
+        packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '2.0.0', revoked: true }),
+      ],
+    }))
+    const merged = mergeCompanyBetaPackages(stable, [])
+    expect(merged.map(entry => `${entry.packageName}@${entry.version}`)).toEqual([
+      '@deepseek-ai/cool-plugin@2.0.0',
+      'dsh-plugin-safe@1.2.3',
+      'dsh-plugin-safe@1.3.0',
+    ])
+  })
+
+  it('an overlay re-pinning a two-version package collapses it to the overlay version', () => {
+    const stable = betaPackagesOf(unsignedManifest({
+      packages: [
+        packageEntry({ version: '1.2.3' }),
+        packageEntry({ version: '1.3.0', integrity: `sha512-${Buffer.alloc(64, 17).toString('base64')}` }),
+        packageEntry({ packageName: '@deepseek-ai/cool-plugin', version: '2.0.0', revoked: true }),
+      ],
+    }))
+    const beta = betaPackagesOf(unsignedManifest({
+      sequence: 54,
+      packages: [packageEntry({ version: '1.4.0', integrity: `sha512-${Buffer.alloc(64, 19).toString('base64')}` })],
+    }))
+    const merged = mergeCompanyBetaPackages(stable, beta)
+    expect(merged.map(entry => `${entry.packageName}@${entry.version}`)).toEqual([
+      '@deepseek-ai/cool-plugin@2.0.0',
+      'dsh-plugin-safe@1.4.0',
+    ])
   })
 })

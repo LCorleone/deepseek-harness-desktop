@@ -591,6 +591,21 @@ describe('published package surface', () => {
     expect(main.slice(prepare)).toContain('policy,\n      bootVerificationInputs,\n    )')
   })
 
+  it('notifies once for class-a boot rejections after startup completes (P10 update prompt)', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const completeStartup = main.indexOf('lifecycleRecorder.completeStartup(startupStage, rendererReport)')
+    const skipped = main.indexOf('notifySkippedOptionalEntries(runtime, electronLogger, prepared.skippedOptionalEntries)')
+    const pending = main.indexOf('notifyPendingBootPluginUpdates(runtime, electronLogger, prepared.bootVerification)')
+
+    expect(main).toContain("} from './boot-update-prompt.ts'")
+    expect(completeStartup).toBeGreaterThan(0)
+    expect(skipped).toBeGreaterThan(completeStartup)
+    // The one call per session rides the existing post-boot notification
+    // block; its helper consumes only the class-a classification.
+    expect(pending).toBeGreaterThan(skipped)
+    expect(main).toContain('function notifyPendingBootPluginUpdates(')
+  })
+
   it('claims plugin install recovery before profile composition and gates health in Electron main', () => {
     const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
     const fixedStatePath = main.indexOf("desktopInstallRecoveryStatePath(app.getPath('userData'))")

@@ -1874,6 +1874,7 @@ describe('locked boot verification of third-party bundles (P2-4)', {
     expect(prepared.bootVerification?.rejected).toEqual([{
       packageName: firstPlugin,
       reason: `the installed files of ${firstPlugin}@${firstVersion} differ from the tree recorded in its install receipt`,
+      code: 'tree-mismatch',
     }])
     expect(prepared.bootVerification?.allowed.map(entry => entry.packageName)).toEqual([secondPlugin])
     expect(rows.map(row => row.id)).not.toContain(markerId(firstPlugin))

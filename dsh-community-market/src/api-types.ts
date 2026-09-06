@@ -257,6 +257,12 @@ export interface MarketOperationPreviewResponse {
   readonly displayName: string
   readonly expiresAt: string
   readonly previewId: string
+  /**
+   * Install previews only (P10): the installed version this confirmed install
+   * replaces through a controlled version replacement — absent for fresh
+   * installs.
+   */
+  readonly replaces?: string
 }
 
 export type MarketOperationExecuteResponse =

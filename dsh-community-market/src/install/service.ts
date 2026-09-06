@@ -85,6 +85,13 @@ export interface MarketInstallPreview {
   readonly version: string
   readonly displayName: string
   readonly expiresAt: string
+  /**
+   * Installed version this install replaces (P10 update path): present only
+   * when a verified market receipt still proves an older installed version
+   * of the same package. The install itself is a controlled version
+   * replacement — never an uninstall-then-install.
+   */
+  readonly replaces?: string
 }
 
 export interface MarketUninstallPreview {
@@ -751,11 +758,46 @@ async function assertInstalledBundle(
   )
 }
 
-async function assertNotInstalled(profile: MarketDesktopProfile, packageName: string): Promise<void> {
-  const profileManifest = await readManifest(join(profile.dir, 'package.json'))
-  if (profileReferencesPlugin(profileManifest, packageName)) {
+/**
+ * The install-target overlay state (P10 update path). A fresh install — the
+ * profile does not reference the package and owns no receipt for it —
+ * returns undefined. A version replacement returns the receipt that still
+ * proves the installed version the candidate replaces: the profile
+ * references the package, the market owns it, the receipt pins a different
+ * version than the candidate, and the installed bundle still verifies
+ * against that receipt (installed package, bundle patch, and lockfile
+ * integrity — registry or controlled `file:` pin alike). Everything else
+ * conflicts exactly like a fresh-install-only market: the same version
+ * already installed, an install the market does not own, a receipt without
+ * an install, or a receipt that no longer proves the disk state. The market
+ * never takes over an install it cannot reconcile.
+ */
+async function assertInstallOverlay(
+  profile: MarketDesktopProfile,
+  packageName: string,
+  candidateVersion: string,
+  receipts: readonly MarketInstallReceipt[],
+): Promise<MarketInstallReceipt | undefined> {
+  const owned = receipts.find(receipt => receipt.profileName === profile.name && receipt.packageName === packageName)
+  const referenced = profileReferencesPlugin(await readManifest(join(profile.dir, 'package.json')), packageName)
+  if (!referenced) {
+    if (owned !== undefined) {
+      throw new MarketInstallError('conflict', 'This plugin already has a market install receipt in the active profile.')
+    }
+    return undefined
+  }
+  if (owned === undefined) {
     throw new MarketInstallError('conflict', 'This plugin is already managed by the active profile.')
   }
+  if (owned.version === candidateVersion) {
+    throw new MarketInstallError('conflict', 'This plugin is already installed at the selected version.')
+  }
+  try {
+    await assertInstalledBundle(profile, owned.packageName, owned.version, owned.bundlePatch, owned.integrity)
+  } catch (cause) {
+    throw new MarketInstallError('conflict', `The installed plugin no longer matches its market receipt.${causeDetail(cause)}`)
+  }
+  return owned
 }
 
 async function assertRemoved(profile: MarketDesktopProfile, packageName: string): Promise<void> {
@@ -1022,8 +1064,7 @@ export class MarketInstallService {
       throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
     }
     const profile = this.profile()
-    this.assertNoReceipt(profile, candidate.packageName)
-    await assertNotInstalled(profile, candidate.packageName)
+    const replaces = await assertInstallOverlay(profile, candidate.packageName, candidate.version, this.receipts())
     let verification: MarketNpmPackageVerification
     try { verification = await this.verifier.verify(candidate, operationSignal) }
     catch (cause) {
@@ -1051,6 +1092,7 @@ export class MarketInstallService {
       version: candidate.version,
       displayName: candidate.displayName,
       expiresAt: new Date(this.now() + this.intentTtlMs).toISOString(),
+      ...(replaces === undefined ? {} : { replaces: replaces.version }),
     }
   }
 
@@ -1067,8 +1109,16 @@ export class MarketInstallService {
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The verified catalog item is no longer available.')
       }
-      this.assertNoReceipt(profile, candidate.packageName)
-      await assertNotInstalled(profile, candidate.packageName)
+      // The overlay is re-decided under the exclusive lock: a replacement
+      // remembers the receipt it must supersede (and restore on rollback);
+      // undefined keeps the fresh-install path. The re-run keeps preview and
+      // execute honest about drift between the two calls.
+      const replaceReceipt = await assertInstallOverlay(
+        profile,
+        candidate.packageName,
+        candidate.version,
+        this.receipts(),
+      )
       let verification: MarketNpmPackageVerification
       try { verification = await this.verifier.verify(candidate, operationSignal) }
       catch (cause) {
@@ -1084,7 +1134,15 @@ export class MarketInstallService {
         throw new MarketInstallError('verification-failed', 'The npm package changed after preview. Preview the install again.')
       }
       const decision = this.assertInstallTargetAllowed(candidate, verification)
-      await assertNotInstalled(profile, candidate.packageName)
+      const overlayAtExecute = await assertInstallOverlay(
+        profile,
+        candidate.packageName,
+        candidate.version,
+        this.receipts(),
+      )
+      if (overlayAtExecute?.receiptId !== replaceReceipt?.receiptId) {
+        throw new MarketInstallError('conflict', 'The installed plugin changed before installation.')
+      }
       if (this.candidates.get(candidate.key) !== candidate) {
         throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
       }
@@ -1110,7 +1168,7 @@ export class MarketInstallService {
         )
       } catch (cause) {
         if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
-        await this.rollbackInstall(profile, candidate.packageName, receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
         // The cause is runPlugin's MarketInstallError, whose message already
         // carries the captured pnpm stderr tail; inline it so this branch
         // does not swallow the actual failure reason behind a generic text.
@@ -1130,7 +1188,7 @@ export class MarketInstallService {
         )
         operationSignal.throwIfAborted()
       } catch (cause) {
-        await this.rollbackInstall(profile, candidate.packageName, receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
         // The cause is the post-install assertion's own error (bundle
         // identity, bundle patch, lockfile provenance) — inlining it keeps
         // the refusal honest instead of swallowing the reason behind a
@@ -1149,7 +1207,7 @@ export class MarketInstallService {
           treeDigest = await computeInstallTreeDigest(installedDir)
           operationSignal.throwIfAborted()
         } catch (cause) {
-          await this.rollbackInstall(profile, candidate.packageName, receiptId)
+          await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
           throw new MarketInstallError(
             'operation-failed',
             `The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.${causeDetail(cause)}`,
@@ -1166,9 +1224,16 @@ export class MarketInstallService {
         treeDigest,
       )
       try {
-        await this.saveReceipts([...this.receipts(), receipt])
+        // A replacement supersedes the receipt of the version it replaces —
+        // the store owns one receipt per (profile, package), and after a
+        // successful version replacement the new version is the one install
+        // the receipt must prove.
+        await this.saveReceipts([
+          ...this.receipts().filter(current => current.receiptId !== replaceReceipt?.receiptId),
+          receipt,
+        ])
       } catch {
-        await this.rollbackInstall(profile, candidate.packageName, receiptId)
+        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
         throw new MarketInstallError('persistence-failed', 'The install receipt could not be saved, so the installation was rolled back.')
       }
       return { receipt }
@@ -1304,12 +1369,6 @@ export class MarketInstallService {
       throw new MarketInstallError('persistence-failed', 'The market install receipt store is invalid.')
     }
     return value
-  }
-
-  private assertNoReceipt(profile: MarketDesktopProfile, packageName: string): void {
-    if (this.receipts().some(receipt => receipt.profileName === profile.name && receipt.packageName === packageName)) {
-      throw new MarketInstallError('conflict', 'This plugin already has a market install receipt in the active profile.')
-    }
   }
 
   private disabledPackages(): ReadonlySet<string> {
@@ -1577,14 +1636,31 @@ export class MarketInstallService {
     }
   }
 
+  /**
+   * Restore the profile from the install-recovery snapshot. A fresh install
+   * must leave the profile without the plugin; a replacement (P10) must
+   * leave the replaced version installed again — the snapshot predates the
+   * replacement, so the rollback target is the old version, not absence.
+   */
   private async rollbackInstall(
     profile: MarketDesktopProfile,
     packageName: string,
     receiptId: string,
+    replaceReceipt?: MarketInstallReceipt,
   ): Promise<void> {
     try {
       await this.pnpm.rollbackPluginInstall(receiptId)
-      await assertRemoved(profile, packageName)
+      if (replaceReceipt === undefined) {
+        await assertRemoved(profile, packageName)
+      } else {
+        await assertInstalledBundle(
+          profile,
+          replaceReceipt.packageName,
+          replaceReceipt.version,
+          replaceReceipt.bundlePatch,
+          replaceReceipt.integrity,
+        )
+      }
     } catch {
       throw new MarketInstallError(
         'persistence-failed',

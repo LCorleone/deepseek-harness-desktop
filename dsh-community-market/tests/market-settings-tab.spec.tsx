@@ -7,6 +7,7 @@ import type {
   MarketInstallReceipt,
   MarketInstallReceiptV1,
   MarketInstallableResponse,
+  MarketOperationPreviewResponse,
   MarketSourceView,
   MarketStateResponse,
 } from '../src/api-types.js'
@@ -474,7 +475,9 @@ describe('MarketSettingsTab', () => {
     expect(screen.getByText(`${en.providerRevision}: ${initialIndex.metadata.providerRevision}`)).toBeTruthy()
     expect(screen.getByText(en.cachedScan)).toBeTruthy()
     expect(readMarketInstallable).toHaveBeenCalledWith('en', false, expect.any(AbortSignal))
-    expect(readMarketInstallations).not.toHaveBeenCalled()
+    // The update banner (P10) preloads the verified installations once when
+    // the installable index lands, on any view.
+    expect(readMarketInstallations).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: en.loadMore }))
     expect(screen.getByRole('button', { name: `${en.install}: Second Installable` })).toBeTruthy()
@@ -585,7 +588,10 @@ describe('MarketSettingsTab', () => {
     })
     await waitFor(() => {
       expect(readMarketInstallable).toHaveBeenCalledTimes(2)
-      expect(readMarketInstallations).toHaveBeenCalledOnce()
+      // The banner (P10) loads the verified installations once when the
+      // installable index lands and refreshes them after the completed
+      // install, so the banner can clear its own row.
+      expect(readMarketInstallations).toHaveBeenCalledTimes(2)
       expect(readMarketState).toHaveBeenCalledTimes(1)
       expect(readMarketCatalog).toHaveBeenCalledTimes(1)
     })
@@ -771,6 +777,9 @@ describe('MarketSettingsTab', () => {
     vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [firstItem, secondItem]))
     vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([firstItem, secondItem]))
     vi.mocked(readMarketInstallations)
+      // The banner's preload (P10) stays pending so the openItem flows below
+      // still own their deferred inventory responses, one per click.
+      .mockImplementationOnce(() => new Promise(() => {}))
       .mockImplementationOnce(() => new Promise(resolve => { resolveFirstInventory = resolve }))
       .mockImplementationOnce(() => new Promise(resolve => { resolveSecondInventory = resolve }))
     vi.mocked(previewMarketOperation).mockResolvedValue({
@@ -1563,6 +1572,147 @@ describe('MarketSettingsTab', () => {
 
     view.unmount()
     expect(signal?.aborted).toBe(true)
+  })
+
+  it('shows the update banner for a managed install older than the pinned version and previews the replacement from Update (P10)', async () => {
+    const item = makeInstallableItem(firstSource, 'update-plugin', 'Update Plugin', 'dsh-plugin-update', '1.3.0')
+    const oldReceipt = makeReceipt({
+      packageName: item.package!.name,
+      version: '1.2.3',
+      // The old install's item id is the old version's row — the re-pinned
+      // item is a different row, so the update goes through the install
+      // flow, exactly like a post-promote reinstall.
+      itemId: 'update-plugin-old',
+      displayName: item.displayName,
+    })
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: oldReceipt }],
+    })
+    let resolvePreview: ((value: MarketOperationPreviewResponse) => void) | undefined
+    vi.mocked(previewMarketOperation).mockReturnValue(new Promise<MarketOperationPreviewResponse>(resolve => { resolvePreview = resolve }))
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    expect(await screen.findByRole('heading', { name: en.updateBannerTitle })).toBeTruthy()
+    expect(screen.getByText(en.updateBannerBody)).toBeTruthy()
+    const banner = document.querySelector('.dshMarketUpdateBanner') as HTMLElement
+    const bannerEntry = within(banner).getByText(item.displayName).closest('li')!
+    expect(bannerEntry.textContent).toContain('1.2.3')
+    expect(bannerEntry.textContent).toContain('1.3.0')
+
+    // Update rides the existing install flow: an exact install preview for
+    // the re-pinned item.
+    fireEvent.click(within(bannerEntry).getByRole('button', { name: `${en.updateAction}: ${item.displayName} 1.3.0` }))
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenCalledWith({
+        action: 'install',
+        sourceRecordId: firstSource.sourceRecordId,
+        itemId: item.id,
+      }, expect.any(AbortSignal))
+    })
+
+    // The replacement preview carries `replaces`: the confirmation says
+    // update and shows the version being replaced beside the target.
+    await act(async () => {
+      resolvePreview?.({
+        action: 'install',
+        profileName: 'web',
+        packageName: item.package!.name,
+        version: item.latestVersion!,
+        displayName: item.displayName,
+        expiresAt: '2026-08-18T00:05:00.000Z',
+        previewId: 'opaque-update-preview',
+        replaces: '1.2.3',
+      })
+    })
+    const confirmDialog = await screen.findByRole('dialog', { name: en.confirmUpdateTitle })
+    expect(within(confirmDialog).getByText(en.replacesVersion)).toBeTruthy()
+    expect(within(confirmDialog).getByText('1.2.3')).toBeTruthy()
+    expect(within(confirmDialog).getByRole('button', { name: en.confirmUpdate })).toBeTruthy()
+  })
+
+  it('keeps the update banner empty for matching versions and catalog-absent plugins (tamper- and revoked-shaped, P10 red)', async () => {
+    const pinnedSame = makeInstallableItem(firstSource, 'same-version', 'Same Version Plugin', 'dsh-plugin-same', '1.2.3')
+    const revokedReceipt = makeReceipt({
+      packageName: 'dsh-plugin-revoked',
+      version: '1.2.3',
+      itemId: 'revoked-plugin',
+      displayName: 'Revoked Plugin',
+    })
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [pinnedSame]))
+    // The catalog pins 1.2.3 of the managed install (versions equal — the
+    // tamper shape) and nothing at all for the revoked plugin's package.
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([pinnedSame]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [
+        { kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+          packageName: pinnedSame.package!.name,
+          version: pinnedSame.latestVersion!,
+          itemId: pinnedSame.id,
+          displayName: pinnedSame.displayName,
+        }) },
+        { kind: 'managed', status: 'active', action: 'uninstall', receipt: revokedReceipt },
+      ],
+    })
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    await screen.findByRole('button', { name: `${en.install}: ${pinnedSame.displayName}` })
+    expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
+  })
+
+  it('clears the update banner row once the replacement install completes (P10 liveness)', async () => {
+    const item = makeInstallableItem(firstSource, 'live-update', 'Live Update Plugin', 'dsh-plugin-live-update', '2.0.0')
+    const oldReceipt = makeReceipt({
+      packageName: item.package!.name,
+      version: '1.9.0',
+      itemId: 'live-update-old',
+      displayName: item.displayName,
+    })
+    const updatedReceipt = { ...oldReceipt, version: item.latestVersion!, itemId: item.id }
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations)
+      .mockResolvedValueOnce({ installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: oldReceipt }] })
+      .mockResolvedValue({ installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: updatedReceipt }] })
+    vi.mocked(previewMarketOperation).mockResolvedValue({
+      action: 'install',
+      profileName: 'web',
+      packageName: item.package!.name,
+      version: item.latestVersion!,
+      displayName: item.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-live-update-preview',
+      replaces: '1.9.0',
+    })
+    vi.mocked(executeMarketOperation).mockResolvedValue({
+      action: 'install',
+      receipt: updatedReceipt as MarketInstallReceipt,
+      restartToken: 'opaque-live-update-restart',
+    })
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    await screen.findByRole('heading', { name: en.updateBannerTitle })
+    const bannerEntry = within(document.querySelector('.dshMarketUpdateBanner') as HTMLElement)
+      .getByText(item.displayName)
+      .closest('li')!
+    fireEvent.click(within(bannerEntry).getByRole('button', { name: `${en.updateAction}: ${item.displayName} 2.0.0` }))
+    const confirmDialog = await screen.findByRole('dialog', { name: en.confirmUpdateTitle })
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: en.confirmUpdate }))
+
+    // One restart prompt (the existing success modal), and after the
+    // refreshed installations land, the banner row is gone.
+    expectMarketModal(await screen.findByRole('dialog', { name: en.updateComplete }), 'dshMarketStatusModal')
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
+    })
+    expect(readMarketInstallations).toHaveBeenCalledTimes(2)
   })
 
   it('opens and closes the shared Market surface from the sidebar launcher', async () => {

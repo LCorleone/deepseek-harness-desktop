@@ -12,6 +12,7 @@ import {
   ed25519PublicKeyFingerprint,
   verifyCompanyManifest,
 } from 'dsh-community-market'
+import type { DesktopCompanyManifestPackage } from '../src/desktop-market.ts'
 import { desktopMarketTarballStagingPath } from '../src/pnpm.js'
 import {
   BOOT_TREE_MAX_PATH_LENGTH,
@@ -34,6 +35,8 @@ import {
   verifyDesktopBootBundles,
   type DesktopBootBundle,
   type DesktopBootReceipt,
+  type DesktopBootRejectionCode,
+  type DesktopBootRejectedBundle,
   type DesktopBootTreeMeasurePurpose,
 } from '../src/boot-verification.ts'
 
@@ -160,6 +163,8 @@ const verify = (
     now?: () => number
     companyCatalogOrigin?: string | null
     measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
+    betaPackages?: readonly DesktopCompanyManifestPackage[]
+    betaSequence?: number
   } = {},
 ) => verifyDesktopBootBundles(manifestBytes, bundles, { trustRoots, ...options })
 
@@ -341,6 +346,7 @@ describe('desktop boot bundle verification', () => {
     expect(result.rejected).toEqual([{
       packageName,
       reason: `the installed files of ${packageName}@${version} differ from the tree recorded in its install receipt`,
+      code: 'tree-mismatch',
     }])
   })
 
@@ -350,32 +356,41 @@ describe('desktop boot bundle verification', () => {
       receipts: [receiptFor({ ...bundle, packageDir: installedPackage(defaultFiles) })],
     })
     expect(result.rejected[0]?.reason).toContain('could not be measured')
+    // Measurement failures carry no explicit classification — the fallback.
+    expect(result.rejected[0]?.code).toBe('other')
   })
 
   it('rejects absent, misversioned, and revoked manifest entries', () => {
     const absent = verify(signedManifestText([]), [bundleInput()])
     expect(absent.rejected[0]?.reason).toBe(`${packageName}@${version} is not in the signed company manifest`)
+    expect(absent.rejected[0]?.code).toBe('not-in-manifest')
 
     const otherVersion = verify(signedManifestText([packageEntry({ version: '2.0.0' })]), [bundleInput()])
     expect(otherVersion.rejected[0]?.reason).toBe(
       `the signed company manifest pins ${packageName}@2.0.0, but ${version} is installed`,
     )
+    expect(otherVersion.rejected[0]?.code).toBe('not-pinned-newer-pinned')
+    expect(otherVersion.rejected[0]).toMatchObject({ installedVersion: version, pinnedVersion: '2.0.0' })
 
     const revoked = verify(signedManifestText([packageEntry({ revoked: true })]), [bundleInput()])
     expect(revoked.rejected[0]?.reason).toBe(`${packageName}@${version} is revoked in the signed company manifest`)
+    expect(revoked.rejected[0]?.code).toBe('revoked')
   })
 
   it('rejects unresolvable bundles and missing or diverging lock integrity', () => {
     const unresolvable = verify(signedManifestText([packageEntry()]), [bundleInput({ packageDir: undefined, version: undefined })])
     expect(unresolvable.rejected[0]?.reason).toContain('cannot be resolved as an installed package')
+    expect(unresolvable.rejected[0]?.code).toBe('unresolved')
 
     const unpinned = verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: undefined })])
     expect(unpinned.rejected[0]?.reason).toContain('no exact pinned record in the profile lockfile')
+    expect(unpinned.rejected[0]?.code).toBe('no-lock-integrity')
 
     const diverging = verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: otherIntegrity })])
     expect(diverging.rejected[0]?.reason).toBe(
       `the profile lockfile pins ${packageName}@${version} to integrity ${otherIntegrity}, but the signed company manifest pins ${signedIntegrity}`,
     )
+    expect(diverging.rejected[0]?.code).toBe('integrity-mismatch')
   })
 
   it('rejects every bundle when the manifest is missing, expired, or badly signed', () => {
@@ -391,8 +406,8 @@ describe('desktop boot bundle verification', () => {
       },
       allowed: [],
       rejected: [
-        { packageName, reason: expect.stringContaining('manifest-missing') },
-        { packageName: 'second-plugin', reason: expect.stringContaining('manifest-missing') },
+        { packageName, reason: expect.stringContaining('manifest-missing'), code: 'other' },
+        { packageName: 'second-plugin', reason: expect.stringContaining('manifest-missing'), code: 'other' },
       ],
     })
 
@@ -453,6 +468,79 @@ describe('desktop boot bundle verification', () => {
     })
     expect(result.manifestFailure?.code).toBe('unknown-key')
     expect(result.rejected).toHaveLength(1)
+  })
+
+  it('classifies a beta overlay re-pin as update-available against the beta pin (P10 a-class beta fallback)', () => {
+    // A tester's stale beta install while the admitted beta manifest already
+    // re-pins: the rejection must carry the a-class code with the beta pin
+    // as the update target — the pinned lookup runs beta-first.
+    const staleBeta = '0.9.0'
+    const betaPinned = '0.9.1'
+    const result = verify(
+      signedManifestText([]),
+      [bundleInput({ version: staleBeta })],
+      {
+        betaPackages: [packageEntry({ version: betaPinned }) as unknown as DesktopCompanyManifestPackage],
+        betaSequence: manifestSequence,
+      },
+    )
+    expect(result.rejected[0]?.code).toBe('not-pinned-newer-pinned')
+    expect(result.rejected[0]).toMatchObject({ installedVersion: staleBeta, pinnedVersion: betaPinned })
+    expect(result.rejected[0]?.reason).toBe(
+      `the signed company manifest pins ${packageName}@${betaPinned}, but ${staleBeta} is installed`,
+    )
+
+    // Without the overlay the same install is simply absent from the
+    // manifest — never update-available (non-roster machines never see beta
+    // content, so their classification stays not-in-manifest).
+    const stableOnly = verify(signedManifestText([]), [bundleInput({ version: staleBeta })])
+    expect(stableOnly.rejected[0]?.code).toBe('not-in-manifest')
+  })
+
+  it('guarantees classification completeness: the code vocabulary is closed and unclassified branches fall back to other', () => {
+    // The union admits exactly the P10 classification vocabulary; the cast
+    // fails to compile the moment a code leaves or joins it.
+    const vocabulary = [
+      'not-pinned-newer-pinned',
+      'not-in-manifest',
+      'revoked',
+      'integrity-mismatch',
+      'tree-mismatch',
+      'unresolved',
+      'no-lock-integrity',
+      'other',
+    ] as const satisfies readonly DesktopBootRejectionCode[]
+    expect(vocabulary).toContain('other')
+
+    // Every already-covered rejection branch lands inside the vocabulary
+    // with a defined code (the per-branch assertions above pin the exact
+    // values); the branch that passes no classification at all — the
+    // measurement failure stands in for any future branch — still produces
+    // the total fallback instead of undefined.
+    const branches = [
+      verify(signedManifestText([packageEntry()]), [bundleInput({ packageDir: undefined, version: undefined })]),
+      verify(signedManifestText([]), [bundleInput()]),
+      verify(signedManifestText([packageEntry({ version: '2.0.0' })]), [bundleInput()]),
+      verify(signedManifestText([packageEntry({ revoked: true })]), [bundleInput()]),
+      verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: undefined })]),
+      verify(signedManifestText([packageEntry()]), [bundleInput({ lockIntegrity: otherIntegrity })]),
+      verify(signedManifestText([packageEntry({ treeDigest: 'ab'.repeat(32) })]), [bundleInput()], {
+        measureTreeRootDigest: () => 'cd'.repeat(32),
+      }),
+      verify(undefined, [bundleInput()]),
+    ]
+    const seen = new Set<DesktopBootRejectionCode>()
+    for (const decision of branches) {
+      expect(decision.rejected.length).toBeGreaterThan(0)
+      for (const rejected of decision.rejected as readonly DesktopBootRejectedBundle[]) {
+        expect(typeof rejected.code).toBe('string')
+        expect(vocabulary).toContain(rejected.code)
+        seen.add(rejected.code)
+      }
+    }
+    // Both fallback producers are present: the manifest-level rejection and
+    // the unclassified measurement failure.
+    expect(seen.has('other')).toBe(true)
   })
 })
 
@@ -690,6 +778,7 @@ describe('signed tree digest authority (entries carrying treeDigest)', () => {
     expect(result.rejected).toEqual([{
       packageName,
       reason: `the installed files of ${packageName}@${version} differ from the tree digest pinned in the signed company manifest`,
+      code: 'tree-mismatch',
     }])
   })
 
@@ -818,6 +907,7 @@ describe('signed tree digest authority bypasses the fingerprint cache', () => {
     expect(result.rejected).toEqual([{
       packageName,
       reason: `the installed files of ${packageName}@${version} differ from the tree digest pinned in the signed company manifest`,
+      code: 'tree-mismatch',
     }])
     // The authority path measured the tampered contents for real.
     expect(measure).toHaveBeenCalledTimes(1)
@@ -1498,6 +1588,7 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
     expect(result.rejected).toEqual([{
       packageName,
       reason: expect.stringContaining('reinstall the plugin from the company market') as unknown as string,
+      code: 'no-lock-integrity',
     }])
   })
 
