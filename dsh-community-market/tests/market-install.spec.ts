@@ -2266,6 +2266,29 @@ describe('install event sink (client event telemetry, 2026-09-07)', () => {
     service.dispose()
   })
 
+  it('reports a completed uninstall as an uninstalled event', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      { installEventSink: sink },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const installed = await service.executeInstall(preview.intent, new AbortController().signal)
+    const uninstallPreview = await service.previewUninstall(installed.receipt.receiptId, new AbortController().signal)
+    await service.executePreview(uninstallPreview.intent, new AbortController().signal)
+    expect(events.map(event => [event.packageName, event.version, event.outcome])).toEqual([
+      [packageName, version, 'installed'],
+      [packageName, version, 'uninstalled'],
+    ])
+    service.dispose()
+  })
+
   it('reports an operation-failed install with the code only — no stderr or paths leak into the event (privacy line)', async () => {
     const profileDir = await createProfile()
     const calls: Array<{ args: readonly string[]; dir: string }> = []

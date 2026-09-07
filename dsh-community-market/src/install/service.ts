@@ -295,7 +295,7 @@ export const rejectAllInstallTargetAuthority: InstallTargetAuthority = {
 }
 
 /** Terminal outcome of one market install attempt (client event telemetry). */
-export type MarketInstallEventOutcome = 'installed' | 'updated-in-place' | 'rolled-back' | 'failed'
+export type MarketInstallEventOutcome = 'installed' | 'updated-in-place' | 'uninstalled' | 'rolled-back' | 'failed'
 
 /**
  * One install attempt's reportable facts (client event telemetry,
@@ -1425,8 +1425,20 @@ export class MarketInstallService {
       } catch {
         throw new MarketInstallError('persistence-failed', 'The plugin was removed, but its market receipt could not be updated.')
       }
+      // Client event telemetry: a completed uninstall is fleet-visible churn
+      // (the "who left" signal); categorical identity only, same as installs.
+      this.reportUninstallEvent(currentReceipt.packageName, currentReceipt.version)
       return { receiptId: currentReceipt.receiptId, packageName: currentReceipt.packageName }
     })
+  }
+
+  /** Fire-and-forget uninstall event (throw-guarded like every sink call). */
+  private reportUninstallEvent(packageName: string, version: string): void {
+    try {
+      this.installEvents.reportInstallEvent({ packageName, version, outcome: 'uninstalled' })
+    } catch {
+      // Telemetry must never fail an uninstall; drop the row silently.
+    }
   }
 
   dispose(): void {

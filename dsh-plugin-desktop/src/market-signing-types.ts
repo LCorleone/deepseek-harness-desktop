@@ -82,6 +82,7 @@ export interface VerifyCompanyManifestOptions {
 export type MarketInstallEventOutcome =
   | 'installed'
   | 'updated-in-place'
+  | 'uninstalled'
   | 'rolled-back'
   | 'failed'
 

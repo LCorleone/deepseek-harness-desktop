@@ -178,7 +178,7 @@ export interface PluginInstallEventDetail {
   readonly version: string
   /** Which catalog channel delivered the installed version. */
   readonly channel: 'stable' | 'beta'
-  readonly outcome: 'installed' | 'updated-in-place' | 'rolled-back' | 'failed'
+  readonly outcome: 'installed' | 'updated-in-place' | 'uninstalled' | 'rolled-back' | 'failed'
   /** Bounded failure category (the market's install error code vocabulary). */
   readonly reasonCode?: string
   /** Optional one-line bounded failure reason; never free stderr text. */
@@ -473,7 +473,7 @@ export function bootVerifyEvent(
 export interface MarketInstallEventView {
   readonly packageName: string
   readonly version: string
-  readonly outcome: 'installed' | 'updated-in-place' | 'rolled-back' | 'failed'
+  readonly outcome: 'installed' | 'updated-in-place' | 'uninstalled' | 'rolled-back' | 'failed'
   /** Sequence of the signed manifest that allowed the install, when known. */
   readonly manifestSequence?: number | undefined
   /** Failure category (the market's install error code); present on failures. */

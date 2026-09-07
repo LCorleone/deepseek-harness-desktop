@@ -445,6 +445,12 @@ describe('plugin install projection', () => {
     stableText,
   )
 
+// Uninstall churn is fleet-visible (the "who left" signal).
+    expect(pluginInstallEvent(
+      { packageName: 'corp-plugin', version: '2.0.0', outcome: 'uninstalled' },
+      new Set(),
+    )).toEqual({ packageName: 'corp-plugin', version: '2.0.0', channel: 'stable', outcome: 'uninstalled' })
+
 // P1 red proofs (review): a failure reason never carries paths or stderr
     // tails into the database.
     it('pluginInstallEvent masks path-shaped fragments out of a failure reason', () => {
