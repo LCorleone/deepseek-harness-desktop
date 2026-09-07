@@ -48,6 +48,17 @@ declare global {
   }
 }
 
+const BRIDGE_MISSING_NOTICE = '界面组件加载异常：决策通道未就绪。请截图此窗口并联系管理员（cndchatgen@deloittecn.com.cn）。'
+
+/** Visible degradation (review P1): a missing bridge must never be a silent
+ * dead button — the #63 incident's exact symptom. console.error rides the
+ * window's console-message observability into the desktop log. */
+function bridgeMissing(): boolean {
+  if (window.desktopDisclaimerBridge !== undefined) return false
+  console.error('disclaimer bridge missing: the preload did not load — decisions cannot be delivered')
+  return true
+}
+
 function decide(action: 'agree' | 'disagree'): void {
   window.desktopDisclaimerBridge?.decide(action)
 }
@@ -83,6 +94,7 @@ export class DisclaimerErrorBoundary
 
 export function DisclaimerApp(): JSX.Element {
   const state = decodeState()
+  const degraded = bridgeMissing()
   useEffect(() => { document.title = state === undefined ? FALLBACK_TITLE : state.title }, [state])
   if (state === undefined) {
     return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTitle>{FALLBACK_TITLE}</AlertTitle><AlertDescription>{FALLBACK_BODY}</AlertDescription></Alert></main>
@@ -105,9 +117,10 @@ export function DisclaimerApp(): JSX.Element {
       </div>
     </section>
     <footer className="dshDisclaimerFooter">
+      {degraded ? <p className="mx-auto w-full max-w-2xl px-6 pt-2 text-xs text-red-400" role="alert">{BRIDGE_MISSING_NOTICE}</p> : null}
       <div className="mx-auto flex w-full max-w-2xl items-center justify-end gap-3 px-6 py-4">
-        <button type="button" className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-6')} onClick={() => { decide('disagree') }}>{BUTTON_DISAGREE}</button>
-        <button type="button" className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} onClick={() => { decide('agree') }}>{BUTTON_AGREE}</button>
+        <button type="button" disabled={degraded} className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-6')} onClick={() => { decide('disagree') }}>{BUTTON_DISAGREE}</button>
+        <button type="button" disabled={degraded} className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} onClick={() => { decide('agree') }}>{BUTTON_AGREE}</button>
       </div>
     </footer>
   </main>

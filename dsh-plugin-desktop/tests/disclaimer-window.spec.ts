@@ -95,6 +95,7 @@ const electron = vi.hoisted(() => {
     app: { on: appEmitter.on, off: appEmitter.off, isHidden: vi.fn(() => false), show: vi.fn() },
     BrowserWindow: FakeDisclaimerWindow,
     ipcMain,
+    ipcListeners,
     windows,
   }
 })
@@ -245,6 +246,34 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
   }
 
   beforeEach(() => { electron.windows.length = 0 })
+
+  it('ignores a decide IPC from a foreign sender webContents', async () => {
+    const { results, close } = await openDisclaimer()
+    electron.ipcMain.emit('dsh-disclaimer:decide', { sender: { id: 999 } }, 'agree')
+    await flushAsync()
+    expect(results).toEqual([])
+    close()
+    await flushAsync()
+  })
+
+  it('ignores a decide IPC carrying an off-enum action', async () => {
+    const { results, window, close } = await openDisclaimer()
+    electron.ipcMain.emit('dsh-disclaimer:decide', { sender: { id: window.webContents.id } }, 'agree-but-louder')
+    await flushAsync()
+    expect(results).toEqual([])
+    close()
+    await flushAsync()
+  })
+
+  it('removes the decide listener when the window closes', async () => {
+    const { close } = await openDisclaimer()
+    close()
+    await flushAsync()
+    // A late in-flight IPC after closed must not throw (destroyed window)
+    // and the listener set is empty — nothing remains registered.
+    electron.ipcMain.emit('dsh-disclaimer:decide', { sender: { id: 42 } }, 'agree')
+    expect(electron.ipcListeners.get('dsh-disclaimer:decide')?.size ?? 0).toBe(0)
+  })
 
   it('renders the v2 statement once and settles agree, destroying the window', async () => {
     const disclaimer = await openDisclaimer()

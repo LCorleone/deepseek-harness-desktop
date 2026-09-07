@@ -17,15 +17,15 @@
  * @module dsh-plugin-desktop/disclaimer-window
  */
 
-import { BrowserWindow, app, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { BrowserWindow, app, ipcMain } from 'electron'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import { DISCLAIMER_ITEMS, DISCLAIMER_TITLE } from './disclaimer-text.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
+import { DESKTOP_DISCLAIMER_DECIDE_CHANNEL } from './disclaimer-preload.ts'
 
 const DISCLAIMER_SCHEME = 'dsh-disclaimer:'
-import { DESKTOP_DISCLAIMER_DECIDE_CHANNEL } from './disclaimer-preload.ts'
 // loadFile requires a physical file; pin to the unpacked mirror (dev paths
 // pass through unchanged) — see startup-recovery-window.ts for the rationale.
 const DISCLAIMER_DOCUMENT = unpackedAsarPath(fileURLToPath(new URL('./native-ui/disclaimer.html', import.meta.url)))
@@ -192,8 +192,12 @@ export class DesktopDisclaimerWindow {
     // Deterministic decision transport (see the preload comment above). The
     // sender is pinned to THIS window's webContents so a stray same-partition
     // document cannot decide on its behalf.
+    // Captured at registration: between finish() → destroy() and the
+    // 'closed' cleanup, an in-flight duplicate IPC would touch a destroyed
+    // window's webContents otherwise.
+    const wcId = window.webContents.id
     const decide = (event: Electron.IpcMainEvent, action: unknown): void => {
-      if (event.sender.id !== window.webContents.id) return
+      if (event.sender.id !== wcId) return
       if (action !== 'agree' && action !== 'disagree') return
       this.finish(action)
     }

@@ -10,8 +10,8 @@ function stateQuery(model: unknown): string {
 }
 
 /** Render the disclaimer document against a stubbed window.location.search. */
-function renderDisclaimer(search: string): string {
-  vi.stubGlobal('window', { location: { search } })
+function renderDisclaimer(search: string, bridge?: unknown): string {
+  vi.stubGlobal('window', { location: { search }, ...(bridge === undefined ? {} : { desktopDisclaimerBridge: bridge }) })
   try {
     return renderToStaticMarkup(createElement(DisclaimerApp))
   } finally {
@@ -31,6 +31,11 @@ describe('disclaimer document state decoding (issue #36 black-screen defense)', 
     expect(markup).toContain('生成式AI合规指引(第一版)')
     expect(markup).toContain('不同意')
     expect(markup).toContain('同意')
+    // The dead v1 transport must never come back silently (review P2).
+    expect(markup).not.toContain('dsh-disclaimer://')
+    // No bridge in this render → visible degradation, disabled buttons.
+    expect(markup).toContain('界面组件加载异常')
+    expect(markup).toContain('disabled')
     expect(markup).not.toContain('声明内容读取失败')
     // The two buttons navigate exactly the two parsed custom-scheme actions.
     expect(markup).toContain('不同意')
@@ -77,5 +82,13 @@ describe('disclaimer render failure boundary', () => {
     expect(renderToStaticMarkup(healthy)).toContain('inner')
     const armed: DisclaimerErrorBoundary['state'] = { failed: true }
     expect(armed).toEqual({ failed: true })
+  })
+})
+
+describe('disclaimer decision bridge (review P1/P2)', () => {
+  it('with the preload bridge present, buttons stay enabled and no degradation notice renders', () => {
+    const markup = renderDisclaimer(stateQuery({ title: DISCLAIMER_TITLE, items: [...DISCLAIMER_ITEMS] }), { decide: () => {} })
+    expect(markup).not.toContain('界面组件加载异常')
+    expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|\s|>)/u)
   })
 })
