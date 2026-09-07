@@ -257,7 +257,7 @@ describe('DesktopSsoGateWindow lifecycle', () => {
   beforeEach(() => { electron.windows.length = 0 })
 
   it('ignores a sign-in IPC from a foreign sender webContents', async () => {
-    const { results, close } = await openGate()
+    const { results, close } = await openGate(() => new Promise<never>(() => {}))
     electron.ipcMain.emit('dsh-sso-gate:sign-in', { sender: { id: 999 } })
     await flushAsync()
     expect(results).toEqual([])
@@ -266,14 +266,14 @@ describe('DesktopSsoGateWindow lifecycle', () => {
   })
 
   it('removes the sign-in listener when the window closes', async () => {
-    const { close } = await openGate()
+    const { close } = await openGate(() => new Promise<never>(() => {}))
     close()
     await flushAsync()
     expect(electron.ipcListeners.get('dsh-sso-gate:sign-in')?.size ?? 0).toBe(0)
   })
 
   it('a late in-flight sign-in IPC after closed does not throw', async () => {
-    const { close } = await openGate()
+    const { close } = await openGate(() => new Promise<never>(() => {}))
     close()
     await flushAsync()
     expect(() => { electron.ipcMain.emit('dsh-sso-gate:sign-in', { sender: { id: 7 } }) }).not.toThrow()
