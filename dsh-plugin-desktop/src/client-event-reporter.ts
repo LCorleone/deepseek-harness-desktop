@@ -176,8 +176,10 @@ export interface BootVerifyEventDetail {
 export interface PluginInstallEventDetail {
   readonly packageName: string
   readonly version: string
-  /** Which catalog channel delivered the installed version. */
-  readonly channel: 'stable' | 'beta'
+  /** Which catalog channel delivered the installed version; absent for
+   * uninstalls (the removed version's delivery channel is not knowable from
+   * the boot-time overlay set — guessing would pollute churn analytics). */
+  readonly channel?: 'stable' | 'beta'
   readonly outcome: 'installed' | 'updated-in-place' | 'uninstalled' | 'rolled-back' | 'failed'
   /** Bounded failure category (the market's install error code vocabulary). */
   readonly reasonCode?: string
@@ -546,6 +548,9 @@ export function pluginInstallEvent(
   event: MarketInstallEventView,
   betaDelivered: ReadonlySet<string> | undefined,
 ): PluginInstallEventDetail {
+  if (event.outcome === 'uninstalled') {
+    return { packageName: event.packageName, version: event.version, outcome: 'uninstalled' }
+  }
   const channel = betaDelivered !== undefined
     && betaDelivered.has(`${event.packageName}@${event.version}`)
     ? 'beta'
