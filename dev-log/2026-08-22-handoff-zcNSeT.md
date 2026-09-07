@@ -238,6 +238,12 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 · **kimi wire 实测**：curl 直打 nova 网关 kimi-k2.6 两发全通（「通」/17×23=391，usage 齐全，响应形状与 deepseek 同款 chat-completions）；工具调用+流式留 #63 真机验。
 · **上下文长度议题**：blob v2 已留可选 contextWindow/maxTokens 字段（steer 并入），未填走上游回退 256K/32K；等运维给两模型真实参数后重生成 blob 即可，零代码改动。
 
+### 发车事故复盘：grep -c 掐断 && 链（2026-09-07 21:57）
+**事故**：构建号代码从未进首个 #63（run 34129324729，弃用不下载）。根因=`typecheck | grep -cE "error TS" && git add && git commit && git push` 链中 grep -c 在**零匹配（类型全对）时退出码 1**（grep「未选中行」语义）→ && 断链 → commit/push 静默跳过；随后一次 push 成功推的实为 devlog commit，造成「已提交」错觉。**戳穿者=review-buildseq**（评审查 git 发现 1966671d88 仅含 devlog、方案在工作区未提交）——评审环节的实战价值实证。
+**修复**：commit e9bd9cb82a（构建号+评审 P2 全修：make-build-seq CI-only 守卫防本地脏树/前导零 parseInt 归一防 ES 语法错/诊断面 exportDesktopDiagnostics×2+terminal spec.productVersion 改带 +b；updater currentVersion 与 update artifact 比对刻意保持基准版）→ 重发车 **#63=34130149224**（e9bd9cb82a，九件套：卸载事件/沙箱铁律/X 退出/隐私加固/locale/名册 v2/声明门/构建号 2.0.3+b63/诊断面）。
+**防再犯**（纪律入档）：①计数 grep 不进 && 链；②发车前必核 `git log origin/master -1` SHA；③评审输出里「提交状态」类疑点立即 git show 核实不辩解。
+评审余项：P3 seq 按 workflow 计数（未来多打包 workflow 各自序列，已注释注明）；注入测试建议（vi.mock generated 模块）未做。
+
 ### 构建号方案 + #63 发车（2026-09-07 21:50）
 **问题**（老板发现）：版本常年 2.0.3——更新不触发声明重弹、遥测分不清构建。老板要「2.0.3.x」四段式；四段非 semver 会被 electron-builder 拒 → **等价实现=semver build metadata**：`2.0.3+b<CI run_number>`（1966671d88）。
 - 新 src/desktop-build-version.ts（base=package.json 版；DSH_BUILD_SEQ>0 拼 +b）+ build-seq.generated.ts（committed 默认 0，CI 用 DSH_BUILD_NUMBER 覆写不回传）
