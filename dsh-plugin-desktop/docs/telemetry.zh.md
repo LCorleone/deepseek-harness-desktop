@@ -37,6 +37,10 @@ ttft_ms, latency_ms, session_id, turn, step, client_version, created_at`。
 
 ## 3. 常用查询（老板面板直抄）
 
+> **时区注意**：`created_at` 一律存 **UTC**（写入端统一序列化，防 fleet 时区漂移）。
+> 北京时间 = 库值 +8 小时：查询时用 `DATE_ADD(created_at, INTERVAL 8 HOUR)`
+> 或会话级 `SET time_zone = '+08:00';`。看到 05:34 就是本地 13:34，没丢时间。
+
 ```sql
 -- 每日活跃（谁今天开过客户端）
 SELECT DATE(created_at) d, COUNT(DISTINCT user_email) DAU
