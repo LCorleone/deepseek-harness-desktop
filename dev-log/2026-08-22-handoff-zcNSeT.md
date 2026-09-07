@@ -238,6 +238,16 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 · **kimi wire 实测**：curl 直打 nova 网关 kimi-k2.6 两发全通（「通」/17×23=391，usage 齐全，响应形状与 deepseek 同款 chat-completions）；工具调用+流式留 #63 真机验。
 · **上下文长度议题**：blob v2 已留可选 contextWindow/maxTokens 字段（steer 并入），未填走上游回退 256K/32K；等运维给两模型真实参数后重生成 blob 即可，零代码改动。
 
+### 声明门真机事故 + 双窗 IPC 修复夜（2026-09-07 23:20 收工）
+**事故**：#65 前身（run 34130149224=b64）真机——声明窗弹出但点「同意」无反应，启动停摆。日志定位：will-navigate 从未到主进程。**根因=打包态 sandbox 渲染器把未知 scheme 锚点（dsh-disclaimer://agree）吞成外部协议**——单测 fake 窗口盖不到渲染层真实导航语义（P8「单测绿打包死」第 N 次）。sso-gate 同款写法=同雷潜伏（静默登录一直成功掩盖，打包态零真人点击）。
+**修复双批**：
+① 77c29e081d 声明门换 preload IPC（disclaimer-preload.ts：contextBridge.decide→ipcRenderer.send；主侧 sender.id 钉本窗+枚举校验+closed 清理；App 锚点换 button onClick）+评审 7405840dc6（P1 无桥静默死→禁用+红字+console.error 进日志；P2×4：伪造/枚举/清理三条变异测、死通道反向钉 dsh-disclaimer:// 永不回归、打包清单含新 preload、destroyed 窗 wcId 捕获）。
+② 5fdd61d89c sso-gate 同款变换（sso-gate-preload.ts+IPC+降级+清单四件套）+评审修 376f0a643e/85301dec0e（三条变异测镜像+App 降级断言+死 scheme 反向钉+邮箱文案；评审结论「补上即 APPROVED」条件达成）。
+**#65=34135502345 已下载 asserts**（23:18，SHA256 0c037923…，构建号 2.0.3+b65；含声明修复**不含 sso-gate 加固**）。注：会话内编号曾漂（把 b64/b65 口称 #63/#64）——一律以 GitHub workflow 计数为准。
+**明早流程**：运维给两模型上下文/输出参数→填参重生成 blob→#66 终版（sso-gate 加固+参数+今日全部）→July 终验（声明弹窗/Kimi/X 退出/client_version=b66）→fleet 群发。
+**工具纪律自省**：今晚 python 单行改码多次插错层/转义翻车（修三轮×2）——以后代码编辑一律用 edit 工具，bash 只跑命令。
+**sso-gate App spec 降级断言、伪造面测试**：均已补（2006+7skip/typecheck 0）。
+
 ### 发车事故复盘：grep -c 掐断 && 链（2026-09-07 21:57）
 **事故**：构建号代码从未进首个 #63（run 34129324729，弃用不下载）。根因=`typecheck | grep -cE "error TS" && git add && git commit && git push` 链中 grep -c 在**零匹配（类型全对）时退出码 1**（grep「未选中行」语义）→ && 断链 → commit/push 静默跳过；随后一次 push 成功推的实为 devlog commit，造成「已提交」错觉。**戳穿者=review-buildseq**（评审查 git 发现 1966671d88 仅含 devlog、方案在工作区未提交）——评审环节的实战价值实证。
 **修复**：commit e9bd9cb82a（构建号+评审 P2 全修：make-build-seq CI-only 守卫防本地脏树/前导零 parseInt 归一防 ES 语法错/诊断面 exportDesktopDiagnostics×2+terminal spec.productVersion 改带 +b；updater currentVersion 与 update artifact 比对刻意保持基准版）→ 重发车 **#63=34130149224**（e9bd9cb82a，九件套：卸载事件/沙箱铁律/X 退出/隐私加固/locale/名册 v2/声明门/构建号 2.0.3+b63/诊断面）。
@@ -268,12 +278,12 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 插件仓整体迁移（2026-09-07 15:15）
 julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-desktop-plugins（http://10.173.59.30:9080）**。镜像迁移完成：master=老 HEAD 5d1f0e73 后续+契约更新 322e8b7、默认分支 master、Maintainer-only 保护（push/merge=40）复刻、起始 main 已删、契约四件+example 已同步指向新实例（handoff.schema.json $id/README clone 命令/SOP 两处）。老仓已归档（api archive 201，只读留存）。⚠️ 注意：①交接线 ⑤⑥ 权限动作要落在新实例（sebtang/lizywu 需在 10.173.59.30 有账号）②新实例走 HTTP（内网明文，token 注意）③客户端不受影响（客户端拉的是 config 仓，未动）④旧 GITLAB_TOKEN 对新实例无效，新 token=pluginpuller 用户。verify-handoff 命令行 origin 参数照传新地址即可（无硬编码）。
 
-### 当前 TODO 快照（2026-09-07 21:35 收工版）
-**今日全清**：0.4.184→stable（seq16）+RELEASE 速查 · 新库 DSH_LOG+四类事件+卸载+telemetry 手册+july 降权 · 沙箱档1 · X 确认退出 · 插件仓迁移+契约 v2+MR 模板+示例 MR !1+MR-HANDLING 指南 · 模型名册 v2（deepseek-v4-flash 显示+Kimi，双评审过）· 声明门（评审过）。master=35981a3cae 已 push。
-**发车线（#63 七件套齐，等一件事）**：运维给 deepseek-v4-flash 与 kimi-k2.6 的上下文窗口/最大输出 → 填参重生成 blob → 构建 #63 → 真机验收（声明弹窗+Kimi 切换两个必看点）→ fleet 群发。
-**用户动作**：①运维参数（明早）②sebtang/lizywu 新实例账号+Developer→「照 MR !1 提交」③0.4.184 fleet 反馈瞄一眼。
-**挂着**：横切 P3 残余+遗留表（用户说等）· P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗随行）· 遥测 P3（conflict Linux 路径=/var /srv，won't-fix）· 声明窗 Escape 键+render-gone 灰屏姿势（P3 挂账）。
-**观察项**：fleet 事件数据汇入（面板查询在 telemetry.zh.md §3）· 同事首个真 MR（MR-HANDLING.zh.md 走起）· 0.4.184 P10 提示反馈。
+### 当前 TODO 快照（2026-09-07 23:20 收工版）
+**明日第一件事**：①运维上下文参数→填参重生成 blob→**#66 终版构建**（含 sso-gate 加固）②July 终验 #66（声明弹窗/Kimi/X 退出/b66）③fleet 群发。
+**今晚可测**：#65 已在 asserts（声明修复版）——弹窗→同意→主窗口出 = 主验点。
+**用户动作**：运维参数 · sebtang/lizywu 新实例账号+Developer（照 MR !1 提交）· 0.4.184 fleet 反馈。
+**挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 遥测 P3 won't-fix 项 · 声明窗 Escape/render-gone P3。
+**观察**：fleet 事件汇入 · 同事首 MR（MR-HANDLING.zh.md）· sso-gate 真机浏览器登录路径（#66 后可主动测一次：清 portal 票触发静默失败）。
 
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
