@@ -286,6 +286,46 @@ export const rejectAllInstallTargetAuthority: InstallTargetAuthority = {
   canInstall: () => ({ allowed: false, reason: 'no signed install manifest is trusted yet' }),
 }
 
+/** Terminal outcome of one market install attempt (client event telemetry). */
+export type MarketInstallEventOutcome = 'installed' | 'updated-in-place' | 'rolled-back' | 'failed'
+
+/**
+ * One install attempt's reportable facts (client event telemetry,
+ * 2026-09-07). Categorical metadata only: identity, outcome, the signed
+ * manifest sequence that allowed the install, and a bounded failure
+ * category. The library never attaches stderr tails, paths, or free error
+ * text — the optional `reason` is the already-bounded message fragment the
+ * embedding Host may further clip.
+ */
+export interface MarketInstallEvent {
+  readonly packageName: string
+  readonly version: string
+  readonly outcome: MarketInstallEventOutcome
+  /** Sequence of the signed company manifest that allowed the install; absent for unsigned deployments. */
+  readonly manifestSequence?: number
+  /** Failure category (a {@link MarketInstallErrorCode}); present on failures. */
+  readonly reasonCode?: string
+  /** Optional one-line failure reason; bounded by the embedding Host. */
+  readonly reason?: string
+}
+
+/**
+ * Host-injected install telemetry seam (the `desktopClientEventReporter`
+ * context capability): the market library reports every install attempt,
+ * the Desktop main process forwards it to the company event database. The
+ * default is a no-op, so standalone deployments and Hosts without the
+ * injection keep byte-for-byte behavior. Implementations must never throw —
+ * a telemetry failure must never fail an install.
+ */
+export interface MarketInstallEventSink {
+  reportInstallEvent(event: MarketInstallEvent): void
+}
+
+/** Default no-op sink used when no telemetry seam is injected. */
+export const noopMarketInstallEventSink: MarketInstallEventSink = {
+  reportInstallEvent() {},
+}
+
 export interface MarketInstallServiceOptions {
   readonly now?: () => number
   readonly intentTtlMs?: number
@@ -298,6 +338,8 @@ export interface MarketInstallServiceOptions {
   readonly allowedRegistryOrigin?: string
   /** Host-owned install whitelist; defaults to {@link allowAllInstallTargetAuthority}. */
   readonly installTargetAuthority?: InstallTargetAuthority
+  /** Host-injected install telemetry sink; defaults to a no-op. */
+  readonly installEventSink?: MarketInstallEventSink
 }
 
 function stableExactVersion(value: unknown): value is string {
@@ -886,6 +928,7 @@ export class MarketInstallService {
   private readonly disabledPackageNames: () => readonly string[]
   private readonly allowedRegistryOrigin: string
   private readonly installTargetAuthority: InstallTargetAuthority
+  private readonly installEvents: MarketInstallEventSink
   private readonly generation = new AbortController()
   private recoveryReconciliation: Promise<void> | undefined
   private operationActive = false
@@ -908,8 +951,12 @@ export class MarketInstallService {
       options.allowedRegistryOrigin ?? DEFAULT_NPM_REGISTRY_ORIGIN,
     )
     this.installTargetAuthority = options.installTargetAuthority ?? allowAllInstallTargetAuthority
+    this.installEvents = options.installEventSink ?? noopMarketInstallEventSink
     if (typeof this.installTargetAuthority.canInstall !== 'function') {
       throw new TypeError('invalid market install target authority')
+    }
+    if (typeof this.installEvents.reportInstallEvent !== 'function') {
+      throw new TypeError('invalid market install event sink')
     }
     for (const [label, value] of [
       ['intent TTL', this.intentTtlMs],
@@ -1102,141 +1149,176 @@ export class MarketInstallService {
       const intent = this.consumeIntent(token, 'install')
       const profile = this.sameProfile(intent.profile)
       const candidate = intent.candidate
-      const disabledPackages = this.disabledPackages()
-      if (disabledPackages.has(candidate.packageName)) {
-        throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
-      }
-      if (this.candidates.get(candidate.key) !== candidate) {
-        throw new MarketInstallError('not-available', 'The verified catalog item is no longer available.')
-      }
-      // The overlay is re-decided under the exclusive lock: a replacement
-      // remembers the receipt it must supersede (and restore on rollback);
-      // undefined keeps the fresh-install path. The re-run keeps preview and
-      // execute honest about drift between the two calls.
-      const replaceReceipt = await assertInstallOverlay(
-        profile,
-        candidate.packageName,
-        candidate.version,
-        this.receipts(),
-      )
-      let verification: MarketNpmPackageVerification
-      try { verification = await this.verifier.verify(candidate, operationSignal) }
-      catch (cause) {
-        operationSignal.throwIfAborted()
-        throw cause
-      }
-      operationSignal.throwIfAborted()
-      if (
-        verification.integrity !== intent.verification.integrity
-        || verification.bundlePatch !== intent.verification.bundlePatch
-        || verification.tarball !== intent.verification.tarball
-      ) {
-        throw new MarketInstallError('verification-failed', 'The npm package changed after preview. Preview the install again.')
-      }
-      const decision = this.assertInstallTargetAllowed(candidate, verification)
-      const overlayAtExecute = await assertInstallOverlay(
-        profile,
-        candidate.packageName,
-        candidate.version,
-        this.receipts(),
-      )
-      if (overlayAtExecute?.receiptId !== replaceReceipt?.receiptId) {
-        throw new MarketInstallError('conflict', 'The installed plugin changed before installation.')
-      }
-      if (this.candidates.get(candidate.key) !== candidate) {
-        throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
-      }
-      if (disabledPackages.has(candidate.packageName)) {
-        throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
-      }
-      const receiptId = randomUUID()
-      try {
-        await this.runPlugin(
-          this.installOptions(candidate.packageName),
-          profile,
-          operationSignal,
-          true,
-          {
+      // Install telemetry (2026-09-07): exactly one categorical event per
+      // attempt that got as far as knowing its target. Refusals before the
+      // intent is consumed (expired confirmations, foreign profiles) carry
+      // no install facts and report nothing; everything after reports the
+      // terminal outcome — a fresh install, an in-place update, a failure
+      // that rolled the profile back, or a plain refusal.
+      let allowedSequence: number | undefined
+      let rolledBack = false
+      const reportInstall = (outcome: MarketInstallEventOutcome, cause?: unknown): void => {
+        try {
+          this.installEvents.reportInstallEvent({
             packageName: candidate.packageName,
-            packageVersion: candidate.version,
-            receiptId,
-          },
-          // The signed entry's build-script approvals ride along so the
-          // package-manager boundary can widen its workspace approval list
-          // before pnpm materializes the dependency tree.
-          decision.evidence?.approvedBuildDependencies,
-        )
-      } catch (cause) {
-        if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
-        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
-        // The cause is runPlugin's MarketInstallError, whose message already
-        // carries the captured pnpm stderr tail; inline it so this branch
-        // does not swallow the actual failure reason behind a generic text.
-        throw new MarketInstallError(
-          'operation-failed',
-          `The package manager failed after changing the active profile, so the partial installation was rolled back.${causeDetail(cause)}`,
-        )
+            version: candidate.version,
+            outcome,
+            ...(allowedSequence === undefined ? {} : { manifestSequence: allowedSequence }),
+            ...(cause === undefined ? {} : {
+              ...(cause instanceof MarketInstallError ? { reasonCode: cause.code } : {}),
+              reason: cause instanceof Error ? cause.message : String(cause),
+            }),
+          })
+        } catch {
+          // A telemetry failure must never fail (or alter) an install.
+        }
       }
-      let installedDir: string
       try {
-        installedDir = await assertInstalledBundle(
+        const disabledPackages = this.disabledPackages()
+        if (disabledPackages.has(candidate.packageName)) {
+          throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
+        }
+        if (this.candidates.get(candidate.key) !== candidate) {
+          throw new MarketInstallError('not-available', 'The verified catalog item is no longer available.')
+        }
+        // The overlay is re-decided under the exclusive lock: a replacement
+        // remembers the receipt it must supersede (and restore on rollback);
+        // undefined keeps the fresh-install path. The re-run keeps preview and
+        // execute honest about drift between the two calls.
+        const replaceReceipt = await assertInstallOverlay(
           profile,
           candidate.packageName,
           candidate.version,
-          verification.bundlePatch,
-          verification.integrity,
+          this.receipts(),
         )
+        let verification: MarketNpmPackageVerification
+        try { verification = await this.verifier.verify(candidate, operationSignal) }
+        catch (cause) {
+          operationSignal.throwIfAborted()
+          throw cause
+        }
         operationSignal.throwIfAborted()
-      } catch (cause) {
-        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
-        // The cause is the post-install assertion's own error (bundle
-        // identity, bundle patch, lockfile provenance) — inlining it keeps
-        // the refusal honest instead of swallowing the reason behind a
-        // generic text (the failure mode that hid the 0.4.181 prefix drift).
-        throw new MarketInstallError(
-          'operation-failed',
-          `The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.${causeDetail(cause)}`,
+        if (
+          verification.integrity !== intent.verification.integrity
+          || verification.bundlePatch !== intent.verification.bundlePatch
+          || verification.tarball !== intent.verification.tarball
+        ) {
+          throw new MarketInstallError('verification-failed', 'The npm package changed after preview. Preview the install again.')
+        }
+        const decision = this.assertInstallTargetAllowed(candidate, verification)
+        allowedSequence = decision.evidence?.manifestSequence
+        const overlayAtExecute = await assertInstallOverlay(
+          profile,
+          candidate.packageName,
+          candidate.version,
+          this.receipts(),
         )
-      }
-      // Post-install measurement (P2-3): the receipt records what is actually
-      // on disk for installs a signed manifest allowed. Unlocked deployments
-      // without signed evidence keep the legacy v1 receipt shape.
-      let treeDigest: MarketInstallTreeDigest | undefined
-      if (decision.evidence !== undefined) {
+        if (overlayAtExecute?.receiptId !== replaceReceipt?.receiptId) {
+          throw new MarketInstallError('conflict', 'The installed plugin changed before installation.')
+        }
+        if (this.candidates.get(candidate.key) !== candidate) {
+          throw new MarketInstallError('not-available', 'The catalog source changed before installation.')
+        }
+        if (disabledPackages.has(candidate.packageName)) {
+          throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
+        }
+        const receiptId = randomUUID()
         try {
-          treeDigest = await computeInstallTreeDigest(installedDir)
+          await this.runPlugin(
+            this.installOptions(candidate.packageName),
+            profile,
+            operationSignal,
+            true,
+            {
+              packageName: candidate.packageName,
+              packageVersion: candidate.version,
+              receiptId,
+            },
+            // The signed entry's build-script approvals ride along so the
+            // package-manager boundary can widen its workspace approval list
+            // before pnpm materializes the dependency tree.
+            decision.evidence?.approvedBuildDependencies,
+          )
+        } catch (cause) {
+          if (!await this.installMayHaveMutatedProfile(profile, candidate.packageName)) throw cause
+          await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
+          rolledBack = true
+          // The cause is runPlugin's MarketInstallError, whose message already
+          // carries the captured pnpm stderr tail; inline it so this branch
+          // does not swallow the actual failure reason behind a generic text.
+          throw new MarketInstallError(
+            'operation-failed',
+            `The package manager failed after changing the active profile, so the partial installation was rolled back.${causeDetail(cause)}`,
+          )
+        }
+        let installedDir: string
+        try {
+          installedDir = await assertInstalledBundle(
+            profile,
+            candidate.packageName,
+            candidate.version,
+            verification.bundlePatch,
+            verification.integrity,
+          )
           operationSignal.throwIfAborted()
         } catch (cause) {
           await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
+          rolledBack = true
+          // The cause is the post-install assertion's own error (bundle
+          // identity, bundle patch, lockfile provenance) — inlining it keeps
+          // the refusal honest instead of swallowing the reason behind a
+          // generic text (the failure mode that hid the 0.4.181 prefix drift).
           throw new MarketInstallError(
             'operation-failed',
-            `The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.${causeDetail(cause)}`,
+            `The package manager finished, but the plugin bundle was invalid, so the installation was rolled back.${causeDetail(cause)}`,
           )
         }
+        // Post-install measurement (P2-3): the receipt records what is actually
+        // on disk for installs a signed manifest allowed. Unlocked deployments
+        // without signed evidence keep the legacy v1 receipt shape.
+        let treeDigest: MarketInstallTreeDigest | undefined
+        if (decision.evidence !== undefined) {
+          try {
+            treeDigest = await computeInstallTreeDigest(installedDir)
+            operationSignal.throwIfAborted()
+          } catch (cause) {
+            await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
+            rolledBack = true
+            throw new MarketInstallError(
+              'operation-failed',
+              `The package manager finished, but the installed plugin tree could not be measured, so the installation was rolled back.${causeDetail(cause)}`,
+            )
+          }
+        }
+        const receipt: MarketInstallReceipt = this.buildInstallReceipt(
+          candidate,
+          verification,
+          profile,
+          receiptId,
+          new Date(this.now()).toISOString(),
+          decision,
+          treeDigest,
+        )
+        try {
+          // A replacement supersedes the receipt of the version it replaces —
+          // the store owns one receipt per (profile, package), and after a
+          // successful version replacement the new version is the one install
+          // the receipt must prove.
+          await this.saveReceipts([
+            ...this.receipts().filter(current => current.receiptId !== replaceReceipt?.receiptId),
+            receipt,
+          ])
+        } catch {
+          await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
+          rolledBack = true
+          throw new MarketInstallError('persistence-failed', 'The install receipt could not be saved, so the installation was rolled back.')
+        }
+        reportInstall(replaceReceipt === undefined ? 'installed' : 'updated-in-place')
+        return { receipt }
+      } catch (cause) {
+        reportInstall(rolledBack ? 'rolled-back' : 'failed', cause)
+        throw cause
       }
-      const receipt: MarketInstallReceipt = this.buildInstallReceipt(
-        candidate,
-        verification,
-        profile,
-        receiptId,
-        new Date(this.now()).toISOString(),
-        decision,
-        treeDigest,
-      )
-      try {
-        // A replacement supersedes the receipt of the version it replaces —
-        // the store owns one receipt per (profile, package), and after a
-        // successful version replacement the new version is the one install
-        // the receipt must prove.
-        await this.saveReceipts([
-          ...this.receipts().filter(current => current.receiptId !== replaceReceipt?.receiptId),
-          receipt,
-        ])
-      } catch {
-        await this.rollbackInstall(profile, candidate.packageName, receiptId, replaceReceipt)
-        throw new MarketInstallError('persistence-failed', 'The install receipt could not be saved, so the installation was rolled back.')
-      }
-      return { receipt }
     })
   }
 

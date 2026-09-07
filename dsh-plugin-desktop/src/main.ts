@@ -73,7 +73,11 @@ import {
   readDesktopMarketStateForUserData,
   selectDesktopMarketProvider,
 } from './desktop-market.ts'
-import { resolveDesktopBetaChannelOverlay } from './beta-channel.ts'
+import {
+  resolveDesktopBetaChannelOverlay,
+  type DesktopBetaChannelOptions,
+  type DesktopBetaChannelOverlay,
+} from './beta-channel.ts'
 import {
   browserSsoLogin,
   desktopSsoGateRequired,
@@ -85,6 +89,15 @@ import {
 } from './company-sso.ts'
 import { DesktopSsoGateWindow } from './sso-gate-window.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
+import {
+  betaCatalogRefreshEvent,
+  betaDeliveredPackageKeys,
+  bootVerifyEvent,
+  createClientEventCollector,
+  pluginInstallEvent,
+  stableCatalogRefreshEvent,
+} from './client-event-reporter.ts'
+import type { MarketInstallEventSink } from 'dsh-community-market'
 import {
   COMPANY_LLM_GATEWAY_API_KEY_ENV,
   managedModelGateway,
@@ -457,6 +470,22 @@ async function start(): Promise<void> {
   // update wiring below, and the same immutable policy document reaches the
   // profile composition (boot verification, market, CLI environment).
   const policy = readDesktopPolicy()
+  // Low-frequency client event telemetry (2026-09-07): SSO logins, catalog
+  // refresh outcomes, boot verification refusals, and market installs land
+  // in `dsh_client_events` of the same company database as the model usage
+  // reporter (own connection, fire-and-forget, drop-on-failure). Created
+  // BEFORE the SSO gate so login attempts are covered; a `usageReport:`
+  // false policy or an invalid destination keeps the desktop completely
+  // offline (undefined collector, one sanitized log line) — telemetry must
+  // never fail the boot.
+  const clientEvents = createClientEventCollector({
+    policy,
+    clientVersion: appVersion,
+    userEmail: () => getSsoSession()?.email ?? null,
+    logInfo: message => { electronLogger.error(`${message}`) },
+    logError: message => { electronLogger.error(`${message}`) },
+  })
+  generation.own(() => { void clientEvents?.dispose() })
   // Launcher-environment hygiene (review guard-clamp P2-1): the locked GUI
   // evaluates the base rows' `!!js` sandbox/approval expressions in THIS
   // process, and the locked restatement deliberately leaves those two rows
@@ -588,8 +617,10 @@ async function start(): Promise<void> {
           `${BIN_NAME}: sso silent authentication ok (email=${silent.session.email})`,
         )
         adoptSession(silent.session)
+        clientEvents?.ssoLogin({ result: 'success', mode: 'silent' })
       } else {
         electronLogger.error(`${BIN_NAME}: sso silent authentication unavailable: ${maskSecrets(silent.reason)}`)
+        clientEvents?.ssoLogin({ result: 'failure', mode: 'silent', reason: maskSecrets(silent.reason) })
         const gate = new DesktopSsoGateWindow({
           locale: desktopLocaleFromLanguageTag(app.getLocale()),
           silentFailureDetail: maskSecrets(silent.reason),
@@ -607,10 +638,12 @@ async function start(): Promise<void> {
                 `${BIN_NAME}: sso browser authentication ok (email=${result.session.email})`,
               )
               adoptSession(result.session)
+              clientEvents?.ssoLogin({ result: 'success', mode: 'browser' })
               return { ok: true as const }
             }
             const reason = maskSecrets(result.reason)
             electronLogger.error(`${BIN_NAME}: sso browser authentication failed: ${reason}`)
+            clientEvents?.ssoLogin({ result: 'failure', mode: 'browser', reason })
             return { ok: false, reason }
           },
         })
@@ -893,25 +926,39 @@ async function start(): Promise<void> {
     // provider, the tarball install channel — then keeps the stable
     // manifest alone, exactly today's behavior. One diagnostic line per
     // outcome; the roster contents and the identity never appear in it.
-    const resolveBetaCatalogOverlay = policy.locked && policy.companyCatalogOrigin !== null
-      ? () => {
-        const session = getSsoSession()
-        return resolveDesktopBetaChannelOverlay({
-          policy,
-          request: (url, init) => net.fetch(url, init),
-          ...(session === undefined ? {} : { session }),
-          ...(electronLogger === undefined
-            ? {}
-            : { log: (message: string) => { electronLogger.error(`${message}`) } }),
-        })
+    // The beta catalog resolution options are shared by the boot-time call
+    // (which additionally reports the telemetry outcome) and the capability
+    // closures below — same session lookup, same Chromium network boundary,
+    // same diagnostic sink.
+    const betaCatalogOptions = (): Omit<DesktopBetaChannelOptions, 'onOutcome'> => {
+      const session = getSsoSession()
+      return {
+        policy,
+        request: (url, init) => net.fetch(url, init),
+        ...(session === undefined ? {} : { session }),
+        ...(electronLogger === undefined
+          ? {}
+          : { log: (message: string) => { electronLogger.error(`${message}`) } }),
       }
+    }
+    const resolveBetaCatalogOverlay = policy.locked && policy.companyCatalogOrigin !== null
+      ? () => resolveDesktopBetaChannelOverlay(betaCatalogOptions())
       : undefined
     // The boot-time resolution starts concurrently with the stable manifest
     // fetch below, so a healthy origin adds no boot latency; a hanging one
-    // is bounded by the resolver's own whole-request timeout.
+    // is bounded by the resolver's own whole-request timeout. This ONE call
+    // also reports the beta channel's `catalog_refresh` event — the shared
+    // closure above stays silent, so later re-resolutions (the market
+    // catalog provider, the tarball channel) keep the event table at one
+    // row per boot per channel instead of one per scan.
     const bootBetaOverlayPromise = resolveBetaCatalogOverlay === undefined
       ? undefined
-      : resolveBetaCatalogOverlay()
+      : resolveDesktopBetaChannelOverlay({
+        ...betaCatalogOptions(),
+        onOutcome: outcome => {
+          clientEvents?.catalogRefresh(betaCatalogRefreshEvent(outcome))
+        },
+      })
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings
     // document, the embedded catalog asset (content mode), or one restricted
@@ -926,6 +973,11 @@ async function start(): Promise<void> {
     // the wrapper bypasses the user-writable cache, measuring those trees in
     // full on every boot. Without this the receipt reconciliation and the
     // sequence ratchet would never run outside tests.
+    // Boot-time beta overlay snapshot (client event telemetry): the overlay
+    // this generation verified, retained for install channel attribution —
+    // a market install of an overlay-only `name@version` is a beta-channel
+    // delivery. Non-roster and origin-less boots keep it undefined.
+    let bootBetaOverlay: DesktopBetaChannelOverlay | undefined
     const bootVerificationInputs = policy.locked
       ? await desktopBootVerificationInputs(
         policy,
@@ -942,6 +994,7 @@ async function start(): Promise<void> {
           ...(await (async () => {
             if (bootBetaOverlayPromise === undefined) return {}
             const overlay = await bootBetaOverlayPromise.catch(() => undefined)
+            bootBetaOverlay = overlay
             return overlay === undefined ? {} : { betaOverlay: overlay }
           })()),
         },
@@ -1005,6 +1058,24 @@ async function start(): Promise<void> {
         `${BIN_NAME}: failed to persist the boot verification snapshot for diagnostics`,
       )
     }
+    // Client event telemetry (2026-09-07): the stable catalog's refresh
+    // outcome — every locked boot resolves it, stable-only machines included
+    // (that is this hook: the beta channel's event rode the boot overlay
+    // resolution above) — and the boot verification refusals, reported only
+    // when at least one bundle was refused so healthy boots stay silent.
+    const stableCatalogEvent = stableCatalogRefreshEvent(
+      prepared.bootVerification === undefined
+        ? undefined
+        : {
+          manifestTrusted: prepared.bootVerification.manifestTrusted,
+          manifestSequence: prepared.bootVerification.manifestSequence,
+          manifestFailureCode: prepared.bootVerification.manifestFailure?.code,
+        },
+      bootVerificationInputs?.manifestBytes,
+    )
+    if (stableCatalogEvent !== undefined) clientEvents?.catalogRefresh(stableCatalogEvent)
+    const bootVerifyDetail = bootVerifyEvent(prepared.bootVerification)
+    if (bootVerifyDetail !== undefined) clientEvents?.bootVerify(bootVerifyDetail)
     if (profileCheckpoint === undefined) {
       try {
         profileCheckpoint = new DesktopProfileCheckpoint({
@@ -1285,6 +1356,25 @@ async function start(): Promise<void> {
         if (resolveBetaCatalogOverlay !== undefined) {
           hostCtx.provide('desktopCompanyBetaCatalog', resolveBetaCatalogOverlay)
         }
+        // Client event telemetry (2026-09-07): the market library reports
+        // every install attempt through this capability (its
+        // `desktopClientEventReporter` seam) and this adapter forwards the
+        // categorical facts into `dsh_client_events`. The channel column is
+        // desktop knowledge: an install whose `name@version` the boot-time
+        // beta overlay delivered and the stable manifest does not pin is a
+        // beta-channel delivery; everything else is stable. A missing
+        // collector (offline policy) keeps the adapter as a silent no-op —
+        // the market's behavior never depends on telemetry.
+        const installBetaDeliveredKeys = betaDeliveredPackageKeys(
+          bootBetaOverlay?.packages,
+          bootVerificationInputs?.manifestBytes,
+        )
+        const clientEventReporterForMarket: MarketInstallEventSink = {
+          reportInstallEvent: event => {
+            clientEvents?.pluginInstall(pluginInstallEvent(event, installBetaDeliveredKeys))
+          },
+        }
+        hostCtx.provide('desktopClientEventReporter', clientEventReporterForMarket)
         if (policy.locked) {
           // Tarball install orchestration for the market UI (P7 2c): one
           // channel object serves two capabilities. The market library

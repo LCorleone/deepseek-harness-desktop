@@ -156,6 +156,17 @@ export type DesktopBetaChannelIgnoredReason =
   | 'no-sso-identity'
   | 'not-a-tester'
 
+/**
+ * Structured outcome of one beta resolution, mirroring the diagnostic log
+ * line: `applied` carries the verified sequence and entry count, every other
+ * outcome is exactly one ignored-reason category. Consumers that report the
+ * catalog refresh (the boot-time telemetry hook) consume this instead of
+ * parsing log text; it never carries roster contents or identities.
+ */
+export type DesktopBetaChannelOutcome =
+  | { readonly outcome: 'applied'; readonly sequence: number; readonly entries: number }
+  | { readonly outcome: DesktopBetaChannelIgnoredReason }
+
 /** Options of {@link resolveDesktopBetaChannelOverlay}. */
 export interface DesktopBetaChannelOptions {
   /** Deployment policy: trust roots and the pinned catalog origin. */
@@ -174,6 +185,12 @@ export interface DesktopBetaChannelOptions {
   readonly now?: () => number
   /** Diagnostic sink receiving exactly one line per outcome. */
   readonly log?: (message: string) => void
+  /**
+   * Structured outcome sink (client event telemetry): exactly one call per
+   * resolution with the same facts as the log line. The sink must never
+   * throw into the resolution — hosts inject non-throwing reporters.
+   */
+  readonly onOutcome?: (outcome: DesktopBetaChannelOutcome) => void
 }
 
 const defaultRequest: UpdateChannelRequest = (url, init) => globalThis.fetch(url, init)
@@ -219,8 +236,19 @@ export async function resolveDesktopBetaChannelOverlay(
   options: DesktopBetaChannelOptions,
 ): Promise<DesktopBetaChannelOverlay | undefined> {
   const candidates = desktopBetaTesterEmailCandidates(options.session)
+  // The outcome sink must never break the resolution (telemetry red line):
+  // a throwing sink is swallowed — the log line above already happened and
+  // the caller's decision is unaffected.
+  const reportOutcome = (outcome: DesktopBetaChannelOutcome): void => {
+    try {
+      options.onOutcome?.(outcome)
+    } catch {
+      // Best-effort by contract.
+    }
+  }
   const ignored = (reason: DesktopBetaChannelIgnoredReason, detail?: string): undefined => {
     options.log?.(`${BIN_NAME}: beta catalog ignored (${reason}${detail === undefined ? '' : `: ${detail}`})`)
+    reportOutcome({ outcome: reason })
     return undefined
   }
   const betaUrl = desktopBetaManifestUrl(options.policy.companyManifestUrl)
@@ -269,6 +297,11 @@ export async function resolveDesktopBetaChannelOverlay(
     `${BIN_NAME}: beta catalog applied (sequence ${String(verification.manifest.sequence)}, `
       + `${String(verification.manifest.packages.length)} entries, ${String(testers.length)} testers)`,
   )
+  reportOutcome({
+    outcome: 'applied',
+    sequence: verification.manifest.sequence,
+    entries: verification.manifest.packages.length,
+  })
   return {
     packages: verification.manifest.packages,
     sequence: verification.manifest.sequence,

@@ -17,6 +17,7 @@ import {
   rejectAllInstallTargetAuthority,
   type MarketDesktopPnpm,
   type MarketDesktopProfile,
+  type MarketInstallEventSink,
   type MarketTarballEntryVerifier,
 } from './install/service.js'
 import { createSignedManifestInstallTargetAuthority, type SignedManifestInstallTargetAuthority } from './install/signed-manifest-authority.js'
@@ -368,6 +369,12 @@ export function apply(ctx: Context): void {
   // controlled target, and the post-install lockfile assert accepts the
   // `file:` pin whose recorded integrity is that same signed sha512.
   const tarballEntryVerifier = ctx.get('desktopMarketTarballEntryVerifier') as MarketTarballEntryVerifier | undefined
+  // Install telemetry injection (2026-09-07): the Desktop host provides
+  // `desktopClientEventReporter`, the sink that forwards every install
+  // attempt's categorical outcome to the company event database. A missing
+  // capability keeps the built-in no-op sink — standalone deployments
+  // included — so install behavior is byte-for-byte unchanged.
+  const installEventSink = ctx.get('desktopClientEventReporter') as MarketInstallEventSink | undefined
   const locked = policy?.locked === true
   // L2 wiring: a locked deployment with pinned trust roots serves the signed
   // company catalog end to end. A locked policy without trust roots cannot
@@ -449,6 +456,7 @@ export function apply(ctx: Context): void {
             }
             return plugins.disabledPackageNames()
           },
+          ...(installEventSink === undefined ? {} : { installEventSink }),
         },
       )
       installService = service
@@ -493,10 +501,14 @@ export type {
   InstallTargetCandidate,
   InstallTargetDecision,
   InstallTargetEvidence,
+  MarketInstallEvent,
+  MarketInstallEventOutcome,
+  MarketInstallEventSink,
   MarketNpmPackageVerifier,
   MarketNpmPackageVerification,
   MarketTarballEntryVerifier,
 } from './install/service.js'
+export { noopMarketInstallEventSink } from './install/service.js'
 export type {
   MarketInstallTreeDigest,
   MarketInstallTreeDigestFile,

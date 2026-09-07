@@ -282,6 +282,61 @@ describe('resolveDesktopBetaChannelOverlay (P9)', () => {
   })
 })
 
+describe('structured outcome sink (client event telemetry, 2026-09-07)', () => {
+  // Fresh sequences above every floor earlier tests in this file set (the
+  // in-session replay floor is module state; this describe must stay the
+  // last resolver describe).
+  const sinkSequence = 401
+  const sinkBetaText = (overrides: Record<string, unknown> = {}) =>
+    betaManifestText({ sequence: sinkSequence, ...overrides })
+
+  it('reports the applied overlay with its sequence and entry count', async () => {
+    const onOutcome = vi.fn()
+    const overlay = await resolve({
+      session: sessionOf('julu@deloitte.com.cn'),
+      request: serving(sinkBetaText()),
+      onOutcome,
+    })
+    expect(overlay).toBeDefined()
+    expect(onOutcome).toHaveBeenCalledTimes(1)
+    expect(onOutcome).toHaveBeenCalledWith({ outcome: 'applied', sequence: sinkSequence, entries: 2 })
+  })
+
+  it.each([
+    ['fetch-failed', failing as UpdateChannelRequest, sessionOf('julu@deloitte.com.cn')],
+    ['no-sso-identity', serving(sinkBetaText()), undefined],
+    ['not-a-tester', serving(sinkBetaText()), sessionOf('someone.else@deloitte.com.cn')],
+  ])('reports the %s outcome exactly once', async (outcome, request, session) => {
+    const onOutcome = vi.fn()
+    const overlay = await resolve({ request, ...(session === undefined ? {} : { session }), onOutcome })
+    expect(overlay).toBeUndefined()
+    expect(onOutcome).toHaveBeenCalledTimes(1)
+    expect(onOutcome).toHaveBeenCalledWith({ outcome })
+  })
+
+  it('reports the unverified outcome without verification detail', async () => {
+    const onOutcome = vi.fn()
+    // Tampered bytes: verification fails, the reason text stays in the log
+    // line only, the structured outcome is the bare category.
+    const overlay = await resolve({
+      session: sessionOf('julu@deloitte.com.cn'),
+      request: serving(sinkBetaText().slice(0, -2)),
+      onOutcome,
+    })
+    expect(overlay).toBeUndefined()
+    expect(onOutcome).toHaveBeenCalledWith({ outcome: 'unverified' })
+  })
+
+  it('a throwing sink never breaks the resolution', async () => {
+    const overlay = await resolve({
+      session: sessionOf('julu@deloitte.com.cn'),
+      request: serving(sinkBetaText()),
+      onOutcome: () => { throw new Error('sink exploded') },
+    })
+    expect(overlay?.sequence).toBe(sinkSequence)
+  })
+})
+
 describe('verifyDesktopCompanyManifest beta channel schema (P9)', () => {
   const verify = (text: string, channel?: 'stable' | 'beta') =>
     verifyDesktopCompanyManifest(text, { trustRoots, companyCatalogOrigin: origin, now, ...(channel === undefined ? {} : { channel }) })

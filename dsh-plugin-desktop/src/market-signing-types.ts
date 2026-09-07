@@ -74,6 +74,40 @@ export interface VerifyCompanyManifestOptions {
   readonly now?: () => number
 }
 
+/**
+ * Mirror of `dsh-community-market/src/install/service.ts`
+ * `MarketInstallEventOutcome` (client event telemetry, 2026-09-07): the
+ * terminal outcome of one market install attempt.
+ */
+export type MarketInstallEventOutcome =
+  | 'installed'
+  | 'updated-in-place'
+  | 'rolled-back'
+  | 'failed'
+
+/**
+ * Mirror of `dsh-community-market/src/install/service.ts`
+ * `MarketInstallEvent`: categorical install-attempt facts the Desktop host
+ * forwards into `dsh_client_events` (`plugin_install`).
+ */
+export interface MarketInstallEvent {
+  readonly packageName: string
+  readonly version: string
+  readonly outcome: MarketInstallEventOutcome
+  readonly manifestSequence?: number
+  readonly reasonCode?: string
+  readonly reason?: string
+}
+
+/**
+ * Mirror of `dsh-community-market/src/install/service.ts`
+ * `MarketInstallEventSink`: the `desktopClientEventReporter` context
+ * capability the market consumes. Implementations must never throw.
+ */
+export interface MarketInstallEventSink {
+  reportInstallEvent(event: MarketInstallEvent): void
+}
+
 export type CompanyManifestVerification =
   | {
     readonly ok: true

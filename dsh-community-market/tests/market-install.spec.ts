@@ -19,6 +19,8 @@ import {
   rejectAllInstallTargetAuthority,
   type InstallTargetCandidate,
   type MarketDesktopPnpm,
+  type MarketInstallEvent,
+  type MarketInstallEventSink,
   type MarketInstallReceipt,
 } from '../src/install/service.js'
 import { marketRoutes, registerMarketRoutes, registerMarketSettings } from '../src/host/routes.js'
@@ -2021,5 +2023,312 @@ describe('version replacement installs (P10 update path)', () => {
     await expect(service.listVerifiedReceipts()).resolves.toMatchObject([{ receiptId: oldReceiptId, version }])
     expect(settings.receipts()).toHaveLength(1)
     service.dispose()
+  })
+})
+
+describe('install event sink (client event telemetry, 2026-09-07)', () => {
+  const nextVersion = '1.3.0'
+  const nextIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`
+
+  const verificationFor = (targetVersion: string) => targetVersion === version
+    ? verification
+    : {
+        integrity: nextIntegrity,
+        bundlePatch: './cordis.patch.yml',
+        tarball: `https://registry.npmjs.org/${packageName}/-/${packageName}-${targetVersion}.tgz`,
+      }
+
+  function recordingSink(): { sink: MarketInstallEventSink, events: MarketInstallEvent[] } {
+    const events: MarketInstallEvent[] = []
+    return {
+      events,
+      sink: { reportInstallEvent: event => { events.push(event) } },
+    }
+  }
+
+  /** Write the exact on-disk state a real `pnpm add pkg@<version>` leaves. */
+  async function writeInstalledPluginAt(profileDir: string, installedVersion: string, pinnedIntegrity: string): Promise<void> {
+    const pluginDir = join(profileDir, 'node_modules', packageName)
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(join(pluginDir, 'cordis.patch.yml'), '[]\n')
+    await writeFile(join(pluginDir, 'package.json'), JSON.stringify({
+      name: packageName,
+      version: installedVersion,
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }))
+    await writeFile(join(profileDir, 'package.json'), JSON.stringify({
+      name: 'fixture-profile',
+      dependencies: { [packageName]: installedVersion },
+      dsh: { profile: { bundles: [packageName] } },
+    }))
+    await writeFile(join(profileDir, 'pnpm-lock.yaml'), stringifyYaml({
+      lockfileVersion: '9.0',
+      importers: {
+        '.': {
+          dependencies: {
+            [packageName]: { specifier: installedVersion, version: installedVersion },
+          },
+        },
+      },
+      packages: { [`${packageName}@${installedVersion}`]: { resolution: { integrity: pinnedIntegrity } } },
+      snapshots: { [`${packageName}@${installedVersion}`]: {} },
+    }))
+  }
+
+  /**
+   * A package-manager double that installs whichever exact version the
+   * service requests, like a real `pnpm add`, and whose rollback restores
+   * the pre-install version. The failing-add option simulates a child that
+   * mutated the profile and then exited nonzero (the WAL rollback path).
+   */
+  function replaceableRunner(
+    profileDir: string,
+    calls: Array<{ args: readonly string[]; dir: string }>,
+    options: { failAddAt?: string } = {},
+  ): MarketDesktopPnpm {
+    let installed: string | undefined
+    let rollbackTo: string | undefined
+    const run = async (args: readonly string[]): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }> => {
+      calls.push({ args: [...args], dir: profileDir })
+      if (args[0] === 'add') {
+        const targetVersion = args[args.length - 1]!.split('@').pop()!
+        await writeInstalledPluginAt(profileDir, targetVersion, verificationFor(targetVersion).integrity)
+        installed = targetVersion
+        return targetVersion === options.failAddAt
+          ? { exitCode: 1, signal: null }
+          : { exitCode: 0, signal: null }
+      }
+      if (args[0] === 'remove') {
+        await removeInstalledPlugin(profileDir)
+        installed = undefined
+        return { exitCode: 0, signal: null }
+      }
+      return { exitCode: 0, signal: null }
+    }
+    return {
+      async installPlugin(request) {
+        rollbackTo = installed
+        const done = run(['add', `${request.recovery.packageName}@${request.recovery.packageVersion}`])
+        return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
+      },
+      runPlugin(args) {
+        const done = run([...args])
+        return { stdout: Readable.from([]), stderr: Readable.from([]), done, cancel: vi.fn() }
+      },
+      async recoveredInstallReceiptIds() { return [] },
+      async acknowledgeRecoveredInstall() {},
+      async rollbackPluginInstall() {
+        if (rollbackTo === undefined) {
+          await removeInstalledPlugin(profileDir)
+          return true
+        }
+        await writeInstalledPluginAt(profileDir, rollbackTo, verificationFor(rollbackTo).integrity)
+        return true
+      },
+    }
+  }
+
+  /** Install one version, then re-pin the source and install the next. */
+  async function installSecondVersion(
+    service: MarketInstallService,
+    secondVersion: string,
+  ): Promise<void> {
+    service.observeCatalog(snapshot({ latestVersion: secondVersion }))
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(preview.replaces).toBe(version)
+    await service.executeInstall(preview.intent, new AbortController().signal)
+  }
+
+  it('reports a fresh install exactly once, and never for the preview alone', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      { installEventSink: sink },
+    )
+    service.observeCatalog(snapshot())
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(events).toEqual([])
+
+    await service.executeInstall(preview.intent, new AbortController().signal)
+    expect(events).toEqual([{
+      packageName,
+      version,
+      outcome: 'installed',
+    }])
+    service.dispose()
+  })
+
+  it('carries the signed-manifest sequence of the allowing decision', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      {
+        installEventSink: sink,
+        installTargetAuthority: {
+          canInstall: () => ({
+            allowed: true,
+            evidence: { manifestSequence: 42, keyId: 'company-catalog-key' },
+          }),
+        },
+      },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(preview.intent, new AbortController().signal)
+
+    expect(events).toEqual([{
+      packageName,
+      version,
+      outcome: 'installed',
+      manifestSequence: 42,
+    }])
+    service.dispose()
+  })
+
+  it('reports a failed install with its categorical code and reason', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    let allowed = true
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      {
+        installEventSink: sink,
+        installTargetAuthority: {
+          canInstall: () => (allowed
+            ? { allowed: true }
+            : { allowed: false, reason: 'the company catalog is not trusted' }),
+        },
+      },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+
+    allowed = false
+    await expect(service.executeInstall(preview.intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'verification-failed' })
+    expect(events).toEqual([{
+      packageName,
+      version,
+      outcome: 'failed',
+      reasonCode: 'verification-failed',
+      reason: 'The plugin package is not in the trusted install whitelist: the company catalog is not trusted',
+    }])
+    expect(calls).toEqual([])
+    service.dispose()
+  })
+
+  it('reports a rolled-back replacement distinctly from a plain failure', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, calls, { failAddAt: nextVersion }),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+      { installEventSink: sink },
+    )
+    service.observeCatalog(snapshot({ latestVersion: version }))
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(first.intent, new AbortController().signal)
+    expect(events.map(event => event.outcome)).toEqual(['installed'])
+
+    await expect(installSecondVersion(service, nextVersion))
+      .rejects.toMatchObject({ code: 'operation-failed' })
+
+    expect(events).toEqual([
+      { packageName, version, outcome: 'installed' },
+      {
+        packageName,
+        version: nextVersion,
+        outcome: 'rolled-back',
+        reasonCode: 'operation-failed',
+        reason: expect.stringContaining('rolled back'),
+      },
+    ])
+    service.dispose()
+  })
+
+  it('reports an in-place update on a successful replacement', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, calls),
+      { verify: vi.fn(async candidate => verificationFor(candidate.version)) },
+      { installEventSink: sink },
+    )
+    service.observeCatalog(snapshot({ latestVersion: version }))
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(first.intent, new AbortController().signal)
+
+    await installSecondVersion(service, nextVersion)
+
+    expect(events.map(event => [event.version, event.outcome])).toEqual([
+      [version, 'installed'],
+      [nextVersion, 'updated-in-place'],
+    ])
+    service.dispose()
+  })
+
+  it('never fails an install when the sink throws, and defaults to a no-op without one', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const explodingSink: MarketInstallEventSink = {
+      reportInstallEvent() { throw new Error('telemetry exploded') },
+    }
+    const withExplodingSink = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      { installEventSink: explodingSink },
+    )
+    withExplodingSink.observeCatalog(snapshot())
+    const preview = await withExplodingSink.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await expect(withExplodingSink.executeInstall(preview.intent, new AbortController().signal))
+      .resolves.toMatchObject({ receipt: { packageName, version } })
+    withExplodingSink.dispose()
+
+    const secondProfileDir = await createProfile()
+    const withoutSink = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: secondProfileDir }),
+      runner(secondProfileDir, calls),
+      { verify: vi.fn(async () => verification) },
+    )
+    withoutSink.observeCatalog(snapshot())
+    const plain = await withoutSink.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await expect(withoutSink.executeInstall(plain.intent, new AbortController().signal))
+      .resolves.toMatchObject({ receipt: { packageName, version } })
+    withoutSink.dispose()
+  })
+
+  it('rejects an invalid sink shape like any other constructor dependency', () => {
+    const profileDir = join(tmpdir(), 'market-install-sink-shape')
+    expect(() => new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn(async () => verification) },
+      { installEventSink: {} as MarketInstallEventSink },
+    )).toThrow('invalid market install event sink')
   })
 })
