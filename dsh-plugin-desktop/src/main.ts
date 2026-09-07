@@ -95,6 +95,7 @@ import {
   bootVerifyEvent,
   createClientEventCollector,
   pluginInstallEvent,
+  ssoLoginEvent,
   stableCatalogRefreshEvent,
 } from './client-event-reporter.ts'
 import type { MarketInstallEventSink } from 'dsh-community-market'
@@ -617,10 +618,10 @@ async function start(): Promise<void> {
           `${BIN_NAME}: sso silent authentication ok (email=${silent.session.email})`,
         )
         adoptSession(silent.session)
-        clientEvents?.ssoLogin({ result: 'success', mode: 'silent' })
+        clientEvents?.ssoLogin(ssoLoginEvent('success', 'silent'))
       } else {
         electronLogger.error(`${BIN_NAME}: sso silent authentication unavailable: ${maskSecrets(silent.reason)}`)
-        clientEvents?.ssoLogin({ result: 'failure', mode: 'silent', reason: maskSecrets(silent.reason) })
+        clientEvents?.ssoLogin(ssoLoginEvent('failure', 'silent', silent.reason))
         const gate = new DesktopSsoGateWindow({
           locale: desktopLocaleFromLanguageTag(app.getLocale()),
           silentFailureDetail: maskSecrets(silent.reason),
@@ -638,12 +639,12 @@ async function start(): Promise<void> {
                 `${BIN_NAME}: sso browser authentication ok (email=${result.session.email})`,
               )
               adoptSession(result.session)
-              clientEvents?.ssoLogin({ result: 'success', mode: 'browser' })
+              clientEvents?.ssoLogin(ssoLoginEvent('success', 'browser'))
               return { ok: true as const }
             }
             const reason = maskSecrets(result.reason)
             electronLogger.error(`${BIN_NAME}: sso browser authentication failed: ${reason}`)
-            clientEvents?.ssoLogin({ result: 'failure', mode: 'browser', reason })
+            clientEvents?.ssoLogin(ssoLoginEvent('failure', 'browser', result.reason))
             return { ok: false, reason }
           },
         })

@@ -765,6 +765,9 @@ describe('market install service', () => {
     service.dispose()
     await expect(service.listInstallable(fullIndex(snapshot()), new AbortController().signal))
       .rejects.toMatchObject({ code: 'operation-failed' })
+
+
+
   })
 
   it('rejects prerelease targets while allowing normalized standard-source candidates', async () => {
@@ -2258,9 +2261,33 @@ describe('install event sink (client event telemetry, 2026-09-07)', () => {
         version: nextVersion,
         outcome: 'rolled-back',
         reasonCode: 'operation-failed',
-        reason: expect.stringContaining('rolled back'),
       },
     ])
+    service.dispose()
+  })
+
+  it('reports an operation-failed install with the code only — no stderr or paths leak into the event (privacy line)', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const { sink, events } = recordingSink()
+    const service = new MarketInstallService(
+      memoryScope().scope,
+      () => ({ name: 'web', dir: profileDir }),
+      replaceableRunner(profileDir, calls, { failAddAt: version }),
+      { verify: vi.fn(async () => verification) },
+      { installEventSink: sink },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await expect(service.executeInstall(preview.intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'operation-failed' })
+    expect(events).toEqual([{
+      packageName,
+      version,
+      outcome: 'rolled-back',
+      reasonCode: 'operation-failed',
+    }])
+    expect(JSON.stringify(events[0])).not.toMatch(/"reason"|stderr|AppData|node_modules/u)
     service.dispose()
   })
 

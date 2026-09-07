@@ -126,6 +126,14 @@ export type MarketInstallErrorCode =
   | 'operation-failed'
   | 'persistence-failed'
 
+/** Failure codes whose messages are fixed first-party vocabulary (no stderr
+ * tails or local paths are ever concatenated into them) — the only codes a
+ * telemetry `reason` may carry. */
+const REASON_SAFE_INSTALL_CODES: ReadonlySet<string> = new Set([
+  'invalid-request', 'not-available', 'conflict', 'intent-expired',
+  'verification-failed', 'persistence-failed',
+])
+
 /** Error whose message is safe to return through the loopback API. */
 export class MarketInstallError extends Error {
   constructor(readonly code: MarketInstallErrorCode, message: string) {
@@ -1166,7 +1174,13 @@ export class MarketInstallService {
             ...(allowedSequence === undefined ? {} : { manifestSequence: allowedSequence }),
             ...(cause === undefined ? {} : {
               ...(cause instanceof MarketInstallError ? { reasonCode: cause.code } : {}),
-              reason: cause instanceof Error ? cause.message : String(cause),
+              // Privacy line: a free-form Error message may inline a pnpm stderr
+              // tail or local paths. Only codes whose messages are our own fixed
+              // vocabulary may carry a reason; every other failure reports the
+              // code alone (the desktop projection masks again, belt and braces).
+              ...(cause instanceof MarketInstallError && REASON_SAFE_INSTALL_CODES.has(cause.code)
+                ? { reason: cause.message }
+                : {}),
             }),
           })
         } catch {

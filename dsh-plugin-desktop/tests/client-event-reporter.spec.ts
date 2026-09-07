@@ -25,6 +25,7 @@ import {
   clientEventRowValues,
   createClientEventCollector,
   pluginInstallEvent,
+  ssoLoginEvent,
   stableCatalogRefreshEvent,
   stableManifestEntryCount,
   type BetaCatalogOutcomeView,
@@ -443,6 +444,42 @@ describe('plugin install projection', () => {
     ],
     stableText,
   )
+
+// P1 red proofs (review): a failure reason never carries paths or stderr
+    // tails into the database.
+    it('pluginInstallEvent masks path-shaped fragments out of a failure reason', () => {
+      const detail = pluginInstallEvent({
+        packageName: 'corp-plugin',
+        version: '2.0.0',
+        outcome: 'failed',
+        reason: 'pnpm install failed: ENOTEMPTY rmdir C:\\Users\\julu\\AppData\\dsh\\corp-plugin; tail of stderr: /home/julu/.cache/pnpm err 1',
+      }, new Set())
+      expect(detail.reason).not.toMatch(/[A-Za-z]:\\|node_modules|\/home\/|\/Users\//u)
+      expect(detail.reason).toContain('‹path›')
+    })
+
+    it('pluginInstallEvent keeps a path-free reason intact', () => {
+      const detail = pluginInstallEvent({
+        packageName: 'corp-plugin', version: '2.0.0', outcome: 'failed',
+        reason: 'intent expired before the install could be confirmed',
+      }, new Set())
+      expect(detail.reason).toBe('intent expired before the install could be confirmed')
+    })
+
+    it('ssoLoginEvent masks secret-shaped fragments in the failure reason', () => {
+      const detail = ssoLoginEvent('failure', 'browser', 'portal refused (token=AKIA1234567890ABCDEFGHI)')
+      expect(detail.reason).not.toContain('AKIA1234567890ABCDEFGHI')
+      expect(ssoLoginEvent('failure', 'silent', 'x'.repeat(500)).reason?.length).toBeLessThanOrEqual(240)
+      expect(ssoLoginEvent('success', 'silent')).toEqual({ result: 'success', mode: 'silent' })
+    })
+
+    it('clientEventRowValues truncates user_email to the VARCHAR(320) limit', () => {
+      const values = clientEventRowValues({
+        eventType: 'sso_login', userEmail: 'a'.repeat(400), clientVersion: '2.0.3',
+        detail: {}, createdAt: new Date(0),
+      })
+      expect(values[1]).toHaveLength(320)
+    })
 
   it('attributes beta only to overlay pins the stable manifest does not carry', () => {
     expect(betaKeys).toBeInstanceOf(Set)

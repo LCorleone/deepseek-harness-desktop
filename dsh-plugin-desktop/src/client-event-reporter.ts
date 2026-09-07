@@ -103,7 +103,9 @@ export interface ClientEventRow {
 export function clientEventRowValues(row: ClientEventRow): unknown[] {
   return [
     row.eventType,
-    row.userEmail,
+    // VARCHAR(320) — a longer identity (never legitimate) truncates instead of
+    // silently dropping the whole row under a strict-mode INSERT.
+    row.userEmail === null ? null : row.userEmail.slice(0, 320),
     row.clientVersion,
     JSON.stringify(row.detail),
     row.createdAt,
@@ -428,6 +430,31 @@ export interface BootVerificationView {
 }
 
 /**
+ * Project one sso login attempt into an `sso_login` detail. The failure
+ * reason is masked HERE (not at the call site) so the masking is a tested
+ * property of the projection — a main.ts hook cannot silently drop it.
+ */
+export function ssoLoginEvent(
+  result: 'success' | 'failure',
+  mode: 'silent' | 'browser',
+  reason?: string,
+): SsoLoginEventDetail {
+  const bounded = result === 'failure' ? boundedSsoReason(reason ?? '') : undefined
+  return {
+    result,
+    mode,
+    ...(bounded === undefined ? {} : { reason: bounded }),
+  }
+}
+
+/** Mask + bound one sso failure reason (same vocabulary discipline as the
+ * log line: masked secrets, no control characters, hard length bound). */
+function boundedSsoReason(value: string): string | undefined {
+  const flattened = maskSecrets(value).replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim()
+  return flattened.length === 0 ? undefined : flattened.slice(0, 240)
+}
+
+/**
  * Project one boot decision into a `boot_verify` detail — one row per boot,
  * emitted ONLY when at least one bundle was refused (success stays silent to
  * keep the low-frequency table low-frequency).
@@ -461,7 +488,11 @@ function boundedReason(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
   // Secret-shaped fragments never survive into a row even when a market
   // failure message inlined a stderr tail.
-  const flattened = maskSecrets(value).replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim()
+  const flattened = maskSecrets(value)
+    // Path-shaped fragments (drive letters, POSIX homes, node_modules trees)
+    // never enter the database either — the privacy line lists file paths.
+    .replace(/(?:[A-Za-z]:\\|\\\\|\/home\/|\/Users\/|\/root\/|\S*[\/]node_modules[\/]?)\S*/gu, '‹path›')
+    .replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim()
   return flattened.length === 0 ? undefined : flattened.slice(0, PLUGIN_INSTALL_REASON_LIMIT)
 }
 
