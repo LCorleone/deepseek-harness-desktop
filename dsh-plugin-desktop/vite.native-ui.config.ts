@@ -48,6 +48,7 @@ export default defineConfig({
         // file-privilege fuse's relaxed cross-directory reach (#53/#54);
         // same-subtree references stay least-privilege and guard-checked.
         'agent-browser': resolve(uiRoot, 'agent-browser.html'),
+        'disclaimer': resolve(uiRoot, 'disclaimer.html'),
       },
     },
   },

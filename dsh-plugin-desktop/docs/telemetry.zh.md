@@ -34,6 +34,7 @@ ttft_ms, latency_ms, session_id, turn, step, client_version, created_at`。
 | `catalog_refresh` | 每次启动各通道目录解析（稳定+beta 叠加各一条） | `outcome` applied/fetch-failed/no-sso-identity/not-a-tester… · `sequence` · `entries`（applied 时） · `channel` stable/beta-overlay |
 | `plugin_install` | 安装/升级/卸载/回滚/失败 | `packageName` · `version` · `outcome` installed/updated-in-place/**uninstalled**/rolled-back/failed · `channel`（**uninstalled 无此字段**——被删版本的交付渠道不可知，不猜） · `reasonCode`（失败码） · `reason`（仅固定词汇安全码才有） |
 | `boot_verify` | **仅当启动有插件被拒**（成功不打扰） | `rejected:[{packageName, code}]`（8 码：not-pinned-newer-pinned/revoked/digest-mismatch/signature-invalid/compat-unsupported/manifest-missing/manifest-invalid/other）· `loaded` |
+| `disclaimer` | 内测声明弹窗决策：**仅弹窗真出现才报**（装后无 ack / 升级版本变 / 声明改版哈希变，三者各弹一次；日常启动不弹不报） | `decision` agree/disagree · `clientVersion`（本次同意的版本） · `textHash`（声明文案 JSON 的 sha256，改版即变） |
 
 ## 3. 常用查询（老板面板直抄）
 

@@ -1,0 +1,82 @@
+/*
+ * Brand tokens and scoped rules for the disclaimer window.
+ *
+ * The disclaimer is deliberately BRAND-styled (决定 2026-09-07): Deloitte
+ * brand green as the primary action, the brand wordmark up top. The token
+ * vocabulary is the one agent-browser-styles.ts rides (--dsw-alias-*),
+ * but that module injects a runtime <style> into the HOST page — this
+ * window's CSP (`style-src 'self'`) refuses inline style elements, so the
+ * same tokens ship as a bundled stylesheet instead: identical names, own
+ * values, CSP-clean, and unlayered (so a token rule deterministically
+ * beats the layered Tailwind utility it overrides).
+ *
+ * Theme-sensitive tokens resolve against shared/theme.css variables
+ * (--foreground, --muted-foreground, --border), so dark mode needs no
+ * extra rules; only the brand literals are fixed.
+ */
+
+:root {
+  /* Deloitte brand green — the co-brand wordmark's leading-word color
+     (client/DeloitteBrandName.tsx, #86BC25) and the primary action. */
+  --dsw-alias-brand-primary: #86bc25;
+  /* Pressed/hover green, one step down the same hue. */
+  --dsw-alias-brand-primary-pressed: #76a81c;
+  /* Near-black on green: white on #86BC25 misses AA; black passes with room
+     and matches the brand's green-plus-black pairing. */
+  --dsw-alias-brand-primary-foreground: #0d1205;
+  /* Neutral aliases mapped onto the window theme (auto dark mode). */
+  --dsw-alias-label-secondary: var(--muted-foreground);
+  --dsw-alias-border-l1: var(--border);
+}
+
+/* Header: the brand wordmark band with a hairline under it. */
+.dshDisclaimerHeader {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 8px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* Wordmark: brand-green "DSH" leading the neutral "Desktop" — the same
+   two-tone construction as the co-brand wordmark, as a pure text mark
+   (no new image assets in the native-ui build). */
+.dshDisclaimerWordmark {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 24px;
+}
+
+.dshDisclaimerWordmarkBrand {
+  color: var(--dsw-alias-brand-primary);
+}
+
+/* Clause numbers: quiet, tabular, never fighting the statement text. */
+.dshDisclaimerMarker {
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Footer band pinned under the scroll area. */
+.dshDisclaimerFooter {
+  flex: none;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* The 「同意」 primary action: brand green over the house button shape
+   (unlayered rules override the default variant's background utilities). */
+.dshDisclaimerPrimary {
+  background-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary-foreground);
+}
+
+.dshDisclaimerPrimary:hover {
+  background-color: var(--dsw-alias-brand-primary-pressed);
+  color: var(--dsw-alias-brand-primary-foreground);
+}
+
+.dshDisclaimerPrimary:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+}

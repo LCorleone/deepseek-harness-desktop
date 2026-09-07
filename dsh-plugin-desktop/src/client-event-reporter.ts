@@ -53,12 +53,13 @@ import {
 // Event vocabulary and destination
 // ---------------------------------------------------------------------------
 
-/** The four event types of this collector (the `event_type` column). */
+/** The event types of this collector (the `event_type` column). */
 export const CLIENT_EVENT_TYPES = Object.freeze({
   ssoLogin: 'sso_login',
   catalogRefresh: 'catalog_refresh',
   pluginInstall: 'plugin_install',
   bootVerify: 'boot_verify',
+  disclaimer: 'disclaimer',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -185,6 +186,23 @@ export interface PluginInstallEventDetail {
   readonly reasonCode?: string
   /** Optional one-line bounded failure reason; never free stderr text. */
   readonly reason?: string
+}
+
+/** Version facts the disclaimer decision is about (the desktop's own state). */
+export interface DisclaimerEventView {
+  readonly clientVersion: string
+  readonly textHash: string
+}
+
+/** `disclaimer`: the user's decision on the per-version beta disclaimer
+ * prompt (one row only when the prompt actually appeared — quiet boots
+ * stay silent, the boot_verify discipline). */
+export interface DisclaimerEventDetail {
+  readonly decision: 'agree' | 'disagree'
+  /** Client version the decision acknowledged (matches the ack record). */
+  readonly clientVersion: string
+  /** sha256 of the acknowledged statement text (disclaimer-text.ts). */
+  readonly textHash: string
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +584,19 @@ export function pluginInstallEvent(
   }
 }
 
+/**
+ * Project one disclaimer gate decision into a `disclaimer` detail. The
+ * detail carries the version and text hash the decision was about (the
+ * same pair the ack record pins), so a fleet view can tell an install
+ * consent from an update re-consent without joining on client_version.
+ */
+export function disclaimerEvent(
+  decision: 'agree' | 'disagree',
+  current: DisclaimerEventView,
+): DisclaimerEventDetail {
+  return { decision, clientVersion: current.clientVersion, textHash: current.textHash }
+}
+
 // ---------------------------------------------------------------------------
 // Collector (typed facade over the reporter) and desktop wiring
 // ---------------------------------------------------------------------------
@@ -617,6 +648,10 @@ export class ClientEventCollector {
 
   bootVerify(detail: BootVerifyEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.bootVerify, detail)
+  }
+
+  disclaimer(detail: DisclaimerEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.disclaimer, detail)
   }
 
   #emit<T extends object>(eventType: string, detail: T): void {

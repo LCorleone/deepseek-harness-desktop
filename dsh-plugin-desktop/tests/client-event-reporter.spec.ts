@@ -24,6 +24,7 @@ import {
   clientEventInsertSql,
   clientEventRowValues,
   createClientEventCollector,
+  disclaimerEvent,
   pluginInstallEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
@@ -133,7 +134,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -305,10 +306,11 @@ describe('client event collector', () => {
     collector.catalogRefresh({ outcome: 'not-a-tester', channel: 'beta-overlay' })
     collector.pluginInstall({ packageName: 'corp-plugin', version: '1.0.0', channel: 'stable', outcome: 'installed' })
     collector.bootVerify({ rejected: [{ packageName: 'corp-plugin', code: 'revoked' }], loaded: 4 })
+    collector.disclaimer({ decision: 'agree', clientVersion: '9.9.9-test', textHash: 'a'.repeat(64) })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
-      'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify',
+      'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -430,6 +432,28 @@ describe('boot verify projection', () => {
       ],
       loaded: 3,
     })
+  })
+})
+
+describe('disclaimer projection', () => {
+  it('pins the detail shape: exactly decision + clientVersion + textHash', () => {
+    const view = { clientVersion: '0.4.184', textHash: '6'.repeat(64) }
+    const detail = disclaimerEvent('agree', view)
+    // Shape is nailed down (§2 telemetry dict): three fields, no extras — a
+    // fleet query can rely on them without defensive parsing.
+    expect(Object.keys(detail).sort()).toEqual(['clientVersion', 'decision', 'textHash'])
+    expect(detail).toEqual({ decision: 'agree', clientVersion: '0.4.184', textHash: '6'.repeat(64) })
+    expect(disclaimerEvent('disagree', view))
+      .toEqual({ decision: 'disagree', clientVersion: '0.4.184', textHash: '6'.repeat(64) })
+  })
+
+  it('carries the version and hash of the acknowledged statement, not the row stamp', () => {
+    // The view is the gate's current pair — a later boot on a newer client
+    // must not rewrite what this decision was about.
+    const detail = disclaimerEvent('agree', { clientVersion: '0.4.184', textHash: 'f'.repeat(64) })
+    expect(detail.clientVersion).toBe('0.4.184')
+    expect(detail.textHash).toBe('f'.repeat(64))
+    expect(detail.decision === 'agree' || detail.decision === 'disagree').toBe(true)
   })
 })
 

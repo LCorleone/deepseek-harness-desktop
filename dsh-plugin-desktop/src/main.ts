@@ -88,12 +88,16 @@ import {
   type SsoSession,
 } from './company-sso.ts'
 import { DesktopSsoGateWindow } from './sso-gate-window.ts'
+import { DesktopDisclaimerWindow } from './disclaimer-window.ts'
+import { runDisclaimerGate } from './disclaimer-gate.ts'
+import { disclaimerTextHash } from './disclaimer-text.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import {
   betaCatalogRefreshEvent,
   betaDeliveredPackageKeys,
   bootVerifyEvent,
   createClientEventCollector,
+  disclaimerEvent,
   pluginInstallEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
@@ -362,6 +366,7 @@ async function start(): Promise<void> {
     return
   }
   let ssoGateWindow: DesktopSsoGateWindow | undefined
+  let disclaimerWindow: DesktopDisclaimerWindow | undefined
   if (isDesktopInstallerQuitRequest(process.argv, process.platform)) {
     app.quit()
     return
@@ -579,6 +584,7 @@ async function start(): Promise<void> {
       return
     }
     if (ssoGateWindow !== undefined) ssoGateWindow.show()
+    else if (disclaimerWindow !== undefined) disclaimerWindow.show()
     else if (startupRecoveryWindow !== undefined) startupRecoveryWindow.show()
     else runtime.show()
   })
@@ -658,6 +664,44 @@ async function start(): Promise<void> {
         }
       }
     }
+    // Beta disclaimer gate (2026-09-07): one prompt per client version AND
+    // statement revision — no ack (fresh install), a version change (update),
+    // or a text-hash change (revised statement) each ask once, everyday boots
+    // stay untouched. The check sits where the boot has just authenticated
+    // (after adoptSession on both silent and browser paths, with the SSO gate
+    // window already closed — AAD 之后的自然挂点) and in dev/unpackaged boots
+    // at the identical spot (same rule everywhere, no dev exemption, so the
+    // flow is verifiable on real machines), always BEFORE any shell window,
+    // Host boot, market, or CLI surface exists — a refusal leaves nothing
+    // unlocked behind it. Agree persists the ack (userData/disclaimer-ack.json)
+    // and the boot continues; disagree — or closing the window, which is the
+    // same refusal — reports the decision and runs the same graceful quit
+    // chain the shell's X-close quit uses (dispose teardown, then exit).
+    const disclaimerCurrent = { clientVersion: appVersion, textHash: disclaimerTextHash() }
+    const disclaimerOutcome = await runDisclaimerGate(disclaimerCurrent, {
+      userDataDir: app.getPath('userData'),
+      openWindow: () => {
+        const window = new DesktopDisclaimerWindow({
+          logError: message => { electronLogger.error(maskSecrets(message)) },
+        })
+        disclaimerWindow = window
+        return window
+      },
+      // Fire-and-forget (never awaited, never throws): a refuse row can be
+      // lost when the teardown outpaces the single-row write — accepted
+      // trade, documented in disclaimer-gate.ts.
+      reportDecision: decision => {
+        clientEvents?.disclaimer(disclaimerEvent(decision, disclaimerCurrent))
+      },
+      logError: message => { electronLogger.error(maskSecrets(message)) },
+      quit: async () => {
+        electronLogger.error(`${BIN_NAME}: the beta disclaimer was declined; exiting`)
+        lifecycleRecorder.failStartup(startupStage, 'startup-failed')
+        await shutdown.request(0)
+      },
+    })
+    disclaimerWindow = undefined
+    if (disclaimerOutcome !== 'agreed') return
     const shellEnvironmentResolution = await resolveDesktopShellEnvironment({
       environment: process.env,
       home: app.getPath('home'),
