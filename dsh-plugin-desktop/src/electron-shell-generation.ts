@@ -37,6 +37,9 @@ export interface ElectronShellGenerationOptions {
   readonly preloadPath: string
   readonly buildApplicationMenuItems: () => readonly Electron.MenuItemConstructorOptions[]
   readonly isQuitting: () => boolean
+  /** UI-language preference (the tray-locale pattern): the close-confirmation
+   * dialog follows the app's chosen locale, not the raw OS locale. */
+  readonly getLocale: () => string
   readonly buildTrayTemplate: () => Electron.MenuItemConstructorOptions[]
   readonly stopRendererBootMonitoring: () => void
   readonly abortRendererBootMonitoring: (cause: unknown) => void
@@ -44,7 +47,6 @@ export interface ElectronShellGenerationOptions {
   readonly logError: (message: string) => void
 }
 
-/** Own one BrowserWindow and Tray generation, including every native listener. */
 /** Locale-picked close-confirmation dialog copy (zh/en, the tray-locale pattern). */
 const SHELL_CLOSE_CONFIRM = {
   zh: { message: '确定要退出 DSH Desktop 吗？', detail: '退出后正在运行的任务将终止。', buttons: ['取消', '退出'] },
@@ -76,8 +78,8 @@ export function requestShellWindowClose(
 }
 
 /** One native close confirmation; true = quit. */
-async function confirmShellWindowClose(window: BrowserWindow): Promise<boolean> {
-  const copy = app.getLocale().toLowerCase().startsWith('zh') ? SHELL_CLOSE_CONFIRM.zh : SHELL_CLOSE_CONFIRM.en
+async function confirmShellWindowClose(window: BrowserWindow, localeTag: string): Promise<boolean> {
+  const copy = localeTag.toLowerCase().startsWith('zh') ? SHELL_CLOSE_CONFIRM.zh : SHELL_CLOSE_CONFIRM.en
   const { response } = await dialog.showMessageBox(window, {
     type: 'warning',
     buttons: [...copy.buttons],
@@ -91,6 +93,7 @@ async function confirmShellWindowClose(window: BrowserWindow): Promise<boolean> 
   return response === 1
 }
 
+/** Own one BrowserWindow and Tray generation, including every native listener. */
 export class ElectronShellGeneration {
   private window: BrowserWindow | undefined
   private closeConfirmPending = false
@@ -134,7 +137,7 @@ export class ElectronShellGeneration {
         isQuitting: this.options.isQuitting,
         beginConfirm: () => { this.closeConfirmPending = true },
         endConfirm: () => { this.closeConfirmPending = false },
-        confirmClose: () => confirmShellWindowClose(window),
+        confirmClose: () => confirmShellWindowClose(window, this.options.getLocale()),
         quit: () => { app.quit() },
       })
     }

@@ -257,6 +257,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         preloadPath: desktopPreloadPath(),
         buildApplicationMenuItems: () => this.buildApplicationMenuItems(),
         isQuitting: () => this.quitting,
+        getLocale: () => this.currentLocale,
         buildTrayTemplate: () => this.buildTrayTemplate(spec),
         stopRendererBootMonitoring: () => { this.stopRendererBootMonitoring() },
         abortRendererBootMonitoring: cause => { this.rendererHealthGate?.stop(cause) },
