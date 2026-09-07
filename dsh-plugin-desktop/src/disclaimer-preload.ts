@@ -11,12 +11,10 @@
  * @module dsh-plugin-desktop/disclaimer-preload
  */
 import { contextBridge, ipcRenderer } from 'electron'
-
-/** Main-world key the disclaimer document calls. */
-export const DESKTOP_DISCLAIMER_BRIDGE = 'desktopDisclaimerBridge'
-
-/** IPC channel carrying one decision; payload validated on both sides. */
-export const DESKTOP_DISCLAIMER_DECIDE_CHANNEL = 'dsh-disclaimer:decide'
+import {
+  DESKTOP_DISCLAIMER_BRIDGE,
+  DESKTOP_DISCLAIMER_DECIDE_CHANNEL,
+} from './disclaimer-contract.ts'
 
 function decide(action: 'agree' | 'disagree'): void {
   ipcRenderer.send(DESKTOP_DISCLAIMER_DECIDE_CHANNEL, action)

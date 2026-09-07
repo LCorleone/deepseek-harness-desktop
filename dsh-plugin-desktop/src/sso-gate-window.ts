@@ -18,7 +18,7 @@
 
 import { BrowserWindow, app, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { DESKTOP_SSO_GATE_SIGN_IN_CHANNEL } from './sso-gate-preload.ts'
+import { DESKTOP_SSO_GATE_SIGN_IN_CHANNEL } from './sso-gate-contract.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import type { DesktopLocale } from './runtime.ts'

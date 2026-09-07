@@ -12,12 +12,10 @@
  * @module dsh-plugin-desktop/sso-gate-preload
  */
 import { contextBridge, ipcRenderer } from 'electron'
-
-/** Main-world key the gate document calls. */
-export const DESKTOP_SSO_GATE_BRIDGE = 'desktopSsoGateBridge'
-
-/** IPC channel carrying the sign-in request. */
-export const DESKTOP_SSO_GATE_SIGN_IN_CHANNEL = 'dsh-sso-gate:sign-in'
+import {
+  DESKTOP_SSO_GATE_BRIDGE,
+  DESKTOP_SSO_GATE_SIGN_IN_CHANNEL,
+} from './sso-gate-contract.ts'
 
 contextBridge.exposeInMainWorld(DESKTOP_SSO_GATE_BRIDGE, {
   signIn(): void {

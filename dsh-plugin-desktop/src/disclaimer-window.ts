@@ -23,7 +23,7 @@ import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import { DISCLAIMER_ITEMS, DISCLAIMER_TITLE } from './disclaimer-text.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
-import { DESKTOP_DISCLAIMER_DECIDE_CHANNEL } from './disclaimer-preload.ts'
+import { DESKTOP_DISCLAIMER_DECIDE_CHANNEL } from './disclaimer-contract.ts'
 
 const DISCLAIMER_SCHEME = 'dsh-disclaimer:'
 // loadFile requires a physical file; pin to the unpacked mirror (dev paths
