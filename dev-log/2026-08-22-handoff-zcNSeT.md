@@ -231,6 +231,13 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
 新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
 
+### 傍晚补遗（2026-09-07 18:00-20:50）
+· **MR-HANDLING.zh.md**（tools/company-catalog/docs/handoff/）：MR 处理 pi session 冷启动指南（四文件上下文+命令直抄+五纪律），SOP 加指引；用户将开专用 session 处理同事 MR。
+· **key 暴露面问答**（用户问「agent 打印环境变量会不会泄 key」——已核实不泄）：上游 scrubbedParentEnv() 双规则擦除（/KEY|PASSWORD|SECRET|TOKEN/i + 一切 DSH_* 前缀），DSH_COMPANY_LLM_KEY/KIMI_KEY 双命中；余面=fs 读应用目录里混淆 blob 可硬解（软屏障既定接受面，非 env 泄漏）。
+· **Python 依赖问答**：客户端零 Python 依赖（grep 证实），裸机全功能可用；仅 agent 干 Python 活时环境缺失自退路。
+· **kimi wire 实测**：curl 直打 nova 网关 kimi-k2.6 两发全通（「通」/17×23=391，usage 齐全，响应形状与 deepseek 同款 chat-completions）；工具调用+流式留 #63 真机验。
+· **上下文长度议题**：blob v2 已留可选 contextWindow/maxTokens 字段（steer 并入），未填走上游回退 256K/32K；等运维给两模型真实参数后重生成 blob 即可，零代码改动。
+
 ### 声明门 + 模型名册 v2（2026-09-07 21:30，双评审 APPROVED 待发车）
 **模型名册 v2**（3484c1d034+6448da36c1）：blob 多 provider（providers[] 严格解码+v1 拒）；DSV4-DSH 显示 deepseek-v4-flash（wire 不变）；新增 Kimi/kimi-k2.6（同 nova 地址独立 key DSH_COMPANY_KIMI_KEY，wire 已 curl 实测通：17×23=391）；默认模型不变；可选 contextWindow/maxTokens 字段就位待运维参数；让位语义逐 provider；mask 泛化 DSH_COMPANY_*_KEY；用量表 provider 列改记 displayName。评审修：生成器 JSON 报错固定文案（P1 回显明文雷）+brief 明文 key 打码。
 **内测声明门**（27c39ceeb1）：SSO 后弹品牌风声明窗（文案 v2 逐字钉死+sha256 稳定哈希）；同意进入/拒绝优雅退出/关窗=拒绝；按版本+文案哈希每版一次（装后/更新后/文案改版自动重弹，日常零打扰）；决策上报 dsh_client_events（disagree 丢行容忍=老板拍板）；ack 0600 原子写 userData；38 新测。
@@ -246,16 +253,12 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 插件仓整体迁移（2026-09-07 15:15）
 julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-desktop-plugins（http://10.173.59.30:9080）**。镜像迁移完成：master=老 HEAD 5d1f0e73 后续+契约更新 322e8b7、默认分支 master、Maintainer-only 保护（push/merge=40）复刻、起始 main 已删、契约四件+example 已同步指向新实例（handoff.schema.json $id/README clone 命令/SOP 两处）。老仓已归档（api archive 201，只读留存）。⚠️ 注意：①交接线 ⑤⑥ 权限动作要落在新实例（sebtang/lizywu 需在 10.173.59.30 有账号）②新实例走 HTTP（内网明文，token 注意）③客户端不受影响（客户端拉的是 config 仓，未动）④旧 GITLAB_TOKEN 对新实例无效，新 token=pluginpuller 用户。verify-handoff 命令行 origin 参数照传新地址即可（无硬编码）。
 
-### 当前 TODO 快照（2026-09-07 13:28）
-**已完成（今日）**：0.4.184→stable（seq16，共享棘轮跳号修复+RELEASE.zh.md 发布速查）/ 新库 DSH_LOG 切换 / 四类事件上报+卸载补全 / #62 构建验收（真机四类落库实证）/ telemetry.zh.md 运维手册。master=45fd981854 已 push。
-**待办优先序**：
-1. #62 fleet 推广（群发安装包；注意 #62 不含卸载事件——下个构建才带）
-2. 沙箱弹窗档1（preset 提示词铁律，~半小时；和卸载事件同车下个构建）
-3. 交接线：GitLab 给 sebtang/lizywu 加 staging Developer → repo 权限模式拍板（A/B/C）→ 同事真发 MR 演练（RELEASE.zh.md+SOP 照抄验证）
-4. 横切评审 P3 残余（market 粘滞首条目 vs desktop some()——多版本 stable 形态才触发）+ 遗留表圈范围（repository URL C1/beta→beta ratchet 已缓解/e2e smoke P10 用例/三重交互用例）
-5. ~~遥测遗留~~（2026-09-07 13:33 关闭）：july 账号降权=July 自行在 MySQL 侧收权（效果等同换号：客户端 DSN 不变但服务端权限缩到最小——**注意保留两张表的 INSERT，否则上报全断**）；conflict 码 Linux 路径 + /var /srv 前缀=won't-fix（fleet 全 Windows，两层防护盖默认布局，理论缝不修）
-6. P8 收官三部曲（观察期→扩面→tag）；上游 0.1.2 正式→升级专项（档3 弹窗需求随行）
-**观察项**：fleet 装 #62 后 dsh_client_events 数据汇入（老板面板查询已备）；0.4.184 stable 推广后 P10 更新提示首次全员亮相的反馈。
+### 当前 TODO 快照（2026-09-07 21:35 收工版）
+**今日全清**：0.4.184→stable（seq16）+RELEASE 速查 · 新库 DSH_LOG+四类事件+卸载+telemetry 手册+july 降权 · 沙箱档1 · X 确认退出 · 插件仓迁移+契约 v2+MR 模板+示例 MR !1+MR-HANDLING 指南 · 模型名册 v2（deepseek-v4-flash 显示+Kimi，双评审过）· 声明门（评审过）。master=35981a3cae 已 push。
+**发车线（#63 七件套齐，等一件事）**：运维给 deepseek-v4-flash 与 kimi-k2.6 的上下文窗口/最大输出 → 填参重生成 blob → 构建 #63 → 真机验收（声明弹窗+Kimi 切换两个必看点）→ fleet 群发。
+**用户动作**：①运维参数（明早）②sebtang/lizywu 新实例账号+Developer→「照 MR !1 提交」③0.4.184 fleet 反馈瞄一眼。
+**挂着**：横切 P3 残余+遗留表（用户说等）· P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗随行）· 遥测 P3（conflict Linux 路径=/var /srv，won't-fix）· 声明窗 Escape 键+render-gone 灰屏姿势（P3 挂账）。
+**观察项**：fleet 事件数据汇入（面板查询在 telemetry.zh.md §3）· 同事首个真 MR（MR-HANDLING.zh.md 走起）· 0.4.184 P10 提示反馈。
 
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
