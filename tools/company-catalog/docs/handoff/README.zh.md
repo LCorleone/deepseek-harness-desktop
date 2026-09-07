@@ -20,7 +20,7 @@
 > 启动 client/host 双面验证；对照 `desktop.version` 用该版桌面端做一次冒烟
 > （dev workspace 侧载）。测试结果记入 handoff.json 的 evidence，没跑的不要勾。
 
-其余细节（所有者侧十步闸门、异常路径、发布流程）见同目录 **SOP.zh.md**。
+审查节奏、异常处理等由仓库维护者负责，提交侧按本页五步走即可；有问题在 MR 里留言。
 
 ## 契约文件与 handoff.json 字段
 
