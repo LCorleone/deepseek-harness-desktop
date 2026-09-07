@@ -228,6 +228,9 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
+新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
