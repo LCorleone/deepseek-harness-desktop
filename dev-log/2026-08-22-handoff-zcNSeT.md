@@ -238,6 +238,15 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 · **kimi wire 实测**：curl 直打 nova 网关 kimi-k2.6 两发全通（「通」/17×23=391，usage 齐全，响应形状与 deepseek 同款 chat-completions）；工具调用+流式留 #63 真机验。
 · **上下文长度议题**：blob v2 已留可选 contextWindow/maxTokens 字段（steer 并入），未填走上游回退 256K/32K；等运维给两模型真实参数后重生成 blob 即可，零代码改动。
 
+### 构建号方案 + #63 发车（2026-09-07 21:50）
+**问题**（老板发现）：版本常年 2.0.3——更新不触发声明重弹、遥测分不清构建。老板要「2.0.3.x」四段式；四段非 semver 会被 electron-builder 拒 → **等价实现=semver build metadata**：`2.0.3+b<CI run_number>`（1966671d88）。
+- 新 src/desktop-build-version.ts（base=package.json 版；DSH_BUILD_SEQ>0 拼 +b）+ build-seq.generated.ts（committed 默认 0，CI 用 DSH_BUILD_NUMBER 覆写不回传）
+- 消费分面（刻意）：遥测 client_version/声明门 ack/日志头=**build 版**；安装器/lifecycle/crashReporter/updates/compat.json=**基准版**（同版本覆盖升级链与 verify-handoff 兼容断言不动）
+- modelUsageClientVersion 改走 build 版（删重复 package.json 直读）
+- 实证：手动烘 seq=63 → 2.0.3+b63 ✓ 恢复 0 全绿（1997+7skip/typecheck 0）
+- **直做未预审**（你催当天上），#63 构建中补审 review-buildseq（分面漏点/compat 污染/re-run 同 seq 边界）
+**#63=34129324729 发车**（21:47，八件套：卸载事件/沙箱铁律/X 退出/隐私加固/locale/名册 v2/声明门/构建号）——声明弹窗+Kimi 切换+X 退出为真机三必看；上下文参数等运维明天，#64 补。
+
 ### 声明门 + 模型名册 v2（2026-09-07 21:30，双评审 APPROVED 待发车）
 **模型名册 v2**（3484c1d034+6448da36c1）：blob 多 provider（providers[] 严格解码+v1 拒）；DSV4-DSH 显示 deepseek-v4-flash（wire 不变）；新增 Kimi/kimi-k2.6（同 nova 地址独立 key DSH_COMPANY_KIMI_KEY，wire 已 curl 实测通：17×23=391）；默认模型不变；可选 contextWindow/maxTokens 字段就位待运维参数；让位语义逐 provider；mask 泛化 DSH_COMPANY_*_KEY；用量表 provider 列改记 displayName。评审修：生成器 JSON 报错固定文案（P1 回显明文雷）+brief 明文 key 打码。
 **内测声明门**（27c39ceeb1）：SSO 后弹品牌风声明窗（文案 v2 逐字钉死+sha256 稳定哈希）；同意进入/拒绝优雅退出/关窗=拒绝；按版本+文案哈希每版一次（装后/更新后/文案改版自动重弹，日常零打扰）；决策上报 dsh_client_events（disagree 丢行容忍=老板拍板）；ack 0600 原子写 userData；38 新测。
