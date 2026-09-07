@@ -72,10 +72,13 @@ function pluginTarball({ name = 'fixture-hello', version = '1.0.0', patch = './c
   ])
 }
 
+/** The v2 plugin metadata block every sheet carries (author/description/type are required alongside the identity pair). */
+const PLUGIN_BLOCK = { packageName: 'fixture-hello', version: '1.0.0', author: 'zhangsan', description: 'A minimal hello plugin used as the suite fixture.', type: 'tool' }
+
 /** A schema-valid handoff sheet for the fixture above. */
 const handoffSheet = (overrides = {}) => ({
-  schemaVersion: 1,
-  plugin: { packageName: 'fixture-hello', version: '1.0.0' },
+  schemaVersion: 2,
+  plugin: { ...PLUGIN_BLOCK },
   compat: {
     dshRuntimeVersion: PINNED_RUNTIME_RANGE,
     dshCommit: PINNED_DSH_COMMIT,
@@ -259,7 +262,7 @@ test('scoped packages bind through the flattened npm pack spelling', async () =>
     dirName: 'company-scoped-plugin-0.9.0',
     tarball: pluginTarball({ name: '@company/scoped-plugin', version: '0.9.0' }),
     handoff: handoffSheet({
-      plugin: { packageName: '@company/scoped-plugin', version: '0.9.0' },
+      plugin: { ...PLUGIN_BLOCK, packageName: '@company/scoped-plugin', version: '0.9.0' },
       artifact: { file: 'company-scoped-plugin-0.9.0.tgz', sha256: '0'.repeat(64), sizeBytes: 1 },
     }),
   }))
@@ -376,7 +379,7 @@ test('red: handoff plugin identity vs the tarball manifest fails step 4', async 
   const workspace = withPackagesDir(submissionWorkspace({
     tarball: pluginTarball(),
     dirName: 'fixture-hello-1.0.1',
-    handoff: handoffSheet({ plugin: { packageName: 'fixture-hello', version: '1.0.1' }, artifact: { file: 'fixture-hello-1.0.1.tgz', sha256: '0'.repeat(64), sizeBytes: 1 } }),
+    handoff: handoffSheet({ plugin: { ...PLUGIN_BLOCK, version: '1.0.1' }, artifact: { file: 'fixture-hello-1.0.1.tgz', sha256: '0'.repeat(64), sizeBytes: 1 } }),
   }))
   try {
     const result = await verifyWorkspace(workspace)
@@ -543,7 +546,7 @@ test('red: an unexpected top-level field fails step 1 naming the field', async (
 test('red: an unexpected nested field and enum drift fail step 1', async () => {
   const workspace = withPackagesDir(submissionWorkspace({
     tarball: pluginTarball(),
-    handoff: handoffSheet({ plugin: { packageName: 'fixture-hello', version: '1.0.0', homepage: 'https://example.com' } }),
+    handoff: handoffSheet({ plugin: { ...PLUGIN_BLOCK, homepage: 'https://example.com' } }),
   }))
   try {
     const result = await verifyWorkspace(workspace)
@@ -586,6 +589,62 @@ test('red: a non-calendar date and a bad sha256 pattern fail step 1 before step 
     } finally {
       rmSync(patternWorkspace.root, { recursive: true, force: true })
     }
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('red: a v1 sheet is refused at step 1 with the readable contract-v2 pointer', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({
+    tarball: pluginTarball(),
+    // The exact v1 shape: schemaVersion 1 and a plugin block without the
+    // v2 metadata — zero legacy MRs exist, so nothing older may pass.
+    handoff: handoffSheet({
+      schemaVersion: 1,
+      plugin: { packageName: 'fixture-hello', version: '1.0.0' },
+    }),
+  }))
+  try {
+    const result = await verifyWorkspace(workspace)
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStep.step, 'schema')
+    assert.match(result.failedStep.reason, /schemaVersion.*must equal the constant 2/us)
+    assert.match(result.failedStep.reason, /handoff contract v2/u)
+    assert.match(result.failedStep.reason, /v1 提交单直接拒绝/u)
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('red: dropping any v2 plugin metadata field (author/description/type) fails step 1 with the bilingual note', async () => {
+  for (const field of ['author', 'description', 'type']) {
+    const plugin = { ...PLUGIN_BLOCK }
+    delete plugin[field]
+    const workspace = withPackagesDir(submissionWorkspace({ tarball: pluginTarball(), handoff: handoffSheet({ plugin }) }))
+    try {
+      const result = await verifyWorkspace(workspace)
+      assert.equal(result.failedStep.step, 'schema', field)
+      assert.match(result.failedStep.reason, new RegExp(`missing the required field '${field}'`, 'u'), field)
+      assert.match(result.failedStep.reason, /handoff contract v2 requires plugin\.author\/description\/type/u, field)
+    } finally {
+      rmSync(workspace.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('red: a plugin.type outside the fixed eleven-slug enum is refused at step 1', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({
+    tarball: pluginTarball(),
+    // The classic mistake: the Chinese label from the MR template instead of
+    // the English slug the enum actually lists.
+    handoff: handoffSheet({ plugin: { ...PLUGIN_BLOCK, type: '工具' } }),
+  }))
+  try {
+    const result = await verifyWorkspace(workspace)
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStep.step, 'schema')
+    assert.match(result.failedStep.reason, /\/plugin\/type: must be one of.*"tool"/u)
+    assert.match(result.failedStep.reason, /handoff contract v2/u)
   } finally {
     rmSync(workspace.root, { recursive: true, force: true })
   }
@@ -722,7 +781,7 @@ test('red: a prerelease plugin version is refused at step 1 with the pointed sta
     tarball: pluginTarball({ version: '1.0.0-rc.1' }),
     dirName: 'fixture-hello-1.0.0-rc.1',
     handoff: handoffSheet({
-      plugin: { packageName: 'fixture-hello', version: '1.0.0-rc.1' },
+      plugin: { ...PLUGIN_BLOCK, version: '1.0.0-rc.1' },
       artifact: { file: 'fixture-hello-1.0.0-rc.1.tgz', sha256: '0'.repeat(64), sizeBytes: 1 },
     }),
   }))
@@ -747,7 +806,7 @@ test('red: a prerelease version that slips a loosened schema copy still dies at 
     tarball: pluginTarball({ version: '1.0.0-rc.1' }),
     dirName: 'fixture-hello-1.0.0-rc.1',
     handoff: handoffSheet({
-      plugin: { packageName: 'fixture-hello', version: '1.0.0-rc.1' },
+      plugin: { ...PLUGIN_BLOCK, version: '1.0.0-rc.1' },
       artifact: { file: 'fixture-hello-1.0.0-rc.1.tgz', sha256: '0'.repeat(64), sizeBytes: 1 },
     }),
   }))
@@ -997,6 +1056,45 @@ test('the schema subset validator: unknown keywords fail closed, const/enum/boun
   assert.match(messages, /\/extra: is not allowed/u)
   // An unimplemented keyword is a schema-side error, never a silent pass.
   assert.throws(() => validateJsonSchema({ n: 1 }, { properties: { n: { maxLength: 5, if: {} } } }), /if.*does not implement/u)
+})
+
+// ---------------------------------------------------------------------------
+// The shipped contract itself: v2 shape, the eleven type slugs, and the
+// example sheet clearing its own schema
+// ---------------------------------------------------------------------------
+
+test('the shipped schema is contract v2: eleven plugin.type slugs validate, and example.handoff.json satisfies it', () => {
+  const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'))
+  assert.equal(schema.properties.schemaVersion.const, 2)
+  const pluginSchema = schema.properties.plugin
+  assert.deepEqual(pluginSchema.required, ['packageName', 'version', 'author', 'description', 'type'])
+  assert.deepEqual(Object.keys(pluginSchema.properties), ['packageName', 'version', 'author', 'description', 'type'])
+  const slugs = pluginSchema.properties.type.enum
+  assert.equal(slugs.length, 11)
+  assert.deepEqual([slugs[0], slugs[10]], ['tool', 'other'])
+  // Every slug is a valid plugin.type for an otherwise-green sheet; the
+  // author deliberately needs no format (bare handle or email both pass).
+  for (const type of slugs) {
+    for (const author of ['sebtang', 'sebtang@company.example']) {
+      const sheet = handoffSheet({ plugin: { ...PLUGIN_BLOCK, author, type } })
+      const validation = validateJsonSchema(sheet, schema)
+      assert.equal(validation.ok, true, `${type}/${author}: ${JSON.stringify(validation.errors)}`)
+    }
+  }
+  // The repo's own example must clear the contract it documents.
+  const example = JSON.parse(readFileSync(join(TOOL_DIR, 'docs', 'handoff', 'example.handoff.json'), 'utf8'))
+  const exampleValidation = validateJsonSchema(example, schema)
+  assert.equal(exampleValidation.ok, true, JSON.stringify(exampleValidation.errors))
+  // And its v1-shaped counterpart (schemaVersion 1, no metadata) must not.
+  const v1Example = {
+    ...example,
+    schemaVersion: 1,
+    plugin: { packageName: example.plugin.packageName, version: example.plugin.version },
+  }
+  const v1Validation = validateJsonSchema(v1Example, schema)
+  assert.equal(v1Validation.ok, false)
+  assert.equal(v1Validation.errors.some((error) => error.at === '/schemaVersion'), true)
+  assert.equal(v1Validation.errors.filter((error) => error.at === '/plugin' && /'(?:author|description|type)'/u.test(error.message)).length, 3)
 })
 
 // ---------------------------------------------------------------------------

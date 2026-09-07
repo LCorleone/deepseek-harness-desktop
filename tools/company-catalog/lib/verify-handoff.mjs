@@ -259,7 +259,17 @@ function checkSchema({ submissionDir, schemaPath }) {
     const versionNote = typeof declaredVersion === 'string' && /^\d+\.\d+\.\d+[-+]/u.test(declaredVersion)
       ? `\n  plugin.version '${esc(declaredVersion)}' — the catalog only lists stable three-segment versions (X.Y.Z); drop the prerelease/build segment and resubmit`
       : ''
-    failCheck('schema', `handoff.json does not satisfy handoff.schema.json:\n  ${rendered.join('\n  ')}${validation.errors.length > 5 ? `\n  (+${String(validation.errors.length - 5)} more)` : ''}${versionNote}`)
+    // Contract v2 earns the same pointed sentences: the bare const/required/
+    // enum errors a v1 sheet triggers do not say what changed, so a stale
+    // schemaVersion and a missing/invalid plugin.author/description/type
+    // each carry their own bilingual pointer.
+    const schemaVersionNote = handoff?.schemaVersion === 2 ? '' : '\n  schemaVersion must be 2 — this repo enforces handoff contract v2 and refuses v1 sheets（本仓已强制 v2 契约：v1 提交单直接拒绝——改 schemaVersion 为 2 并按 schema 补齐 plugin 段）'
+    const touchesV2Fields = (error) => error.at === '/plugin/author' || error.at === '/plugin/description' || error.at === '/plugin/type'
+      || (error.at === '/plugin' && /'(?:author|description|type)'/u.test(error.message))
+    const v2FieldsNote = validation.errors.some(touchesV2Fields)
+      ? '\n  handoff contract v2 requires plugin.author/description/type（契约 v2：plugin 段必填 作者 author / 一句话描述 description / 类型 type，type 只能取 handoff.schema.json 列出的英文枚举值）'
+      : ''
+    failCheck('schema', `handoff.json does not satisfy handoff.schema.json:\n  ${rendered.join('\n  ')}${validation.errors.length > 5 ? `\n  (+${String(validation.errors.length - 5)} more)` : ''}${versionNote}${schemaVersionNote}${v2FieldsNote}`)
   }
   return handoff
 }

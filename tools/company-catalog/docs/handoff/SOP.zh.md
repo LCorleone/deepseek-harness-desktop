@@ -20,6 +20,7 @@
 1. npm pack 打出 <名>-<版本>.tgz
 2. agent 按 compat.json 搭同版本环境自验（dsh commit+桌面版都钉在那份文件）
 3. 算 sha256+字节数，填 handoff.json（严格按 handoff.schema.json）
+   契约 v2：plugin 段必填 author / description / type（作者/一句话描述/类型，type 取 11 个英文枚举值）
 4. 拉 submissions/<名>-<版本> 分支，放提交目录，推分支
 5. 开 MR 到 master（标题=插件名@版本），等 verdict
 ```

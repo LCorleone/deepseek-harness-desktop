@@ -82,8 +82,8 @@ function pluginTarball({ withRepository = true } = {}) {
 }
 
 const handoffSheet = (bytes) => ({
-  schemaVersion: 1,
-  plugin: { packageName: 'fixture-hello', version: '1.0.0' },
+  schemaVersion: 2,
+  plugin: { packageName: 'fixture-hello', version: '1.0.0', author: 'zhangsan', description: 'A minimal hello plugin used as the suite fixture.', type: 'tool' },
   compat: { dshRuntimeVersion: PINNED_RUNTIME_RANGE, dshCommit: PINNED_DSH_COMMIT, desktopVersion: PINNED_DESKTOP },
   artifact: { file: 'fixture-hello-1.0.0.tgz', sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.byteLength },
   submitter: { name: '张三', gitlabHandle: '@zhangsan', submittedAt: '2026-09-06' },

@@ -15,11 +15,11 @@
     "changes"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "plugin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["packageName", "version"],
+      "required": ["packageName", "version", "author", "description", "type"],
       "properties": {
         "packageName": {
           "type": "string",
@@ -30,6 +30,32 @@
           "type": "string",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$",
           "description": "Stable three-segment version, and it must equal the tarball's package.json version and the submission directory's version segment. The catalog only lists stable releases: prerelease (-rc.1) and build (+meta) segments are refused — publish the stable release instead."
+        },
+        "author": {
+          "type": "string",
+          "description": "Who wrote the plugin. The author is not necessarily the submitter — pushing the MR on the author's behalf is fine (submitter.name says who pushed). A plain string with no format enforced: 'sebtang' and 'sebtang@company.example' are both valid."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One or two sentences, in your own words, saying what the plugin does — this is the text colleagues read when deciding whether to install, and it must agree with the MR description."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "tool",
+            "skill",
+            "docs-and-rendering",
+            "vision-and-multimodal",
+            "voice-and-audio",
+            "memory",
+            "workflow-and-automation",
+            "git-and-code-review",
+            "interface-ui",
+            "browser-and-network",
+            "other"
+          ],
+          "description": "The plugin's category, exactly one of the fixed eleven English slugs above (their Chinese translations live in the MR template and the repo README). Pick the closest fit; 'other' is a last resort."
         }
       }
     },
