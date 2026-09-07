@@ -85,7 +85,7 @@ export const MODEL_USAGE_RECONNECT_MAX_MS = 60_000
 // Database destination
 // ---------------------------------------------------------------------------
 
-/** Target table (company MySQL, database `dsh_usage`). */
+/** Target table (company MySQL, database `DSH_LOG`). */
 export const MODEL_USAGE_TABLE = 'dsh_model_call_events'
 
 /** Column order of the INSERT statement; values follow the same order. */

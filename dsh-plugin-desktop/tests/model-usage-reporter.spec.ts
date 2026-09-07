@@ -174,10 +174,10 @@ describe('usage report database blob codec', () => {
     const dsn = decodeUsageReportDbBlob(USAGE_REPORT_DB_BLOB)
 
     expect(dsn).toEqual({
-      host: '10.173.46.21',
+      host: '10.173.59.16',
       port: 3306,
-      user: 'dsh_report_writer',
-      database: 'dsh_usage',
+      user: 'july',
+      database: 'DSH_LOG',
       password: expect.any(String),
     })
     expect(dsn.password.length).toBeGreaterThan(0)
