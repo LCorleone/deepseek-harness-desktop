@@ -704,14 +704,20 @@ async function main() {
     ratchetSource = `${masterRawUrl} (404 — first beta publish; base = deployed stable ${stableRawUrl})`
     console.log(`ratchet: no deployed beta manifest — first beta publish, base = deployed stable sequence ${String(ratchetBase.sequence)}`)
   }
-  if (meta.sequence !== ratchetBase.sequence + 1) {
+  // Shared-ratchet semantics: the beta channel consumes sequence numbers from
+  // the same monotonic state, so a stable artifact may legitimately SKIP past
+  // deployed+1 (e.g. stable 13 → beta 14,15 → stable 16). Stale detection
+  // stays exact — an artifact at or below the deployed sequence was already
+  // seen by clients and must never re-push.
+  if (typeof meta.sequence !== 'number' || meta.sequence <= ratchetBase.sequence) {
     throw new Error(
       `sequence ratchet failure: the artifact carries sequence ${String(meta.sequence)} but GitLab has ${String(ratchetBase.sequence)} deployed ` +
-      `(${ratchetSource}); required artifact.sequence == deployed + 1 (== ${String(ratchetBase.sequence + 1)}). ` +
-      (meta.sequence <= ratchetBase.sequence
-        ? 'this artifact is stale — clients have already seen its sequence or newer; rebuild from a bumped state file'
-        : 'the state file used for the build jumped ahead of the deployment — publish the pending artifact first, then rebuild'),
+      `(${ratchetSource}); required artifact.sequence > deployed (> ${String(ratchetBase.sequence)}). ` +
+      'this artifact is stale — clients have already seen its sequence or newer; rebuild from a bumped state file',
     )
+  }
+  if (meta.sequence > ratchetBase.sequence + 1) {
+    console.log(`ratchet: artifact sequence ${String(meta.sequence)} skips past deployed ${String(ratchetBase.sequence)} — legitimate under the shared ratchet (the beta channel consumed the intervening numbers)`)
   }
   const market = await loadMarketLibrary()
   const verification = await verifyManifestText(market, manifestText, {

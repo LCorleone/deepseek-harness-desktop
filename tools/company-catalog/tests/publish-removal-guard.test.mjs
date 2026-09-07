@@ -134,6 +134,35 @@ function runPublisher({ work, artifactDir, deployedPath, extra = [], channel = '
   return { status: probe.status, output: `${probe.stdout ?? ''}\n${probe.stderr ?? ''}` }
 }
 
+// --- shared-ratchet skip: a stable artifact may legitimately jump past
+// deployed+1 when the beta channel consumed the intervening sequence numbers
+// (the live case: stable 13 → beta 14,15 → stable 16). Stale (≤ deployed)
+// stays a hard refusal.
+test('shared ratchet: a stable artifact skipping past deployed+1 passes; stale does not', () => {
+  const work = workspace()
+  try {
+    const deployedDir = join(work.root, 'deployed')
+    const artifactDir = join(work.root, 'artifact')
+    // Deployed stable at sequence 1.
+    publish(work, [entry({ packageName: 'soak-a', version: '1.0.0' })], deployedDir)
+    // Advance the shared state twice WITHOUT deploying stable (beta consumed 2 and 3).
+    stageTarballs([entry({ packageName: 'soak-a', version: '1.0.0' })], artifactDir)
+    publish(work, [entry({ packageName: 'soak-a', version: '1.0.0' })], join(work.root, 'beta-consume-1'), 'beta')
+    publish(work, [entry({ packageName: 'soak-a', version: '1.0.0' })], join(work.root, 'beta-consume-2'), 'beta')
+    // The stable artifact now carries sequence 4 against deployed 1 — a legal skip.
+    publish(work, [entry({ packageName: 'soak-a', version: '1.0.0' })], artifactDir)
+    const skip = runPublisher({ work, artifactDir, deployedPath: join(deployedDir, 'catalog-manifest.json') })
+    assert.equal(skip.status, 0, `the shared-racket skip was refused:\n${skip.output}`)
+    assert.match(skip.output, /skips past deployed/u, 'the skip is logged as legitimate')
+    // Stale: the very artifact that is already deployed (sequence 1 vs 1).
+    const stale = runPublisher({ work, artifactDir: deployedDir, deployedPath: join(deployedDir, 'catalog-manifest.json') })
+    assert.notEqual(stale.status, 0, 'a stale (already-deployed) artifact was admitted')
+    assert.match(stale.output, /stale/u)
+  } finally {
+    rmSync(work.root, { recursive: true, force: true })
+  }
+})
+
 test('red: a stable artifact dropping an unrevoked deployed package is refused, before any push plan (dry-run reports it)', () => {
   const work = workspace()
   try {
