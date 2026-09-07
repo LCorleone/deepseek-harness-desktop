@@ -231,6 +231,17 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
 新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
 
+### 当前 TODO 快照（2026-09-07 13:28）
+**已完成（今日）**：0.4.184→stable（seq16，共享棘轮跳号修复+RELEASE.zh.md 发布速查）/ 新库 DSH_LOG 切换 / 四类事件上报+卸载补全 / #62 构建验收（真机四类落库实证）/ telemetry.zh.md 运维手册。master=45fd981854 已 push。
+**待办优先序**：
+1. #62 fleet 推广（群发安装包；注意 #62 不含卸载事件——下个构建才带）
+2. 沙箱弹窗档1（preset 提示词铁律，~半小时；和卸载事件同车下个构建）
+3. 交接线：GitLab 给 sebtang/lizywu 加 staging Developer → repo 权限模式拍板（A/B/C）→ 同事真发 MR 演练（RELEASE.zh.md+SOP 照抄验证）
+4. 横切评审 P3 残余（market 粘滞首条目 vs desktop some()——多版本 stable 形态才触发）+ 遗留表圈范围（repository URL C1/beta→beta ratchet 已缓解/e2e smoke P10 用例/三重交互用例）
+5. 遥测遗留：july 账号降权（换只写 INSERT 账号+重生成 blob）/ conflict 码 Linux 路径遮蔽 / /var /srv 前缀
+6. P8 收官三部曲（观察期→扩面→tag）；上游 0.1.2 正式→升级专项（档3 弹窗需求随行）
+**观察项**：fleet 装 #62 后 dsh_client_events 数据汇入（老板面板查询已备）；0.4.184 stable 推广后 P10 更新提示首次全员亮相的反馈。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
