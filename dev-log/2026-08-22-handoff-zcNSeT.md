@@ -231,6 +231,13 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
 新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
 
+### 契约 v2 + 示例 MR（2026-09-07 17:25，dsh-desktop-plugins）
+**契约 v2**（desktop db650205fc+518e3bb552，评审 APPROVED+3P3 当清）：handoff.json 的 plugin 增三必填——author（纯 string，minLength 1）/ description / type（11 英文枚举：tool·skill·docs-and-rendering·vision-and-multimodal·voice-audio·memory·workflow-and-automation·git-and-code-review·interface-ui·browser-network·other）；schemaVersion const 2 零兼容层（无存量 MR）；verify-handoff 步 1 双语拒绝指路；MR 模板 .gitlab/merge_request_templates/plugin.md（网页建 MR 自动带出中文表头+测试勾选；desktop 仓双副本字节钉测试）；README 首页化。172/172。
+**插件仓面**（41a9a5f..d496aec）：契约五件套（README/schema/example/compat/MR 模板）；删 SOP.zh.md+plugin.md 根副本（所有者文档回 desktop 仓）+ 删陈旧 v1 example/ 目录；README 去重单一化。
+**示例 MR !1**（submissions/dsh-free-search-0.4.184）：模板表头照填 + handoff v2 + 真实 tgz（与 stable 线上同源 sha256 6b6ed3e3…）；verify PASS 10/10 回执推分支+评论摘要。制作中被闸门真咬三次（自造 checks 值/目录双层/重报已发布版本）——咬痕教学写进 MR 评论。**MR 保持 open 当活示例**。
+**界限重申**：插件仓改动零客户端影响（客户端拉 config 仓未动）。
+**接手条件**（⑤⑥）：sebtang/lizywu 在 10.173.59.30 开账号 → 加 repo Developer → 扔一句「照 MR !1 提交」。
+
 ### 插件仓整体迁移（2026-09-07 15:15）
 julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-desktop-plugins（http://10.173.59.30:9080）**。镜像迁移完成：master=老 HEAD 5d1f0e73 后续+契约更新 322e8b7、默认分支 master、Maintainer-only 保护（push/merge=40）复刻、起始 main 已删、契约四件+example 已同步指向新实例（handoff.schema.json $id/README clone 命令/SOP 两处）。老仓已归档（api archive 201，只读留存）。⚠️ 注意：①交接线 ⑤⑥ 权限动作要落在新实例（sebtang/lizywu 需在 10.173.59.30 有账号）②新实例走 HTTP（内网明文，token 注意）③客户端不受影响（客户端拉的是 config 仓，未动）④旧 GITLAB_TOKEN 对新实例无效，新 token=pluginpuller 用户。verify-handoff 命令行 origin 参数照传新地址即可（无硬编码）。
 
