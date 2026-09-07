@@ -50,6 +50,7 @@ const electron = vi.hoisted(() => {
     readonly states: string[] = []
     readonly webContents = {
       ...emitter(),
+      id: 42,
       setWindowOpenHandler: vi.fn(() => ({ action: 'deny' })),
     }
     readonly events = emitter()
@@ -76,14 +77,29 @@ const electron = vi.hoisted(() => {
   }
 
   const appEmitter = emitter()
+  const ipcListeners = new Map<string, Set<(event: unknown, action: unknown) => void>>()
+  const ipcMain = {
+    on: (channel: string, listener: (event: unknown, action: unknown) => void): void => {
+      const set = ipcListeners.get(channel) ?? new Set()
+      set.add(listener)
+      ipcListeners.set(channel, set)
+    },
+    removeListener: (channel: string, listener: (event: unknown, action: unknown) => void): void => {
+      ipcListeners.get(channel)?.delete(listener)
+    },
+    emit: (channel: string, event: unknown, action: unknown): void => {
+      for (const listener of ipcListeners.get(channel) ?? []) listener(event, action)
+    },
+  }
   return {
     app: { on: appEmitter.on, off: appEmitter.off, isHidden: vi.fn(() => false), show: vi.fn() },
     BrowserWindow: FakeDisclaimerWindow,
+    ipcMain,
     windows,
   }
 })
 
-vi.mock('electron', () => ({ app: electron.app, BrowserWindow: electron.BrowserWindow }))
+vi.mock('electron', () => ({ app: electron.app, BrowserWindow: electron.BrowserWindow, ipcMain: electron.ipcMain, contextBridge: { exposeInMainWorld: () => {} }, ipcRenderer: { send: () => {} } }))
 
 const SCHEME = 'dsh-disclaimer:'
 
@@ -219,8 +235,10 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
       window,
       results,
       run,
+      // The real transport since the #63 packaged-renderer finding: the
+      // preload's IPC send, not scheme navigation.
       decide: action => {
-        window.webContents.emit('will-navigate', { preventDefault: vi.fn() }, `${SCHEME}//${action}`)
+        electron.ipcMain.emit('dsh-disclaimer:decide', { sender: { id: window.webContents.id } }, action)
       },
       close: () => { window.events.emit('closed') },
     }

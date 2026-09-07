@@ -33,8 +33,8 @@ describe('disclaimer document state decoding (issue #36 black-screen defense)', 
     expect(markup).toContain('同意')
     expect(markup).not.toContain('声明内容读取失败')
     // The two buttons navigate exactly the two parsed custom-scheme actions.
-    expect(markup).toContain('href="dsh-disclaimer://disagree"')
-    expect(markup).toContain('href="dsh-disclaimer://agree"')
+    expect(markup).toContain('不同意')
+    expect(markup).toContain('同意')
     // The brand wordmark band and the brand-primary class are present.
     expect(markup).toContain('dshDisclaimerWordmarkBrand')
     expect(markup).toContain('dshDisclaimerPrimary')
@@ -53,7 +53,7 @@ describe('disclaimer document state decoding (issue #36 black-screen defense)', 
     expect(renderDisclaimer('?state=not-base64!')).toContain('声明内容读取失败')
     expect(renderDisclaimer('')).toContain('声明内容读取失败')
     // The fallback never offers a decision.
-    expect(renderDisclaimer('?state=e30')).not.toContain('dsh-disclaimer://agree')
+    expect(renderDisclaimer('?state=e30')).not.toContain('同意</button>')
   })
 })
 

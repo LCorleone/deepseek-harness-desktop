@@ -17,7 +17,7 @@
  * @module dsh-plugin-desktop/disclaimer-window
  */
 
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
@@ -25,6 +25,7 @@ import { DISCLAIMER_ITEMS, DISCLAIMER_TITLE } from './disclaimer-text.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
 
 const DISCLAIMER_SCHEME = 'dsh-disclaimer:'
+import { DESKTOP_DISCLAIMER_DECIDE_CHANNEL } from './disclaimer-preload.ts'
 // loadFile requires a physical file; pin to the unpacked mirror (dev paths
 // pass through unchanged) — see startup-recovery-window.ts for the rationale.
 const DISCLAIMER_DOCUMENT = unpackedAsarPath(fileURLToPath(new URL('./native-ui/disclaimer.html', import.meta.url)))
@@ -167,6 +168,10 @@ export class DesktopDisclaimerWindow {
         webviewTag: false,
         spellcheck: false,
         partition: 'dsh-disclaimer',
+        // The v1 scheme-anchor transport is dead in packaged sandboxed
+        // renderers (external-protocol swallow, #63 finding); decisions ride
+        // this preload's IPC send instead.
+        preload: fileURLToPath(new URL('./disclaimer-preload.cjs', import.meta.url)),
       },
     })
     this.window = window
@@ -184,6 +189,15 @@ export class DesktopDisclaimerWindow {
     }
     window.webContents.on('will-navigate', navigate)
     window.webContents.on('will-redirect', navigate)
+    // Deterministic decision transport (see the preload comment above). The
+    // sender is pinned to THIS window's webContents so a stray same-partition
+    // document cannot decide on its behalf.
+    const decide = (event: Electron.IpcMainEvent, action: unknown): void => {
+      if (event.sender.id !== window.webContents.id) return
+      if (action !== 'agree' && action !== 'disagree') return
+      this.finish(action)
+    }
+    ipcMain.on(DESKTOP_DISCLAIMER_DECIDE_CHANNEL, decide)
     const activate = (): void => {
       if (applicationNeedsReveal(window)) revealApplication(window)
     }
@@ -191,6 +205,7 @@ export class DesktopDisclaimerWindow {
     if (process.platform === 'darwin') app.on('did-become-active', activate)
     window.once('ready-to-show', () => { revealApplication(window) })
     window.on('closed', () => {
+      ipcMain.removeListener(DESKTOP_DISCLAIMER_DECIDE_CHANNEL, decide)
       app.off('activate', activate)
       if (process.platform === 'darwin') app.off('did-become-active', activate)
       this.window = undefined

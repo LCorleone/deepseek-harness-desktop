@@ -3,7 +3,6 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { buttonVariants } from '../components/ui/button.tsx'
 import { cn } from '../lib/utils.ts'
 
-const SCHEME = 'dsh-disclaimer:'
 
 /** Fixed window chrome (the statement itself travels in the view model). */
 const WORDMARK_BRAND = 'DSH'
@@ -41,8 +40,16 @@ function decodeState(): DisclaimerState | undefined {
   return undefined
 }
 
-function decisionHref(action: 'agree' | 'disagree'): string {
-  return `${SCHEME}//${action}`
+/** The preload IPC bridge (disclaimer-preload.cjs). The v1 scheme-anchor
+ * transport is dead in packaged sandboxed renderers — this is the transport. */
+declare global {
+  interface Window {
+    readonly desktopDisclaimerBridge?: { readonly decide: (action: 'agree' | 'disagree') => void }
+  }
+}
+
+function decide(action: 'agree' | 'disagree'): void {
+  window.desktopDisclaimerBridge?.decide(action)
 }
 
 /** Boundary fallback card: the renderer failed, but the window stays readable. */
@@ -99,8 +106,8 @@ export function DisclaimerApp(): JSX.Element {
     </section>
     <footer className="dshDisclaimerFooter">
       <div className="mx-auto flex w-full max-w-2xl items-center justify-end gap-3 px-6 py-4">
-        <a className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-6')} href={decisionHref('disagree')}>{BUTTON_DISAGREE}</a>
-        <a className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} href={decisionHref('agree')}>{BUTTON_AGREE}</a>
+        <button type="button" className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-6')} onClick={() => { decide('disagree') }}>{BUTTON_DISAGREE}</button>
+        <button type="button" className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} onClick={() => { decide('agree') }}>{BUTTON_AGREE}</button>
       </div>
     </footer>
   </main>

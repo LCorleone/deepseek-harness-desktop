@@ -495,7 +495,7 @@ describe('published package surface', () => {
     expect(config).toContain("diagnostics: 'src/diagnostics.ts'")
     expect(config).toContain("notifications: 'src/notifications.ts'")
     expect(config).toContain("'diagnostic-export-worker': 'src/diagnostic-export-worker.ts'")
-    expect(config).toContain("entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts' }")
+    expect(config).toContain("entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts', 'disclaimer-preload': 'src/disclaimer-preload.ts' }")
     expect(config).toContain("entryFileNames: '[name].cjs'")
     expect(config).toContain("'agent-browser': 'src/agent-browser.ts'")
     expect(config).toContain("terminal: 'src/terminal.ts'")
