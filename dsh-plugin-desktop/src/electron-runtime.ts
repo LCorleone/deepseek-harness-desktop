@@ -91,6 +91,8 @@ export function desktopPreloadPath(moduleUrl: string = import.meta.url): string 
   return fileURLToPath(new URL('./preload.cjs', moduleUrl))
 }
 
+import { desktopBuildVersion } from './desktop-build-version.ts'
+
 const PRODUCT_VERSION = desktopProductVersion()
 
 /** Main-process deadline for one Renderer generation to settle its client Loader. */
@@ -370,7 +372,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         pnpmBinPath: packagedDependencyPath(import.meta.url, 'pnpm/bin/pnpm.mjs'),
         electronVersion,
         profileName: spec.profileName,
-        productVersion: PRODUCT_VERSION,
+        productVersion: desktopBuildVersion(),
         profileDir: spec.profileDir,
         homeDir: spec.homeDir,
         installRecoveryStatePath: desktopInstallRecoveryStatePath(app.getPath('userData')),
@@ -408,7 +410,9 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
       })
       if (confirmation.response !== 0) return
       const path = await exportDesktopDiagnostics(app.getPath('userData'), {
-        appVersion: PRODUCT_VERSION,
+        // Diagnostics must distinguish builds (2.0.3+b63), unlike the
+        // updater face below which stays on the plain product version.
+        appVersion: desktopBuildVersion(),
         crashDumpsDir: app.getPath('crashDumps'),
       })
       shell.showItemInFolder(path)

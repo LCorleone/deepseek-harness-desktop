@@ -33,6 +33,13 @@ jobs:
           path: ${{ steps.yarn-cache.outputs.dir }}
           key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
       - run: yarn install --immutable
+      # Bake the CI build number as semver build metadata (2.0.3+b<run>) —
+      # telemetry client_version and the disclaimer gate distinguish builds
+      # while the installer version stays upstream-pinned.
+      - name: Bake build sequence
+        env:
+          DSH_BUILD_NUMBER: ${{ github.run_number }}
+        run: node dsh-plugin-desktop/scripts/make-build-seq.mjs
       # dist:win self-runs check:win-package (Windows-relevant gates only).
       # The root `yarn check` is skipped: upstream module-resolution.spec.ts
       # asserts POSIX-style file URLs and cannot pass on Windows runners.

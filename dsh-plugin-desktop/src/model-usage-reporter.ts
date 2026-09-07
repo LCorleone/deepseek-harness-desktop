@@ -43,13 +43,13 @@
  * @module dsh-plugin-desktop/model-usage-report
  */
 
-import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { isTokenDelta } from '@deepseek-ai/dsh-llm/message'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readDesktopPolicy, type DesktopPolicy } from './desktop-policy.ts'
 import { maskSecrets } from './mask-secrets.ts'
+import { desktopBuildVersion } from './desktop-build-version.ts'
 import { managedModelGateway } from './model-gateway.ts'
 import { MODEL_GATEWAY_BLOB } from './model-gateway-blob.ts'
 import { isPackagedApplicationPath } from './packaged-runtime-path.ts'
@@ -889,12 +889,9 @@ export function sanitizeUsageReportError(error: unknown, dsn?: UsageReportDbDsn)
  * (`desktopProductVersion`): the package manifest beside the built module.
  */
 export function modelUsageClientVersion(moduleUrl: string = import.meta.url): string {
-  const value: unknown = JSON.parse(readFileSync(new URL('../package.json', moduleUrl), 'utf8'))
-  if (value === null || typeof value !== 'object'
-    || typeof (value as { version?: unknown }).version !== 'string') {
-    throw new Error('dsh-plugin-desktop: package.json has no product version')
-  }
-  return (value as { version: string }).version
+  // Build-distinguishing identity (2.0.3+b63): telemetry rows must tell
+  // builds apart even while the installer version stays upstream-pinned.
+  return desktopBuildVersion(moduleUrl)
 }
 
 /** Every dependency `apply` can take from its host; tests substitute all. */

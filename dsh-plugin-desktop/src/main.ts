@@ -21,6 +21,7 @@ import {
   installDesktopPnpmRuntime,
 } from './desktop-runtime-environment.ts'
 import { desktopProductVersion, ElectronDesktopRuntime } from './electron-runtime.ts'
+import { desktopBuildVersion } from './desktop-build-version.ts'
 import {
   ElectronStderrLogger,
   installDesktopChildProcessLogging,
@@ -399,6 +400,9 @@ async function start(): Promise<void> {
   let protectedInstallVerificationActive = false
   let startupStage: DesktopStartupFailureStage = 'electron-ready'
   const appVersion = desktopProductVersion()
+  // Build-distinguishing identity for telemetry, the disclaimer gate, and the
+  // log header; the installer/updater faces keep the plain appVersion.
+  const appBuildVersion = desktopBuildVersion()
   try {
     logSink = new LogFileSink(join(app.getPath('userData'), 'logs'), {
       maxFileBytes: 10 * 1024 * 1024,
@@ -406,7 +410,7 @@ async function start(): Promise<void> {
     })
     logSink.enforceDirectoryCap()
     logSink.purgeOlderThan(7)
-    logSink.writeHeader(`--- ${BIN_NAME} ${PRODUCT_NAME} ${appVersion} ${process.platform} node ${process.version} run ${Date.now()} ---`)
+    logSink.writeHeader(`--- ${BIN_NAME} ${PRODUCT_NAME} ${appBuildVersion} ${process.platform} node ${process.version} run ${Date.now()} ---`)
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause)
     process.stderr.write(`${BIN_NAME}: file logging unavailable: ${maskSecrets(detail)}\n`)
@@ -485,7 +489,7 @@ async function start(): Promise<void> {
   // never fail the boot.
   const clientEvents = createClientEventCollector({
     policy,
-    clientVersion: appVersion,
+    clientVersion: appBuildVersion,
     userEmail: () => getSsoSession()?.email ?? null,
     logInfo: message => { electronLogger.error(`${message}`) },
     logError: message => { electronLogger.error(`${message}`) },
@@ -677,7 +681,7 @@ async function start(): Promise<void> {
     // and the boot continues; disagree — or closing the window, which is the
     // same refusal — reports the decision and runs the same graceful quit
     // chain the shell's X-close quit uses (dispose teardown, then exit).
-    const disclaimerCurrent = { clientVersion: appVersion, textHash: disclaimerTextHash() }
+    const disclaimerCurrent = { clientVersion: appBuildVersion, textHash: disclaimerTextHash() }
     const disclaimerOutcome = await runDisclaimerGate(disclaimerCurrent, {
       userDataDir: app.getPath('userData'),
       openWindow: () => {
@@ -1818,7 +1822,7 @@ async function run(): Promise<void> {
     try {
       await app.whenReady()
       const path = await exportDesktopDiagnostics(app.getPath('userData'), {
-        appVersion: desktopProductVersion(),
+        appVersion: desktopBuildVersion(),
         crashDumpsDir: app.getPath('crashDumps'),
       })
       await new Promise<void>((resolve, reject) => {
@@ -1854,7 +1858,7 @@ async function handleFatalLauncherFailure(cause: unknown): Promise<void> {
       failureStage: 'electron-ready',
       failureDetail: detail,
       exportDiagnostics: async signal => await exportDesktopDiagnostics(app.getPath('userData'), {
-        appVersion: desktopProductVersion(),
+        appVersion: desktopBuildVersion(),
         crashDumpsDir: app.getPath('crashDumps'),
         signal,
       }),
