@@ -106,6 +106,11 @@ desktop 仓（你）
   packages/*.tgz                                       插件字节
 ```
 
+## MR 处理指南
+
+专门开 pi session 处理同事 MR 时，读同目录 **MR-HANDLING.zh.md**——
+冷启动上下文+命令直抄版（本 SOP 是流程权威）。
+
 ## 发布速查
 
 四类发布（首发 beta/转正/名单/吊销）的照抄命令见同目录 **RELEASE.zh.md**——
