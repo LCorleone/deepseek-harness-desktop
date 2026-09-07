@@ -16,8 +16,9 @@
  * @module dsh-plugin-desktop/sso-gate-window
  */
 
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { DESKTOP_SSO_GATE_SIGN_IN_CHANNEL } from './sso-gate-preload.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import type { DesktopLocale } from './runtime.ts'
@@ -179,6 +180,10 @@ export class DesktopSsoGateWindow {
         webviewTag: false,
         spellcheck: false,
         partition: 'dsh-sso-gate',
+        // The v1 scheme-anchor transport is dead in packaged sandboxed
+        // renderers (external-protocol swallow, #63 finding); sign-in rides
+        // this preload's IPC send instead.
+        preload: fileURLToPath(new URL('./sso-gate-preload.cjs', import.meta.url)),
       },
     })
     this.window = window
@@ -198,6 +203,15 @@ export class DesktopSsoGateWindow {
     }
     window.webContents.on('will-navigate', navigate)
     window.webContents.on('will-redirect', navigate)
+    // Deterministic sign-in transport (see the preload comment above); the
+    // sender is pinned to THIS window so a stray same-partition document
+    // cannot start a login on its behalf.
+    const wcId = window.webContents.id
+    const signIn = (event: Electron.IpcMainEvent): void => {
+      if (event.sender.id !== wcId) return
+      void this.handleAction()
+    }
+    ipcMain.on(DESKTOP_SSO_GATE_SIGN_IN_CHANNEL, signIn)
     const activate = (): void => {
       if (applicationNeedsReveal(window)) revealApplication(window)
     }
@@ -205,6 +219,7 @@ export class DesktopSsoGateWindow {
     if (process.platform === 'darwin') app.on('did-become-active', activate)
     window.once('ready-to-show', () => { revealApplication(window) })
     window.on('closed', () => {
+      ipcMain.removeListener(DESKTOP_SSO_GATE_SIGN_IN_CHANNEL, signIn)
       app.off('activate', activate)
       if (process.platform === 'darwin') app.off('did-become-active', activate)
       this.window = undefined

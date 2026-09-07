@@ -63,6 +63,7 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   // The beta disclaimer window's local document (per-version gate before
   // the shell mounts; loadFile pins the unpacked mirror like the others).
   'lib/disclaimer-preload.cjs',
+  'lib/sso-gate-preload.cjs',
   'lib/native-ui/disclaimer.html',
   // The agent-browser embedder document (field-test surface, #53) — it
   // must sit at the native-ui root, inside its own file:// origin subtree.
@@ -110,6 +111,7 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'lib/native-ui/profile-create.html',
   'lib/native-ui/recovery.html',
   'lib/disclaimer-preload.cjs',
+  'lib/sso-gate-preload.cjs',
   'lib/native-ui/sso-gate.html',
   'lib/native-ui/disclaimer.html',
   // loadFile pins the physical mirror, so the agent-browser document must

@@ -51,6 +51,7 @@ const electron = vi.hoisted(() => {
     readonly states: string[] = []
     readonly webContents = {
       ...emitter(),
+      id: 7,
       setWindowOpenHandler: vi.fn(() => ({ action: 'deny' })),
     }
     readonly events = emitter()
@@ -77,14 +78,30 @@ const electron = vi.hoisted(() => {
   }
 
   const appEmitter = emitter()
+  const ipcListeners = new Map<string, Set<(event: unknown, ...args: unknown[]) => void>>()
+  const ipcMain = {
+    on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void): void => {
+      const set = ipcListeners.get(channel) ?? new Set()
+      set.add(listener)
+      ipcListeners.set(channel, set)
+    },
+    removeListener: (channel: string, listener: (event: unknown, ...args: unknown[]) => void): void => {
+      ipcListeners.get(channel)?.delete(listener)
+    },
+    emit: (channel: string, event: unknown, ...args: unknown[]): void => {
+      for (const listener of ipcListeners.get(channel) ?? []) listener(event, ...args)
+    },
+  }
   return {
     app: { on: appEmitter.on, off: appEmitter.off, isHidden: vi.fn(() => false), show: vi.fn() },
     BrowserWindow: FakeGateWindow,
+    ipcMain,
+    ipcListeners,
     windows,
   }
 })
 
-vi.mock('electron', () => ({ app: electron.app, BrowserWindow: electron.BrowserWindow }))
+vi.mock('electron', () => ({ app: electron.app, BrowserWindow: electron.BrowserWindow, ipcMain: electron.ipcMain, contextBridge: { exposeInMainWorld: () => {} }, ipcRenderer: { send: () => {} } }))
 
 const SCHEME = 'dsh-sso-gate:'
 
@@ -231,7 +248,7 @@ describe('DesktopSsoGateWindow lifecycle', () => {
       results,
       run,
       signIn: () => {
-        window.webContents.emit('will-navigate', { preventDefault: vi.fn() }, 'dsh-sso-gate://sign-in')
+        electron.ipcMain.emit('dsh-sso-gate:sign-in', { sender: { id: window.webContents.id } })
       },
       close: () => { window.events.emit('closed') },
     }

@@ -5,7 +5,6 @@ import { buttonVariants } from '../components/ui/button.tsx'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.tsx'
 import { cn } from '../lib/utils.ts'
 
-const SCHEME = 'dsh-sso-gate:'
 
 type Locale = 'en' | 'zh'
 type Phase = 'ready' | 'waiting' | 'authenticated'
@@ -92,8 +91,21 @@ function decodeState(): SsoGateState | undefined {
   return undefined
 }
 
-function signInHref(): string {
-  return `${SCHEME}//sign-in`
+/** The preload IPC bridge (sso-gate-preload.cjs). The v1 scheme-anchor
+ * transport is dead in packaged sandboxed renderers (#63 finding). */
+declare global {
+  interface Window {
+    readonly desktopSsoGateBridge?: { readonly signIn: () => void }
+  }
+}
+
+/** Visible degradation (never a silent dead button): missing bridge disables
+ * the button and says so — the console.error rides the window's
+ * console-message observability into the desktop log. */
+function ssoBridgeMissing(): boolean {
+  if (window.desktopSsoGateBridge !== undefined) return false
+  console.error('sso gate bridge missing: the preload did not load — sign-in cannot be delivered')
+  return true
 }
 
 /** Boundary fallback card: the renderer failed, but the window stays readable. */
@@ -138,6 +150,7 @@ export class SsoGateErrorBoundary
 
 export function SsoGateApp(): JSX.Element {
   const state = decodeState()
+  const gateDegraded = ssoBridgeMissing()
   useEffect(() => { document.title = state === undefined ? 'Deloitte DSH Desktop Sign In' : COPY[state.locale].title }, [state])
   if (state === undefined) {
     return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTitle>Deloitte DSH Desktop Sign In</AlertTitle><AlertDescription>The sign-in state could not be read. Quit and start Deloitte DSH Desktop again.</AlertDescription></Alert></main>
@@ -161,9 +174,10 @@ export function SsoGateApp(): JSX.Element {
           )}
           {state.phase === 'authenticated'
             ? <p className="flex items-center gap-2 text-sm"><RefreshCw className="animate-spin" />{copy.statusAuthenticated}</p>
-            : <a className={cn(buttonVariants({ variant: 'default' }), 'w-full')} href={signInHref()} onClick={event => { if (state.phase === 'waiting') event.preventDefault() }}>
+            : <button type="button" disabled={state.phase === 'waiting' || gateDegraded} className={cn(buttonVariants({ variant: 'default' }), 'w-full')} onClick={() => { window.desktopSsoGateBridge?.signIn() }}>
                 <Globe />{state.errorDetail === undefined ? copy.signIn : copy.signInAgain}
-              </a>}
+              </button>}
+          {gateDegraded ? <p className="text-xs text-red-400" role="alert">界面组件加载异常：登录通道未就绪。请截图此窗口并联系管理员。</p> : null}
           <p className="text-xs text-muted-foreground">{copy.gateBody}</p>
         </CardContent>
       </Card>

@@ -100,7 +100,7 @@ export default defineConfig([
   },
   {
     name: `${PACKAGE_NAME}/preload`,
-    entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts', 'disclaimer-preload': 'src/disclaimer-preload.ts' },
+    entry: { preload: 'src/preload.ts', 'agent-browser-preload': 'src/agent-browser-preload.ts', 'disclaimer-preload': 'src/disclaimer-preload.ts', 'sso-gate-preload': 'src/sso-gate-preload.ts' },
     outDir: 'lib',
     format: 'cjs',
     platform: 'node',
