@@ -15,11 +15,19 @@
     "changes"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": {
+      "const": 2
+    },
     "plugin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["packageName", "version", "author", "description", "type"],
+      "required": [
+        "packageName",
+        "version",
+        "author",
+        "description",
+        "type"
+      ],
       "properties": {
         "packageName": {
           "type": "string",
@@ -33,7 +41,8 @@
         },
         "author": {
           "type": "string",
-          "description": "Who wrote the plugin. The author is not necessarily the submitter — pushing the MR on the author's behalf is fine (submitter.name says who pushed). A plain string with no format enforced: 'sebtang' and 'sebtang@company.example' are both valid."
+          "description": "Who wrote the plugin. The author is not necessarily the submitter — pushing the MR on the author's behalf is fine (submitter.name says who pushed). A plain string with no format enforced: 'sebtang' and 'sebtang@company.example' are both valid.",
+          "minLength": 1
         },
         "description": {
           "type": "string",
@@ -62,7 +71,11 @@
     "compat": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dshRuntimeVersion", "dshCommit", "desktopVersion"],
+      "required": [
+        "dshRuntimeVersion",
+        "dshCommit",
+        "desktopVersion"
+      ],
       "properties": {
         "dshRuntimeVersion": {
           "type": "string",
@@ -84,7 +97,11 @@
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["file", "sha256", "sizeBytes"],
+      "required": [
+        "file",
+        "sha256",
+        "sizeBytes"
+      ],
       "properties": {
         "file": {
           "type": "string",
@@ -106,17 +123,34 @@
     "submitter": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "gitlabHandle", "submittedAt"],
+      "required": [
+        "name",
+        "gitlabHandle",
+        "submittedAt"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "gitlabHandle": { "type": "string", "pattern": "^@[a-z0-9_.-]+$" },
-        "submittedAt": { "type": "string", "format": "date" }
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "gitlabHandle": {
+          "type": "string",
+          "pattern": "^@[a-z0-9_.-]+$"
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date"
+        }
       }
     },
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["summary", "checks"],
+      "required": [
+        "summary",
+        "checks"
+      ],
       "properties": {
         "summary": {
           "type": "string",
@@ -128,15 +162,18 @@
           "type": "array",
           "minItems": 2,
           "maxItems": 20,
-          "items": { "type": "string", "enum": [
-            "install-in-dev-workspace",
-            "client-face-renders",
-            "host-face-works",
-            "market-page-loads",
-            "settings-save-restart",
-            "long-run-stability",
-            "other-described-in-summary"
-          ] }
+          "items": {
+            "type": "string",
+            "enum": [
+              "install-in-dev-workspace",
+              "client-face-renders",
+              "host-face-works",
+              "market-page-loads",
+              "settings-save-restart",
+              "long-run-stability",
+              "other-described-in-summary"
+            ]
+          }
         }
       }
     },

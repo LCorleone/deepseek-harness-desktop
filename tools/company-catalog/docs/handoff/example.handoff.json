@@ -4,7 +4,7 @@
     "packageName": "dsh-free-search",
     "version": "0.4.184",
     "author": "julu",
-    "description": "Free web search for DeepSeek Harness, company-hardened build of upstream v0.4.18: reviewed keyed-only engine chain tavily -> exa -> anysearch (each engine joins only with its self-registered free API key; zero keys answer with setup guidance — the keyless bing/ddg engines were removed in 0.4.183), settings-section key configuration, no self-update path (updates arrive through the company catalog channel).",
+    "description": "聚合 tavily/exa/anysearch 的搜索插件，设置页各自填 Key。",
     "type": "tool"
   },
   "compat": {

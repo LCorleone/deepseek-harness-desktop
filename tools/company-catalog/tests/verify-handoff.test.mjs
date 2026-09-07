@@ -23,6 +23,7 @@ import { compareSemver, parseSemver, rangesIntersect } from '../lib/version-rang
 import { verifyHandoffSubmission } from '../lib/verify-handoff.mjs'
 
 const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const REPO_ROOT = resolve(TOOL_DIR, '..', '..')
 const SCHEMA_PATH = join(TOOL_DIR, 'docs', 'handoff', 'handoff.schema.json')
 const CATALOG_ORIGIN = 'https://gitlab.company.example'
 const FIXED_DIGEST = 'a'.repeat(64)
@@ -163,6 +164,15 @@ const withPackagesDir = (workspace) => {
 // ---------------------------------------------------------------------------
 // The green path
 // ---------------------------------------------------------------------------
+
+// MR 模板双副本同步钉（review P3-2）：去头部 HTML 注记后，两份正文必须
+// 字节一致 — 手动同步漏改在这里红。
+test('the MR template copies stay byte-identical below their sync notes', () => {
+  const strip = text => text.replace(/^<!--.*?-->\n/su, '')
+  const source = readFileSync(join(REPO_ROOT, 'tools/company-catalog/docs/handoff/plugin.md'), 'utf8')
+  const mirror = readFileSync(join(REPO_ROOT, '.gitlab/merge_request_templates/plugin.md'), 'utf8')
+  assert.equal(strip(mirror), strip(source))
+})
 
 test('green path: ten steps, verdict.md, staged tgz, validated allowlist entry', async () => {
   const workspace = withPackagesDir(submissionWorkspace({
