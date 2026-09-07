@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-plugins/handoff.schema.json",
+  "$id": "http://10.173.59.30:9080/pluginpuller/dsh-desktop-plugins/handoff.schema.json",
   "title": "DSH desktop plugin handoff submission",
   "description": "One submission directory per plugin version: handoff.json (this schema) plus the npm-pack tarball it describes. The desktop owner verifies every field against the artifact and the pinned compatibility contract (compat.json) before the version can enter the signed catalog.",
   "type": "object",

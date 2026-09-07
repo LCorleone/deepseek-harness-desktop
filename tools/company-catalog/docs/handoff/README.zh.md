@@ -21,7 +21,7 @@ MR 就是你的提交窗口：所有者会在 MR 上回验证结果（verdict）
 
 ## 自验兼容（agent 指令模板，可直接给你的 agent）
 
-> git clone https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-plugins.git 并读 compat.json
+> git clone http://10.173.59.30:9080/pluginpuller/dsh-desktop-plugins.git 并读 compat.json
 >（本仓 internal，用你的 GitLab 凭据 clone——同提交用的是同一通道；raw URL 对窄 scope token 会 302，别依赖）。
 > 按 `dsh.commit` 检出 deepseek-harness 到该 commit，安装我方插件（pnpm，workspace 内），
 > 启动 client/host 双面验证插件功能。对照 `desktop.version` 用该版桌面端做一次冒烟

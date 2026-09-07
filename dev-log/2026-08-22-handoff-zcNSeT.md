@@ -231,6 +231,9 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
 新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
 
+### 插件仓整体迁移（2026-09-07 15:15）
+julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-desktop-plugins（http://10.173.59.30:9080）**。镜像迁移完成：master=老 HEAD 5d1f0e73 后续+契约更新 322e8b7、默认分支 master、Maintainer-only 保护（push/merge=40）复刻、起始 main 已删、契约四件+example 已同步指向新实例（handoff.schema.json $id/README clone 命令/SOP 两处）。老仓已归档（api archive 201，只读留存）。⚠️ 注意：①交接线 ⑤⑥ 权限动作要落在新实例（sebtang/lizywu 需在 10.173.59.30 有账号）②新实例走 HTTP（内网明文，token 注意）③客户端不受影响（客户端拉的是 config 仓，未动）④旧 GITLAB_TOKEN 对新实例无效，新 token=pluginpuller 用户。verify-handoff 命令行 origin 参数照传新地址即可（无硬编码）。
+
 ### 当前 TODO 快照（2026-09-07 13:28）
 **已完成（今日）**：0.4.184→stable（seq16，共享棘轮跳号修复+RELEASE.zh.md 发布速查）/ 新库 DSH_LOG 切换 / 四类事件上报+卸载补全 / #62 构建验收（真机四类落库实证）/ telemetry.zh.md 运维手册。master=45fd981854 已 push。
 **待办优先序**：

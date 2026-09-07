@@ -8,7 +8,7 @@
 ## 角色与权限（一眼版）
 
 ```
-同事   Developer @ gitlab julu/dsh-desktop-plugins（只能开 MR，推不了 master）
+同事   Developer @ gitlab pluginpuller/dsh-desktop-plugins（10.173.59.30:9080）（只能开 MR，推不了 master）
 你     Maintainer 同上 + desktop 仓 owner + GitLab julu/dsh-desktop-config 写权
        + GitHub Secrets（签名私钥，永远不离开）
 员工   无任何 GitLab 权限；客户端只读 dsh-desktop-config 的签名清单
@@ -88,7 +88,7 @@ beta 撤条目    同理：测试者还装着的 beta-only 条目不要直接从
 ## 文件地图（哪份文件管什么）
 
 ```
-staging 仓（julu/dsh-desktop-plugins）
+staging 仓（pluginpuller/dsh-desktop-plugins @ 10.173.59.30:9080）
   README.md            同事规则（MR 流程/agent 模板）        ← 同事读
   compat.json          兼容契约（dsh+桌面钉死版本）          ← 双方 agent 读
   handoff.schema.json  提交单格式（additionalProperties:false）
