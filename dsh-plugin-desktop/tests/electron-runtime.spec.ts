@@ -870,13 +870,18 @@ describe('Electron desktop runtime', () => {
     const closeEvent = { preventDefault: vi.fn() }
     close(closeEvent)
     expect(closeEvent.preventDefault).toHaveBeenCalledOnce()
-    expect(window?.hide).toHaveBeenCalledOnce()
+    // X quits (2026-09-07): no more hide-to-tray — the held window waits on
+    // the close confirmation dialog (canned response 0 = 取消 here), so the
+    // window stays open and hide is never called.
+    expect(window?.hide).not.toHaveBeenCalled()
+    expect(electron.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+    await new Promise(resolve => { setTimeout(resolve, 0) })
 
     runtime.prepareToQuit()
     const quittingCloseEvent = { preventDefault: vi.fn() }
     close(quittingCloseEvent)
     expect(quittingCloseEvent.preventDefault).not.toHaveBeenCalled()
-    expect(window?.hide).toHaveBeenCalledOnce()
+    expect(window?.hide).not.toHaveBeenCalled()
 
     await release()
   })

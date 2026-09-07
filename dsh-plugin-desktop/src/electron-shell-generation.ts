@@ -45,8 +45,55 @@ export interface ElectronShellGenerationOptions {
 }
 
 /** Own one BrowserWindow and Tray generation, including every native listener. */
+/** Locale-picked close-confirmation dialog copy (zh/en, the tray-locale pattern). */
+const SHELL_CLOSE_CONFIRM = {
+  zh: { message: '确定要退出 DSH Desktop 吗？', detail: '退出后正在运行的任务将终止。', buttons: ['取消', '退出'] },
+  en: { message: 'Quit DSH Desktop?', detail: 'Running tasks will be terminated.', buttons: ['Cancel', 'Quit'] },
+} as const
+
+/**
+ * The close decision, extracted for tests: a quitting app lets the close
+ * through; otherwise the window is held and a confirmation dialog decides
+ * whether to run the graceful quit.
+ */
+export function requestShellWindowClose(
+  event: { preventDefault(): void },
+  options: {
+    isQuitting(): boolean
+    beginConfirm(): void
+    endConfirm(): void
+    confirmClose(): Promise<boolean>
+    quit(): void
+  },
+): void {
+  if (options.isQuitting()) return
+  event.preventDefault()
+  options.beginConfirm()
+  void options.confirmClose().then(
+    confirmed => { options.endConfirm(); if (confirmed) options.quit() },
+    () => { options.endConfirm() },
+  )
+}
+
+/** One native close confirmation; true = quit. */
+async function confirmShellWindowClose(window: BrowserWindow): Promise<boolean> {
+  const copy = app.getLocale().toLowerCase().startsWith('zh') ? SHELL_CLOSE_CONFIRM.zh : SHELL_CLOSE_CONFIRM.en
+  const { response } = await dialog.showMessageBox(window, {
+    type: 'warning',
+    buttons: [...copy.buttons],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: copy.message,
+    message: copy.message,
+    detail: copy.detail,
+  })
+  return response === 1
+}
+
 export class ElectronShellGeneration {
   private window: BrowserWindow | undefined
+  private closeConfirmPending = false
   private tray: Tray | undefined
   private mounted = false
   private released = false
@@ -79,9 +126,17 @@ export class ElectronShellGeneration {
     }
     const clearAttention = (): void => { this.clearAttention() }
     const close = (event: Electron.Event): void => {
-      if (this.options.isQuitting()) return
-      event.preventDefault()
-      window.hide()
+      // X quits (2026-09-07): the fleet build no longer hides to tray — a
+      // confirmation dialog decides, and 退出 runs the same graceful quit
+      // path as the tray's exit item (app.quit -> before-quit teardown).
+      if (this.closeConfirmPending) { event.preventDefault(); return }
+      requestShellWindowClose(event, {
+        isQuitting: this.options.isQuitting,
+        beginConfirm: () => { this.closeConfirmPending = true },
+        endConfirm: () => { this.closeConfirmPending = false },
+        confirmClose: () => confirmShellWindowClose(window),
+        quit: () => { app.quit() },
+      })
     }
     const preserveBlankTitle = (event: Electron.Event): void => { event.preventDefault() }
     const handleZoomShortcut = (event: Electron.Event, input: Electron.Input): void => {
