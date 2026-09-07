@@ -238,7 +238,7 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 2. 沙箱弹窗档1（preset 提示词铁律，~半小时；和卸载事件同车下个构建）
 3. 交接线：GitLab 给 sebtang/lizywu 加 staging Developer → repo 权限模式拍板（A/B/C）→ 同事真发 MR 演练（RELEASE.zh.md+SOP 照抄验证）
 4. 横切评审 P3 残余（market 粘滞首条目 vs desktop some()——多版本 stable 形态才触发）+ 遗留表圈范围（repository URL C1/beta→beta ratchet 已缓解/e2e smoke P10 用例/三重交互用例）
-5. 遥测遗留：july 账号降权（换只写 INSERT 账号+重生成 blob）/ conflict 码 Linux 路径遮蔽 / /var /srv 前缀
+5. ~~遥测遗留~~（2026-09-07 13:33 关闭）：july 账号降权=July 自行在 MySQL 侧收权（效果等同换号：客户端 DSN 不变但服务端权限缩到最小——**注意保留两张表的 INSERT，否则上报全断**）；conflict 码 Linux 路径 + /var /srv 前缀=won't-fix（fleet 全 Windows，两层防护盖默认布局，理论缝不修）
 6. P8 收官三部曲（观察期→扩面→tag）；上游 0.1.2 正式→升级专项（档3 弹窗需求随行）
 **观察项**：fleet 装 #62 后 dsh_client_events 数据汇入（老板面板查询已备）；0.4.184 stable 推广后 P10 更新提示首次全员亮相的反馈。
 
