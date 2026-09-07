@@ -546,7 +546,7 @@ describe('model gateway blob generator', () => {
     expect(() => modelGatewayPayloadFromEnvironment({ DSH_GATEWAY_PROVIDERS_JSON: ' ' }))
       .toThrow('DSH_GATEWAY_PROVIDERS_JSON: must carry the full providers JSON document')
     expect(() => modelGatewayPayloadFromEnvironment({ DSH_GATEWAY_PROVIDERS_JSON: '{nope' }))
-      .toThrow('DSH_GATEWAY_PROVIDERS_JSON: must be valid JSON')
+      .toThrow('DSH_GATEWAY_PROVIDERS_JSON is not valid JSON')
     expect(() => modelGatewayPayloadFromEnvironment({
       DSH_GATEWAY_PROVIDERS_JSON: JSON.stringify({ providers: [{ ...SYNTHETIC_PAYLOAD.providers[0]!, route: '' }] }),
     })).toThrow('DSH_GATEWAY_PROVIDERS_JSON: providers[0].route must be a non-empty string')

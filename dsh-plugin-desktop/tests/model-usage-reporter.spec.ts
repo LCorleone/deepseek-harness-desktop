@@ -166,6 +166,7 @@ function assistantMessage(
 const ATTRIBUTION = {
   userEmail: () => 'user@company.example',
   baseUrlFor: (provider: string) => provider === 'dsh-company-gateway' ? 'https://gateway.company.example/v1' : '',
+  displayNameFor: (provider: string) => provider === 'dsh-company-gateway' ? 'Company LLM Gateway' : provider === 'dsh-company-kimi' ? 'Kimi' : provider,
   clientVersion: '9.9.9-test',
 }
 
@@ -334,7 +335,7 @@ describe('model usage projection', () => {
     // Four disjoint buckets; reasoning is an output subset and never added.
     expect(row).toMatchObject({
       userEmail: 'user@company.example',
-      provider: 'dsh-company-gateway',
+      provider: 'Company LLM Gateway',
       model: 'DSV4-DSH',
       baseUrl: 'https://gateway.company.example/v1',
       inputTokens: 100,
@@ -1023,7 +1024,7 @@ describe('model usage reporter plugin', () => {
     const byColumn = Object.fromEntries(columns.map((column, index) => [column, query?.values[index]]))
     expect(byColumn).toEqual({
       user_email: 'user@company.example',
-      provider: 'dsh-company-gateway',
+      provider: 'Company LLM Gateway',
       model: 'DSV4-DSH',
       base_url: 'https://gateway.company.example/v1',
       input_tokens: 9,
@@ -1062,7 +1063,7 @@ describe('model usage reporter plugin', () => {
     const columns = MODEL_USAGE_COLUMNS
     const byColumn = Object.fromEntries(columns.map((column, index) => [column, query?.values[index]]))
     expect(byColumn).toMatchObject({
-      provider: 'dsh-company-kimi',
+      provider: 'Kimi',
       model: 'kimi-k2.6',
       base_url: 'https://kimi.company.example/v1',
     })

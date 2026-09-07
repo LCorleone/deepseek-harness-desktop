@@ -226,7 +226,10 @@ export function modelGatewayPayloadFromEnvironment(environment) {
   try {
     document = JSON.parse(raw)
   } catch (cause) {
-    throw invalid(`must be valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`)
+    // Fixed wording only — a V8 JSON error quotes the offending text, which
+    // here is the plaintext document carrying the API keys (review P1).
+    void cause
+    throw invalid('DSH_GATEWAY_PROVIDERS_JSON is not valid JSON (the error text is suppressed because it can quote the plaintext document)')
   }
   return validateProvidersDocument(document)
 }

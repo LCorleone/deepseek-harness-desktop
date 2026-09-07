@@ -285,6 +285,12 @@ export interface ModelUsageAttribution {
    * ''.
    */
   readonly baseUrlFor: (provider: string) => string
+  /**
+   * Panel-friendly provider label for one provider route (the blob's
+   * displayName; e.g. 'Kimi' for 'dsh-company-kimi'). Unknown routes fall
+   * back to the raw route string.
+   */
+  readonly displayNameFor: (provider: string) => string
   /** Desktop product version stamped on every row. */
   readonly clientVersion: string
 }
@@ -404,12 +410,12 @@ export class ModelUsageProjection {
         const stepKey = `${String(event.data.turn)}:${String(event.data.step)}`
         if (state.reportedSteps.has(stepKey)) return undefined
         state.reportedSteps.add(stepKey)
-        const provider = state.config?.provider ?? ''
+        const providerRoute = state.config?.provider ?? ''
         return {
           userEmail: this.#attribution.userEmail(),
-          provider,
+          provider: this.#attribution.displayNameFor(providerRoute),
           model: state.config?.model ?? '',
-          baseUrl: this.#attribution.baseUrlFor(provider),
+          baseUrl: this.#attribution.baseUrlFor(providerRoute),
           inputTokens: usage.inputTokens,
           cacheReadTokens: finiteNonNegative(usage.cacheReadTokens) ? usage.cacheReadTokens : null,
           cacheWriteTokens: finiteNonNegative(usage.cacheWriteTokens) ? usage.cacheWriteTokens : null,
@@ -941,11 +947,11 @@ export function apply(ctx: Context, options: ModelUsageReporterOptions = {}): vo
   // A corrupt gateway blob already failed this build loudly on the launcher's
   // own decode; here it only degrades the base_url column to ''.
   let gatewayBaseUrls: ReadonlyMap<string, string> = new Map()
+  let gatewayDisplayNames: ReadonlyMap<string, string> = new Map()
   try {
-    gatewayBaseUrls = new Map(
-      managedModelGateway(policy, options.gatewayBlob ?? MODEL_GATEWAY_BLOB)
-        ?.providers.map(provider => [provider.route, provider.baseUrl]) ?? [],
-    )
+    const providers = managedModelGateway(policy, options.gatewayBlob ?? MODEL_GATEWAY_BLOB)?.providers ?? []
+    gatewayBaseUrls = new Map(providers.map(provider => [provider.route, provider.baseUrl]))
+    gatewayDisplayNames = new Map(providers.map(provider => [provider.route, provider.displayName]))
   } catch {
     gatewayBaseUrls = new Map()
   }
@@ -967,6 +973,7 @@ export function apply(ctx: Context, options: ModelUsageReporterOptions = {}): vo
         clientVersion: options.clientVersion ?? modelUsageClientVersion(options.moduleUrl),
         userEmail: () => ctx.desktopRuntime?.ssoAccountEmail ?? '',
         baseUrlFor: provider => gatewayBaseUrls.get(provider) ?? '',
+        displayNameFor: provider => gatewayDisplayNames.get(provider) ?? provider,
       })
       const stopEvents = sessionsCtx.on('session/event', (session, event) => {
         const row = projection.sessionEvent(session, event)
