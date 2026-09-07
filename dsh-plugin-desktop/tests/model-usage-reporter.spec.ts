@@ -121,9 +121,24 @@ function textDelta(text: string, turn: number, step: number, seq: number, time: 
 const CLASSIFIED_RESPONSE = 'SECRET-RESPONSE api-key sk-000000000000'
 
 const FAKE_GATEWAY_BLOB = encodeModelGatewayBlob({
-  baseUrl: 'https://gateway.company.example/v1',
-  apiKey: 'fake-gateway-key',
-  models: ['DSV4-DSH'],
+  providers: [
+    {
+      route: 'dsh-company-gateway',
+      displayName: 'Company LLM Gateway',
+      apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
+      baseUrl: 'https://gateway.company.example/v1',
+      apiKey: 'fake-gateway-key',
+      models: [{ id: 'DSV4-DSH' }],
+    },
+    {
+      route: 'dsh-company-kimi',
+      displayName: 'Kimi',
+      apiKeyEnv: 'DSH_COMPANY_KIMI_KEY',
+      baseUrl: 'https://kimi.company.example/v1',
+      apiKey: 'fake-kimi-key',
+      models: [{ id: 'kimi-k2.6' }],
+    },
+  ],
 })
 
 function assistantMessage(
@@ -1028,6 +1043,29 @@ describe('model usage reporter plugin', () => {
     })
     expect(JSON.stringify(query)).not.toContain('SECRET-RESPONSE')
     expect(recorder.ended).toEqual([true])
+  })
+
+  it('attributes each managed provider route to its own base URL', async () => {
+    // The v2 blob carries two providers behind two routes; the attribution
+    // map must resolve per route, not assume one gateway URL for all.
+    const { harness, recorder } = reporterHarness()
+    const active = session('kimi-session')
+
+    await harness.sessionEvent(active, requestHeader('dsh-company-kimi', 'kimi-k2.6', 1, 900))
+    await harness.sessionEvent(active, event('step/start', { turn: 1, step: 1 }, 2, 1_000))
+    await harness.sessionEvent(active, assistantMessage({
+      inputTokens: 2, outputTokens: 1,
+    }, 1, 1, 3, 1_100))
+    await harness.dispose()
+
+    const query = recorder.queries[0]
+    const columns = MODEL_USAGE_COLUMNS
+    const byColumn = Object.fromEntries(columns.map((column, index) => [column, query?.values[index]]))
+    expect(byColumn).toMatchObject({
+      provider: 'dsh-company-kimi',
+      model: 'kimi-k2.6',
+      base_url: 'https://kimi.company.example/v1',
+    })
   })
 
   it('reports with an empty email when no SSO session exists', async () => {

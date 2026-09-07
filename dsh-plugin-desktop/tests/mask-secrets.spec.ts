@@ -52,14 +52,18 @@ describe('maskSecrets', () => {
     expect(masked).not.toContain(uuid)
   })
 
-  it('masks the company gateway key the generic named rule misses', () => {
+  it('masks every company gateway provider key the generic named rule misses', () => {
     // Contrast with NAMED_SECRET: `\bkey\b` finds no word boundary inside the
-    // underscored DSH_COMPANY_LLM_KEY identifier, so the generic rule passes
-    // over it; the dedicated rule masks even values too short for any token
-    // pattern to catch.
+    // underscored DSH_COMPANY_*_KEY identifiers, so the generic rule passes
+    // over them; the dedicated rule masks even values too short for any token
+    // pattern to catch — for the gateway key and the second provider's key
+    // alike, and for `:`-separated renderings too.
     const masked = maskSecrets('DSH_COMPANY_LLM_KEY=shortkey1 mode=fast')
     expect(masked).toBe('DSH_COMPANY_LLM_KEY=**** mode=fast')
     expect(masked).not.toContain('shortkey1')
+    expect(maskSecrets('DSH_COMPANY_KIMI_KEY=shortkey2 mode=fast'))
+      .toBe('DSH_COMPANY_KIMI_KEY=**** mode=fast')
+    expect(maskSecrets('DSH_COMPANY_KIMI_KEY: shortkey3')).toBe('DSH_COMPANY_KIMI_KEY: ****')
   })
 
   it('masks the usage report DB password the generic named rule misses', () => {

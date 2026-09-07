@@ -50,10 +50,7 @@ import { isTokenDelta } from '@deepseek-ai/dsh-llm/message'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readDesktopPolicy, type DesktopPolicy } from './desktop-policy.ts'
 import { maskSecrets } from './mask-secrets.ts'
-import {
-  COMPANY_LLM_GATEWAY_PROVIDER_ROUTE,
-  managedModelGateway,
-} from './model-gateway.ts'
+import { managedModelGateway } from './model-gateway.ts'
 import { MODEL_GATEWAY_BLOB } from './model-gateway-blob.ts'
 import { isPackagedApplicationPath } from './packaged-runtime-path.ts'
 import { USAGE_REPORT_DB_BLOB } from './usage-report-db-blob.ts'
@@ -940,14 +937,17 @@ export function apply(ctx: Context, options: ModelUsageReporterOptions = {}): vo
     return
   }
 
-  // Managed-gateway base URL attribution. A corrupt gateway blob already
-  // failed this build loudly on the launcher's own decode; here it only
-  // degrades the base_url column to ''.
-  let gatewayBaseUrl: string | undefined
+  // Managed-gateway base URL attribution, one entry per blob provider route.
+  // A corrupt gateway blob already failed this build loudly on the launcher's
+  // own decode; here it only degrades the base_url column to ''.
+  let gatewayBaseUrls: ReadonlyMap<string, string> = new Map()
   try {
-    gatewayBaseUrl = managedModelGateway(policy, options.gatewayBlob ?? MODEL_GATEWAY_BLOB)?.baseUrl
+    gatewayBaseUrls = new Map(
+      managedModelGateway(policy, options.gatewayBlob ?? MODEL_GATEWAY_BLOB)
+        ?.providers.map(provider => [provider.route, provider.baseUrl]) ?? [],
+    )
   } catch {
-    gatewayBaseUrl = undefined
+    gatewayBaseUrls = new Map()
   }
 
   const sink = new ModelUsageSink(
@@ -966,8 +966,7 @@ export function apply(ctx: Context, options: ModelUsageReporterOptions = {}): vo
       const projection = new ModelUsageProjection({
         clientVersion: options.clientVersion ?? modelUsageClientVersion(options.moduleUrl),
         userEmail: () => ctx.desktopRuntime?.ssoAccountEmail ?? '',
-        baseUrlFor: provider =>
-          provider === COMPANY_LLM_GATEWAY_PROVIDER_ROUTE ? gatewayBaseUrl ?? '' : '',
+        baseUrlFor: provider => gatewayBaseUrls.get(provider) ?? '',
       })
       const stopEvents = sessionsCtx.on('session/event', (session, event) => {
         const row = projection.sessionEvent(session, event)

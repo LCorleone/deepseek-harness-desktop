@@ -14,11 +14,14 @@ const NAMED_SECRET = new RegExp(
   String.raw`\b(${SECRET_FIELD_NAME})\b(\s*[:=]\s*)(?!(?:Bearer|Basic)\b)[^\s,;&]+`,
   'giu',
 )
-// The company gateway key hand-off (`COMPANY_LLM_GATEWAY_API_KEY_ENV` in
-// model-gateway.ts). The generic NAMED_SECRET rule cannot see it: `\bkey\b`
-// finds no word boundary inside the underscored identifier, so the value
-// needs a dedicated rule of its own.
-const NAMED_COMPANY_GATEWAY_KEY = /DSH_COMPANY_LLM_KEY(\s*[:=]\s*)\S+/giu
+// The company gateway key hand-offs (the per-provider apiKeyEnv values the
+// model gateway blob names; today DSH_COMPANY_LLM_KEY and
+// DSH_COMPANY_KIMI_KEY in model-gateway.ts pin tests). The generic
+// NAMED_SECRET rule cannot see them: `\bkey\b` finds no word boundary
+// inside the underscored identifiers, so each value needs a dedicated rule
+// of its own. New providers keep the DSH_COMPANY_*_KEY spelling so this one
+// rule keeps covering them.
+const NAMED_COMPANY_GATEWAY_KEY = /(DSH_COMPANY_[A-Z0-9]+_KEY)(\s*[:=]\s*)\S+/giu
 // The usage-report DSN password (`DSH_REPORT_DB_PASSWORD` in
 // model-usage-reporter.ts). Same blind spot: `\bpassword\b` finds no word
 // boundary inside the underscored identifier, so the credential needs a
@@ -64,7 +67,7 @@ export function maskSecrets(text: string): string {
       return `Authorization: ${scheme === undefined ? '' : `${scheme} `}${MASK}`
     })
     .replace(NAMED_SECRET, (_match, name: string, separator: string) => `${name}${separator}${MASK}`)
-    .replace(NAMED_COMPANY_GATEWAY_KEY, (_match, separator: string) => `DSH_COMPANY_LLM_KEY${separator}${MASK}`)
+    .replace(NAMED_COMPANY_GATEWAY_KEY, (_match, name: string, separator: string) => `${name}${separator}${MASK}`)
     .replace(NAMED_REPORT_DB_PASSWORD, (_match, separator: string) => `DSH_REPORT_DB_PASSWORD${separator}${MASK}`)
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, (match) => {

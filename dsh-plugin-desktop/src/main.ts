@@ -100,7 +100,6 @@ import {
 } from './client-event-reporter.ts'
 import type { MarketInstallEventSink } from 'dsh-community-market'
 import {
-  COMPANY_LLM_GATEWAY_API_KEY_ENV,
   managedModelGateway,
   managedModelsPresetGateEntry,
   readStoredCredentialNames,
@@ -738,31 +737,31 @@ async function start(): Promise<void> {
     process.env[managedModelsGate.name] = managedModelsGate.value
 
     // Managed company gateway token injection (locked + managedModels): the
-    // gateway api key enters the process environment here — BEFORE
-    // `loadLayeredEnv` takes the launch-environment snapshot — so it lands in
-    // the snapshot's `process` layer, which is exactly the layer the
-    // credentials seam (`dsh-credentials-local`, and through it the
-    // `llm-pi-ai` adapter's `apiKeyEnv` resolution) trusts most. The same
-    // `process.env` write also propagates to the terminal and CLI children
-    // through normal environment inheritance. User-priority yield: an
-    // inherited `DSH_COMPANY_LLM_KEY` or an entry with that name in
+    // gateway api keys enter the process environment here — one entry per
+    // blob provider, BEFORE `loadLayeredEnv` takes the launch-environment
+    // snapshot — so they land in the snapshot's `process` layer, which is
+    // exactly the layer the credentials seam (`dsh-credentials-local`, and
+    // through it the `llm-pi-ai` adapter's `apiKeyEnv` resolution) trusts
+    // most. The same `process.env` writes also propagate to the terminal and
+    // CLI children through normal environment inheritance. User-priority
+    // yield, evaluated per provider: an inherited value for that provider's
+    // `DSH_`-prefixed environment name, or an entry with that name in
     // `$DSH_HOME/.credentials.yaml` (probed read-only through the upstream
-    // parser) keeps the launcher's value out entirely; `.env` files cannot
-    // carry the `DSH_`-prefixed name at all (upstream rejects them).
+    // parser), keeps the launcher's value out entirely — one provider
+    // yielding never affects another; `.env` files cannot carry the
+    // `DSH_`-prefixed names at all (upstream rejects them).
     const managedGateway = managedModelGateway(policy)
     const storedCredentials = readStoredCredentialNames(storedCredentialsPath(homeDir))
     const gatewayEnvironment = resolveManagedModelGatewayEnvironment(managedGateway, {
-      inheritedApiKeyValue: process.env[COMPANY_LLM_GATEWAY_API_KEY_ENV],
+      inheritedEnvironment: process.env,
       storedCredentials,
     })
-    if (gatewayEnvironment.managed && gatewayEnvironment.inject) {
-      process.env[COMPANY_LLM_GATEWAY_API_KEY_ENV] = gatewayEnvironment
-        .environment[COMPANY_LLM_GATEWAY_API_KEY_ENV]!
-    } else if (
-      gatewayEnvironment.managed
-      && !gatewayEnvironment.inject
-      && storedCredentials.status === 'unreadable'
-    ) {
+    if (gatewayEnvironment.managed) {
+      for (const [name, value] of Object.entries(gatewayEnvironment.environment)) {
+        process.env[name] = value
+      }
+    }
+    if (gatewayEnvironment.managed && storedCredentials.status === 'unreadable') {
       electronLogger.error(
         `${BIN_NAME}: skipping the company gateway token injection because the credentials document could not be probed: ${storedCredentials.reason}`,
       )

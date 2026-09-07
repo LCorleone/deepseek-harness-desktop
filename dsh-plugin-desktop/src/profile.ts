@@ -29,7 +29,6 @@ import { parseDocument } from 'yaml'
 import { COMPANY_PRESET_ID } from './company-agent-presets.ts'
 import {
   AGENT_DEFAULT_MODEL_ROW_ID,
-  COMPANY_LLM_GATEWAY_PROVIDER_ROUTE,
   LLM_DEEPSEEK_ROW_ID,
   LLM_PI_AI_ROW_ID,
   UI_SETTINGS_MODELS_ROW_ID,
@@ -1128,16 +1127,18 @@ export function prepareDesktopProfile(
       { id: 'web-runtime', config: { ...webRuntime, surfaceContext: false } },
     )
   }
-  // Managed company model gateway (locked + managedModels). Registration
+  // Managed company model gateways (locked + managedModels). Registration
   // rides the composition base layer of the `llm-pi-ai` settings section —
-  // the same layering the upstream plugin already supports — so the gateway
-  // profile, base URL, and model list exist only in the in-memory Loader
-  // graph: nothing is ever written to settings.yaml or .credentials.yaml.
-  // The api key is deliberately absent here; the provider names only its
+  // the same layering the upstream plugin already supports — so every
+  // gateway profile, base URL, and model list exists only in the in-memory
+  // Loader graph: nothing is ever written to settings.yaml or .credentials.yaml.
+  // Each blob provider registers under its own route key (route, display
+  // name, credential environment name, and model list are blob data), and
+  // the api keys are deliberately absent here; each provider names only its
   // environment reference, and the launcher's managed-mode injection (see
-  // main.ts) supplies the value into the inherited environment that the
-  // credentials seam resolves first. The default model pins to the gateway's
-  // first listed model by restating the `agent-default-model` row (again the
+  // main.ts) supplies the values into the inherited environment that the
+  // credentials seam resolves first. The default model pins to the first
+  // provider's first listed model by restating the `agent-default-model` row (again the
   // composition base, never a settings write), the web Models settings
   // page is disabled wholesale — the same Loader mechanism the compatibility
   // shell uses for `ui-layout` — because managed users pick models from the
@@ -1145,7 +1146,7 @@ export function prepareDesktopProfile(
   // native `llm-deepseek` adapter row goes dark: its built-in model catalog
   // is composition-borne (it feeds the picker no matter what the user stored
   // in settings or credentials), so without this the three official models
-  // would keep sitting beside the company gateway route.
+  // would keep sitting beside the company gateway routes.
   if (managedGateway !== undefined) {
     const llmPiAi = rows.get(LLM_PI_AI_ROW_ID)
     if (llmPiAi?.name !== UPSTREAM_LLM_PI_AI_PACKAGE || rowDisabledOnPlatform(llmPiAi, platform)) {
@@ -1155,17 +1156,20 @@ export function prepareDesktopProfile(
     }
     const llmPiAiConfig = rowConfig(llmPiAi)
     const declaredProviders = llmPiAiConfig.providers
+    const composedProviders: Record<string, unknown> = {
+      ...(declaredProviders !== null && typeof declaredProviders === 'object'
+        && !Array.isArray(declaredProviders)
+        ? declaredProviders as Record<string, unknown>
+        : {}),
+    }
+    for (const provider of managedGateway.providers) {
+      composedProviders[provider.route] = companyModelGatewayProviderProfile(provider)
+    }
     patches.push({
       id: LLM_PI_AI_ROW_ID,
       config: {
         ...llmPiAiConfig,
-        providers: {
-          ...(declaredProviders !== null && typeof declaredProviders === 'object'
-            && !Array.isArray(declaredProviders)
-            ? declaredProviders as Record<string, unknown>
-            : {}),
-          [COMPANY_LLM_GATEWAY_PROVIDER_ROUTE]: companyModelGatewayProviderProfile(managedGateway),
-        },
+        providers: composedProviders,
       },
     })
     const defaultModelRow = rows.get(AGENT_DEFAULT_MODEL_ROW_ID)

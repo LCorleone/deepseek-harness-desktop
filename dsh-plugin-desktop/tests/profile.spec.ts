@@ -934,7 +934,7 @@ describe('desktop profile composition', {
     expect(webRuntime).toMatchObject({ surfaceContext: true })
   })
 
-  it('registers the company model gateway in memory for a managed build', () => {
+  it('registers both company model gateway providers in memory for a managed build', () => {
     const home = temporaryHome()
     const gateway = managedModelGateway(injectedDesktopPolicy(true, true))
     if (gateway === undefined) throw new Error('test requires the embedded managed gateway blob')
@@ -952,22 +952,33 @@ describe('desktop profile composition', {
     )
     const rows = composeEntries([prepared.patches])
 
-    // The provider registers through the llm-pi-ai composition base: the
-    // gateway URL and model list live only in the composed Loader graph, the
-    // profile names only the credential reference, and nothing is written to
-    // the settings or credentials documents.
+    // Both providers register through the llm-pi-ai composition base under
+    // their own routes: the gateway URLs and model lists live only in the
+    // composed Loader graph, each profile names only its credential
+    // reference, and nothing is written to the settings or credentials
+    // documents. The model picker surfaces the display names: DSV4-DSH
+    // renders as deepseek-v4-flash under Company LLM Gateway, and kimi-k2.6
+    // (no name) renders as its id under Kimi.
     expect(rows.find(row => row.id === 'llm-pi-ai')?.config).toMatchObject({
       providers: {
         'dsh-company-gateway': {
           displayName: 'Company LLM Gateway',
           apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
           api: 'openai-completions',
-          baseURL: gateway.baseUrl,
-          models: [{ id: 'DSV4-DSH' }],
+          baseURL: gateway.providers[0]?.baseUrl,
+          models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash' }],
+        },
+        'dsh-company-kimi': {
+          displayName: 'Kimi',
+          apiKeyEnv: 'DSH_COMPANY_KIMI_KEY',
+          api: 'openai-completions',
+          baseURL: gateway.providers[1]?.baseUrl,
+          models: [{ id: 'kimi-k2.6' }],
         },
       },
     })
-    // The pinned default rides the agent-default-model row config.
+    // The pinned default rides the agent-default-model row config: still the
+    // first model of the first provider.
     expect(rows.find(row => row.id === 'agent-default-model')?.config).toMatchObject({
       provider: 'dsh-company-gateway',
       model: 'DSV4-DSH',
