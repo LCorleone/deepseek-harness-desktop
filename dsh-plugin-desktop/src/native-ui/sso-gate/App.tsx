@@ -177,7 +177,7 @@ export function SsoGateApp(): JSX.Element {
             : <button type="button" disabled={state.phase === 'waiting' || gateDegraded} className={cn(buttonVariants({ variant: 'default' }), 'w-full')} onClick={() => { window.desktopSsoGateBridge?.signIn() }}>
                 <Globe />{state.errorDetail === undefined ? copy.signIn : copy.signInAgain}
               </button>}
-          {gateDegraded ? <p className="text-xs text-red-400" role="alert">界面组件加载异常：登录通道未就绪。请截图此窗口并联系管理员。</p> : null}
+          {gateDegraded ? <p className="text-xs text-red-400" role="alert">界面组件加载异常：登录通道未就绪。请截图此窗口并联系管理员（cndchatgen@deloittecn.com.cn）。</p> : null}
           <p className="text-xs text-muted-foreground">{copy.gateBody}</p>
         </CardContent>
       </Card>

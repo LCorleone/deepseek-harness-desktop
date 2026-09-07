@@ -9,8 +9,8 @@ function stateQuery(model: unknown): string {
 }
 
 /** Render the gate document against a stubbed window.location.search. */
-function renderGate(search: string): string {
-  vi.stubGlobal('window', { location: { search } })
+function renderGate(search: string, bridge?: unknown): string {
+  vi.stubGlobal('window', { location: { search }, ...(bridge === undefined ? {} : { desktopSsoGateBridge: bridge }) })
   try {
     return renderToStaticMarkup(createElement(SsoGateApp))
   } finally {
@@ -90,5 +90,20 @@ describe('sso gate render failure boundary', () => {
     gate.state = { failed: true }
     expect(renderToStaticMarkup(gate.render() as JSX.Element))
       .toContain('Sign-in window failed to render. Quit and start again.')
+  })
+})
+
+describe('sso gate decision bridge (review P1/P2 mirror of the disclaimer gate)', () => {
+  it('without the bridge the sign-in button degrades visibly and the dead scheme never returns', () => {
+    const markup = renderGate(stateQuery({ locale: 'zh', phase: 'ready' }))
+    expect(markup).toContain('界面组件加载异常')
+    expect(markup).toMatch(/<button[^>]*\sdisabled(?:=|\s|>)/u)
+    expect(markup).not.toContain('dsh-sso-gate://')
+  })
+
+  it('with the bridge present the button stays enabled with no degradation notice', () => {
+    const markup = renderGate(stateQuery({ locale: 'zh', phase: 'ready' }), { signIn: () => {} })
+    expect(markup).not.toContain('界面组件加载异常')
+    expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|\s|>)/u)
   })
 })

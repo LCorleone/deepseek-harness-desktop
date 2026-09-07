@@ -256,6 +256,29 @@ describe('DesktopSsoGateWindow lifecycle', () => {
 
   beforeEach(() => { electron.windows.length = 0 })
 
+  it('ignores a sign-in IPC from a foreign sender webContents', async () => {
+    const { results, close } = await openGate()
+    electron.ipcMain.emit('dsh-sso-gate:sign-in', { sender: { id: 999 } })
+    await flushAsync()
+    expect(results).toEqual([])
+    close()
+    await flushAsync()
+  })
+
+  it('removes the sign-in listener when the window closes', async () => {
+    const { close } = await openGate()
+    close()
+    await flushAsync()
+    expect(electron.ipcListeners.get('dsh-sso-gate:sign-in')?.size ?? 0).toBe(0)
+  })
+
+  it('a late in-flight sign-in IPC after closed does not throw', async () => {
+    const { close } = await openGate()
+    close()
+    await flushAsync()
+    expect(() => { electron.ipcMain.emit('dsh-sso-gate:sign-in', { sender: { id: 7 } }) }).not.toThrow()
+  })
+
   it('settles authenticated and renders that phase once the browser login succeeds', async () => {
     const startBrowserLogin = vi.fn(async () => ({ ok: true as const }))
     const gate = await openGate(startBrowserLogin)
