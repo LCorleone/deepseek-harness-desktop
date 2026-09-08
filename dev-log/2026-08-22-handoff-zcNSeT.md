@@ -327,6 +327,11 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ### 上游客户端仓（anywhere-labs/dsh-desktop）动态盘点（2026-09-08 11:33）
 自 09-02 上次摘取以来 87 个非合并提交。分拣定案：**A 类可摘**（渲染器崩溃自动恢复 62171c6010/7e21d642e2；启动性能三连 cdf1d51c22/9b1cdb8e22/dae8660de3；Windows 小修 15668197aa/05276d3230/1097fcdea3/caeefec7b2；更新链 1bddc64eb0/e7a7537f8c）；**B 类观察**（Safe Mode 快速恢复——与我们的 startup-recovery-window 职责重叠且上游还在连日迭代；compat 隔离 chrome 63cf730f5d 系列）；**C 类不跟**（profile 架构重构波=纯对齐；上游公网 beta/stable 双包基建与我们公司市场通道冲突）。另：上游 stable 的 DSH 运行时仍钉 0.1.1-rc.2=与我们子模块对齐；其 beta 已到 0.1.3-alpha.2。remote dsh-desktop 已添加。待用户拍板是否开始 A 类摘取。
 
+### 上游 A 类摘取批 1+2（2026-09-08 11:45-12:50，0164c01e05+0669080f3b）
+**批 1**（0164c01e05，+374/−9，12 文件；review-batch1 APPROVED）：6 picks 实际 1 干净落地（安装器图标 caeefec7b2：ico/package.json 三处引用/README 双语/结构测试）+1 改写（滚动条 05276d3230→patches/dsh-client-ui-primitives@0.1.1-rc.2.patch+resolutions，与上游末态逐规则同）+1 措辞（e7a7537f8c：windowsHide:false 已有只补注释/测试标题）+3 丢弃（1bddc64eb0 头校验=从未跟随的双包基建；1097fcdea3 对话框文件不存在；15668197aa 托盘窗无 substrate）。评审亲跑复核；P3 两项：ico 非字节同源（结构等价，打包前重生）措辞已正；滚动条/图标视觉行为挂打包态目检账。
+**批 2**（0669080f3b，+104/−11，4 文件；评审 agent 中途死，主会话直读全 diff 补完核查）：9b1cdb8e22 丢弃（无二次 prepare 架构）；cdf1d51c22 改写落地（per-install overlay 选择缓存：命中缓存/miss 不缓存/重装刷新+\ 前缀 specifier 硬化；+4 测）；dae8660de3 丢弃（选择性 ASAR 依赖上游 runAsNode:true，我们 P3 定案 runAsNode:false+外置 Node，asarUnpack 清单不动，preload/native-ui 镜像保持）；74b8747fb7 未带（无主件可放宽）。**关键交互核查（overlay 缓存×公司市场）**：新装包=miss 不缓存→装后可见（测试钉）；升级同路径重写 manifest→Node 每次重读；市场安装走不可变 profile generation→主进程 1306 行 resolver 随 Host 代重启重建；锁定层零触碰（diff 只 module-resolution/package-overlay/tests）。2022+7skip（基线 2018+7）/typecheck 0/yarn check exit 0（worker 自报）。
+**挂账**：批 3（渲染器崩溃自动恢复 62171c6010/7e21d642e2）未开始——用户叫停暂停。上游后续若基于已丢 commit 迭代（对话框系列/asar-resolver）再摘时需重评。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
