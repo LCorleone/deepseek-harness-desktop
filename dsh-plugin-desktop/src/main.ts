@@ -171,6 +171,27 @@ import {
 const BIN_NAME = 'dsh-plugin-desktop'
 const PRODUCT_NAME = 'DSH Desktop'
 
+/**
+ * The disclaimer window across its two lives: the deciding prompt, then —
+ * after 「同意」 — the startup loading surface that keeps a visible face on
+ * screen while the slow boot chain (corporate env, first-boot Profile
+ * creation, Host boot, shell mount) runs. Reused instead of a splash
+ * window: zero new window infrastructure and zero new close races — the
+ * #66 lifetime guard already owns a user-closed loading window.
+ */
+let disclaimerWindow: DesktopDisclaimerWindow | undefined
+/**
+ * Retire the loading surface once the first successor face is visible:
+ * the shell window's first show, the startup recovery window, the Profile
+ * creator, or the SSO gate window. Idempotent — safe before the prompt
+ * even opened (a silent-SSO or everyday boot) and after the user closed
+ * the loading window themselves.
+ */
+const disposeDisclaimerLoading = (): void => {
+  disclaimerWindow?.dispose()
+  disclaimerWindow = undefined
+}
+
 class RendererStartupFailure extends Error {
   constructor(
     readonly reason: Extract<DesktopInstallRecoveryFailureReason, 'renderer-failed' | 'renderer-timeout'>,
@@ -368,7 +389,6 @@ async function start(): Promise<void> {
     return
   }
   let ssoGateWindow: DesktopSsoGateWindow | undefined
-  let disclaimerWindow: DesktopDisclaimerWindow | undefined
   if (isDesktopInstallerQuitRequest(process.argv, process.platform)) {
     app.quit()
     return
@@ -535,7 +555,7 @@ async function start(): Promise<void> {
     // Main owns every pre-health failure branch. Returning true prevents the
     // legacy Renderer recovery dialog from racing the native startup window.
     return report.status === 'failed'
-  }, electronLogger, undefined, policy.locked)
+  }, electronLogger, undefined, policy.locked, disposeDisclaimerLoading)
   const finalExit = (code: number): void => { nativeExit.finish(code) }
   shutdown = createDesktopShutdown(
     async () => { await generation.release() },
@@ -555,6 +575,8 @@ async function start(): Promise<void> {
   ): Promise<'restart' | 'quit' | 'unavailable'> => {
     if (!app.isReady()) return 'unavailable'
     try {
+      // A visible successor face replaces the disclaimer loading surface.
+      disposeDisclaimerLoading()
       startupRecoveryWindow = new DesktopStartupRecoveryWindow({
         ...(controller === undefined ? {} : { controller }),
         ...(startupRecoveryConfigurationPaths === undefined
@@ -637,6 +659,10 @@ async function start(): Promise<void> {
       } else {
         electronLogger.error(`${BIN_NAME}: sso silent authentication unavailable: ${maskSecrets(silent.reason)}`)
         clientEvents?.ssoLogin(ssoLoginEvent('failure', 'silent', silent.reason))
+        // A visible successor face replaces the disclaimer loading surface
+        // (today this runs before the gate, so the call is a future-proof
+        // no-op — kept so no reordering can reintroduce the empty gap).
+        disposeDisclaimerLoading()
         const gate = new DesktopSsoGateWindow({
           locale: desktopLocaleFromLanguageTag(app.getLocale()),
           silentFailureDetail: maskSecrets(silent.reason),
@@ -710,8 +736,14 @@ async function start(): Promise<void> {
         await shutdown.request(0)
       },
     })
-    disclaimerWindow = undefined
-    if (disclaimerOutcome !== 'agreed') return
+    if (disclaimerOutcome !== 'agreed') {
+      disclaimerWindow = undefined
+      return
+    }
+    // Agreed: the window stays alive as the startup loading surface — no
+    // empty gap between the prompt and the first successor face. The SSO
+    // silent path has no intermediate window, so the loading surface simply
+    // lives until the shell window's first show.
     const shellEnvironmentResolution = await resolveDesktopShellEnvironment({
       environment: process.env,
       home: app.getPath('home'),
@@ -1872,6 +1904,8 @@ async function handleFatalLauncherFailure(cause: unknown): Promise<void> {
     return
   }
   try {
+    // The last-resort recovery window is a visible successor face too.
+    disposeDisclaimerLoading()
     const recoveryWindow = new DesktopStartupRecoveryWindow({
       locale: desktopLocaleFromLanguageTag(app.getLocale()),
       failureStage: 'electron-ready',

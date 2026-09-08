@@ -15,7 +15,7 @@ import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DISCLAIMER_ITEMS, DISCLAIMER_TITLE } from '../src/disclaimer-text.ts'
 import { DESKTOP_DISCLAIMER_BRIDGE } from '../src/disclaimer-contract.ts'
-import { DisclaimerApp } from '../src/native-ui/disclaimer/App.tsx'
+import { DisclaimerApp, disclaimerStartingLocale } from '../src/native-ui/disclaimer/App.tsx'
 
 function stateSearch(): string {
   return `?state=${Buffer.from(JSON.stringify({ title: DISCLAIMER_TITLE, items: [...DISCLAIMER_ITEMS] }), 'utf8').toString('base64url')}`
@@ -79,12 +79,98 @@ describe('disclaimer decision buttons → bridge (real clicks)', () => {
   })
 })
 
+describe('disclaimer starting state (the post-agree loading surface)', () => {
+  let root: Root | undefined
+  afterEach(() => {
+    act(() => { root?.unmount() })
+    document.body.innerHTML = ''
+    delete (window.navigator as { language?: string }).language
+    delete (window as unknown as Record<string, unknown>)[DESKTOP_DISCLAIMER_BRIDGE]
+  })
+
+  /** Mount a live app with a working bridge and return its host element. */
+  function mountLive(): HTMLElement {
+    const host = mountApp({ decide: () => {} })
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+    return host
+  }
+
+  function agree(host: HTMLElement): void {
+    const agreeButton = [...host.querySelectorAll('button')].find(b => b.textContent === '同意')!
+    act(() => { agreeButton.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+  }
+
+  /** Pin the renderer locale for starting-copy tests (shadows jsdom's navigator). */
+  function stubNavigatorLanguage(tag: string): void {
+    Object.defineProperty(window.navigator, 'language', { value: tag, configurable: true })
+  }
+
+  it('clicking 同意 flips to the starting surface instantly: decide still fires, buttons vanish, spinner + zh copy appear', () => {
+    stubNavigatorLanguage('zh-CN')
+    const decide = vi.fn()
+    const host = mountApp({ decide })
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+
+    agree(host)
+
+    // The IPC 'agree' is still delivered (the main process settles the gate).
+    expect(decide).toHaveBeenCalledWith('agree')
+    // The decision surface is gone — no button remains.
+    expect(host.querySelectorAll('button')).toHaveLength(0)
+    // The loading surface is here: spinner, zh copy, window title.
+    expect(host.querySelector('[role="status"]')).not.toBeNull()
+    expect(host.querySelector('.animate-spin')).not.toBeNull()
+    expect(host.textContent).toContain('正在启动 DSH Desktop')
+    expect(document.title).toBe('正在启动 DSH Desktop…')
+  })
+
+  it('renders the English starting copy on an English renderer', () => {
+    stubNavigatorLanguage('en-US')
+    const host = mountLive()
+
+    agree(host)
+
+    expect(host.textContent).toContain('Starting DSH Desktop…')
+    expect(host.textContent).not.toContain('正在启动 DSH Desktop…')
+  })
+
+  it('Escape after agree stays silent — the made decision cannot be un-made', () => {
+    const decide = vi.fn()
+    const host = mountApp({ decide })
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+    agree(host)
+    decide.mockClear()
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+
+    expect(decide).not.toHaveBeenCalled()
+  })
+})
+
+describe('disclaimer starting locale pick', () => {
+  it('picks zh for zh spellings and the default, en otherwise', () => {
+    expect(disclaimerStartingLocale('zh-CN')).toBe('zh')
+    expect(disclaimerStartingLocale('zh-Hans-SG')).toBe('zh')
+    expect(disclaimerStartingLocale('en-US')).toBe('en')
+    expect(disclaimerStartingLocale('fr')).toBe('en')
+    expect(disclaimerStartingLocale(undefined)).toBe('zh')
+  })
+})
+
 describe('disclaimer.html static fallback (early render death)', () => {
   it('ships a visible no-JS / no-bundle message inside #root that React replaces on mount', () => {
     const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'native-ui', 'disclaimer.html'), 'utf8')
     const root = html.match(/<div id="root">([\s\S]*?)<\/div>/)![1]!
     expect(root).toContain('<noscript>')
     expect(root).toMatch(/组件加载异常/)
+    // The static fallback also carries the post-agree startup semantics —
+    // if the renderer dies mid-starting, the window still says the app is
+    // booting instead of going blank.
+    expect(root).toMatch(/正在启动/)
+    expect(root).toMatch(/主界面/)
   })
 
   it('every native window ships the same static bundle-death fallback inside #root', () => {

@@ -1,4 +1,5 @@
-import { Component, useEffect, type ReactNode } from 'react'
+import { Component, useEffect, useState, type ReactNode } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { buttonVariants } from '../components/ui/button.tsx'
 import { cn } from '../lib/utils.ts'
@@ -13,6 +14,36 @@ const FALLBACK_TITLE = '内测声明'
 const FALLBACK_BODY = '声明内容读取失败，请退出后重新启动 Deloitte DSH Desktop。'
 /** Boundary fallback body — the renderer itself failed, not the gate. */
 const RENDER_FAILURE_BODY = '声明窗口渲染失败，请退出后重新启动 Deloitte DSH Desktop。'
+
+/** Locale of the starting copy (the sso gate's zh/en record pattern). */
+type StartingLocale = 'zh' | 'en'
+interface StartingCopy {
+  readonly title: string
+  readonly note: string
+}
+/** The post-agree loading copy: this window carries no locale from the main
+ * process, so it is picked from the renderer's own language, zh by default
+ * (the statement chrome above is zh-primary). */
+const STARTING_COPY: Record<StartingLocale, StartingCopy> = {
+  zh: {
+    title: '正在启动 DSH Desktop…',
+    note: '正在完成启动准备，请勿关闭本窗口，主界面将在准备完成后自动打开。',
+  },
+  en: {
+    title: 'Starting DSH Desktop…',
+    note: 'Startup preparation is underway. Please keep this window open; the main window opens automatically when it is ready.',
+  },
+}
+
+/** Pure locale pick for the starting copy (unit-tested; undefined → zh). */
+export function disclaimerStartingLocale(tag: string | undefined): StartingLocale {
+  if (tag === undefined) return 'zh'
+  return tag.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+}
+
+function startingCopy(): StartingCopy {
+  return STARTING_COPY[disclaimerStartingLocale(typeof navigator === 'undefined' ? undefined : navigator.language)]
+}
 
 interface DisclaimerState {
   readonly title: string
@@ -95,18 +126,45 @@ export class DisclaimerErrorBoundary
 export function DisclaimerApp(): JSX.Element {
   const state = decodeState()
   const degraded = bridgeMissing()
+  // The starting state flips locally on the 同意 click — instant feedback,
+  // no IPC round-trip wait; the decide('agree') message still goes out.
+  const [starting, setStarting] = useState(false)
   useEffect(() => { document.title = state === undefined ? FALLBACK_TITLE : state.title }, [state])
+  useEffect(() => {
+    if (!starting) return
+    // The window title follows the loading surface (the native title bar
+    // stops saying 内测声明 once the decision is made).
+    document.title = startingCopy().title
+  }, [starting])
   // Escape closes the prompt: same semantics as the window's X (disagree).
   // Captures the mount-time degraded state, matching the disabled buttons.
+  // Once starting, Escape decides nothing — the decision is made and the
+  // X alone closes the loading window without touching the boot.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !degraded) decide('disagree')
+      if (event.key === 'Escape' && !degraded && !starting) decide('disagree')
     }
     window.addEventListener('keydown', onKeyDown)
     return () => { window.removeEventListener('keydown', onKeyDown) }
-  }, [degraded])
+  }, [degraded, starting])
   if (state === undefined) {
     return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTitle>{FALLBACK_TITLE}</AlertTitle><AlertDescription>{FALLBACK_BODY}</AlertDescription></Alert></main>
+  }
+  if (starting) {
+    // The post-agree loading surface: same brand chrome, no decision UI —
+    // a spinner plus bilingual-window copy while the boot chain runs and
+    // the main process holds this window for the first successor face.
+    const copy = startingCopy()
+    return <main className="flex h-screen flex-col" role="status" aria-label={copy.title}>
+      <header className="dshDisclaimerHeader">
+        <span className="dshDisclaimerWordmark"><span className="dshDisclaimerWordmarkBrand">{WORDMARK_BRAND}</span> {WORDMARK_REST}</span>
+      </header>
+      <section className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" aria-hidden="true" />
+        <h1 className="text-lg font-semibold tracking-tight">{copy.title}</h1>
+        <p className="max-w-md text-sm leading-relaxed text-muted-foreground">{copy.note}</p>
+      </section>
+    </main>
   }
   return <main className="flex h-screen flex-col">
     <header className="dshDisclaimerHeader">
@@ -129,7 +187,7 @@ export function DisclaimerApp(): JSX.Element {
       {degraded ? <p className="mx-auto w-full max-w-2xl px-6 pt-2 text-xs text-red-400" role="alert">{BRIDGE_MISSING_NOTICE}</p> : null}
       <div className="mx-auto flex w-full max-w-2xl items-center justify-end gap-3 px-6 py-4">
         <button type="button" disabled={degraded} className={cn(buttonVariants({ variant: 'outline' }), 'h-10 px-6')} onClick={() => { decide('disagree') }}>{BUTTON_DISAGREE}</button>
-        <button type="button" disabled={degraded} className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} onClick={() => { decide('agree') }}>{BUTTON_AGREE}</button>
+        <button type="button" disabled={degraded} className={cn(buttonVariants({ variant: 'default' }), 'dshDisclaimerPrimary h-10 px-6')} onClick={() => { setStarting(true); decide('agree') }}>{BUTTON_AGREE}</button>
       </div>
     </footer>
   </main>

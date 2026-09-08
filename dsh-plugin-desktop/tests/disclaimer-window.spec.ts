@@ -216,6 +216,7 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
    * (a `will-navigate` the main process intercepts) and closing the window.
    */
   async function openDisclaimer(): Promise<{
+    readonly host: DesktopDisclaimerWindow
     readonly window: WindowMock
     readonly results: ('agree' | 'disagree')[]
     readonly run: Promise<'agree' | 'disagree'>
@@ -237,6 +238,7 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
     await vi.waitFor(() => expect(window.states).toHaveLength(1))
     window.events.emit('ready-to-show')
     return {
+      host: disclaimer,
       window,
       results,
       run,
@@ -279,7 +281,7 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
     expect(electron.ipcListeners.get('dsh-disclaimer:decide')?.size ?? 0).toBe(0)
   })
 
-  it('renders the v2 statement once and settles agree, destroying the window', async () => {
+  it('renders the v2 statement once and settles agree, keeping the window alive as the loading surface', async () => {
     const disclaimer = await openDisclaimer()
 
     // The rendered view model IS the hashed copy: same title, same clauses.
@@ -293,8 +295,39 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
     disclaimer.decide('agree')
 
     await expect(disclaimer.run).resolves.toBe('agree')
-    expect(disclaimer.window.destroy).toHaveBeenCalledOnce()
+    // Agree no longer destroys: the window stays on screen as the startup
+    // loading surface until the caller disposes it at the first successor
+    // face (shell window / recovery / Profile creator / SSO gate).
+    expect(disclaimer.window.destroy).not.toHaveBeenCalled()
     expect(disclaimer.results).toEqual(['agree'])
+
+    // dispose() is the retirement signal — and idempotent.
+    disclaimer.host.dispose()
+    disclaimer.host.dispose()
+    expect(disclaimer.window.destroy).toHaveBeenCalledOnce()
+    // Electron delivers `closed` after destroy(); the listener cleanup runs.
+    disclaimer.close()
+    await flushAsync()
+    expect(electron.ipcListeners.get('dsh-disclaimer:decide')?.size ?? 0).toBe(0)
+  })
+
+  it('dispose is safe after the user closed the loading window — a late signal is a no-op', async () => {
+    const disclaimer = await openDisclaimer()
+
+    disclaimer.decide('agree')
+    await expect(disclaimer.run).resolves.toBe('agree')
+    // The user closes the loading window themselves (X = close, not quit:
+    // the #66 lifetime guard owns the boot gap).
+    disclaimer.close()
+    await flushAsync()
+
+    expect(disclaimer.results).toEqual(['agree'])
+    expect(disclaimer.window.destroy).not.toHaveBeenCalled()
+    // A dispose signal arriving after `closed` must neither throw nor
+    // double-destroy — `closed` already released the window and the listeners.
+    disclaimer.host.dispose()
+    expect(disclaimer.window.destroy).not.toHaveBeenCalled()
+    expect(electron.ipcListeners.get('dsh-disclaimer:decide')?.size ?? 0).toBe(0)
   })
 
   it('settles disagree from the 「不同意」 button and destroys the window', async () => {
@@ -325,13 +358,15 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
     disclaimer.decide('agree')
     await expect(disclaimer.run).resolves.toBe('agree')
 
-    // Electron delivers `closed` after destroy(); settling again is a no-op.
+    // Electron delivers `closed` after the user closes the loading window;
+    // settling again is a no-op and the agree verdict stands.
     disclaimer.close()
     disclaimer.close()
     await flushAsync()
 
     expect(disclaimer.results).toEqual(['agree'])
-    expect(disclaimer.window.destroy).toHaveBeenCalledOnce()
+    // The window closed on its own; finish must not destroy on agree.
+    expect(disclaimer.window.destroy).not.toHaveBeenCalled()
   })
 
   it('ignores decision navigations after settlement', async () => {

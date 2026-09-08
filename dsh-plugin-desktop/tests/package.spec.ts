@@ -1163,3 +1163,33 @@ describe('published package surface', () => {
     expect(installedRuntime).not.toContain('134217728')
   })
 })
+
+describe('disclaimer loading surface wiring (agree morphs the window into a startup loader)', () => {
+  // main.ts boots Electron at import time, so its wiring is asserted
+  // structurally — the same discipline as the boot-sequence tests above.
+  it('holds the agreed window until the first successor face disposes it', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+
+    // One module-level idempotent disposer, defined once and handed to the
+    // runtime (shell first show + Profile creator fire it from inside).
+    expect(main).toContain('const disposeDisclaimerLoading = (): void => {')
+    expect(main).toContain('}, electronLogger, undefined, policy.locked, disposeDisclaimerLoading)')
+
+    // Agree keeps the window; only a refusal clears it immediately.
+    expect(main).toContain("if (disclaimerOutcome !== 'agreed') {\n      disclaimerWindow = undefined\n      return\n    }")
+
+    // Every successor window creation point retires the loading surface
+    // first (the nearest preceding call, not a distant one).
+    for (const creation of [
+      'startupRecoveryWindow = new DesktopStartupRecoveryWindow({',
+      'const gate = new DesktopSsoGateWindow({',
+      'const recoveryWindow = new DesktopStartupRecoveryWindow({',
+    ] as const) {
+      const at = main.indexOf(creation)
+      expect(at, creation).toBeGreaterThan(0)
+      const dispose = main.lastIndexOf('disposeDisclaimerLoading()', at)
+      expect(dispose, creation).toBeGreaterThan(0)
+      expect(at - dispose, creation).toBeLessThan(300)
+    }
+  })
+})

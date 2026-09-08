@@ -50,6 +50,12 @@ export interface ElectronShellGenerationOptions {
   readonly canRecoverRenderer: () => boolean
   readonly rendererRecoveryCopy: () => DesktopRestartConfirmationCopy
   readonly logError: (message: string) => void
+  /**
+   * Fires exactly once when the shell window first shows (its
+   * ready-to-show) — the moment the boot's successor face replaces the
+   * disclaimer loading surface. Not on later re-shows.
+   */
+  readonly onShellWindowVisible?: () => void
 }
 
 /** Locale-picked close-confirmation dialog copy (zh/en, the tray-locale pattern). */
@@ -139,6 +145,13 @@ export class ElectronShellGeneration {
     this.window = window
 
     const show = (): void => { this.show() }
+    // First visibility: the disclaimer loading surface retires exactly here
+    // — not at did-finish-load, which can precede the window's first show
+    // and would reopen a zero-visible-window gap mid-boot.
+    const firstShown = (): void => {
+      show()
+      this.options.onShellWindowVisible?.()
+    }
     const activate = (): void => {
       if (applicationNeedsReveal(window, platform.platform)) this.show()
     }
@@ -245,7 +258,7 @@ export class ElectronShellGeneration {
       }
       return { action: 'deny' }
     })
-    window.once('ready-to-show', show)
+    window.once('ready-to-show', firstShown)
     let tray: Tray | undefined
     this.cleanupListeners = () => {
       app.off('activate', activate)
@@ -253,7 +266,7 @@ export class ElectronShellGeneration {
       window.off('close', close)
       window.off('focus', clearAttention)
       window.off('page-title-updated', preserveBlankTitle)
-      window.off('ready-to-show', show)
+      window.off('ready-to-show', firstShown)
       window.webContents.off('before-input-event', handleZoomShortcut)
       window.webContents.off('will-frame-navigate', navigate)
       window.webContents.off('will-redirect', redirect)

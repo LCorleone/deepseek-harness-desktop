@@ -14,6 +14,12 @@
  * displayed text and the acknowledged hash are the same bytes by
  * construction.
  *
+ * Agree no longer destroys the window (2026-09-08): the renderer flips to
+ * its starting state on click, and the window stays on screen as the boot's
+ * loading surface until {@link DesktopDisclaimerWindow.dispose} retires it
+ * at the first successor face — the fix for the "agreed, then every window
+ * vanished" first-boot gap. A refusal still destroys immediately.
+ *
  * @module dsh-plugin-desktop/disclaimer-window
  */
 
@@ -138,7 +144,10 @@ export interface DesktopDisclaimerWindowOptions {
 /**
  * One native disclaimer window. `run()` resolves when the user picks
  * 「同意」 (`agree`) or 「不同意」/closes the window (`disagree` — a close is
- * the same refusal), and the window is destroyed on every settlement.
+ * the same refusal). A refusal destroys the window on settlement; an agree
+ * keeps it alive as the startup loading surface until the caller — which
+ * holds the settled instance — invokes {@link dispose} once the first
+ * successor window is visible.
  */
 export class DesktopDisclaimerWindow {
   private window: BrowserWindow | undefined
@@ -231,12 +240,33 @@ export class DesktopDisclaimerWindow {
     revealApplication(window)
   }
 
-  private finish(result: DisclaimerResult): void {
-    if (this.settled) return
-    this.settled = true
+  /**
+   * Retire the post-agree loading surface — the first successor window
+   * (shell, startup recovery, Profile creator, SSO gate) is visible now.
+   * Idempotent, and safe after the user closed the loading window
+   * themselves: the `closed` cleanup already released the window and every
+   * listener, so a late signal is a plain no-op. Destroying fires `closed`,
+   * which runs that same cleanup here.
+   */
+  dispose(): void {
     const window = this.window
     this.window = undefined
     if (window !== undefined && !window.isDestroyed()) window.destroy()
+  }
+
+  private finish(result: DisclaimerResult): void {
+    if (this.settled) return
+    this.settled = true
+    if (result === 'disagree') {
+      // A refusal quits the app: destroy the prompt immediately, exactly
+      // as before this window grew its second life.
+      const window = this.window
+      this.window = undefined
+      if (window !== undefined && !window.isDestroyed()) window.destroy()
+    }
+    // Agree: the window stays on screen as the startup loading surface —
+    // the renderer has already switched to its starting state on click, and
+    // the caller disposes it at the first successor face.
     this.resolveResult?.(result)
     this.resolveResult = undefined
   }

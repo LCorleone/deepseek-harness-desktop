@@ -66,6 +66,19 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: childProcess.spawn,
 }))
 
+const profileCreate = vi.hoisted(() => {
+  const instances: Array<ProfileCreateWindowFake> = []
+  class ProfileCreateWindowFake {
+    readonly open = vi.fn()
+    constructor(readonly options: unknown) { instances.push(this) }
+  }
+  return { ProfileCreateWindow: ProfileCreateWindowFake, instances }
+})
+
+vi.mock('../src/profile-create-window.ts', () => ({
+  ProfileCreateWindow: profileCreate.ProfileCreateWindow,
+}))
+
 const electron = vi.hoisted(() => {
   const browserWindowOptions: unknown[] = []
   const browserWindowThemeSources: string[] = []
@@ -1969,5 +1982,52 @@ describe('Electron desktop runtime', () => {
     expect(electron.nativeTheme.themeSource).toBe('dark')
     await expect(release()).rejects.toThrow('renderer unavailable')
     expect(electron.nativeTheme.themeSource).toBe('light')
+  })
+
+  it('retires the disclaimer loading surface when the shell window first shows (ready-to-show)', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const onFirstVisibleSurface = vi.fn()
+    const runtime = new ElectronDesktopRuntime(async () => {}, undefined, undefined, undefined, false, onFirstVisibleSurface)
+    const release = runtime.schedule(spec)
+    await runtime.mountScheduled()
+
+    const window = electron.browserWindows[0]!
+    const firstShown = window.once.mock.calls.find(([event]) => event === 'ready-to-show')?.[1]
+    expect(firstShown).toEqual(expect.any(Function))
+    // Before first visibility the loading surface must stay — a gap with
+    // zero visible windows mid-boot is exactly the bug this hook exists for.
+    expect(onFirstVisibleSurface).not.toHaveBeenCalled()
+
+    firstShown!()
+
+    expect(window.show).toHaveBeenCalled()
+    expect(onFirstVisibleSurface).toHaveBeenCalledOnce()
+    // Later re-shows (tray click, second instance) must not re-fire the hook.
+    runtime.show()
+    expect(onFirstVisibleSurface).toHaveBeenCalledOnce()
+
+    await release()
+  })
+
+  it('retires the disclaimer loading surface when the Profile creator opens', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const onFirstVisibleSurface = vi.fn()
+    const runtime = new ElectronDesktopRuntime(async () => {}, undefined, undefined, undefined, false, onFirstVisibleSurface)
+    const instancesBefore = profileCreate.instances.length
+
+    runtime.openProfileCreateWindow({ onSubmit: () => {} })
+
+    expect(profileCreate.instances).toHaveLength(instancesBefore + 1)
+    expect(profileCreate.instances.at(-1)!.open).toHaveBeenCalledOnce()
+    // The Profile creator is one of the boot's first visible faces — the
+    // hook fires at its creation point (idempotent on the caller's side).
+    expect(onFirstVisibleSurface).toHaveBeenCalledOnce()
+
+    // A repeated open focuses the same instance and re-signals harmlessly.
+    runtime.openProfileCreateWindow({ onSubmit: () => {} })
+    expect(profileCreate.instances).toHaveLength(instancesBefore + 1)
+    expect(onFirstVisibleSurface).toHaveBeenCalledTimes(2)
   })
 })

@@ -128,6 +128,13 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     workspaceVolumeQuery: WindowsVolumeQuery | undefined = undefined,
     /** Whether company policy locks this build (DesktopPolicy.locked). */
     policyLocked: boolean = false,
+    /**
+     * Fires when one of the boot's first visible native faces appears —
+     * the shell window's first show or the Profile creator window — so the
+     * launcher can retire the disclaimer loading surface (no-op when no
+     * such surface is held).
+     */
+    private readonly onFirstVisibleSurface: (() => void) | undefined = undefined,
   ) {
     this.platformStrategy = electronPlatformStrategy()
     this.platform = this.platformStrategy.platform
@@ -268,6 +275,9 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         failRendererBoot: error => { this.failRendererBoot('renderer-failed', error) },
         canRecoverRenderer: () => this.rendererBootHealthy,
         rendererRecoveryCopy: () => rendererRecoveryCopy[this.currentLocale],
+        ...(this.onFirstVisibleSurface === undefined
+          ? {}
+          : { onShellWindowVisible: this.onFirstVisibleSurface }),
         logError: message => { this.logError(message) },
       })
       this.generation = generation
@@ -306,6 +316,9 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
 
   /** @inheritdoc */
   openProfileCreateWindow(options: Omit<ProfileCreateWindowOptions, 'locale'>): void {
+    // The Profile creator (the slow first-boot path) is one of the boot's
+    // first visible faces: retire the disclaimer loading surface here.
+    this.onFirstVisibleSurface?.()
     if (this.profileCreateWindow === undefined) {
       this.profileCreateWindow = new ProfileCreateWindow({
         ...options,
