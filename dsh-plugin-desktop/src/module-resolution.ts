@@ -5,8 +5,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
 import {
   findOverlayPackage,
+  PackageOverlayNotFoundError,
   packageNameFromSpecifier,
-  resolveOverlayPackage,
+  type PackageOverlaySelection,
 } from './package-overlay.ts'
 
 const LOADER_ENTRY_URL = import.meta.resolve('@deepseek-ai/cordis-plugin-loader')
@@ -46,6 +47,30 @@ function isBareSpecifier(specifier: string): boolean {
 export function installProfilePackageResolver(profileBaseUrl: string): () => void {
   const profileManifestPath = fileURLToPath(profileBaseUrl)
 
+  // Repeated Loader and manifest overlay lookups used to walk both package
+  // trees and re-read both manifests on every resolution, making Host boot
+  // proportional to the resolved module graph. Cache one selection per
+  // package root for this installation: a found selection is immutable for
+  // the process, while misses stay uncached because Market can publish a
+  // missing package while this process is alive. A new installation (Loader
+  // hand-over) starts with a fresh cache and re-reads the Profile state.
+  const overlaySelections = new Map<string, PackageOverlaySelection>()
+  const findOverlaySelection = (packageName: string): PackageOverlaySelection | undefined => {
+    const cached = overlaySelections.get(packageName)
+    if (cached !== undefined) return cached
+    const selection = findOverlayPackage(packageName, {
+      installPackageUrl: DESKTOP_PACKAGE_URL,
+      profilePackageUrl: profileBaseUrl,
+    })
+    if (selection !== undefined) overlaySelections.set(packageName, selection)
+    return selection
+  }
+  const resolveOverlaySelection = (packageName: string): PackageOverlaySelection => {
+    const selection = findOverlaySelection(packageName)
+    if (selection === undefined) throw new PackageOverlayNotFoundError(packageName)
+    return selection
+  }
+
   // ClientModuleRegistry intentionally uses createRequire(ctx.baseUrl) to
   // resolve each browser bundle from the config tree. Node's ESM resolve hook
   // does not observe that CommonJS manifest lookup, so without this narrow
@@ -66,10 +91,7 @@ export function installProfilePackageResolver(profileBaseUrl: string): () => voi
       ? packageNameFromManifestSpecifier(request)
       : undefined
     if (packageName !== undefined) {
-      const overlay = findOverlayPackage(packageName, {
-        installPackageUrl: DESKTOP_PACKAGE_URL,
-        profilePackageUrl: profileBaseUrl,
-      })
+      const overlay = findOverlaySelection(packageName)
       if (overlay !== undefined) return overlay.selected.manifestPath
     }
     return previousResolveFilename.call(this, request, parent, isMain, options)
@@ -83,10 +105,7 @@ export function installProfilePackageResolver(profileBaseUrl: string): () => voi
       const fromLoader = context.parentURL === LOADER_ENTRY_URL
       const packageName = fromLoader ? packageNameFromSpecifier(specifier) : undefined
       if (packageName !== undefined) {
-        const overlay = resolveOverlayPackage(packageName, {
-          installPackageUrl: DESKTOP_PACKAGE_URL,
-          profilePackageUrl: profileBaseUrl,
-        })
+        const overlay = resolveOverlaySelection(packageName)
         const resolved = nextResolve(specifier, {
           ...context,
           parentURL: overlay.selected.source === 'profile' ? profileBaseUrl : DESKTOP_ENTRY_URL,

@@ -96,6 +96,79 @@ describe('installProfilePackageResolver', () => {
     expect(harness.overlay).toHaveBeenCalledWith('dsh-plugin-desktop', expect.any(Object))
   })
 
+  it('caches one overlay selection per installation and package root', () => {
+    const profileBaseUrl = 'file:///C:/Users/test/profile/package.json'
+    harness.sources.set('plugin', 'install')
+    installProfilePackageResolver(profileBaseUrl)
+    const nextResolve = vi.fn((specifier: string) => ({
+      url: `file:///resolved/${specifier.replaceAll('/', '-')}.js`,
+    }))
+    const loaderEntryUrl = import.meta.resolve('@deepseek-ai/cordis-plugin-loader')
+
+    harness.resolve?.('plugin', { parentURL: loaderEntryUrl }, nextResolve)
+    harness.resolve?.('plugin/feature', { parentURL: loaderEntryUrl }, nextResolve)
+
+    expect(harness.overlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('reuses one overlay selection across the ESM hook and CommonJS manifest bridge', () => {
+    const profileBaseUrl = 'file:///tmp/dsh-profile/package.json'
+    harness.sources.set('dsh-client-kit', 'profile')
+    installProfilePackageResolver(profileBaseUrl)
+    const resolveFilename = harness.cjsModule._resolveFilename
+    const nextResolve = vi.fn((specifier: string) => ({ url: `file:///resolved/${specifier}.js` }))
+    const loaderEntryUrl = import.meta.resolve('@deepseek-ai/cordis-plugin-loader')
+
+    harness.resolve?.('dsh-client-kit', { parentURL: loaderEntryUrl }, nextResolve)
+    expect(resolveFilename(
+      'dsh-client-kit/package.json',
+      { filename: '/tmp/dsh-profile/package.json' },
+      false,
+    )).toBe('/profile/dsh-client-kit/package.json')
+
+    expect(harness.overlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not cache a missing overlay selection before Market publishes it', () => {
+    const profileBaseUrl = 'file:///tmp/dsh-profile/package.json'
+    harness.sources.set('market-plugin', 'install')
+    harness.overlay.mockImplementationOnce(() => undefined as never)
+    installProfilePackageResolver(profileBaseUrl)
+    const resolveFilename = harness.cjsModule._resolveFilename
+
+    expect(resolveFilename(
+      'market-plugin/package.json',
+      { filename: '/tmp/dsh-profile/package.json' },
+      false,
+    )).toBe('ordinary:market-plugin/package.json')
+    expect(resolveFilename(
+      'market-plugin/package.json',
+      { filename: '/tmp/dsh-profile/package.json' },
+      false,
+    )).toBe('/install/market-plugin/package.json')
+
+    expect(harness.overlay).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes overlay selection when a new installation retains the Profile', () => {
+    const profileBaseUrl = 'file:///C:/Users/test/profile/package.json'
+    harness.sources.set('plugin', 'install')
+    const dispose = installProfilePackageResolver(profileBaseUrl)
+    const nextResolve = vi.fn((specifier: string, context: { parentURL?: string }) => ({ specifier, context }))
+    const loaderEntryUrl = import.meta.resolve('@deepseek-ai/cordis-plugin-loader')
+    harness.resolve?.('plugin', { parentURL: loaderEntryUrl }, nextResolve)
+
+    dispose()
+    harness.sources.set('plugin', 'profile')
+    installProfilePackageResolver(profileBaseUrl)
+    const refreshed = harness.resolve?.('plugin/feature', { parentURL: loaderEntryUrl }, nextResolve) as {
+      context: { parentURL?: string }
+    }
+
+    expect(harness.overlay).toHaveBeenCalledTimes(2)
+    expect(refreshed.context.parentURL).toBe(profileBaseUrl)
+  })
+
   it('keeps non-package Loader specifiers on ordinary Node resolution', () => {
     installProfilePackageResolver('file:///C:/Users/test/profile/package.json')
     const nextResolve = vi.fn((specifier: string, context: { parentURL?: string }) => ({ specifier, context }))

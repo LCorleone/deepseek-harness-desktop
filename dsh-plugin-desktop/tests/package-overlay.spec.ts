@@ -132,10 +132,11 @@ describe('Desktop package overlay', () => {
     expect(resolveOverlayPackage('plugin', installVersion.options).selected.source).toBe('install')
   })
 
-  it('extracts scoped and unscoped roots without treating URLs as packages', () => {
+  it('extracts scoped and unscoped roots without treating URLs or Windows-rooted paths as packages', () => {
     expect(packageNameFromSpecifier('@scope/plugin/subpath')).toBe('@scope/plugin')
     expect(packageNameFromSpecifier('plugin/subpath')).toBe('plugin')
     expect(packageNameFromSpecifier('node:fs')).toBeUndefined()
     expect(packageNameFromSpecifier('./relative.js')).toBeUndefined()
+    expect(packageNameFromSpecifier('\\Device\\plugin')).toBeUndefined()
   })
 })

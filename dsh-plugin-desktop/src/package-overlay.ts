@@ -90,7 +90,7 @@ function readCandidate(
 /** Extract an npm package root from one Loader bare specifier. */
 export function packageNameFromSpecifier(specifier: string): string | undefined {
   if (specifier.length === 0 || specifier.startsWith('.') || specifier.startsWith('/')
-    || specifier.startsWith('#') || URL.canParse(specifier)) return undefined
+    || specifier.startsWith('\\') || specifier.startsWith('#') || URL.canParse(specifier)) return undefined
   const parts = specifier.split('/')
   if (specifier.startsWith('@')) {
     if (parts.length < 2 || parts[0]?.length === 0 || parts[1]?.length === 0) return undefined
