@@ -422,6 +422,27 @@ describe('community market overlay', () => {
     expect(input).toHaveProperty('value', 'https://plugins.example.org/broken.json')
   })
 
+  it('closes the overlay when Escape lands inside the hidden-preview window', async () => {
+    // New behavior pinned by the no-flash gate: while an item's auto-begun
+    // install preview is in flight the modal is not rendered, so Escape
+    // reaches the overlay itself and closes it instead of being absorbed
+    // by a detail dialog.
+    const request = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input)
+      if (url.includes('/state')) return response(stateWithSource)
+      if (url.includes('/catalog')) return response(catalogWithItem)
+      return new Promise<Response>(() => {})
+    })
+    vi.stubGlobal('fetch', request)
+    const view = renderOpenOverlay()
+    await screen.findByText('Better Sidebar')
+    fireEvent.click(screen.getByText('Better Sidebar').closest('button')!)
+    expect(screen.queryByRole('dialog', { name: 'Better Sidebar' })).toBeNull()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => { expect(view.instance.getSnapshot().open).toBe(false) })
+  })
+
   it('opens plugin details and forwards the repository link safely', async () => {
     const request = vi.fn<typeof fetch>(async (input) => (
       String(input).includes('/state') ? response(stateWithSource) : response(catalogWithItem)
@@ -432,7 +453,9 @@ describe('community market overlay', () => {
     await screen.findByText('Better Sidebar')
     fireEvent.click(screen.getByText('Better Sidebar').closest('button')!)
 
-    const details = screen.getByRole('dialog', { name: 'Better Sidebar' })
+    // The auto-begun install preview for a package-less item settles first;
+    // the detail dialog returns once that attempt lands.
+    const details = await screen.findByRole('dialog', { name: 'Better Sidebar' })
     fireEvent.click(within(details).getByRole('button', { name: 'repository' }))
     expect(open).toHaveBeenCalledWith('https://github.com/example/better-sidebar', '_blank', 'noopener,noreferrer')
 
@@ -449,9 +472,10 @@ describe('community market overlay', () => {
     const view = renderOpenOverlay()
     await screen.findByText('Better Sidebar')
     fireEvent.click(screen.getByText('Better Sidebar').closest('button')!)
+    const details = await screen.findByRole('dialog', { name: 'Better Sidebar' })
 
     fireEvent.keyDown(document, { key: 'Escape' })
-    const details = screen.getByRole('dialog', { name: 'Better Sidebar' })
+    expect(screen.getByRole('dialog', { name: 'Better Sidebar' })).toBeTruthy()
     fireEvent.click(within(details).getByRole('button', { name: 'close' }))
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Better Sidebar' })).toBeNull() })
     fireEvent.keyDown(document, { key: 'Escape' })

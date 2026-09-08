@@ -1168,7 +1168,13 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           />
         )}
       </main>
-      {selected !== undefined && (
+      {selected !== undefined && !(operationPending && operationPreview === undefined && operationError === undefined) && (
+        // While the auto-begun install preview for an uninstalled item is in
+        // flight, hold the modal back: rendering the detail form (repository /
+        // terminal / close footer) for the host round-trip read as a foreign
+        // window flashing before the confirm form. The modal reappears with
+        // the confirm form on success or the detail form on preview failure
+        // (manual-install fallback), so nothing is lost.
         <ItemActionModal
           value={selected}
           installation={selectedInstallation}
@@ -2147,6 +2153,10 @@ function ItemActionModal({
   onEnable: (bundleId: string) => void
   t: MarketSettingsTabProps['t']
 }) {
+  // Unreachable since the render gate holds the whole modal back while an
+  // install preview is pending (the gate hides exactly this combination);
+  // kept as a defensive fallback for any future caller that renders the
+  // modal without the gate.
   const checking = preview === undefined && pending && operationError === undefined
   const updating = preview?.action === 'install' && preview.replaces !== undefined
   const footer = installation === undefined && preview !== undefined ? <>

@@ -362,7 +362,10 @@ describe('MarketSettingsTab', () => {
       )
     })
     fireEvent.click(plugin)
-    expect(screen.getByRole('dialog')).toBeTruthy()
+    // Package-less items auto-begin an install preview that cannot succeed;
+    // the modal stays hidden until that attempt settles, then the detail
+    // form returns with the error handled inside.
+    expect(await screen.findByRole('dialog')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Fixture Plugin' })).toBeTruthy()
     expect(screen.getByText('Fixture Plugin details')).toBeTruthy()
     expect(screen.getByText(`${en.source}: Fixture catalog · Fixture provider`)).toBeTruthy()
@@ -537,26 +540,19 @@ describe('MarketSettingsTab', () => {
     await screen.findByRole('button', { name: /Installable Plugin/u })
     fireEvent.click(screen.getByRole('button', { name: en.installable }))
     fireEvent.click(await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` }))
-    const detailsDialog = screen.getByRole('dialog', { name: item.displayName })
-    expectMarketModal(detailsDialog, 'dshMarketWideModal')
-    expect(detailsDialog.classList.contains('dshMarketConfirmModal')).toBe(false)
-    const detailsSource = within(detailsDialog).getByRole('link', { name: `${en.source}: Fixture catalog · Fixture provider` }) as HTMLAnchorElement
-    expect(detailsSource.href).toBe('https://fixture-home.example/catalog')
-    expect(detailsSource.target).toBe('_blank')
-    expect(detailsSource.rel).toContain('noopener')
-    expect(detailsSource.rel).toContain('noreferrer')
-    expect(await screen.findByText(en.checkingInstallMethod)).toBeTruthy()
-    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    // While the preview is in flight the modal stays hidden: no detail-form
+    // flash before the confirm form (the auto-begun install preview for an
+    // uninstalled item resolves straight into the confirm dialog).
+    expect(screen.queryByRole('dialog')).toBeNull()
     await waitFor(() => {
       expect(previewMarketOperation).toHaveBeenCalledWith({
         action: 'install',
-        sourceRecordId: firstSource.sourceRecordId,
+        sourceRecordId: linkedSource.sourceRecordId,
         itemId: item.id,
       }, expect.any(AbortSignal))
     })
     await act(async () => { resolvePreview?.(preview) })
     const previewDialog = await screen.findByRole('dialog', { name: en.confirmInstallTitle })
-    expect(previewDialog).toBe(detailsDialog)
     expectMarketModal(previewDialog, 'dshMarketWideModal')
     expect(previewDialog.classList.contains('dshMarketConfirmModal')).toBe(false)
     const previewSource = within(previewDialog).getByRole('link', { name: `${en.source}: Fixture catalog · Fixture provider` }) as HTMLAnchorElement
