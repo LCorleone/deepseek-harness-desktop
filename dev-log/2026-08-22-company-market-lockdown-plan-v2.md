@@ -293,6 +293,8 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 - agent 侧感知：persona/preset 或环境探测告知模型 python 可用（含版本）；沙箱路径白名单放行。
 - Mac 不做（fleet=Windows）。
 
+**网络实测（2026-09-08 22:12，用户机）**：内网经公司代理可达 pypi 全链——pip 自动读 WinINET 系统代理，`--no-cache-dir` 强制下载实测成功（索引+文件域+TLS 全过）；直连（无代理）pypi.org 挂起、files.pythonhosted.org 反而通。**结论：零额外配置（无需镜像/无需 pip.ini cert）**，P11 的 pip 环节按"系统代理自动拾取"设计即可；验收时找一台同事机复测一遍代理行为。
+
 **规模**：M（2-3 天+装机验证）。**依赖**：pip 内网源调研（运维）；排期在 #72/#73 之后。**验收**：零环境 Win 机器上 agent 直接跑通 `python -c` 与 pip install+import pandas 全链。
 
 ## P8 · Agent 网页操作能力（agent-browser）—— 开卡 2026-09-03
