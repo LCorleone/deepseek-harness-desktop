@@ -7,6 +7,12 @@
  * on every release, without touching the installer's version-based upgrade
  * path. Committed default is 0 (plain version); CI overwrites before build
  * and nothing commits the generated value back.
+ *
+ * INVARIANT (review P3, closed 2026-09-08): the build seq is the run_number
+ * of THE single `windows-package` workflow. A second packaging workflow
+ * would fork run_number counters and break `+bN` monotonicity — if one is
+ * ever added, it must derive its number from a shared ratchet (e.g. the
+ * catalog state sequence) instead of its own run_number.
  */
 import { writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
