@@ -24,7 +24,7 @@
 - 代码编辑一律 `edit` 工具（oldText 唯一）；bash 只跑命令。
 - 长命令（vitest/typecheck）加 `timeout 900`。
 - **不要 push**（主会话统一 push）；**不要动 `deepseek-harness/` 子模块**；**不要构建**。
-- 完成判据每批：`corepack yarn workspace dsh-plugin-desktop vitest run` 全绿（当前基线 2016 passed + 7 skipped）+ `corepack yarn workspace dsh-plugin-desktop typecheck` 0 error。若上游 commit 自带新测试，允许 passed 数增加，不允许 fail。
+- 完成判据每批：`corepack yarn workspace dsh-plugin-desktop vitest run` 全绿（**基线更新 2026-09-08 18:25：2025 passed + 7 skipped**，boot 后缀修复并入后）+ `corepack yarn workspace dsh-plugin-desktop typecheck` 0 error。若上游 commit 自带新测试，允许 passed 数增加，不允许 fail。
 
 ## 4. Decisions made & failed attempts
 
