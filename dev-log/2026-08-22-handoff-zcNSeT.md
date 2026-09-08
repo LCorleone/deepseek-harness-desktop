@@ -336,6 +336,12 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **事故**：dsh-dai-context@0.41.3（beta seq17，同事首 MR，另一 session 发布）真机两次安装均 rolled-back（operation-failed；UI：lockfile integrity mismatch）。**根因（MR session 完整 debug+复现，勿重验）**：pnpm 在 profile 树已有可解析 peer 时给 lockfile importer version 挂后缀（file:…tgz(@deepseek-ai/schemastery@3.18.2)），而 packages:/snapshots: 段 key 永远是裸 key；assertProfileLockRecord file: 通道拿带后缀串查不到→integrity 比对失败→回滚。影响面=任何 peers 与 profile 树相交的插件（free-search 首装未踩=历史巧合）；registry 通道早有 startsWith(version+'(') 容忍，tarball 通道漏了。
 **修复（32bfaf522d，+100/−5）**：file: 通道 fileKeys=Set{原串/首个 ( 剥出裸 key}双试，姿势镜像 registry 先例；integrity 逐字比对/信任根/treeDigest 零改动。红绿证：正向修前红（receipt 为空）修后绿；负向（integrity 真不匹配）全程拒。market vitest 440（基线 438）/typecheck 0。**review-peer-suffix APPROVED**：信任面零扩大（只扩查找 key 集，绑定不变）；P3 理论括号路径歧义=不可达（staging 名 safePackageName+stableExactVersion 均禁括号），不修。
 
+### 双雷同根闭环：同事首 MR 插件「装不上→不上效」全解（2026-09-08 14:00-15:45）
+**雷一·装在失败**（上午）：dsh-dai-context@0.41.3 真机两次 rolled-back（operation-failed；UI lockfile integrity mismatch）。根因=pnpm peer 后缀（file:…tgz(@deepseek-ai/schemastery@3.18.2)）vs install 校验 assertProfileLockRecord 裸 key 查找。修 32bfaf522d（file: 通道双 key）+review-peer-suffix APPROVED（信任面零扩大）。
+**雷二·装瓶不生效**（下午）：重启后顶部无 Context tab，桌面日志零痕迹。诊断链：grab-dsh-logs→包结构正规→槽名 conversation.view 在 0.1.1-rc.2 存在→inject 包都在→直到 DB boot_verify detail **铁证**：`rejected:[{dsh-dai-context, no-lock-integrity}]`，loaded:2——**同一 pnpm 后缀盲区第二处（boot 验证）**：boot-verification.ts desktopBootTarballLockIntegrity 位①917-923 路径比较②924 lockEntry 单 key 均裸/缀盲。修 9242d87b6d（剥后缀+双 key+拒绝日志）+review-boot-suffix APPROVED（trust 面零扩大；P2 拒絶日志补 installedVersion、P3a 剥离语义统一 indexOf('(')）并入 69ff8bb4c3。
+**#71 真机验收**：b71 重装 dsh-dai-context → **Context tab 出现** ✓（用户确认）。同事首 MR 端到端打通（提交→发布 beta→真机安装→生效）。
+**沉淀**：①pnpm peer 后缀是**双关卡同型**（install 校验+boot 验证），以后再改 lockfile 相关路径要两处同查；②boot 拒绝此前只写快照+遥测不写日志=静默雷源，本次已改成一行日志（同类以后可见）；③原版 dsh-context@0.41.3（seq18 对照）已发 beta，留着（修复后回归双证）还是清，待用户定。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
