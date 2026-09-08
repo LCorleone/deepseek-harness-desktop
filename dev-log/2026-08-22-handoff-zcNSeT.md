@@ -347,6 +347,7 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **沉淀**：①pnpm peer 后缀是**双关卡同型**（install 校验+boot 验证），以后再改 lockfile 相关路径要两处同查；②boot 拒绝此前只写快照+遥测不写日志=静默雷源，本次已改成一行日志（同类以后可见）；③原版 dsh-context@0.41.3（seq18 对照）已发 beta，留着（修复后回归双证）还是清，待用户定。
 
 ### 安全收尾三件（2026-09-08 18:10）
+**会话分工（2026-09-08 18:18 记）**：同事插件仓 MR 审查/merge/发布线由另一个 pi session 负责（标题「审查同事提交的插件仓MR」）——查 MR 线改动/发布细节看那个 session。两 session 已实证可并行且会收敛（本 session 17:46 下架 dsh-context 签 seq19，另一 session 17:15+ 发 dai-agent-teams，最终 live beta=seq20 四条目合并对齐，state=20）。
 ① **主仓不迁移**（用户拍板）：GitGuardian/secret 扫描是 GitHub 全平台内容级扫描，换仓零隐蔽收益；真风险已关死（key 轮换作废+历史重写+零明文）；且迁移会砸构建号权威（bN=run_number 归 1 撞历史号）+CI/secrets 重配。若后续要加固：开 push protection（免费，推送时拦疑似密钥）——待用户点头。
 ② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
 ③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
