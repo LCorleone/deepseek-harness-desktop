@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from './contracts.ts'
 import type { DesktopClientPlatform } from './environment.ts'
@@ -21,7 +22,7 @@ export type AdvancedFrameProps = PropsRuntime<'root'>
   & AdvancedFrameInjected
 
 /** Desktop-owned transparent frame around the unchanged product surfaces. */
-export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: AdvancedFrameProps) {
+export function AdvancedFrame({ layout, platform, renderSlot, SessionProvider, useSessions }: AdvancedFrameProps) {
   const subscribeLayout = useCallback((listener: () => void) => layout.subscribe(listener), [layout])
   const readLayout = useCallback(() => layout.getSnapshot(), [layout])
   const panels = useSyncExternalStore(subscribeLayout, readLayout)
@@ -112,7 +113,9 @@ export function AdvancedFrame({ layout, platform, renderSlot, useSessions }: Adv
         </div>
       </aside>
       <main className="dshDesktopConversationSurface">{renderSlot('conversation', {})}</main>
-      <aside className="dshDesktopDetailsSurface">{renderSlot('details', {})}</aside>
+      <aside className="dshDesktopDetailsSurface">
+        <SessionProvider>{renderSlot('details', {})}</SessionProvider>
+      </aside>
       {/* Electron resolves app regions in DOM order; Desktop overlays must remain later. */}
       {platform === 'win32' && <div className="dshDesktopWindowsCaptionRow" aria-hidden="true" />}
       <div className="dshDesktopOverlay" data-shell-overlay>

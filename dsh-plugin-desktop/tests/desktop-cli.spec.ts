@@ -107,7 +107,7 @@ function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/example-plugin' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     ...overrides,
   }
 }
@@ -1366,7 +1366,7 @@ describe('locked CLI clamp', () => {
     })
   })
 
-  it('resolves the inserted company roster row from the healed profile fallback', () => {
+  it('resolves the inserted company roster row from the healed profile fallback', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-clamp-row-resolution-'))
     const homeDir = join(root, 'home')
     const profileDir = join(homeDir, 'profiles', 'desktop')
@@ -1379,10 +1379,10 @@ describe('locked CLI clamp', () => {
       // The launcher heals this fallback on every GUI composition; the clamp
       // relies on the same symlink from its own package anchor, because the
       // upstream `plugin`/boot children never import desktop rows themselves.
-      healProfilesModuleFallback(
-        fileURLToPath(new URL('../package.json', import.meta.url)),
-        homeDir,
-      )
+      await healProfilesModuleFallback({
+        installAnchor: fileURLToPath(new URL('../package.json', import.meta.url)),
+        home: homeDir,
+      })
       const require = createRequire(join(profileDir, 'package.json'))
       expect(require.resolve('dsh-plugin-desktop/company-agent-presets'))
         .toMatch(/company-agent-presets\.js$/u)

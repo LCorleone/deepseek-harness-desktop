@@ -185,7 +185,7 @@ const manifestText = (() => {
       bundlePatch: BUNDLE_PATCH,
       repository: { url: 'https://gitlab.company.example/julu/dsh-free-search-fixture' },
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: FIXTURE.treeDigest,
       source: { kind: 'tarball', url: TARBALL_URL, integrity: FIXTURE.integrity },
     }],

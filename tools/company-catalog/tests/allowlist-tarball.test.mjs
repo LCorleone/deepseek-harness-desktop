@@ -32,7 +32,7 @@ const baseEntry = {
   bundlePatch: './cordis.patch.yml',
   repository: 'https://github.com/example/company-hardened-plugin',
   revoked: false,
-  runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+  runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
 }
 
 const validate = (entry, options = { companyCatalogOrigin: CATALOG_ORIGIN }) =>

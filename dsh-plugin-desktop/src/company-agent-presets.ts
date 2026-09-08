@@ -1,9 +1,9 @@
 /** Locked-build agent preset roster pinned to the company-managed Deloitte preset. */
 
 import AgentPresets, {
-  PresetExistsError,
   type AgentPreset,
 } from '@deepseek-ai/dsh-agent-presets'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 
 /** The one preset a locked company build ships: the upstream standard composition with a company persona. */
 export const COMPANY_PRESET_ID = 'deloitte-standard'
@@ -14,7 +14,7 @@ export const COMPANY_PRESET_ID = 'deloitte-standard'
  * company preset, whose composition is a full copy of `standard` and therefore
  * compatible with sessions authored on any of them.
  */
-export const COMPANY_RETIRED_PRESET_IDS = ['standard', 'code', 'cordis', 'minimal'] as const
+export const COMPANY_RETIRED_PRESET_IDS = ['standard', 'ptc', 'cordis', 'minimal'] as const
 
 /** Whether one preset id belongs to the retired upstream roster. */
 export function isCompanyRetiredPresetId(id: string): boolean {
@@ -43,9 +43,18 @@ export class CompanyAgentPresets extends AgentPresets {
   }
 
   override async copy(from: string, id: string, name?: string): Promise<void> {
-    if (isCompanyRetiredPresetId(id)) throw new PresetExistsError(id)
+    if (isCompanyRetiredPresetId(id)) throw presetExistsError(id)
     await super.copy(from, id, name)
   }
+}
+
+/** Stable `agent-preset/invalid` rejection mirroring upstream `copy()` refusals. */
+function presetExistsError(id: string): RemoteError {
+  const reason = `preset "${id}" already exists — a copy never overwrites; delete the existing preset first or choose another id`
+  return new RemoteError('agent-preset/invalid', `agent-presets: ${reason}`, {
+    agentPreset: id,
+    reason,
+  })
 }
 
 export default CompanyAgentPresets

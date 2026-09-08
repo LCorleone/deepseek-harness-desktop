@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import { PresetExistsError, UnknownPresetError } from '@deepseek-ai/dsh-agent-presets'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   WindowsAgentPresets,
@@ -28,12 +29,21 @@ function createRoster(defaultId: string): WindowsAgentPresets {
   roots.push(root)
   writePreset(root, WINDOWS_SAFE_PRESET)
   writePreset(root, WINDOWS_UNSUPPORTED_PRESET)
-  writePreset(root, 'code')
+  writePreset(root, 'ptc')
   const ctx = new Context()
+  // 0.1.2 requires a composition base for plugin-name resolution; the fixture
+  // root is the harness-side base for this roster.
+  ;(ctx as { baseUrl?: string }).baseUrl = `${pathToFileURL(root).href}/`
+  // The roster registers its projection with any composed registry; the
+  // guard specs compose the roster bare, so a stub registry stands in.
+  ;(ctx as unknown as { sessionProjections?: { register: () => () => void } }).sessionProjections = {
+    register: () => () => {},
+  }
   contexts.push(ctx)
   return new WindowsAgentPresets(ctx, {
     default: defaultId,
     roots: [{ path: root, trust: 'system' }],
+    includeShippedRoot: false,
     includeUserRoot: false,
   })
 }
@@ -48,7 +58,7 @@ describe('Windows agent preset guard', () => {
     const presets = createRoster(WINDOWS_SAFE_PRESET)
 
     expect((await presets.list()).map(preset => preset.id)).toEqual([
-      'code',
+      'ptc',
       WINDOWS_SAFE_PRESET,
     ])
   })
@@ -72,14 +82,16 @@ describe('Windows agent preset guard', () => {
     const agentCtx = new Context()
     contexts.push(agentCtx)
 
-    await expect(presets.recompose(agentCtx, WINDOWS_UNSUPPORTED_PRESET))
-      .rejects.toBeInstanceOf(UnknownPresetError)
+    await expect(presets.recompose(agentCtx, WINDOWS_UNSUPPORTED_PRESET)).rejects.toSatisfy(
+      (cause: unknown) => cause instanceof RemoteError && cause.code === 'agent-preset/not-found',
+    )
   })
 
   it('reserves the hidden minimal id from user-authored copies', async () => {
     const presets = createRoster(WINDOWS_SAFE_PRESET)
 
-    await expect(presets.copy('code', WINDOWS_UNSUPPORTED_PRESET))
-      .rejects.toBeInstanceOf(PresetExistsError)
+    await expect(presets.copy('ptc', WINDOWS_UNSUPPORTED_PRESET)).rejects.toSatisfy(
+      (cause: unknown) => cause instanceof RemoteError && cause.code === 'agent-preset/invalid',
+    )
   })
 })

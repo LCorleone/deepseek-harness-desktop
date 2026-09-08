@@ -55,7 +55,8 @@ import {
 } from './desktop-settings-route.ts'
 import type {} from './desktop-settings-controller.ts'
 import { desktopBootRecoveryInjections } from './desktop-boot-recovery.ts'
-import type { DesktopShellMode } from './runtime.ts'
+import { desktopLocaleFromLanguageTag } from './tray-locale.ts'
+import type { DesktopLocale, DesktopShellMode } from './runtime.ts'
 import type {} from './runtime.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 
@@ -78,6 +79,17 @@ export const inject = ['webServer', 'webRuntime', 'appExit', 'settings']
 
 /** Standard settings namespace shared by tray and configuration surfaces. */
 export const DESKTOP_SETTINGS_NAMESPACE = settingsNamespace('dsh-desktop')
+
+/** Narrow the open 0.1.2 locale id to the Electron chrome's built-in languages.
+ *
+ * `LocaleSettings.preference` widened from the built-in union to an open
+ * `LocaleId` when upstream added third-party language packs; the native tray
+ * and menu copy still only ships `zh`/`en`, so an unknown pack id falls back
+ * through the same language-tag mapping the system locale uses.
+ */
+function localePreferenceOf(preference: string | undefined): DesktopLocale | undefined {
+  return preference === undefined ? undefined : desktopLocaleFromLanguageTag(preference)
+}
 
 const UI_THEME_SETTINGS_NAMESPACE = settingsNamespace(THEME_SETTINGS_NAMESPACE)
 const UI_LOCALE_SETTINGS_NAMESPACE = settingsNamespace(LOCALE_SETTINGS_NAMESPACE)
@@ -311,7 +323,7 @@ export function apply(ctx: Context, config: Config): void {
   }
   ctx.on('settings/updated', (namespace, next) => {
     if (namespace !== UI_LOCALE_SETTINGS_NAMESPACE) return
-    runtime.setLocalePreference((next as LocaleSettings).preference)
+    runtime.setLocalePreference(localePreferenceOf((next as LocaleSettings).preference))
   })
   ctx.effect(
     () => runtime.schedule({
@@ -332,7 +344,7 @@ export function apply(ctx: Context, config: Config): void {
       iconPath,
       trayIcons,
       readLocalePreference: () => {
-        return (ctx.settings.get(UI_LOCALE_SETTINGS_NAMESPACE) as LocaleSettings | undefined)?.preference
+        return localePreferenceOf((ctx.settings.get(UI_LOCALE_SETTINGS_NAMESPACE) as LocaleSettings | undefined)?.preference)
       },
       readThemeSource: () => {
         const theme = ctx.settings.get(UI_THEME_SETTINGS_NAMESPACE) as ThemeSettings | undefined

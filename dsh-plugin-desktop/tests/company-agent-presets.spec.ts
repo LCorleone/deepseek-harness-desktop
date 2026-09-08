@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import { PresetExistsError } from '@deepseek-ai/dsh-agent-presets'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { evaluate } from '@deepseek-ai/cordis-plugin-loader'
 import { parseDocument } from 'yaml'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -110,10 +110,19 @@ function createCompanyRoster(defaultId: string): CompanyAgentPresets {
     '',
   ].join('\n'))
   const ctx = new Context()
+  // 0.1.2 requires a composition base for plugin-name resolution; the fixture
+  // root is the harness-side base for this roster.
+  ;(ctx as { baseUrl?: string }).baseUrl = `${pathToFileURL(root).href}/`
+  // The roster registers its projection with any composed registry; the
+  // guard specs compose the roster bare, so a stub registry stands in.
+  ;(ctx as unknown as { sessionProjections?: { register: () => () => void } }).sessionProjections = {
+    register: () => () => {},
+  }
   contexts.push(ctx)
   return new CompanyAgentPresets(ctx, {
     default: defaultId,
     roots: [{ path: root, trust: 'system' }],
+    includeShippedRoot: false,
     includeUserRoot: false,
   })
 }
@@ -225,8 +234,10 @@ describe('locked company agent preset roster', () => {
   it('reserves retired upstream ids from user-authored copies', async () => {
     const roster = createCompanyRoster(COMPANY_PRESET_ID)
 
-    await expect(roster.copy(COMPANY_PRESET_ID, 'standard')).rejects.toBeInstanceOf(PresetExistsError)
-    await expect(roster.copy(COMPANY_PRESET_ID, 'minimal')).rejects.toBeInstanceOf(PresetExistsError)
+    const rejectsInvalidPreset = (cause: unknown): boolean =>
+      cause instanceof RemoteError && cause.code === 'agent-preset/invalid'
+    await expect(roster.copy(COMPANY_PRESET_ID, 'standard')).rejects.toSatisfy(rejectsInvalidPreset)
+    await expect(roster.copy(COMPANY_PRESET_ID, 'minimal')).rejects.toSatisfy(rejectsInvalidPreset)
   })
 })
 

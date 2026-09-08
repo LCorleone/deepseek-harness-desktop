@@ -1,5 +1,5 @@
 diff --git a/lib/markdown/MarkdownText.module.css b/lib/markdown/MarkdownText.module.css
-index f8d45cd..9388fed 100644
+index 0d46ab1..6a9353e 100644
 --- a/lib/markdown/MarkdownText.module.css
 +++ b/lib/markdown/MarkdownText.module.css
 @@ -177,24 +177,27 @@

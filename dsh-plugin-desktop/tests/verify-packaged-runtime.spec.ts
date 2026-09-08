@@ -119,7 +119,7 @@ function signedCatalogManifest(overrides: Record<string, unknown> = {}): string 
       bundlePatch: './cordis.patch.yml',
       repository: { url: 'https://github.com/example/dsh-plugin-safe' },
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     }],
     ...overrides,
   }
@@ -862,9 +862,9 @@ describe('packaged desktop runtime verification', () => {
     const runtimeContext = context('/build', 'win32')
     const unpackedRoot = resolvePackagedUnpackedRoot(runtimeContext)
     const requiredPresetEntries = [
-      'node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/agent.cordis.yml',
-      'node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/cordis-plugin-development/SKILL.md',
-      'node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/editing-cordis-compositions/SKILL.md',
+      'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/agent.cordis.yml',
+      'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/skills/cordis-plugin-development/SKILL.md',
+      'node_modules/@deepseek-ai/dsh-agent-presets/presets/cordis/skills/editing-cordis-compositions/SKILL.md',
     ]
 
     for (const missing of requiredPresetEntries) {

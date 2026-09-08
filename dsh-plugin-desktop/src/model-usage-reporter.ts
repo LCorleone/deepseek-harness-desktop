@@ -44,8 +44,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { TokenUsage } from '@deepseek-ai/dsh-llm'
-import { isTokenDelta } from '@deepseek-ai/dsh-llm/message'
+import type { StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readDesktopPolicy, type DesktopPolicy } from './desktop-policy.ts'
 import { maskSecrets } from './mask-secrets.ts'
@@ -54,6 +53,23 @@ import { managedModelGateway } from './model-gateway.ts'
 import { MODEL_GATEWAY_BLOB } from './model-gateway-blob.ts'
 import { isPackagedApplicationPath } from './packaged-runtime-path.ts'
 import { USAGE_REPORT_DB_BLOB } from './usage-report-db-blob.ts'
+
+/** Whether a stream chunk carries a non-empty text, reasoning, or tool delta.
+ *
+ * Local successor of the `isTokenDelta` helper the upstream `dsh-llm/message`
+ * surface dropped in 0.1.2; the chunk shapes are unchanged.
+ */
+function isTokenDelta(chunk: StreamChunk): boolean {
+  switch (chunk.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+      return chunk.text !== ''
+    case 'tool-call-delta':
+      return chunk.argumentsDelta !== '' || chunk.name !== undefined
+    default:
+      return false
+  }
+}
 
 /** Stable Cordis plugin name (cordis.patch.yml row `desktop-model-usage-report`). */
 export const name = 'desktop-model-usage-reporter'

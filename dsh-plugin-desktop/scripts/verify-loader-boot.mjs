@@ -12,7 +12,7 @@ import {
 } from '@deepseek-ai/dsh-launch-environment'
 import { installDesktopPnpmRuntime } from '../lib/desktop-runtime-environment.js'
 import { installProfilePackageResolver } from '../lib/module-resolution.js'
-import { prepareDesktopProfile } from '../lib/profile.js'
+import { healDesktopProfileModuleFallback, prepareDesktopProfile } from '../lib/profile.js'
 
 const BIN_NAME = 'dsh-plugin-desktop-loader-smoke'
 const THIRD_PARTY_NAME = 'dsh-desktop-loader-smoke-plugin'
@@ -50,6 +50,7 @@ try {
     stateDir: join(home, 'runtime-commands'),
     environment: process.env,
   })
+  await healDesktopProfileModuleFallback(home)
   const prepared = prepareDesktopProfile(undefined, home)
   const thirdPartyLink = join(prepared.profile.dir, 'node_modules', THIRD_PARTY_NAME)
   const thirdPartyDir = join(home, 'linked-plugins', THIRD_PARTY_NAME)

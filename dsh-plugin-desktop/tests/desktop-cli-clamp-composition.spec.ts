@@ -67,7 +67,7 @@ function bundlePatchPath(packageName: string): string {
 
 /** The dsh installation's shipped preset root, the same directory the CLI's final pin writes. */
 function shippedPresetRoot(): string {
-  return join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'config', 'agent-presets')
+  return join(dirname(require.resolve('@deepseek-ai/dsh-agent-presets/package.json')), 'presets')
 }
 
 /** Compose layers with the upstream primitive while collecting every skip warning. */

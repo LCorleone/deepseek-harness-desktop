@@ -1,12 +1,13 @@
 diff --git a/lib/client.js b/lib/client.js
+index cf57328..67b84ea 100644
 --- a/lib/client.js
 +++ b/lib/client.js
-@@ -7271,6 +7271,8 @@ window.__ModuleLoader__.load({
- 			});
+@@ -14479,6 +14479,8 @@ window.__ModuleLoader__.load({
  			return (0, react_jsx_runtime.jsxs)("div", {
+ 				ref: rootResizeRef,
  				className: ConversationRoot_module_css_default.root,
 +				"data-dsh-conversation-drop-target": "",
 +				style: { position: "relative" },
  				"data-phase": phase,
- 				children: [renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
- 					className: ConversationRoot_module_css_default.scrollBody,
+ 				children: [sessionId === void 0 ? null : renderSlot("conversation.session.header", {}), (0, react_jsx_runtime.jsxs)("div", {
+ 					className: ConversationRoot_module_css_default.body,

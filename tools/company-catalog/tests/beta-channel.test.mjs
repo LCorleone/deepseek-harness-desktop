@@ -97,7 +97,7 @@ const stableEntry = () => ({
   bundlePatch: './cordis.patch.yml',
   repository: 'https://github.com/example/corp-stable-plugin',
   revoked: false,
-  runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+  runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
   source: { kind: 'tarball', url: tarballUrl('corp-stable-plugin-1.0.0.tgz'), integrity: INTEGRITY_A },
 })
 
@@ -108,7 +108,7 @@ const betaEntry = () => ({
   bundlePatch: './cordis.patch.yml',
   repository: 'https://github.com/example/corp-beta-plugin',
   revoked: false,
-  runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+  runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
   treeDigest: '648b218888dce4f35b4ab642273f808089e81b5c3bd93e8b42e605117b824237',
   source: { kind: 'tarball', url: tarballUrl('corp-beta-plugin-0.9.0.tgz'), integrity: INTEGRITY_B },
 })

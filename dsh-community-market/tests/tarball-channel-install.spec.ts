@@ -268,7 +268,7 @@ function tarballEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch,
     repository: { url: 'https://github.com/example/company-hardened-plugin' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     treeDigest: 'ab'.repeat(32),
     source: { kind: 'tarball', url: hostedTarballUrl, integrity: tarballIntegrity },
     ...overrides,

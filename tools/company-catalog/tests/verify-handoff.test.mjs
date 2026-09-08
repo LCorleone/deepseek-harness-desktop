@@ -29,9 +29,9 @@ const CATALOG_ORIGIN = 'https://gitlab.company.example'
 const FIXED_DIGEST = 'a'.repeat(64)
 const OTHER_DIGEST = 'b'.repeat(64)
 
-const PINNED_DSH_COMMIT = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
+const PINNED_DSH_COMMIT = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
 const PINNED_DESKTOP = '2.0.3'
-const PINNED_RUNTIME_RANGE = '^0.1.1-rc.2'
+const PINNED_RUNTIME_RANGE = '^0.1.2-rc.1'
 
 const fileEntry = (path, data) => ({ path, type: 'file', mode: 0o644, mtime: 1234567890, data: Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8') })
 const symlinkEntry = (path, linkName) => ({ path, type: 'symlink', mode: 0o755, mtime: 1234567890, linkName })
@@ -41,7 +41,7 @@ const compatContract = (overrides = {}) => ({
   schemaVersion: 1,
   updated: '2026-09-05',
   dsh: {
-    version: '0.1.1-rc.2',
+    version: '0.1.2-rc.1',
     commit: PINNED_DSH_COMMIT,
     runtimeRange: PINNED_RUNTIME_RANGE,
     ...overrides.dsh,
@@ -427,7 +427,7 @@ test('red: compat dshCommit mismatch fails step 5 and points at the pinned value
     assert.equal(result.ok, false)
     assert.equal(result.failedStep.step, 'compat')
     assert.equal(result.failedStep.index, 5)
-    assert.match(result.failedStep.reason, /retest against deepseek-harness commit b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/u)
+    assert.match(result.failedStep.reason, /retest against deepseek-harness commit a66e4702047846cdaa10c66c9d3df3951f5ea70d/u)
     assert.match(readFileSync(join(workspace.submissionDir, 'verdict.md'), 'utf8'), /5\/10 compat/u)
     // desktopVersion drift fails the same step with its own pinned value.
     const desktopWorkspace = withPackagesDir(submissionWorkspace({
@@ -454,7 +454,7 @@ test('red: runtime range without intersection fails step 5 (retest against the p
   try {
     const result = await verifyWorkspace(workspace)
     assert.equal(result.failedStep.step, 'compat')
-    assert.match(result.failedStep.reason, /retest against deepseek-harness 0\.1\.1-rc\.2 \(runtime range \^0\.1\.1-rc\.2\)/u)
+    assert.match(result.failedStep.reason, /retest against deepseek-harness 0\.1\.2-rc\.1 \(runtime range \^0\.1\.2-rc\.1\)/u)
     // A range outside the implemented grammar is refused loudly, never guessed.
     const grammarWorkspace = withPackagesDir(submissionWorkspace({
       tarball: pluginTarball(),
@@ -1121,10 +1121,10 @@ test('semver precedence: prerelease ordering and identifier classes', () => {
 
 test('range intersection: the caret/exact/comparator/hyphen table', () => {
   for (const [left, right, expected] of [
-    ['^0.1.1-rc.2', '0.1.1-rc.2', true],
-    ['^0.1.1-rc.2', '^0.2.0', false],
-    ['^0.1.1-rc.2', '>= 0.1.1-rc.2 < 0.2.0', true],
-    ['0.1.1-rc.1', '^0.1.1-rc.2', false],
+    ['^0.1.2-rc.1', '0.1.2-rc.1', true],
+    ['^0.1.2-rc.1', '^0.2.0', false],
+    ['^0.1.2-rc.1', '>= 0.1.1-rc.2 < 0.2.0', true],
+    ['0.1.1-rc.1', '^0.1.2-rc.1', false],
     ['^0.2.0', '<0.2.5', true],
     ['0.2.5', '<0.2.5', false],
     ['0.2.5', '<=0.2.5', true],

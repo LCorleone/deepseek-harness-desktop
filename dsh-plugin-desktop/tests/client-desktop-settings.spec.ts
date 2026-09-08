@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { DesktopSettingsSection, desktopSettingsSectionVisibility } from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
 import { GeneralUserInfoCard } from '../src/client/GeneralUserInfoCard.tsx'
@@ -248,6 +249,7 @@ describe('Desktop settings Slot registration', () => {
         mode: 'host' as const,
       }),
       subscribe: () => () => {},
+      mutate: vi.fn(async () => {}),
       set: vi.fn(async () => {}),
       unset: vi.fn(async () => {}),
     } satisfies SettingsScope<unknown>

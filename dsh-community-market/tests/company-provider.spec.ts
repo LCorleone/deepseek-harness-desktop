@@ -63,7 +63,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2', nodeRuntimeVersion: '>=22.0.0' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
     ...overrides,
   }
 }
@@ -231,13 +231,13 @@ describe('company catalog provider (content mode)', () => {
         version: '1.2.3',
         integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
         bundlePatch: './cordis.patch.yml',
-        runtime: { dshRuntimeVersion: '^0.1.1-rc.2', nodeRuntimeVersion: '>=22.0.0' },
+        runtime: { dshRuntimeVersion: '^0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
       }),
       expect.objectContaining({ packageName: '@deepseek-ai/cool-plugin', version: '2.0.0' }),
     ])
     expect(provider.findVerifiedPackage('dsh-plugin-safe', '1.2.3')).toMatchObject({
       integrity: `sha512-${Buffer.alloc(64, 7).toString('base64')}`,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     })
     expect(provider.verification()).toMatchObject({
       mode: 'content',

@@ -29,7 +29,7 @@ const entry = (overrides = {}) => ({
   packageName: 'company-hardened-plugin',
   version: '2.1.0',
   repository: 'https://github.com/example/company-hardened-plugin',
-  runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+  runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
   ...overrides,
 })
 

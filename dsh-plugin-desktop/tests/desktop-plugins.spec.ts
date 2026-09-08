@@ -128,7 +128,7 @@ describe('desktop direct bundle management', () => {
     // both Market provider packages can never become verification targets,
     // so no manifest state can ever reject them at boot.
     const declared = [
-      ...(PROFILE_TEMPLATES.web ?? []),
+      ...(PROFILE_TEMPLATES.web?.bundles ?? []),
       'dsh-plugin-desktop',
       'dsh-community-market',
       DESKTOP_MARKET_IDENTITIES.dshMarket.packageName,

@@ -8,7 +8,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   AgentBrowserBannerView,
@@ -297,7 +297,6 @@ describe('agent-browser tool cards', () => {
       turn: 1,
       step: 1,
       time: 0,
-      callView: null,
       subCalls: [],
     }, t)
     expect(data).toEqual({

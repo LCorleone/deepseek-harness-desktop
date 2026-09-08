@@ -96,7 +96,7 @@ function stageSourcesRoot(patchDeclaration) {
     bundlePatch: './cordis.patch.yml',
     repository: 'https://github.com/example/fixture-drift',
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     source: { kind: 'tarball', url: `${ORIGIN}/${PROJECT}/-/raw/master/packages/fixture-drift-1.0.0.tgz`, path: 'tools/company-catalog/out/packages/fixture-drift-1.0.0.tgz' },
   }
   const allowlistPath = join(workspace, 'allowlist.json')

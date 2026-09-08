@@ -1,8 +1,8 @@
 diff --git a/lib/index.js b/lib/index.js
-index 4d7fc639..58caa027 100644
+index 7135199..c50549e 100644
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -165,7 +165,7 @@ const tokenCount = z$1.number().int().nonnegative();
+@@ -179,7 +179,7 @@ const sessionSeq = z$1.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
  */
  const contextBreakdownProjectionDefinition = {
  	key: "contextBreakdown",
@@ -11,7 +11,7 @@ index 4d7fc639..58caa027 100644
  	stateSchema: z$1.object({
  		systemTokens: tokenCount,
  		toolsTokens: tokenCount,
-@@ -194,7 +194,7 @@ const contextBreakdownProjectionDefinition = {
+@@ -208,7 +208,7 @@ const contextBreakdownProjectionDefinition = {
  		return {
  			systemTokens,
  			toolsTokens,
@@ -20,7 +20,7 @@ index 4d7fc639..58caa027 100644
  			...fold.claim === void 0 ? {} : { claim: fold.claim }
  		};
  	},
-@@ -345,7 +345,7 @@ const tokenUsageProjectionDefinition = {
+@@ -363,7 +363,7 @@ const tokenUsageProjectionDefinition = {
  */
  const contextPressureProjectionDefinition = {
  	key: "contextPressure",
@@ -29,7 +29,7 @@ index 4d7fc639..58caa027 100644
  	stateSchema: contextPressureStateSchema,
  	init: () => ({ surfaceTokens: 0 }),
  	apply: (state, event) => {
-@@ -373,7 +373,7 @@ const contextPressureProjectionDefinition = {
+@@ -391,7 +391,7 @@ const contextPressureProjectionDefinition = {
  		}
  		if (fold.deltaTokens !== 0) next = {
  			...next,
@@ -39,10 +39,10 @@ index 4d7fc639..58caa027 100644
  		if (state.claim === void 0 && fold.claim === void 0) return next;
  		const { claim: _expired, ...withoutClaim } = next;
 diff --git a/lib/types/breakdown-projection.js b/lib/types/breakdown-projection.js
-index 49f817fa..c74c0983 100644
+index 7c72772..a4c75b1 100644
 --- a/lib/types/breakdown-projection.js
 +++ b/lib/types/breakdown-projection.js
-@@ -39,7 +39,7 @@ const breakdownSchema = z.object({
+@@ -42,7 +42,7 @@ const breakdownSchema = z.object({
   */
  export const contextBreakdownProjectionDefinition = {
      key: 'contextBreakdown',
@@ -51,7 +51,7 @@ index 49f817fa..c74c0983 100644
      stateSchema: contextBreakdownStateSchema,
      init: () => ({ systemTokens: 0, toolsTokens: 0, messageTokens: 0 }),
      apply: (state, event) => {
-@@ -60,7 +60,7 @@ export const contextBreakdownProjectionDefinition = {
+@@ -63,7 +63,7 @@ export const contextBreakdownProjectionDefinition = {
          return {
              systemTokens,
              toolsTokens,
@@ -61,10 +61,10 @@ index 49f817fa..c74c0983 100644
          };
      },
 diff --git a/lib/types/usage-projection.js b/lib/types/usage-projection.js
-index f46460d2..16e7a5ec 100644
+index 4cde229..5024dc6 100644
 --- a/lib/types/usage-projection.js
 +++ b/lib/types/usage-projection.js
-@@ -141,7 +141,7 @@ export const tokenUsageProjectionDefinition = {
+@@ -147,7 +147,7 @@ export const tokenUsageProjectionDefinition = {
   */
  export const contextPressureProjectionDefinition = {
      key: 'contextPressure',
@@ -73,7 +73,7 @@ index f46460d2..16e7a5ec 100644
      stateSchema: contextPressureStateSchema,
      init: () => ({ surfaceTokens: 0 }),
      apply: (state, event) => {
-@@ -167,7 +167,7 @@ export const contextPressureProjectionDefinition = {
+@@ -173,7 +173,7 @@ export const contextPressureProjectionDefinition = {
              }
          }
          if (fold.deltaTokens !== 0) {

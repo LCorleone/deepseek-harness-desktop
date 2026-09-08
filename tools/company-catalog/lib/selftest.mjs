@@ -147,7 +147,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       version: '1.0.0',
       bundlePatch: './cordis.patch.yml',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     }
     const monoDist = {
       integrity: `sha512-${createHash('sha512').update('company-mono-plugin selftest dist').digest('base64')}`,
@@ -196,7 +196,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/company-authority-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest,
       approvedBuilds: ['sharp', '@scope/native-helper'],
     }
@@ -271,7 +271,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/company-hardened-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: 'd'.repeat(64),
       source: { kind: 'tarball', url: tarballUrl, integrity: tarballIntegrity },
     }
@@ -394,7 +394,7 @@ export async function runSelftest({ toolDir, market, forceOffline = false, log =
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/company-pinned-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: measuredDigest,
     }
     const pinnedResult = applyTreeDigests([alreadyPinned], [{

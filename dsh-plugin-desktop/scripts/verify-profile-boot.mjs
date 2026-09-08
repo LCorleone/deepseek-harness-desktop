@@ -13,7 +13,7 @@ import {
 import { DESKTOP_SETTINGS_NAMESPACE } from '../lib/index.js'
 import { installDesktopPnpmRuntime } from '../lib/desktop-runtime-environment.js'
 import { installProfilePackageResolver } from '../lib/module-resolution.js'
-import { prepareDesktopProfile } from '../lib/profile.js'
+import { healDesktopProfileModuleFallback, prepareDesktopProfile } from '../lib/profile.js'
 import { DesktopProfileService } from '../lib/profile-service.js'
 
 const BIN_NAME = 'dsh-plugin-desktop-profile-smoke'
@@ -35,6 +35,7 @@ try {
     '  default: minimal',
     '',
   ].join('\n'))
+  await healDesktopProfileModuleFallback(home)
   const prepared = prepareDesktopProfile('1', home, 'win32')
   const hostServicePluginDir = join(
     prepared.profile.dir,
@@ -229,7 +230,20 @@ try {
   if (profileMenu?.submenu?.()[0]?.label() !== 'desktop') {
     throw new Error('assembled desktop profile is missing the active profile tray submenu')
   }
-  const response = await fetch(expectedUrl)
+  // 0.1.2 Web authentication: the loopback root serves only requests carrying
+  // the process launch token, so mint the authenticated root from the booted
+  // Host's connection service, exchange the token for the browser cookie
+  // (303 to the clean root), and read the assembled application with it.
+  const exchange = await fetch(ctx.connection.authenticatedUrl(expectedUrl), { redirect: 'manual' })
+  await exchange.body?.cancel()
+  if (exchange.status !== 303 || exchange.headers.get('location') !== '/') {
+    throw new Error(`browser authentication exchange returned HTTP ${String(exchange.status)} instead of a root redirect`)
+  }
+  const cookie = exchange.headers.get('set-cookie')?.split(';', 1)[0] ?? ''
+  if (cookie.length === 0) {
+    throw new Error('browser authentication exchange did not mint a cookie')
+  }
+  const response = await fetch(expectedUrl, { headers: { Cookie: cookie } })
   const html = await response.text()
   if (response.status !== 200) {
     throw new Error(`assembled Web root returned HTTP ${String(response.status)}`)

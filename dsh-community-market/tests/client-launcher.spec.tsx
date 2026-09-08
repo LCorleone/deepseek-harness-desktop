@@ -36,7 +36,7 @@ describe('community market launcher', () => {
       useStore,
       t,
       useSessions: (() => undefined) as MarketLauncherProps['useSessions'],
-      useWorkspaces: (() => undefined) as MarketLauncherProps['useWorkspaces'],
+      useSessionPendingInteraction: (() => undefined) as MarketLauncherProps['useSessionPendingInteraction'],
     } satisfies MarketLauncherProps
 
     const { rerender } = render(<MarketLauncher {...props} />)

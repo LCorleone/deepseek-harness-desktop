@@ -8,6 +8,7 @@ import { evaluate, isJsExpr, type EntryOptions } from '@deepseek-ai/cordis-plugi
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import {
   composeEntries,
+  DEFAULT_PROFILE_PATCH_RELOAD,
   healProfilesModuleFallback,
   initProfile,
   loadOptionalPatches,
@@ -19,6 +20,7 @@ import {
   writeProfileManifest,
   type Profile,
   type ProfileManifest,
+  type ProfilePatchReload,
 } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import FileSettingsProvider, {
@@ -321,11 +323,20 @@ export function migrateManagedDefaultModelSettings(config: SettingsFileConfig): 
 
 /** Resolve the public Web template once and reject an incompatible DSH release. */
 function requiredWebBundles(): string[] {
-  const bundles = PROFILE_TEMPLATES.web
-  if (bundles === undefined) {
+  const template = PROFILE_TEMPLATES.web
+  if (template === undefined) {
     throw new Error(`${BIN_NAME}: installed dsh-app-boot has no web profile template`)
   }
-  return [...bundles]
+  return [...template.bundles]
+}
+
+/** User patch lifecycle inherited from the matching upstream Web profile. */
+function requiredWebPatchReload(): ProfilePatchReload {
+  const template = PROFILE_TEMPLATES.web
+  if (template === undefined) {
+    throw new Error(`${BIN_NAME}: installed dsh-app-boot has no web profile template`)
+  }
+  return template.patchReload
 }
 
 /** Prepared profile inputs consumed by app-boot. */
@@ -394,7 +405,7 @@ function sameList(left: readonly string[], right: readonly string[]): boolean {
  */
 export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   const dir = resolveProfileDir(DESKTOP_PROFILE_NAME, home)
-  if (!existsSync(join(dir, 'package.json'))) initProfile(dir, REQUIRED_BUNDLES)
+  if (!existsSync(join(dir, 'package.json'))) initProfile(dir, REQUIRED_BUNDLES, requiredWebPatchReload())
   const manifest = readProfileManifest(BIN_NAME, dir)
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
   if (rawBundles !== undefined
@@ -403,7 +414,8 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
   }
   const current = rawBundles === undefined ? [] : rawBundles as string[]
   const bundles = desktopBundleList(current)
-  if (!sameList(current, bundles)) {
+  const patchReload = requiredWebPatchReload()
+  if (!sameList(current, bundles) || manifest.dsh?.profile?.patchReload !== patchReload) {
     writeProfileManifest(dir, {
       ...manifest,
       dsh: {
@@ -411,6 +423,7 @@ export function ensureDesktopProfile(home: string = resolveDshHome()): string {
         profile: {
           ...manifest.dsh?.profile,
           bundles,
+          patchReload,
         },
       },
     })
@@ -444,7 +457,7 @@ function loadRecoveryFilteredProfile(
     if (template === undefined) {
       throw new Error(`${BIN_NAME}: profile ${JSON.stringify(profileName)} does not exist`)
     }
-    initProfile(profileDir, template)
+    initProfile(profileDir, template.bundles, template.patchReload)
   }
   const manifest = readProfileManifest(BIN_NAME, profileDir)
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
@@ -453,6 +466,11 @@ function loadRecoveryFilteredProfile(
     throw new Error(`${BIN_NAME}: dsh.profile.bundles must be an array of package names`)
   }
   const bundles = (rawBundles ?? []) as string[]
+  const rawPatchReload: unknown = manifest.dsh?.profile?.patchReload
+  if (rawPatchReload !== undefined && rawPatchReload !== 'live' && rawPatchReload !== 'startup') {
+    throw new Error(`${BIN_NAME}: dsh.profile.patchReload must be "live" or "startup"`)
+  }
+  const patchReload = rawPatchReload ?? PROFILE_TEMPLATES[profileName]?.patchReload ?? DEFAULT_PROFILE_PATCH_RELOAD
   const selectedBundles = bundles.filter(packageName =>
     packageName !== DESKTOP_MARKET_IDENTITIES.community.packageName
     && (marketProvider === DESKTOP_MARKET_IDENTITIES.dshMarket.provider
@@ -506,16 +524,17 @@ function loadRecoveryFilteredProfile(
       layers,
       patchPath,
       patches: existsSync(patchPath) ? loadOverlayPatches(BIN_NAME, patchPath) : [],
+      patchReload,
     },
     ...(dshMarketFailure === undefined ? {} : { dshMarketFailure }),
   }
 }
 
-/** Resolve the agent presets shipped by the matching dsh CLI dependency. */
+/** Resolve the agent presets shipped by the matching presets dependency. */
 export function shippedPresetRoot(moduleUrl: string = import.meta.url): string {
   const require = createRequire(moduleUrl)
   return unpackedAsarPath(
-    join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'config', 'agent-presets'),
+    join(dirname(require.resolve('@deepseek-ai/dsh-agent-presets/package.json')), 'presets'),
   )
 }
 
@@ -881,7 +900,6 @@ export function prepareDesktopProfile(
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
     : resolveProfileDir(profileName, home)
-  healProfilesModuleFallback(INSTALL_ANCHOR, home)
   // `plugin-management` is the community market's user-facing scope. Startup
   // recovery has its own state file so switching to another provider cannot
   // reapply a stale community-market disable, while a recovery disable always
@@ -1324,6 +1342,22 @@ export function prepareDesktopProfile(
     ...(marketFailure === undefined ? {} : { marketFailure }),
     ...(bootVerification === undefined ? {} : { bootVerification }),
   }
+}
+
+/** Maintain the upstream module fallback for one fully resolved Desktop profile.
+ *
+ * `healProfilesModuleFallback` became async in 0.1.2, so the fire-and-forget
+ * call this launcher used to make inside `prepareDesktopProfile` could no
+ * longer guarantee the shared `profiles/node_modules` links before the first
+ * profile boot. Healing now happens at the launch boundary (src/main.ts and
+ * the boot smokes), mirroring the upstream launcher's two-phase await.
+ */
+export function healDesktopProfileModuleFallback(home: string, profile?: Profile): Promise<void> {
+  return healProfilesModuleFallback({
+    installAnchor: INSTALL_ANCHOR,
+    home,
+    ...(profile === undefined ? {} : { profile }),
+  })
 }
 
 /** Expose the package anchor for focused resolution tests. */

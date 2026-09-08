@@ -25,7 +25,7 @@ const tarballEntry = (overrides = {}) => ({
   bundlePatch: './cordis.patch.yml',
   repository: 'https://github.com/example/company-hardened-plugin',
   revoked: false,
-  runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+  runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
   ...overrides,
 })
 
@@ -66,7 +66,7 @@ test('npm entries keep the exact source-free shape and take their integrity from
     bundlePatch: './cordis.patch.yml',
     repository: 'https://github.com/example/plain-plugin',
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
   }
   const dists = new Map([['plain-plugin@1.0.0', { integrity: 'sha512-xyz', repository: { url: 'https://github.com/example/plain-plugin' } }]])
   const { packages } = assemble(market, { entries: [npm], dists })

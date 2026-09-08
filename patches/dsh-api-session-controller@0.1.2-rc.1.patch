@@ -1,8 +1,8 @@
 diff --git a/lib/client.js b/lib/client.js
-index ba3cb21f72..782a387b46 100644
+index 1ed2102..02a900b 100644
 --- a/lib/client.js
 +++ b/lib/client.js
-@@ -9266,7 +9266,7 @@ Set the `cycles` parameter to `"ref"` to resolve cyclical schemas with defs.
+@@ -2628,7 +2628,7 @@ window.__ModuleLoader__.load({
  				}
  				const persisted = this.selection.getSnapshot().sessionId;
  				if (current === void 0) {

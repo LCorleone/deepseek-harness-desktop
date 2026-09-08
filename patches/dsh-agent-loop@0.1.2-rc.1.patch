@@ -1,8 +1,8 @@
 diff --git a/lib/index.js b/lib/index.js
-index 17e11c9df8..597c77594b 100644
+index 6587960..9c886b1 100644
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -114,6 +114,24 @@ var RuntimeContextProjection = class {
+@@ -116,6 +116,24 @@ var RuntimeContextProjection = class {
  * @param signal - abort signal shared by the step.
  * @param acceptContext - accepts committed result context for the next step boundary.
  */
@@ -27,7 +27,7 @@ index 17e11c9df8..597c77594b 100644
  async function executeToolCalls(ctx, turn, step, toolCalls, signal, acceptContext) {
  	const agent = ctx.agents.requireInitiator();
  	const { session } = agent;
-@@ -131,8 +149,18 @@ async function executeToolCalls(ctx, turn, step, toolCalls, signal, acceptContex
+@@ -133,8 +151,18 @@ async function executeToolCalls(ctx, turn, step, toolCalls, signal, acceptContex
  	let concluded = false;
  	while (next < planned.length) {
  		const first = planned[next];

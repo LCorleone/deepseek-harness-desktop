@@ -65,7 +65,7 @@ function entry({ packageName, version, revoked = false, channel }) {
     bundlePatch: './cordis.patch.yml',
     repository: `https://github.com/example/${packageName}`,
     revoked,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     source: { kind: 'tarball', url: `${ORIGIN}/${PROJECT}/-/raw/master/packages/${packageName}-${version}.tgz`, integrity },
     ...(channel === undefined ? {} : { channel }),
   }

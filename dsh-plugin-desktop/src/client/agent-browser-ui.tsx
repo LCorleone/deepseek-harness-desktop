@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InjectFace, PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: brings the conversation + tool SlotMap merges into this program.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'

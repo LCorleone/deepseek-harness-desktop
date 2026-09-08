@@ -68,7 +68,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     ...overrides,
   }
 }

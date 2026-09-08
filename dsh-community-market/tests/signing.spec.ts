@@ -30,7 +30,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     ...overrides,
   }
 }
@@ -116,7 +116,7 @@ describe('company manifest verification', () => {
     })
     if (result.ok) {
       const entry = findCompanyManifestPackage(result.manifest, 'dsh-plugin-safe', '1.2.3')
-      expect(entry).toMatchObject({ revoked: false, runtime: { dshRuntimeVersion: '^0.1.1-rc.2' } })
+      expect(entry).toMatchObject({ revoked: false, runtime: { dshRuntimeVersion: '^0.1.2-rc.1' } })
       expect(findCompanyManifestPackage(result.manifest, 'dsh-plugin-safe', '9.9.9')).toBeUndefined()
     }
   })

@@ -140,6 +140,7 @@ import { DesktopStartupGeneration } from './startup-generation.ts'
 import { DesktopStartupStateCommit } from './startup-state-commit.ts'
 import {
   desktopInstallAnchor,
+  healDesktopProfileModuleFallback,
   prepareDesktopProfile,
   type SkippedOptionalEntry,
 } from './profile.ts'
@@ -1116,6 +1117,7 @@ async function start(): Promise<void> {
       ...desktopPolicyEnvironmentEntries(policy),
       ...(companyManifestHandoff?.environment ?? {}),
     }
+    await healDesktopProfileModuleFallback(homeDir)
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -1136,6 +1138,7 @@ async function start(): Promise<void> {
       policy,
       bootVerificationInputs,
     )
+    await healDesktopProfileModuleFallback(homeDir, prepared.profile)
     // P4-1: persist this boot's verification decision so every diagnostic
     // export — tray, recovery window, or headless CLI — can embed the exact
     // allowed and refused bundle lists in its signed self-check report.

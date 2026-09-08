@@ -151,7 +151,7 @@ async function main() {
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/fixture-hello',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       source: { kind: 'tarball', url, path: record.path },
     }]
     const allowlistPath = join(workspace, 'allowlist.json')

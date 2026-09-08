@@ -57,7 +57,7 @@ function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/example-plugin' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     ...overrides,
   }
 }

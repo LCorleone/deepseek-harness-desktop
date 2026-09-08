@@ -27,7 +27,7 @@ const FIXED_DIGEST = 'a'.repeat(64)
 const OTHER_DIGEST = 'b'.repeat(64)
 const PINNED_DSH_COMMIT = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
 const PINNED_DESKTOP = '2.0.3'
-const PINNED_RUNTIME_RANGE = '^0.1.1-rc.2'
+const PINNED_RUNTIME_RANGE = '^0.1.2-rc.1'
 
 // The allowlist under test lives in a throwaway git repository, committed
 // under a nested path (proving the repo-relative pathspec handling).

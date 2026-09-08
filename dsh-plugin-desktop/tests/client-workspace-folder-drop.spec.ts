@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
+import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller'
+import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import {
   adoptWorkspaceFolder,
   claimWorkspaceFileDrag,

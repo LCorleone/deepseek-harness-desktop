@@ -82,7 +82,7 @@ function npmEntry(overrides: Record<string, unknown> = {}): Record<string, unkno
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/example-plugin' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     ...overrides,
   }
 }
@@ -1570,7 +1570,7 @@ describe('company-catalog allowlist source generation', () => {
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/example-company-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     }
     for (const entry of [base, { ...base, source: { kind: 'npm' } }]) {
       const result = validateAllowlistEntry(entry, 'entry[0]', { companyCatalogOrigin: origin })
@@ -1587,7 +1587,7 @@ describe('company-catalog allowlist source generation', () => {
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/company-hardened-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: TREE_DIGEST,
       source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
     }
@@ -1620,7 +1620,7 @@ describe('company-catalog allowlist source generation', () => {
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/example-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
     }
     const tarballAllowlistEntry = {
       packageName: 'company-hardened-plugin',
@@ -1628,7 +1628,7 @@ describe('company-catalog allowlist source generation', () => {
       bundlePatch: './cordis.patch.yml',
       repository: 'https://github.com/example/company-hardened-plugin',
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: TREE_DIGEST,
       source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
     }
@@ -1649,7 +1649,7 @@ describe('company-catalog allowlist source generation', () => {
       bundlePatch: './cordis.patch.yml',
       repository: { url: 'https://github.com/example/company-hardened-plugin' },
       revoked: false,
-      runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
       treeDigest: TREE_DIGEST,
       source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
     })
@@ -1678,7 +1678,7 @@ describe('company-catalog allowlist source generation', () => {
         bundlePatch: './cordis.patch.yml',
         repository: 'https://github.com/example/company-hardened-plugin',
         revoked: false,
-        runtime: { dshRuntimeVersion: '^0.1.1-rc.2' },
+        runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
         treeDigest: TREE_DIGEST,
         source: { kind: 'tarball', url: TARBALL_URL, integrity: TARBALL_INTEGRITY },
       }],

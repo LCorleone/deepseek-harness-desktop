@@ -960,7 +960,7 @@ describe('signed tree digest authority bypasses the fingerprint cache', () => {
 describe('boot verification target selection', () => {
   it('exempts upstream, desktop, and market bundles from verification', () => {
     const declared = [
-      ...(PROFILE_TEMPLATES.web ?? []),
+      ...(PROFILE_TEMPLATES.web?.bundles ?? []),
       'dsh-plugin-desktop',
       'dsh-community-market',
       'dshmarket',

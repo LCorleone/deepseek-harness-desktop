@@ -60,7 +60,7 @@ function packageEntry(overrides: Record<string, unknown> = {}): Record<string, u
     bundlePatch: './cordis.patch.yml',
     repository: { url: 'https://github.com/example/dsh-plugin-safe' },
     revoked: false,
-    runtime: { dshRuntimeVersion: '^0.1.1-rc.2', nodeRuntimeVersion: '>=22.0.0' },
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
     ...overrides,
   }
 }
@@ -741,7 +741,7 @@ describe('market install service behind the signed manifest', () => {
         version,
         repository,
         scripts: { test: 'vitest' },
-        dependencies: { '@deepseek-ai/dsh-agent': '^0.1.1-rc.2' },
+        dependencies: { '@deepseek-ai/dsh-agent': '^0.1.2-rc.1' },
         peerDependencies: { '@deepseek-ai/cordis': '^4.0.1' },
         engines: { node: '>=22.19.0' },
         dist: { integrity: signedIntegrity, tarball },
