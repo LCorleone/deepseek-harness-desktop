@@ -85,8 +85,14 @@ describe('disclaimer.html static fallback (early render death)', () => {
     const root = html.match(/<div id="root">([\s\S]*?)<\/div>/)![1]!
     expect(root).toContain('<noscript>')
     expect(root).toMatch(/组件加载异常/)
-    // React replaces the container's children on first render — the static
-    // text must live ONLY inside #root, never outside it.
-    expect(html.match(/<div id="root">/)).toBeTruthy()
+  })
+
+  it('every native window ships the same static bundle-death fallback inside #root', () => {
+    for (const name of ['sso-gate', 'recovery', 'profile-create', 'agent-browser'] as const) {
+      const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'native-ui', `${name}.html`), 'utf8')
+      const root = html.match(/<div id="root">([\s\S]*?)<\/div>/)![1]!
+      expect(root, name).toContain('<noscript>')
+      expect(root, name).toMatch(/组件加载异常/)
+    }
   })
 })

@@ -316,8 +316,11 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **多模态**（e58509f526）：用户提示 kimi-k2.6 是多模态——上游 PiAiModelProfile.input?: PiAiModality[]，注释明说「声明 images 才让手写 vision 模型可用；手写模型不声明=纯文本」→ 不配图根本发不到 Kimi。blob v2 模型条目加可选 input（'text'/'image' 枚举/非空/去重，解码器+生成器双侧校验+5 红测），kimi-k2.6 烘 ['text','image']；DSV4 不声明（deepseek 是否吃图未确认，若确认加一行重烘即可）。
 **组名**（2863708742）：用户吐槽选择器「Company LLM Gateway>deepseek / Kimi>kimi-k2.6」不合理——运维名漏进用户面。改 provider displayName Company LLM Gateway→DeepSeek（零代码重烘）；**连费用量表 provider 列跟变**（旧存量行仍旧名，telemetry.zh.md 已注面板 SQL 用新值）。
 
-### 声明窗 P3 双修（2026-09-08 11:28，18e9c67938，评审进行中）
-挂账两清：①Escape=不同意（useEffect keydown，deps=[degraded] 挂载期捕获与灰按钮一致；降级态 Esc 静默——首版写事件时重查 bridgeMissing 被测试披住：测试晚注入 bridge 后 Esc 仍触发，改挂载期捕获）②早期渲染死亡兑底：disclaimer.html #root 内静态纯文本（noscript+组件加载异常+关窗=不同意提示；CSP 禁 inline style 故无样式；React createRoot 首渲染替换容器 children→JS 成功时静态文本天然消失）。+3 测（真 Escape/降级晚注入不触发/html 源码钉）。2015+7skip/ts 0。评审 BD135 关注点：React 19 替换行为依赖/打包管线对 html 的处理/sso-gate.html 同雷面。不构建，待评审结果。
+### 声明窗 P3 双修（2026-09-08 11:28，18e9c67938 + 评审闭环 11:40）
+挂账两清：①Escape=不同意（useEffect keydown，deps=[degraded] 挂载期捕获与灰按钮一致；降级态 Esc 静默——首版写事件时重查 bridgeMissing 被测试披住：测试晚注入 bridge 后 Esc 仍触发，改挂载期捕获）②早期渲染死亡兑底：disclaimer.html #root 内静态纯文本（noscript+组件加载异常+关窗=不同意提示；CSP 禁 inline style 故无样式；React 18.3.1 createRoot 非非 hydrate 首提交同样 clearContainer，JS 成功时静态文本被替换）。评审 BD135 APPROVED：Esc 长按 auto-repeat 无害（主进程 settled 幂等）、vite 把 html 作 rollup input 只重写 script 不剥内容、变异三杀。P3 两项已顺手清：sso-gate/recovery/profile-create/agent-browser 四窗同款 #root 静态兑底（文案按各自关窗语义）；恒真断言删。四窗钉测加入 disclaimer-click.spec（四窗各含 noscript+兑底文案）。2016+7skip/ts 0。不构建，随 #69 发车。
+
+### 上游客户端仓（anywhere-labs/dsh-desktop）动态盘点（2026-09-08 11:33）
+自 09-02 上次摘取以来 87 个非合并提交。分拣定案：**A 类可摘**（渲染器崩溃自动恢复 62171c6010/7e21d642e2；启动性能三连 cdf1d51c22/9b1cdb8e22/dae8660de3；Windows 小修 15668197aa/05276d3230/1097fcdea3/caeefec7b2；更新链 1bddc64eb0/e7a7537f8c）；**B 类观察**（Safe Mode 快速恢复——与我们的 startup-recovery-window 职责重叠且上游还在连日迭代；compat 隔离 chrome 63cf730f5d 系列）；**C 类不跟**（profile 架构重构波=纯对齐；上游公网 beta/stable 双包基建与我们公司市场通道冲突）。另：上游 stable 的 DSH 运行时仍钉 0.1.1-rc.2=与我们子模块对齐；其 beta 已到 0.1.3-alpha.2。remote dsh-desktop 已添加。待用户拍板是否开始 A 类摘取。
 
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
