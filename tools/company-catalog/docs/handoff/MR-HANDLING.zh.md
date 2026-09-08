@@ -53,6 +53,7 @@ node tools/company-catalog/cli.mjs verify-handoff /tmp/mr-review/submissions/<�
 ① 注入面：clientInject/clientPlatform/cordis.patch 合理吗（对照 SOP 判断标准）
 ② 网络域：network hosts 列表里有没有超出插件功能解释的域
 ③ 依赖与生命周期脚本：lifecycle scripts 必须为「无」；依赖漂移问一句
+（evidence/checks 自报不核验——人审只审上三点，不向同事索要运行证明）
 有问题 → MR 评论提出；没问题 → July 拍板 merge
 ```
 

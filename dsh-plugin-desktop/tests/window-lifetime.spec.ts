@@ -12,7 +12,10 @@ describe('installWindowLifetimeGuard', () => {
     const on = vi.fn((_event: string, listener: (event: { preventDefault: () => void }) => void) => {
       listeners.push(listener)
     })
-    const off = vi.fn()
+    const off = vi.fn((_event: string, listener: (event: { preventDefault: () => void }) => void) => {
+      const at = listeners.indexOf(listener)
+      if (at !== -1) listeners.splice(at, 1)
+    })
     const dispose = installWindowLifetimeGuard({ on, off } as never)
 
     expect(listeners).toHaveLength(1)
@@ -22,7 +25,12 @@ describe('installWindowLifetimeGuard', () => {
       expect(event.preventDefault).toHaveBeenCalledOnce()
     }
 
+    const guardListener = listeners[0]
     dispose()
-    expect(off).toHaveBeenCalledOnce()
+    expect(off).toHaveBeenCalledWith('window-all-closed', guardListener)
+    // After disposal the guard is truly gone: another emission passes through.
+    const late = { preventDefault: vi.fn() }
+    for (const listener of listeners) listener(late)
+    expect(late.preventDefault).not.toHaveBeenCalled()
   })
 })
