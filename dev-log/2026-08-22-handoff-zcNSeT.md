@@ -228,6 +228,11 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 首单同事 MR 全流程闭环（2026-09-08 中午，dsh-dai-context 上 beta）
+首单真实同事 MR 走完六步全流程：**dsh-dai-context@0.41.3**（作者 sebtang，经 @pluginuploader 账号提交）。前置 churn：!8 agent-teams 两轮 FAIL（① schema 五处：compat 全空/handle 填邮箱/checks 0 项；② tar czf 手打包带目录条目——npm pack 只产文件条目，已实测验证并写进 MR 评论当教材）后同事弃单自关；!9–!14 试错自关；!15 重提质量到位（描述全、compat 钉死、npm pack 正确）。**PASS 10/10** → 人审三点过（5 client faces 各对得上宣称功能；网络域仅 docs/LICENSE URL；lifecycle 无、运行时依赖仅 zod）→ merge b9ff4f84 → accept 877f841b1a → plugin-sources 落位 a9b70f263c（CI 干跑第一次红在这：tarball 通道必须带 plugin-sources/<名>-<版本>/ 供 CI 重打包，out/ 是 gitignored）→ CI 签名（34185627193）→ publish-local beta **sequence 17**（fleet-upgrade 门禁按速查表 --confirm-fleet-upgraded 过闸；签名指纹 c469 核对）→ 棘轮 547a2cd755。浸泡开始（名单三台），回执全程贴 MR !15。
+**两个口径定案（已落 SOP/MR-HANDLING）**：① evidence/checks 自报字段不核验不索证明（安全边界在所有者侧审计+安装链三验）；② repository 惯例=插件 package.json 自带则用，无源码仓统一钉 config 仓包页 URL（July 拍板方案 a）。
+Gotchas：GitHub push 走 fork remote（LCorleone），origin（anywhere-labs）代理 503 重试可过；工作树有并行 electron-runtime 改动（另一 session），本流程未碰。
+
 ### 遥测日（2026-09-07 下午，#62 验收+卸载补全+文档）
 新库 DSH_LOG@10.173.59.16 切换（blob e9fdd3782b）+ 两表自建（dsh_model_call_events 镜像 P5 结构 + dsh_client_events 通用事件表）+ 四类事件上报落地（4456d24979 worker）+ 评审加固（43c8792ef1：隐私双层掩码/白名单 reason/投影内掩码/邮箱截断，确认评审 APPROVED）+ 卸载事件补全（6cc57f276e+fd5088ce19：uninstalled 不带 channel 归因——宁缺勿假）。#62=c008dec2 真机验收：四类事件全落库实证（sso silent/catalog 双通道 seq15+16/plugin_install installed/用量表在写）。**老板面板文档=dsh-plugin-desktop/docs/telemetry.zh.md**（事件字典+查询直抄+换库流程+新事件清单）。
 
