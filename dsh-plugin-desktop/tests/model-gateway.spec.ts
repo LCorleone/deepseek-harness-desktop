@@ -116,13 +116,13 @@ describe('model gateway blob codec', () => {
       route: 'dsh-company-gateway',
       displayName: 'Company LLM Gateway',
       apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
-      models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash' }],
+      models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash', contextWindow: 512000 }],
     })
     expect(kimiProvider).toMatchObject({
       route: 'dsh-company-kimi',
       displayName: 'Kimi',
       apiKeyEnv: 'DSH_COMPANY_KIMI_KEY',
-      models: [{ id: 'kimi-k2.6' }],
+      models: [{ id: 'kimi-k2.6', contextWindow: 250000 }],
     })
     for (const provider of gateway.providers) {
       // Structural on the secrets: an https endpoint and a non-empty bearer
@@ -320,7 +320,7 @@ describe('managed gateway provider profile', () => {
       apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
       api: 'openai-completions',
       baseURL: provider.baseUrl,
-      models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash' }],
+      models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash', contextWindow: 512000 }],
     })
   })
 
@@ -334,7 +334,7 @@ describe('managed gateway provider profile', () => {
       api: 'openai-completions',
       baseURL: provider.baseUrl,
       // The kimi entry carries no name: the id is the display name.
-      models: [{ id: 'kimi-k2.6' }],
+      models: [{ id: 'kimi-k2.6', contextWindow: 250000 }],
     })
   })
 
