@@ -149,7 +149,7 @@ function memoryScope(initial: readonly unknown[] = []): SettingsScope<MarketSett
 async function writeTarballInstalledProfile(
   profileDir: string,
   stagedPath: string,
-  options: { readonly resolutionIntegrity?: string } = {},
+  options: { readonly resolutionIntegrity?: string; readonly importerPeerSuffix?: string } = {},
 ): Promise<void> {
   const pluginDir = join(profileDir, 'node_modules', packageName)
   await mkdir(pluginDir, { recursive: true })
@@ -173,7 +173,13 @@ async function writeTarballInstalledProfile(
     importers: {
       '.': {
         dependencies: {
-          [packageName]: { specifier: `file:${stagedPath}`, version: `file:${relativeStaged}` },
+          // When the profile tree already pins resolvable peers, pnpm records
+          // the peer resolution as a suffix on the importer's `file:` version
+          // while the `packages:`/`snapshots:` entries keep the bare key.
+          [packageName]: {
+            specifier: `file:${stagedPath}`,
+            version: `file:${relativeStaged}${options.importerPeerSuffix ?? ''}`,
+          },
         },
       },
     },
@@ -392,6 +398,82 @@ describe('file: dependency pin reconciliation (the controlled tarball channel)',
     )
 
     await expect(service.previewUninstall('receipt:tarball-diverging-0001', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'conflict' })
+    await expect(service.listVerifiedReceipts(new AbortController().signal)).resolves.toEqual([])
+  })
+
+  it('reconciles a file: pin whose importer resolution carries a pnpm peer suffix', async () => {
+    // The real-machine shape of a profile whose tree already pins a peer of
+    // the tarball: the importer's recorded `file:` resolution carries the
+    // `(@peer@version)` suffix while the `packages:` entry stays keyed by
+    // the bare resolution — the pin still binds the exact expected bytes.
+    const root = await temporaryDirectory()
+    const profileDir = join(root, 'profiles', 'web')
+    const stagedPath = join(profileDir, '.dsh-market-tarballs', `${packageName}-${version}.tgz`)
+    await writeTarballInstalledProfile(profileDir, stagedPath, {
+      importerPeerSuffix: '(@deepseek-ai/schemastery@3.18.2)',
+    })
+    const provider = await signedSource([tarballEntry()])
+    const settings = memoryScope([{
+      receiptId: 'receipt:tarball-peer-suffix-0001',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity: tarballIntegrity,
+      bundlePatch,
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120021',
+      providerId: 'com.deepseek.company-catalog',
+      itemId: `npm:${packageName}@${version}`,
+      displayName: packageName,
+      installedAt: '2026-09-01T00:00:00.000Z',
+    }])
+    const service = new MarketInstallService(
+      settings,
+      () => ({ name: 'web', dir: profileDir }),
+      pnpmDouble(profileDir, []),
+      { verify: vi.fn(async () => { throw new Error('never reached') }) },
+      { installTargetAuthority: createSignedManifestInstallTargetAuthority(provider) },
+    )
+
+    const verified = await service.listVerifiedReceipts(new AbortController().signal)
+    expect(verified.map(receipt => receipt.receiptId)).toEqual(['receipt:tarball-peer-suffix-0001'])
+    await expect(service.previewUninstall('receipt:tarball-peer-suffix-0001', new AbortController().signal))
+      .resolves.toMatchObject({ action: 'uninstall', packageName })
+  })
+
+  it('refuses a peer-suffixed file: pin whose lockfile integrity truly diverges', async () => {
+    const root = await temporaryDirectory()
+    const profileDir = join(root, 'profiles', 'web')
+    const stagedPath = join(profileDir, '.dsh-market-tarballs', `${packageName}-${version}.tgz`)
+    await writeTarballInstalledProfile(profileDir, stagedPath, {
+      importerPeerSuffix: '(@deepseek-ai/schemastery@3.18.2)',
+      // The suffix tolerance must not loosen the byte-for-byte binding: the
+      // lockfile pins some other sha512, so the pin proves nothing.
+      resolutionIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+    })
+    const provider = await signedSource([tarballEntry()])
+    const settings = memoryScope([{
+      receiptId: 'receipt:tarball-peer-suffix-0002',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity: tarballIntegrity,
+      bundlePatch,
+      sourceRecordId: '018f1f77-a5c4-7b73-a9ae-0242ac120021',
+      providerId: 'com.deepseek.company-catalog',
+      itemId: `npm:${packageName}@${version}`,
+      displayName: packageName,
+      installedAt: '2026-09-01T00:00:00.000Z',
+    }])
+    const service = new MarketInstallService(
+      settings,
+      () => ({ name: 'web', dir: profileDir }),
+      pnpmDouble(profileDir, []),
+      { verify: vi.fn(async () => { throw new Error('never reached') }) },
+      { installTargetAuthority: createSignedManifestInstallTargetAuthority(provider) },
+    )
+
+    await expect(service.previewUninstall('receipt:tarball-peer-suffix-0002', new AbortController().signal))
       .rejects.toMatchObject({ code: 'conflict' })
     await expect(service.listVerifiedReceipts(new AbortController().signal)).resolves.toEqual([])
   })

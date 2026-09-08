@@ -716,20 +716,33 @@ function assertProfileLockRecord(
     throw new Error('lockfile dependency mismatch')
   }
 
-  const resolvedVersion = dependency.version
+  // Both accepted pins verify `dependency.version` is a string; `String()`
+  // only restores that narrowing for the probing below.
+  const resolvedVersion = String(dependency.version)
   const baseKey = `${packageName}@${version}`
   const resolvedKey = `${packageName}@${resolvedVersion}`
+  // When the profile tree already pins resolvable peers, pnpm records the
+  // peer resolution as a `(@peer@version, …)` suffix on the importer's
+  // `file:` version while the lockfile sections keep the bare spelling — the
+  // same drift the registry channel tolerates through `exactLockResolution`.
+  // The lookup probes both spellings; the integrity comparison below still
+  // binds the exact expected bytes whichever entry answers.
+  const peerSuffixIndex = resolvedVersion.indexOf('(')
+  const fileKeys = [...new Set([
+    peerSuffixIndex === -1 ? resolvedKey : `${packageName}@${resolvedVersion.slice(0, peerSuffixIndex)}`,
+    resolvedKey,
+  ])]
   // A `file:` pin resolves to its own lockfile key (`name@file:…`), never a
   // registry version key, so only the registry channel consults the
   // version-spelled keys.
   const packageKeys = registryPinned
     ? [...new Set([baseKey, `/${baseKey}`, resolvedKey, `/${resolvedKey}`])]
-    : [resolvedKey]
+    : fileKeys
   const packageSnapshot = lockEntry(record(lockfile.packages) ?? {}, packageKeys)
   const resolution = record(packageSnapshot?.resolution)
   if (resolution?.integrity !== expectedIntegrity) throw new Error('lockfile integrity mismatch')
 
-  const snapshot = lockEntry(record(lockfile.snapshots) ?? {}, registryPinned ? [resolvedKey, `/${resolvedKey}`] : [resolvedKey])
+  const snapshot = lockEntry(record(lockfile.snapshots) ?? {}, registryPinned ? [resolvedKey, `/${resolvedKey}`] : fileKeys)
   if (snapshot === undefined) throw new Error('lockfile snapshot missing')
 }
 
