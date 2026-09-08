@@ -285,6 +285,27 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 遥测 P3 won't-fix 项 · 声明窗 Escape/render-gone P3。
 **观察**：fleet 事件汇入 · 同事首 MR（MR-HANDLING.zh.md）· sso-gate 真机浏览器登录路径（#66 后可主动测一次：清 portal 票触发静默失败）。
 
+### #65 开机崩 + 契约拆分 + 全链评审（2026-09-08 晨 07:00-08:30）
+**#65 真机开机即退**（b65）：日志一行后无声退出。根因=主进程图 import 了 preload 模块（disclaimer-preload.ts 顶层 export contextBridge/ipcRenderer 专属导出，主进程 require 即炸）。修复 44f60b6c00：**契约常量独立** disclaimer-contract.ts/sso-gate-contract.ts（纯常量，主图永不被 preload 污染）+ main-import-graph.spec.ts 守卫（PRELOAD_MODULES 从 tsdown entry 派生，新增 preload 自动入禁入清单）。全链评审修 53858ed1b7：jsdom 真点击测试（disclaimer-click.spec.ts——两颗决策按钮首次被真点；中文「不同意」包含「同意」须精确匹配的坑）+ 守卫清单派生化 + 双窗口 spec 断言 preload 路径。**#66=34172768233（b66，SHA256 f453caf9…71879）08:31 下载 asserts。**
+
+### #66「点同意仍打不开」诊断→空窗雷破案（2026-09-08 09:00-10:00）
+**报障**：b66 弹窗正常、点「同意」→弹窗消失→主窗无影→无事发生；日志只有 sso ok/CSP benign/sso_login 三行。**无打包态复现环境下的取证法**：pip py7zr 扫 NSIS exe 内嵌 7z（offset 232861）→抽 app.asar（header：json_len=uint32@12、JSON@16、data base=align4；offset:None 全在 app.asar.unpacked/lib 镜像）→逐层静态核对：渲染资产新（desktopDisclaimerBridge 在/锚点死文本不在/降级文案在）、preload 单文件 cjs 对、主包 electron 导入干净（无 contextBridge）、ipcMain 双监听在、preload 路径 fileURLToPath 姿势对——**静态面全对，死因只能在运行时**。
+**用户实证两条破局**：①日志头 2.0.3+b66 确认装对版本；②「点击同意后弹窗消失」——弹窗能消失=IPC 通了、finish('agree') 跑了、runDisclaimerGate 返回 'agreed'、后续 resolveDesktopShellEnvironment/主窗 mount 在即……**破案**：声明窗 destroy 后全应用 0 窗口 → Electron Windows 默认「最后一窗关闭=退出」→进程静默优雅退出（该路径本就不打日志）→主窗永不 mount。#62 及以前无此雷=从未有窗口空窗期（静默登录无窗直达主窗）；CI 冒烟无 SSO 走不到声明门。
+**修复 8042120709**：src/window-lifetime.ts installWindowLifetimeGuard(app)——app.on('window-all-closed', preventDefault)，whenReady 后即挂永不摘；进程寿命单一所有权=关闭协调器（X 确认/托盘/SIGTERM/before-quit→teardown→app.exit，app.exit 不再发事件故 guard 零干扰；teardown 销窗被拦反消除重入风险）。类型姿势：as unknown 双转型绕 App.on 重载族（收窄接口三轮败：never 参数/重载族/Pick 均不合，注释留案）。评审 APPROVED（全仓 rg 证实无任何现存路径依赖「最后一窗退出」；所有空窗时序被全程 guard 兜住）+P2/P3 修 6de39c9b68：挂载点源码钉测试（window-lifetime-mount.spec——「模块对没挂上」
+类事故变异杀伤）+dispose 参数/失效后放行断言。
+
+### 模型容量参数落地 + #67 发车（2026-09-08 10:00-10:08）
+**运维参数**（用户口述）：kimi-k2.6 上下文 250k、deepseek 512k。进制拍板：上游混用、网关侧十进制惯例→统一十进制 512000/250000；maxTokens 未给→不填走回退 32K。**填参零代码**：解码现有 blob（XOR key+b64，明文只经 /tmp 不落库）→注入 contextWindow→make-model-gateway-blob.mjs 重烘→回读校验落位（512000/250000 ✓）。spec 钉测同步（toMatchObject+深等值 profile 两处）。
+**双插曲（均已闭环入档）**：①深等值 spec 漏改 2 处，vitest 红被 && 链（grep 匹配成功）带进 commit d63c8c119f 首版——修后 amend；**再证「grep 出数字≠全绿」，须看 Tests 行或退出码**；②push 误打 origin（上游）被 403 挡（万幸）——正确目标=fork（LCorleone）；`git log origin/master` 核 SHA 纪律反成陷阱，发车前应核 **fork**/master。
+**#67=34178988981 发车**（10:07，master=d63c8c119f）：空窗雷修复+容量参数。2011+7skip/typecheck 0。
+
+### 当前 TODO 快照（2026-09-08 10:10）
+**进行中**：#67 构建（run 34178988981）→下载 asserts 核 SHA→July 真机终验（同意→主窗出=主验点；Kimi 切换/X 退出/client_version=2.0.3+b67）。
+**发车后立即可做**：fleet 群发（终验过后）。
+**用户动作**：sebtang/lizywu 在 10.173.59.30 开账号+repo Developer→「照 MR !1 提交」；0.4.184 fleet 反馈。
+**挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 声明窗 Escape/render-gone P3 · sso-gate 真机浏览器登录路径主动测一次（#67 后清 portal 票触发）· 遥测 P3 won't-fix 项 · kimi maxTokens 未给（运维补→重烘）。
+**观察**：fleet 事件汇入 · 同事首 MR（MR-HANDLING.zh.md 冷启动）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
