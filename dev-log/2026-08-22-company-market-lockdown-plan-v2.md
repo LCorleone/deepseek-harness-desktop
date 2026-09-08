@@ -283,6 +283,18 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **GitLab 真推送演练（2026-09-03）**：P7 仅剩外部依赖①落地。`pack-tarball --from-allowlist` 复打包（对拍口径说明：allowlist 的 pack-artifact 形态按设计不携带 inline integrity——`lib/allowlist.mjs` 强制 path 与 integrity 互斥，integrity 构建时从打包文件计算——故对拍基准=两次独立复打包字节级一致 + 独立 hashlib oracle 复算同值；体积较旧演练 24924 B→25851 B 系 `ef0f55c60c` 评审修复改源（+46/-12）所致，非漂移）。产物 25851 B / 7 files，`sha512-19pLLIG3LWcxgdNw3itdu/S7YMlyRsmHsD8UM9W0Sjb8dIKqQzpLE8NB2b+kUylTvFI11svdLDKi1jKav3bhaw==`，treeDigest 本 Linux 实测 `0c800aba…`（照旧不入库）。推送：浅 clone julu/dsh-desktop-config → 仅新增 `packages/dsh-free-search-0.4.181.tgz` 一个文件（commit `6665896`，`packages: stage hardened dsh-free-search 0.4.181 (drill, manifest untouched)`，`128df14..6665896` master）→ push 成功。验证：raw URL `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz` 下载 HTTP 200 / 25851 B，与本地件 sha256 同（`510a8c4b…`）逐字节一致，sha512 与 pack 记录一致；**manifest 前后对拍逐字节一致**（sequence 10 / dsh-better-sidebar 0.15.2 npm 通道，sha256 `1d743452…` 未动）——fleet 未升级、绝不触碰已部署 manifest 的门禁语义全程守住。留存决策：tarball 留 `packages/`（无 manifest 引用=对客户端零影响；未来真发布时 measure-and-publish→fleet 门禁确认→publish-local 直接复用该文件，publish-local 的既有文件字节校验会因复打包确定性直接通过）。凭据卫生：临时 clone 用毕即删（token-bearing remote URL 一并消失）。
 
+## P11 · 捆绑 Python 运行时 —— 立项 2026-09-08（用户拍板：跑 python 是同事常见需求）
+
+**动机**：fleet 同事多为电脑小白（零环境），Node 已捆绑（P3-1）但 python 未带——同事让 agent 跑 python 脚本/pandas 数据分析时会得到「未安装」。属能力边界非故障，立项补齐。
+
+**方案骨架**（沿 node-runtime 先例）：
+- Win embeddable CPython（版本钉死）进安装包 extraResources；下载 sha256 钉扎+缓存同 build/node-runtime 模式；体积代价 ~100MB+ 级（安装包大小影响需评估）。
+- 终端/PW 沙箱 PATH 注入让 `python` 可用；pip 可用性与内网 pypi 镜像（Deloitte 内网源）调研是前置。
+- agent 侧感知：persona/preset 或环境探测告知模型 python 可用（含版本）；沙箱路径白名单放行。
+- Mac 不做（fleet=Windows）。
+
+**规模**：M（2-3 天+装机验证）。**依赖**：pip 内网源调研（运维）；排期在 #72/#73 之后。**验收**：零环境 Win 机器上 agent 直接跑通 `python -c` 与 pip install+import pandas 全链。
+
 ## P8 · Agent 网页操作能力（agent-browser）—— 开卡 2026-09-03
 **用户拍板**：要实现 agent 可操作网页。调研背书（scout-minke）：同门 Minke 验证了「Electron 内嵌 webview + webContents.debugger 手写 CDP」路线可行（免装外部浏览器/免下载 Chromium/登录态可控）。**我们不照搬**：Minke 把插件烧进 vendored 子模块（踩我们红线）且 4838 行手写 CDP；我们走动态 host 插件 + 最小 CDP 面（快照/隔离求值/真实输入/截图四域，目标 <1000 行）。
 **安全要求（设计红线）**：①危险动作（导航/表单提交/下载）走现有审批门 ②一次性 partition token 隔离+登录态持久化需显式开 ③密码框/凭据对 agent 不可读 ④人机协作：claimControl 随时接管+可视化光标 ⑤URL 策略可配（公司代理/域名白名单）。全部实现在 dsh-plugin-desktop（不动子模块）。
