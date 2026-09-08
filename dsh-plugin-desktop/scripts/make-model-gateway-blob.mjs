@@ -55,7 +55,7 @@ const PROVIDER_KEYS = Object.freeze(['apiKey', 'apiKeyEnv', 'baseUrl', 'displayN
 const API_KEY_ENV_PATTERN = /^DSH_[A-Z][A-Z0-9_]*$/u
 
 /** Every key a model entry may carry; `id` is the only required one. */
-const MODEL_KEYS = Object.freeze(['id', 'name', 'contextWindow', 'maxTokens'])
+const MODEL_KEYS = Object.freeze(['id', 'name', 'contextWindow', 'maxTokens', 'input'])
 
 function invalid(message) {
   return new Error(`${PROVIDERS_JSON_ENV}: ${message}`)
@@ -146,9 +146,9 @@ export function validateProvidersDocument(document) {
       }
       const modelKeys = Object.keys(modelEntry)
       if (!modelKeys.includes('id') || modelKeys.some(name => !MODEL_KEYS.includes(name))) {
-        throw invalid(`${modelSite} must carry exactly id, with optional name, contextWindow, and maxTokens`)
+        throw invalid(`${modelSite} must carry exactly id, with optional name, contextWindow, maxTokens, and input`)
       }
-      const { id, name, contextWindow, maxTokens } = modelEntry
+      const { id, name, contextWindow, maxTokens, input } = modelEntry
       if (typeof id !== 'string' || id.length === 0) {
         throw invalid(`${modelSite}.id must be a non-empty string`)
       }
@@ -166,9 +166,20 @@ export function validateProvidersDocument(document) {
           throw invalid(`${modelSite}.${field} must be a positive integer when present`)
         }
       }
+      // Modalities mirror the runtime decoder: a hand-declared multimodal
+      // model must declare input (['text','image']); absent stays text-only.
+      if (input !== undefined) {
+        if (!Array.isArray(input) || input.length === 0 || input.some(m => m !== 'text' && m !== 'image')) {
+          throw invalid(`${modelSite}.input must be a non-empty array of 'text'/'image' when present`)
+        }
+        if (new Set(input).size !== input.length) {
+          throw invalid(`${modelSite}.input must not repeat a modality`)
+        }
+      }
       validatedModels.push({ id, ...(name === undefined ? {} : { name }),
         ...(contextWindow === undefined ? {} : { contextWindow }),
-        ...(maxTokens === undefined ? {} : { maxTokens }) })
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+        ...(input === undefined ? {} : { input }) })
     }
     validated.push({
       route,

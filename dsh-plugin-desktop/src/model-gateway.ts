@@ -53,7 +53,17 @@ export interface CompanyModelGatewayModel {
   readonly contextWindow?: number
   /** Maximum output tokens; the upstream route default applies when absent. */
   readonly maxTokens?: number
+  /**
+   * Request modalities the endpoint accepts ('text' and/or 'image'; the
+   * pi-ai modality set). A hand-declared model states none by default, so a
+   * multimodal model must declare `['text', 'image']` or image attachments
+   * never reach it — declaring is a claim about the endpoint, not a check.
+   */
+  readonly input?: readonly CompanyModelGatewayModality[]
 }
+
+/** Every modality a blob model may declare (mirrors the pi-ai set). */
+export type CompanyModelGatewayModality = 'text' | 'image'
 
 /** One managed provider decoded from the blob. */
 export interface CompanyModelGatewayProvider {
@@ -85,7 +95,7 @@ function invalidBlob(message: string): Error {
 const PROVIDER_KEYS = Object.freeze(['apiKey', 'apiKeyEnv', 'baseUrl', 'displayName', 'models', 'route'])
 
 /** Every key a model entry may carry; `id` is the only required one. */
-const MODEL_KEYS = Object.freeze(['id', 'name', 'contextWindow', 'maxTokens'])
+const MODEL_KEYS = Object.freeze(['id', 'name', 'contextWindow', 'maxTokens', 'input'])
 
 /** apiKeyEnv shape: `DSH_`-prefixed so `.env` layers reject it and masks see it. */
 const API_KEY_ENV_PATTERN = /^DSH_[A-Z][A-Z0-9_]*$/u
@@ -193,9 +203,9 @@ export function decodeModelGatewayBlob(blob: string): CompanyModelGateway {
       }
       const modelKeys = Object.keys(modelEntry)
       if (!modelKeys.includes('id') || modelKeys.some(name => !MODEL_KEYS.includes(name))) {
-        throw invalidBlob(`${modelSite} must carry exactly id, with optional name, contextWindow, and maxTokens`)
+        throw invalidBlob(`${modelSite} must carry exactly id, with optional name, contextWindow, maxTokens, and input`)
       }
-      const { id, name, contextWindow, maxTokens } = modelEntry as Record<string, unknown>
+      const { id, name, contextWindow, maxTokens, input } = modelEntry as Record<string, unknown>
       if (typeof id !== 'string' || id.length === 0) {
         throw invalidBlob(`${modelSite}.id must be a non-empty string`)
       }
@@ -213,12 +223,23 @@ export function decodeModelGatewayBlob(blob: string): CompanyModelGateway {
           throw invalidBlob(`${modelSite}.${field} must be a positive integer when present`)
         }
       }
+      // Modalities are optional: absent keeps the hand-declared text-only
+      // default (a model outside the installed catalog states no answer).
+      if (input !== undefined) {
+        if (!Array.isArray(input) || input.length === 0 || input.some(m => m !== 'text' && m !== 'image')) {
+          throw invalidBlob(`${modelSite}.input must be a non-empty array of 'text'/'image' when present`)
+        }
+        if (new Set(input).size !== input.length) {
+          throw invalidBlob(`${modelSite}.input must not repeat a modality`)
+        }
+      }
       decodedModels.push(Object.freeze({
         id,
         ...(name === undefined ? {} : { name }),
         ...(contextWindow === undefined ? {} : { contextWindow }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
-      } as CompanyModelGatewayModel))
+        ...(input === undefined ? {} : { input: [...input] as CompanyModelGatewayModality[] }),
+      } as unknown as CompanyModelGatewayModel))
     }
     decoded.push(Object.freeze({
       route,
@@ -308,10 +329,10 @@ export interface CompanyModelGatewayProviderProfile {
  * Render the composition-layer `llm-pi-ai` provider profile for one managed
  * gateway provider. The gateway's `/models` endpoint is absent (404), so the
  * model list is exactly the blob's list — no dynamic discovery is attempted.
- * Each model entry passes through its optional display name and capacities
- * (upstream `catalog.ts` consumes exactly `name`, `contextWindow`, and
- * `maxTokens` off a profile model, falling back to the route defaults for
- * whatever is absent). The response is a reasoning-model format regardless
+ * Each model entry passes through its optional display name, capacities,
+ * and input modalities (upstream `catalog.ts` consumes exactly `name`,
+ * `contextWindow`, `maxTokens`, and `input` off a profile model, falling
+ * back to the route defaults for whatever is absent). The response is a reasoning-model format regardless
  * of request configuration, so the profile declares no reasoning-effort
  * levels: the harness surfaces the returned reasoning content without
  * asking the gateway to think.
@@ -326,11 +347,12 @@ export function companyModelGatewayProviderProfile(
     apiKeyEnv: provider.apiKeyEnv,
     api: 'openai-completions',
     baseURL: provider.baseUrl,
-    models: provider.models.map(({ id, name, contextWindow, maxTokens }) => ({
+    models: provider.models.map(({ id, name, contextWindow, maxTokens, input }) => ({
       id,
       ...(name === undefined ? {} : { name }),
       ...(contextWindow === undefined ? {} : { contextWindow }),
       ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(input === undefined ? {} : { input: [...input] }),
     })),
   }
 }

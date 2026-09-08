@@ -122,7 +122,8 @@ describe('model gateway blob codec', () => {
       route: 'dsh-company-kimi',
       displayName: 'Kimi',
       apiKeyEnv: 'DSH_COMPANY_KIMI_KEY',
-      models: [{ id: 'kimi-k2.6', contextWindow: 250000 }],
+      // Multimodal claim: kimi-k2.6 accepts image attachments.
+      models: [{ id: 'kimi-k2.6', contextWindow: 250000, input: ['text', 'image'] }],
     })
     for (const provider of gateway.providers) {
       // Structural on the secrets: an https endpoint and a non-empty bearer
@@ -231,6 +232,27 @@ describe('model gateway blob codec', () => {
     }
   })
 
+  it('accepts declared input modalities and rejects malformed ones', () => {
+    const base = SYNTHETIC_PAYLOAD.providers[0]!
+    const withInput = decodeModelGatewayBlob(encodeModelGatewayBlob({
+      providers: [{ ...base, models: [{ id: 'VISION-MODEL', input: ['text', 'image'] }] }],
+    } as never))
+    expect(withInput.providers[0]?.models[0]?.input).toEqual(['text', 'image'])
+
+    for (const bad of [
+      { input: [] },
+      { input: ['video'] },
+      { input: 'text' },
+    ]) {
+      expect(() => decodeModelGatewayBlob(encodeModelGatewayBlob({
+        providers: [{ ...base, models: [{ id: 'M', ...bad }] }],
+      } as never))).toThrow('providers[0].models[0].input must be a non-empty array of \'text\'/\'image\' when present')
+    }
+    expect(() => decodeModelGatewayBlob(encodeModelGatewayBlob({
+      providers: [{ ...base, models: [{ id: 'M', input: ['text', 'text'] }] }],
+    } as never))).toThrow('providers[0].models[0].input must not repeat a modality')
+  })
+
   it('accepts positive-integer model capacities and keeps them optional', () => {
     const gateway = decodeModelGatewayBlob(encodeModelGatewayBlob({
       providers: [{
@@ -334,7 +356,7 @@ describe('managed gateway provider profile', () => {
       api: 'openai-completions',
       baseURL: provider.baseUrl,
       // The kimi entry carries no name: the id is the display name.
-      models: [{ id: 'kimi-k2.6', contextWindow: 250000 }],
+      models: [{ id: 'kimi-k2.6', contextWindow: 250000, input: ['text', 'image'] }],
     })
   })
 
