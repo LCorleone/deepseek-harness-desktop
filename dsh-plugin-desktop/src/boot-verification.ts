@@ -913,17 +913,34 @@ function desktopBootTarballLockIntegrity(
   if (stagedPath === undefined) return undefined
   const resolvedSpelling = typeof dependency.version === 'string' ? dependency.version : undefined
   if (resolvedSpelling === undefined || !resolvedSpelling.startsWith('file:')) return undefined
+  // When the profile tree already pins resolvable peers, pnpm records the
+  // peer resolution as a `(@peer@version, …)` suffix on the importer's
+  // `file:` version while the staged spelling stays bare — the same drift
+  // the registry channel tolerates through `exactLockResolution` and the
+  // market install path already fixed (32bfaf522d). The suffix always ends
+  // the string with `)` and can never be part of the deterministic staged
+  // name (safe package names and versions exclude parentheses), so any
+  // spelling containing `(` truncates at the first `(` — identical to the
+  // market install path's indexOf('(') — and every other spelling is its
+  // own bare form.
+  const bareSpelling = resolvedSpelling.includes('(')
+    ? resolvedSpelling.slice(0, resolvedSpelling.indexOf('('))
+    : resolvedSpelling
   // The pnpm-relative resolution spelling points back at the same staged
   // file; it is resolved in the normalized form so a native-separator
   // spelling still lands on the normalized staged path above.
   if (options.profileDir !== undefined
     && desktopMarketFileSpecPosixPath(
-      resolve(options.profileDir, desktopMarketFileSpecPosixPath(resolvedSpelling.slice('file:'.length))),
+      resolve(options.profileDir, desktopMarketFileSpecPosixPath(bareSpelling.slice('file:'.length))),
     ) !== stagedPath) {
     return undefined
   }
   const packages = record(lockfile.packages) ?? {}
-  const integrity = record(lockEntry(packages, [`${packageName}@${resolvedSpelling}`])?.resolution)?.integrity
+  // The packages section keys the bare spelling while a hypothetical future
+  // pnpm could keep the suffixed one, so both are probed; whichever entry
+  // answers, the sha512 below still binds the exact staged bytes.
+  const fileKeys = [...new Set([`${packageName}@${bareSpelling}`, `${packageName}@${resolvedSpelling}`])]
+  const integrity = record(lockEntry(packages, fileKeys)?.resolution)?.integrity
   if (typeof integrity !== 'string' || !SHA512_INTEGRITY_PATTERN.test(integrity)) return undefined
   const digest = sha512OfStagedTarball(stagedPath)
   if (digest === undefined) return undefined
@@ -1209,7 +1226,7 @@ export function verifyDesktopBootBundles(
     }
     if (bundle.lockIntegrity === undefined) {
       reject(bundle.lockProblem
-        ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`, 'no-lock-integrity')
+        ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`, 'no-lock-integrity', { installedVersion: bundle.version })
       continue
     }
     if (bundle.lockIntegrity !== entry.integrity) {

@@ -1112,6 +1112,19 @@ async function start(): Promise<void> {
         `${BIN_NAME}: failed to persist the boot verification snapshot for diagnostics`,
       )
     }
+    // Rejection visibility (2026-09-08): the refusal already rides the DB
+    // boot_verify event and the diagnostics snapshot, but the persistent
+    // dsh-*.log stayed silent — a silently disabled plugin (the pnpm peer
+    // suffix incident) was undebuggable on real machines. One error line
+    // per refused bundle; the reason text is omitted because it can embed
+    // profile-dir paths the log masking does not cover — the bounded code
+    // names the branch here, the snapshot keeps the full reason.
+    for (const rejected of prepared.bootVerification?.rejected ?? []) {
+      const version = rejected.installedVersion === undefined ? '' : `@${rejected.installedVersion}`
+      electronLogger.error(
+        `${BIN_NAME}: boot verification rejected ${rejected.packageName}${version} (code=${rejected.code})`,
+      )
+    }
     // Client event telemetry (2026-09-07): the stable catalog's refresh
     // outcome — every locked boot resolves it, stable-only machines included
     // (that is this hook: the beta channel's event rode the boot overlay

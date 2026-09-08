@@ -1458,6 +1458,7 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
       readonly integrity?: string
       readonly specifier?: string
       readonly resolutionSpelling?: string
+      readonly importerPeerSuffix?: string
     } = {},
   ): string {
     const stagedPath = desktopMarketTarballStagingPath(profileDir, packageName, version)
@@ -1469,7 +1470,11 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
       '    dependencies:',
       `      '${packageName}':`,
       `        specifier: '${options.specifier ?? `file:${stagedPath}`}'`,
-      `        version: '${options.resolutionSpelling ?? `file:${relativeStaged}`}'`,
+      // When the profile tree already pins resolvable peers, pnpm records
+      // the peer resolution as a `(@peer@version)` suffix on the importer's
+      // `file:` version while the `packages:`/`snapshots:` entries keep the
+      // bare spelling (the real-machine shape behind 32bfaf522d).
+      `        version: '${options.resolutionSpelling ?? `file:${relativeStaged}`}${options.importerPeerSuffix ?? ''}'`,
       'packages:',
       `  '${packageName}@file:${options.resolutionSpelling ?? relativeStaged}':`,
       '    resolution:',
@@ -1500,6 +1505,38 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
     // A different package or version never matches this pin.
     expect(desktopBootLockIntegrity(lockfile, packageName, '9.9.9', { profileDir })).toBeUndefined()
     expect(desktopBootLockIntegrity(lockfile, 'other-plugin', version, { profileDir })).toBeUndefined()
+  })
+
+  it('tolerates a pnpm peer suffix on the importer file: resolution', () => {
+    // The real-machine shape of a profile whose tree already pins a peer of
+    // the staged tarball: the importer's recorded `file:` resolution carries
+    // the `(@peer@version)` suffix while the `packages:` entry stays keyed
+    // by the bare spelling — the pin still binds the exact staged bytes, so
+    // the boot decision must recognize it instead of silently rejecting the
+    // bundle as `no-lock-integrity`.
+    const profileDir = temporaryDirectory()
+    const stagedPath = filePinLockfile(profileDir, { importerPeerSuffix: '(@deepseek-ai/schemastery@3.18.2)' })
+    writeStagedTarball(stagedPath)
+    const lockfile = readDesktopBootLockfile(profileDir)!
+    expect(lockfile).toBeDefined()
+    // Strict form: the exact deterministic staging path inside the profile.
+    expect(desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })).toBe(TARBALL_INTEGRITY)
+    // Structural form (direct unit use without the profile directory).
+    expect(desktopBootLockIntegrity(lockfile, packageName, version)).toBe(TARBALL_INTEGRITY)
+  })
+
+  it('still refuses a peer-suffixed pin whose lockfile integrity truly diverges', () => {
+    const profileDir = temporaryDirectory()
+    const stagedPath = filePinLockfile(profileDir, {
+      importerPeerSuffix: '(@deepseek-ai/schemastery@3.18.2)',
+      // The suffix tolerance must not loosen the byte-for-byte binding: the
+      // lockfile pins some other sha512, so the pin proves nothing.
+      integrity: `sha512-${createHash('sha512').update(Buffer.from('some other staged bytes\n')).digest('base64')}`,
+    })
+    writeStagedTarball(stagedPath)
+    const lockfile = readDesktopBootLockfile(profileDir)!
+    expect(desktopBootLockIntegrity(lockfile, packageName, version, { profileDir })).toBeUndefined()
+    expect(desktopBootControlledTarballPinProblem(lockfile, packageName, version, { profileDir })).toBeDefined()
   })
 
   it('returns nothing for a file: pin that is not the deterministic staged path', () => {
@@ -1589,6 +1626,7 @@ describe('controlled tarball file: lock pins (P7 2c)', () => {
       packageName,
       reason: expect.stringContaining('reinstall the plugin from the company market') as unknown as string,
       code: 'no-lock-integrity',
+      installedVersion: version,
     }])
   })
 
