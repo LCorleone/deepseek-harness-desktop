@@ -356,6 +356,13 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
 ③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
 
+### 当前 TODO 快照（2026-09-08 20:35）
+**就绪待发**：#72 构建（用户按住：批3 渲染器崩溃自动恢复 11213d21f8+P3 修 21231e8091、市场闪窗修复 70bd6d5ee0、devlog e8a6be7072；vitest desktop 2050+7skip/market 441/yarn check 绿）。构建后真机验证：杀渲染进程→窗口自动回来（批3 清单）+未装插件点击直接 confirm 窗（闪窗）。
+**进行中·观察面**：①fleet 群发 b71 测试中（DSH_LOG 观察：版本分布 b70→b71 迁移/boot_verify 零 rejected；b64/b66 尾部旧机点名）②两单同事 MR 浸泡（dai-context/dai-agent-teams，MR 线归另一 session）③Kimi 多模态真机表现。
+**挂账·代码**：①沙箱档2评估（观察首拒重试率几天，不理想上 desktop-exec ~2-3 天）②sso-gate 浏览器登录路径主动测（清 portal 票，~10 分钟）③上游 0.1.2 升级专项（等上游 stable 发版）④discover 视图首点三段式闪窗（评审 P2 接受挂账：loadingInstallations→消失→confirm，罕见路径）⑤B 类观察（Safe Mode/compat chrome 等上游稳）。
+**挂账·流程**：P8 收官三部曲/横切 P3 残余表/多 workflow 构建号 seq 语义复审。
+**今日关闭**：⑤deepseek 输入模态（纯文本=终态）⑩批1 打包态目检②泄露邮件③push protection（不开）①fleet 群发（已发测试中）。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
