@@ -6,6 +6,9 @@
  * #63-class blind spot. Here the real document mounts, real clicks land, and
  * the bridge spy must see exactly the contracted actions.
  */
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react'
@@ -52,5 +55,38 @@ describe('disclaimer decision buttons → bridge (real clicks)', () => {
     const disagree = [...host.querySelectorAll('button')].find(b => b.textContent === '不同意')!
     act(() => { disagree.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(decide).toHaveBeenCalledWith('disagree')
+  })
+
+  it('pressing Escape delivers decide("disagree") — same semantics as closing the window', () => {
+    const decide = vi.fn()
+    const host = mountApp({ decide })
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    expect(decide).toHaveBeenCalledWith('disagree')
+    expect(decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('Escape stays silent in the degraded state (bridge missing — matches the disabled buttons)', () => {
+    const host = mountApp(undefined)
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+    const spy = vi.fn()
+    Object.defineProperty(window, DESKTOP_DISCLAIMER_BRIDGE, { value: { decide: spy }, writable: true })
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    // The handler captured degraded=true at mount; a late bridge must not fire.
+    expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+describe('disclaimer.html static fallback (early render death)', () => {
+  it('ships a visible no-JS / no-bundle message inside #root that React replaces on mount', () => {
+    const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'native-ui', 'disclaimer.html'), 'utf8')
+    const root = html.match(/<div id="root">([\s\S]*?)<\/div>/)![1]!
+    expect(root).toContain('<noscript>')
+    expect(root).toMatch(/组件加载异常/)
+    // React replaces the container's children on first render — the static
+    // text must live ONLY inside #root, never outside it.
+    expect(html.match(/<div id="root">/)).toBeTruthy()
   })
 })

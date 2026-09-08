@@ -96,6 +96,15 @@ export function DisclaimerApp(): JSX.Element {
   const state = decodeState()
   const degraded = bridgeMissing()
   useEffect(() => { document.title = state === undefined ? FALLBACK_TITLE : state.title }, [state])
+  // Escape closes the prompt: same semantics as the window's X (disagree).
+  // Captures the mount-time degraded state, matching the disabled buttons.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !degraded) decide('disagree')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => { window.removeEventListener('keydown', onKeyDown) }
+  }, [degraded])
   if (state === undefined) {
     return <main className="flex min-h-screen items-center justify-center p-6"><Alert variant="destructive"><AlertTitle>{FALLBACK_TITLE}</AlertTitle><AlertDescription>{FALLBACK_BODY}</AlertDescription></Alert></main>
   }
