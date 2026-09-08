@@ -346,6 +346,11 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **#71 真机验收**：b71 重装 dsh-dai-context → **Context tab 出现** ✓（用户确认）。同事首 MR 端到端打通（提交→发布 beta→真机安装→生效）。
 **沉淀**：①pnpm peer 后缀是**双关卡同型**（install 校验+boot 验证），以后再改 lockfile 相关路径要两处同查；②boot 拒绝此前只写快照+遥测不写日志=静默雷源，本次已改成一行日志（同类以后可见）；③原版 dsh-context@0.41.3（seq18 对照）已发 beta，留着（修复后回归双证）还是清，待用户定。
 
+### 安全收尾三件（2026-09-08 18:10）
+① **主仓不迁移**（用户拍板）：GitGuardian/secret 扫描是 GitHub 全平台内容级扫描，换仓零隐蔽收益；真风险已关死（key 轮换作废+历史重写+零明文）；且迁移会砸构建号权威（bN=run_number 归 1 撞历史号）+CI/secrets 重配。若后续要加固：开 push protection（免费，推送时拦疑似密钥）——待用户点头。
+② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
+③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
