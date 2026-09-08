@@ -293,6 +293,8 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 - agent 侧感知：persona/preset 或环境探测告知模型 python 可用（含版本）；沙箱路径白名单放行。
 - Mac 不做（fleet=Windows）。
 
+**升级专项启动（2026-09-08 22:32 用户拍板）**：动机修正=获取上游 1735 commits 修复积压（档3 首拒弹窗经 scout 证实不存在于 0.1.2-rc.1/0.1.3-alpha.2，落空不做）。可行性 scout 结论：M~L（补丁 15+2 全重做+新增 settings patch 为主项，上游强制适配集中 17ad0d0802+8794279cb7 两笔可抄）；风险=dshmarket 1.17.1 兼容未验（专项必做）。brief=dev-log/briefs/2026-09-08-dsh-runtime-upgrade-012.md，worker=dsh-upgrade-012。**顺序决策：升级先行，P11 跟进**（同一地基原则）。
+
 **网络实测（2026-09-08 22:12，用户机）**：内网经公司代理可达 pypi 全链——pip 自动读 WinINET 系统代理，`--no-cache-dir` 强制下载实测成功（索引+文件域+TLS 全过）；直连（无代理）pypi.org 挂起、files.pythonhosted.org 反而通。**结论：零额外配置（无需镜像/无需 pip.ini cert）**，P11 的 pip 环节按"系统代理自动拾取"设计即可；验收时找一台同事机复测一遍代理行为。
 
 **规模**：M（2-3 天+装机验证）。**依赖**：pip 内网源调研（运维）；排期在 #72/#73 之后。**验收**：零环境 Win 机器上 agent 直接跑通 `python -c` 与 pip install+import pandas 全链。
