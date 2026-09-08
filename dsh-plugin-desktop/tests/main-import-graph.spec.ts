@@ -27,7 +27,20 @@ function walk(dir: string, files: string[] = []): string[] {
   return files
 }
 
-const PRELOAD_MODULES = ['disclaimer-preload.ts', 'sso-gate-preload.ts', 'agent-browser-preload.ts', 'preload.ts']
+const PRELOAD_MODULES = derivePreloadModules()
+
+/** Derive the preload-module list from the tsdown entry map itself — a
+ * hand-copied list would go blind exactly when a new preload is added
+ * (review P2: the guard's single point of failure). */
+function derivePreloadModules(): string[] {
+  const text = readFileSync(join(PKG, 'tsdown.config.ts'), 'utf8')
+  const names: string[] = []
+  for (const match of text.matchAll(/'([^']*-preload)\.ts'/gu)) {
+    names.push(`${match[1]}.ts`)
+  }
+  if (names.length === 0) throw new Error('main-import-graph guard: no preload entries found in tsdown.config.ts — the derivation is broken')
+  return names
+}
 
 describe('main-process import graph excludes preload modules', () => {
   it('no src module outside a preload itself imports a *-preload.ts', () => {

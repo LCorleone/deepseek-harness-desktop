@@ -241,6 +241,10 @@ describe('DesktopSsoGateWindow lifecycle', () => {
     })
     const window = electron.windows[0]
     if (window === undefined) throw new Error('gate window was not created')
+    // The preload path is the transport's lifeline (review P2 mirror).
+    expect((window.options as { webPreferences: { preload: string } }).webPreferences.preload)
+      .toMatch(/sso-gate-preload\.cjs$/u)
+    if (window === undefined) throw new Error('gate window was not created')
     await vi.waitFor(() => expect(window.states).toHaveLength(1))
     window.events.emit('ready-to-show')
     return {
