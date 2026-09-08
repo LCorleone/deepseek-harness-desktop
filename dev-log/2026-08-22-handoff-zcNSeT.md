@@ -316,6 +316,9 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **多模态**（e58509f526）：用户提示 kimi-k2.6 是多模态——上游 PiAiModelProfile.input?: PiAiModality[]，注释明说「声明 images 才让手写 vision 模型可用；手写模型不声明=纯文本」→ 不配图根本发不到 Kimi。blob v2 模型条目加可选 input（'text'/'image' 枚举/非空/去重，解码器+生成器双侧校验+5 红测），kimi-k2.6 烘 ['text','image']；DSV4 不声明（deepseek 是否吃图未确认，若确认加一行重烘即可）。
 **组名**（2863708742）：用户吐槽选择器「Company LLM Gateway>deepseek / Kimi>kimi-k2.6」不合理——运维名漏进用户面。改 provider displayName Company LLM Gateway→DeepSeek（零代码重烘）；**连费用量表 provider 列跟变**（旧存量行仍旧名，telemetry.zh.md 已注面板 SQL 用新值）。
 
+### 声明窗 P3 双修（2026-09-08 11:28，18e9c67938，评审进行中）
+挂账两清：①Escape=不同意（useEffect keydown，deps=[degraded] 挂载期捕获与灰按钮一致；降级态 Esc 静默——首版写事件时重查 bridgeMissing 被测试披住：测试晚注入 bridge 后 Esc 仍触发，改挂载期捕获）②早期渲染死亡兑底：disclaimer.html #root 内静态纯文本（noscript+组件加载异常+关窗=不同意提示；CSP 禁 inline style 故无样式；React createRoot 首渲染替换容器 children→JS 成功时静态文本天然消失）。+3 测（真 Escape/降级晚注入不触发/html 源码钉）。2015+7skip/ts 0。评审 BD135 关注点：React 19 替换行为依赖/打包管线对 html 的处理/sso-gate.html 同雷面。不构建，待评审结果。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
