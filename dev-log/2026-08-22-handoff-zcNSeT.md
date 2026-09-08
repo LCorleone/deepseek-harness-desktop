@@ -332,6 +332,10 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **批 2**（0669080f3b，+104/−11，4 文件；评审 agent 中途死，主会话直读全 diff 补完核查）：9b1cdb8e22 丢弃（无二次 prepare 架构）；cdf1d51c22 改写落地（per-install overlay 选择缓存：命中缓存/miss 不缓存/重装刷新+\ 前缀 specifier 硬化；+4 测）；dae8660de3 丢弃（选择性 ASAR 依赖上游 runAsNode:true，我们 P3 定案 runAsNode:false+外置 Node，asarUnpack 清单不动，preload/native-ui 镜像保持）；74b8747fb7 未带（无主件可放宽）。**关键交互核查（overlay 缓存×公司市场）**：新装包=miss 不缓存→装后可见（测试钉）；升级同路径重写 manifest→Node 每次重读；市场安装走不可变 profile generation→主进程 1306 行 resolver 随 Host 代重启重建；锁定层零触碰（diff 只 module-resolution/package-overlay/tests）。2022+7skip（基线 2018+7）/typecheck 0/yarn check exit 0（worker 自报）。
 **挂账**：批 3（渲染器崩溃自动恢复 62171c6010/7e21d642e2）未开始——用户叫停暂停。上游后续若基于已丢 commit 迭代（对话框系列/asar-resolver）再摘时需重评。
 
+### 同事首 MR 插件真机安装回滚雷→修复（2026-09-08 12:50，32bfaf522d）
+**事故**：dsh-dai-context@0.41.3（beta seq17，同事首 MR，另一 session 发布）真机两次安装均 rolled-back（operation-failed；UI：lockfile integrity mismatch）。**根因（MR session 完整 debug+复现，勿重验）**：pnpm 在 profile 树已有可解析 peer 时给 lockfile importer version 挂后缀（file:…tgz(@deepseek-ai/schemastery@3.18.2)），而 packages:/snapshots: 段 key 永远是裸 key；assertProfileLockRecord file: 通道拿带后缀串查不到→integrity 比对失败→回滚。影响面=任何 peers 与 profile 树相交的插件（free-search 首装未踩=历史巧合）；registry 通道早有 startsWith(version+'(') 容忍，tarball 通道漏了。
+**修复（32bfaf522d，+100/−5）**：file: 通道 fileKeys=Set{原串/首个 ( 剥出裸 key}双试，姿势镜像 registry 先例；integrity 逐字比对/信任根/treeDigest 零改动。红绿证：正向修前红（receipt 为空）修后绿；负向（integrity 真不匹配）全程拒。market vitest 440（基线 438）/typecheck 0。**review-peer-suffix APPROVED**：信任面零扩大（只扩查找 key 集，绑定不变）；P3 理论括号路径歧义=不可达（staging 名 safePackageName+stableExactVersion 均禁括号），不修。
+
 ### 当前 TODO 快照（2026-09-08 11:21）
 **进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
 **#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
