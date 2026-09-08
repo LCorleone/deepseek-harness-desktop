@@ -100,6 +100,7 @@ const electron = vi.hoisted(() => {
     getZoomLevel: vi.fn(() => zoomLevel),
     on: vi.fn(),
     off: vi.fn(),
+    reloadIgnoringCache: vi.fn(),
     setZoomLevel: vi.fn((level: number) => { zoomLevel = level }),
     setWindowOpenHandler: vi.fn(),
   }
@@ -647,6 +648,152 @@ describe('Electron desktop runtime', () => {
     expect(onRendererBoot).toHaveBeenCalledWith({ status: 'healthy' })
     expect(runtime.rendererBootFailureReason).toBeUndefined()
     await release()
+  })
+
+  describe('runtime renderer recovery', () => {
+    async function mountHealthyRenderer() {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+      const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+      const restart = vi.fn(async () => {})
+      const logger = { error: vi.fn(), errorCause: vi.fn() }
+      const runtime = new ElectronDesktopRuntime(restart, undefined, logger)
+      const release = runtime.schedule(spec)
+      const commitHealthy = vi.fn(async () => {})
+      const boot = runtime.beginRendererBootMonitoring({ commitHealthy })
+      await runtime.mountScheduled()
+      runtime.reportRendererBoot({ status: 'healthy' })
+      await boot
+      vi.useFakeTimers()
+      const window = electron.browserWindows[0]!
+      const gone = window.webContents.on.mock.calls
+        .find(([event]) => event === 'render-process-gone')?.[1]
+      const loaded = window.webContents.on.mock.calls
+        .find(([event]) => event === 'did-finish-load')?.[1]
+      const loadFailed = window.webContents.on.mock.calls
+        .find(([event]) => event === 'did-fail-load')?.[1]
+      const healthy = () => {
+        loaded()
+        runtime.reportRendererBoot({ status: 'healthy' })
+      }
+      const exhaust = async () => {
+        gone({}, { reason: 'oom', exitCode: -536870904 })
+        await vi.advanceTimersByTimeAsync(0)
+        gone({}, { reason: 'oom', exitCode: -536870904 })
+        await vi.advanceTimersByTimeAsync(1000)
+        gone({}, { reason: 'oom', exitCode: -536870904 })
+        await vi.advanceTimersByTimeAsync(3000)
+        gone({}, { reason: 'oom', exitCode: -536870904 })
+        await Promise.resolve()
+      }
+      return { runtime, release, restart, logger, window, gone, loaded, loadFailed, healthy, exhaust, commitHealthy }
+    }
+
+    it.each(['oom', 'crashed', 'abnormal-exit'] as const)('silently reloads after %s without restarting the Host or revealing a hidden window', async (reason) => {
+      const { runtime, release, restart, window, gone, healthy, commitHealthy, logger } = await mountHealthyRenderer()
+      const showCount = window.show.mock.calls.length
+      const focusCount = window.focus.mock.calls.length
+      gone({}, { reason, exitCode: -536870904 })
+      gone({}, { reason, exitCode: -536870904 })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledOnce()
+      healthy()
+      await vi.advanceTimersByTimeAsync(90_000)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledOnce()
+      expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+      expect(window.show).toHaveBeenCalledTimes(showCount)
+      expect(window.focus).toHaveBeenCalledTimes(focusCount)
+      expect(restart).not.toHaveBeenCalled()
+      expect(commitHealthy).toHaveBeenCalledOnce()
+      expect(runtime.rendererBootFailureReason).toBeUndefined()
+      expect(logger.error).toHaveBeenCalledWith('dsh-plugin-desktop: automatic renderer recovery healthy')
+      await release()
+    })
+
+    it('retries a failed main-frame load but ignores subframe errors and aborted navigation', async () => {
+      const { release, window, gone, loadFailed, healthy } = await mountHealthyRenderer()
+      gone({}, { reason: 'oom', exitCode: 9 })
+      await vi.advanceTimersByTimeAsync(0)
+      loadFailed({}, -105, 'NAME_NOT_RESOLVED', spec.url, false)
+      loadFailed({}, -3, 'ABORTED', spec.url, true)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledOnce()
+      loadFailed({}, -102, 'CONNECTION_REFUSED', spec.url, true)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(2)
+      healthy()
+      expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+      await release()
+    })
+
+    it('only asks for help after repeated automatic failure and permits an explicit retry', async () => {
+      const { runtime, release, window, healthy, exhaust } = await mountHealthyRenderer()
+      runtime.setLocalePreference('zh')
+      electron.dialog.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+      await exhaust()
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(3)
+      expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+      expect(electron.dialog.showMessageBox).toHaveBeenCalledWith(window, expect.objectContaining({
+        message: '界面未能自动恢复。',
+        buttons: ['再次尝试恢复', '暂不处理'],
+      }))
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(3)
+      runtime.show()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(4)
+      healthy()
+      expect(electron.dialog.showMessageBox).toHaveBeenCalledTimes(2)
+      await release()
+    })
+
+    it.each(['clean-exit', 'killed'] as const)('does not recover an intentional %s', async (reason) => {
+      const { release, window, gone } = await mountHealthyRenderer()
+      gone({}, { reason, exitCode: 0 })
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+      expect(window.webContents.reloadIgnoringCache).not.toHaveBeenCalled()
+      await release()
+    })
+
+    it.each(['quit', 'release', 'destroy'] as const)('cancels queued automatic recovery after %s', async (action) => {
+      const { runtime, release, window, gone } = await mountHealthyRenderer()
+      gone({}, { reason: 'oom', exitCode: 9 })
+      if (action === 'quit') runtime.prepareToQuit()
+      if (action === 'release') await release()
+      if (action === 'destroy') window.isDestroyed.mockReturnValue(true)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(window.webContents.reloadIgnoringCache).not.toHaveBeenCalled()
+      expect(electron.dialog.showMessageBox).not.toHaveBeenCalled()
+      await release()
+    })
+
+    it('ignores a delayed fallback confirmation after disposal and deduplicates prompts', async () => {
+      const { runtime, release, window, gone, exhaust } = await mountHealthyRenderer()
+      let answer!: (result: { response: number, checkboxChecked: boolean }) => void
+      electron.dialog.showMessageBox.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+      await exhaust()
+      runtime.show()
+      gone({}, { reason: 'oom', exitCode: 9 })
+      expect(electron.dialog.showMessageBox).toHaveBeenCalledOnce()
+      await release()
+      answer({ response: 0, checkboxChecked: false })
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(3)
+    })
+
+    it('logs a fallback dialog failure and permits another attempt from the tray', async () => {
+      const { runtime, release, window, healthy, exhaust, logger } = await mountHealthyRenderer()
+      electron.dialog.showMessageBox.mockRejectedValueOnce(new Error('dialog unavailable'))
+      await exhaust()
+      expect(logger.error).toHaveBeenCalledWith('dsh-plugin-desktop: renderer recovery failed: dialog unavailable')
+      runtime.show()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(window.webContents.reloadIgnoringCache).toHaveBeenCalledTimes(4)
+      healthy()
+      await release()
+    })
   })
 
   it('starts from the saved locale and rebuilds native tray commands when it changes', async () => {

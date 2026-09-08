@@ -166,6 +166,8 @@ Release operator 必须先发布两个平台产物，再让版本可被发现。
 
 ## 日志与诊断
 
+启动健康后，如果界面进程意外退出（包括内存不足），应用会静默重载现有窗口，不重启 Host、不弹窗，也不唤起已隐藏的窗口。只有页面加载完成且客户端 Loader 上报健康，才算恢复成功；恢复尝试在 30 秒内未完成则视为超时。最多自动尝试三次：首次不延迟，后续分别等待一秒、三秒；恢复后保持健康满一分钟才重置重试次数。连续失败时暂停自动恢复，并打开系统原生兑底提示：**再次尝试恢复** 授权新一轮有次数上限的恢复，**暂不处理** 则保留后台服务运行。可从托盘选择 **打开 DSH Desktop** 再次打开提示，或选择 **导出诊断信息…** 继续调查。重载期间画面可能短暂中断，未发送的输入可能丢失；此机制不修复崩溃或内存增长的根因。启动失败仍使用既有恢复流程；主动终止 renderer 和应用退出期间不会发起自动恢复。
+
 DSH Desktop 将 UTF-8 日志写入 Electron 用户数据目录：Windows 位于 `%APPDATA%\DSH Desktop\logs`，macOS 位于 `~/Library/Application Support/DSH Desktop/logs`。完整日志使用 `dsh-YYYY-MM-DD.log`，warning 与 error 还会写入 `dsh-YYYY-MM-DD.error.log`。单文件达到 10 MiB 后轮转，启动时删除七天前的文件，整个目录保持在 200 MiB 以下。`dsh-desktop.logLevel` 设置控制详细程度，默认为 `info`。
 
 在 macOS 与 Windows 上，从托盘选择 **导出诊断信息…**，应用会在相邻的 `diagnostics` 目录创建 ZIP，并在系统文件管理器中定位它。导出在 Electron 主线程之外执行，会在共享的 50 MiB evidence cap 内收集最近的自有日志和本地 Crashpad `.dmp`，并在存在时包含 `crash-evidence/active-run.json` 标记，同时加入 `system-info.txt`，只保留最新三份 ZIP。创建任何文件前，确认对话框会说明隐私边界。系统会脱敏可识别的凭据，但日志仍可能包含本地路径、工作区 ID、会话 ID、提示词、工具输出或第三方插件消息；crash dump 可能包含进程内存片段。分享诊断包前应先检查内容，公开上传时尤其如此。每份诊断包还包含 `self-check-report.json`：一份带签名的启动校验决定、内嵌策略摘要与捆绑 Node 自检快照，管理员验证方式见 [docs/diagnostics-self-check.md](docs/diagnostics-self-check.md)。

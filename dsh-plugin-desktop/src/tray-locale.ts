@@ -61,6 +61,33 @@ export interface DesktopDiagnosticsPrivacyCopy {
   readonly cancel: string
 }
 
+/** Shape shared by native recovery/restore prompts (title, message, detail, buttons). */
+export interface DesktopRestartConfirmationCopy {
+  readonly title: string
+  readonly message: string
+  readonly detail: string
+  readonly confirm: string
+  readonly cancel: string
+}
+
+/** Fallback prompt after automatic renderer recovery is exhausted (tray-locale pattern). */
+export const rendererRecoveryCopy: Record<DesktopLocale, DesktopRestartConfirmationCopy> = {
+  en: {
+    title: 'Restore DSH Desktop',
+    message: 'The interface could not recover automatically.',
+    detail: 'Automatic recovery stopped after repeated failures to avoid a restart loop. You can try again without restarting the background service. Unsent input may be lost. Export diagnostics from the tray to investigate. Choose Open DSH Desktop from the tray to return to this prompt later.',
+    confirm: 'Try recovery again',
+    cancel: 'Not now',
+  },
+  zh: {
+    title: '恢复 DSH Desktop',
+    message: '界面未能自动恢复。',
+    detail: '自动恢复连续失败，为避免重启循环已暂停。可以再次尝试恢复，无需重启后台服务。未发送的输入可能丢失。请从托盘导出诊断信息以继续调查。稍后可从托盘选择“打开 DSH Desktop”再次打开此提示。',
+    confirm: '再次尝试恢复',
+    cancel: '暂不处理',
+  },
+}
+
 const diagnosticsPrivacyCopy: Record<DesktopLocale, DesktopDiagnosticsPrivacyCopy> = {
   en: {
     title: 'Export Diagnostics',
