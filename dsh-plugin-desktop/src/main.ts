@@ -22,6 +22,7 @@ import {
 } from './desktop-runtime-environment.ts'
 import { desktopProductVersion, ElectronDesktopRuntime } from './electron-runtime.ts'
 import { desktopBuildVersion } from './desktop-build-version.ts'
+import { installWindowLifetimeGuard } from './window-lifetime.ts'
 import {
   ElectronStderrLogger,
   installDesktopChildProcessLogging,
@@ -594,6 +595,11 @@ async function start(): Promise<void> {
   })
   try {
     await app.whenReady()
+    // Windows decides nothing (the #66 boot gap): the agreed disclaimer
+    // window was destroyed seconds before the shell window existed, Electron's
+    // Windows default quit-on-last-window-close silently exited mid-boot, and
+    // the shutdown coordinator owns every exit path instead.
+    installWindowLifetimeGuard(app)
     startupStage = 'shell-environment'
     lifecycleRecorder.transitionStartupStage(startupStage)
     if (process.platform === 'win32') app.setAppUserModelId('ai.deepseek.dsh.desktop')
