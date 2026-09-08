@@ -25,8 +25,11 @@ import type { App } from 'electron'
  * structurally satisfy a narrow one-event interface.
  */
 export function installWindowLifetimeGuard(app: App): () => void {
-  const on = app.on as unknown as (event: 'window-all-closed', listener: (event: { preventDefault(): void }) => void) => unknown
-  const off = app.off as unknown as (event: 'window-all-closed', listener: (event: { preventDefault(): void }) => void) => unknown
+  // bind(app) is load-bearing: an extracted unbound `app.on(...)` call runs
+  // with this === undefined inside Node's EventEmitter ("reading '_events'"
+  // — the #67 boot crash); the cast only smooths the overload family.
+  const on = app.on.bind(app) as unknown as (event: 'window-all-closed', listener: (event: { preventDefault(): void }) => void) => unknown
+  const off = app.off.bind(app) as unknown as (event: 'window-all-closed', listener: (event: { preventDefault(): void }) => void) => unknown
   const guard = (event: { preventDefault(): void }): void => { event.preventDefault() }
   on('window-all-closed', guard)
   return () => { off('window-all-closed', guard) }
