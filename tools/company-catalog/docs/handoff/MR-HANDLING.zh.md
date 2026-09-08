@@ -70,6 +70,9 @@ node tools/company-catalog/cli.mjs accept-handoff <名>@<版本>
 
 accept 产出：out/packages/ 的 tgz + allowlist 条目片段（贴入
 tools/company-catalog/allowlist.json，同版本字节闸自动核对）。
+repository 惯例：插件 package.json 自带则用其值；否则统一填 config 仓包页
+`https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
+（2026-09-08 定，详见 SOP ④）。
 
 ## 4. 发布（细节全在 RELEASE.zh.md，此处索引）
 

@@ -48,6 +48,12 @@
      预制回执、调包回执、别台机器验证过的回执一律拒（换机器受理前先在本机重跑 ②）
    → 自动校验 PASS+防陈旧（tgz sha 复核）→ 写 allowlist.json → 生成 commit
    （缺 repository 字段必须补 --repository；同版本不同字节会被拒——不可变红线）
+   **repository 惯例（2026-09-08 定）**：tarball 通道必填 https URL。插件 package.json
+   自带 repository 就用它（free-search 先例）；没有（本地构建常见）→ 统一填
+   config 仓包页地址：
+   `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
+   （语义=本包由公司目录托管；桌面端只对签名值做规范化比对，不访问该 URL。
+   MR 里可顺口问同事有无真实源码仓，有则优先用真实的）
    然后：合并同事的 MR（GitLab 上点），push desktop 仓的 accept commit。
 
 ⑤ 签名发布——先 beta 灰度（名单：你+sebtang+lizywu）
@@ -125,3 +131,5 @@ desktop 仓（你）
   stable 发布禁令（横切评审 P1 守卫）；横幅方向校验与撤销粘滞对齐见当日 commit；回执指纹本机记录闸门（out/verdict-receipts/）同日补上：回执须本机 verify 产生
 - 2026-09-08：evidence/checks 定性为自报字段——闸门只验枚举，人审不核验
   真实性不索要证明（含理由：安全边界在所有者侧审计+安装链三验）
+- 2026-09-08：repository 惯例定案（无源码仓的本地构建件统一指 config 仓包页
+  URL，见 ④）
