@@ -303,7 +303,7 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **进行中**：#67 构建（run 34178988981）→下载 asserts 核 SHA→July 真机终验（同意→主窗出=主验点；Kimi 切换/X 退出/client_version=2.0.3+b67）。
 **发车后立即可做**：fleet 群发（终验过后）。
 **用户动作**：sebtang/lizywu 在 10.173.59.30 开账号+repo Developer→「照 MR !1 提交」；0.4.184 fleet 反馈。
-**挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 声明窗 Escape/render-gone P3 · sso-gate 真机浏览器登录路径主动测一次（#67 后清 portal 票触发）· 遥测 P3 won't-fix 项 · kimi maxTokens 未给（运维补→重烘）。
+**挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 声明窗 Escape/render-gone P3 · sso-gate 真机浏览器登录路径主动测一次（#67 后清 portal 票触发）· 遥测 P3 won't-fix 项。maxTokens 已拍板 32K 回退不填（2026-09-08）。
 **观察**：fleet 事件汇入 · 同事首 MR（MR-HANDLING.zh.md 冷启动）。
 
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
