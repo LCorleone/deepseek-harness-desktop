@@ -91,6 +91,7 @@
   },
   "files": [
     "agent-presets/**",
+    "build/app-icon.ico",
     "build/app-icon.png",
     "build/app-icon-mac.png",
     "build/tray-icon.svg",
@@ -130,7 +131,7 @@
     }
   },
   "scripts": {
-    "build": "node scripts/generate-mac-app-icon.mjs && node scripts/generate-tray-icons.mjs && node scripts/clean.mjs && tsdown && node scripts/embed-desktop-policy.mjs && node scripts/embed-company-manifest.mjs && node scripts/embed-cli-lock-patch.mjs && vite build --config vite.native-ui.config.ts && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
+    "build": "node scripts/generate-windows-app-icon.mjs && node scripts/generate-mac-app-icon.mjs && node scripts/generate-tray-icons.mjs && node scripts/clean.mjs && tsdown && node scripts/embed-desktop-policy.mjs && node scripts/embed-company-manifest.mjs && node scripts/embed-cli-lock-patch.mjs && vite build --config vite.native-ui.config.ts && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.native-ui.json --noEmit && tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.tests.client.json --noEmit",
     "test": "vitest run",
     "verify:closure": "node --test scripts/runtime-closure.spec.mjs && node scripts/verify-runtime-closure.mjs",
@@ -339,6 +340,7 @@
     },
     "files": [
       "agent-presets/**",
+      "build/app-icon.ico",
       "build/app-icon.png",
       "build/app-icon-mac.png",
       "build/tray-icon.svg",
@@ -380,10 +382,11 @@
         }
       ],
       "artifactName": "DSH-Desktop-${version}-${arch}-Portable.${ext}",
-      "icon": "build/app-icon.png"
+      "icon": "build/app-icon.ico"
     },
     "nsis": {
       "include": "installer.nsh",
+      "installerIcon": "build/app-icon.ico",
       "license": "THIRD_PARTY_NOTICES.md",
       "oneClick": false,
       "perMachine": false,
@@ -393,6 +396,7 @@
       "createStartMenuShortcut": true,
       "differentialPackage": false,
       "shortcutName": "DSH Desktop",
+      "uninstallerIcon": "build/app-icon.ico",
       "useZip": false,
       "artifactName": "DSH-Desktop-${version}-${arch}-Setup.${ext}"
     },

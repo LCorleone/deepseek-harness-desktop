@@ -741,7 +741,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
     await resolveDesktopUpdateArtifact(userDataPath, artifact, result.response === 0)
   }
 
-  /** Start the downloaded NSIS installer before releasing the current process. */
+  /** Start the downloaded NSIS installer visibly before releasing the current process. */
   private async launchWindowsUpdateInstaller(installerPath: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let child: ReturnType<typeof spawn>

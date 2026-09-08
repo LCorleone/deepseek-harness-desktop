@@ -251,6 +251,30 @@ describe('published package surface', () => {
     }
   })
 
+  it('keeps wide Markdown table scrollbars visible without hover', () => {
+    const patchPath = './patches/dsh-client-ui-primitives@0.1.1-rc.2.patch'
+    expect(workspaceManifest.resolutions).toMatchObject({
+      '@deepseek-ai/dsh-client-ui-primitives@npm:0.1.1-rc.2': expect.stringContaining(patchPath),
+      '@deepseek-ai/dsh-client-ui-primitives@npm:^0.1.1-rc.2': expect.stringContaining(patchPath),
+    })
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedStyles = readFileSync(new URL(
+      'node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/markdown/MarkdownText.module.css',
+      packageRoot,
+    ), 'utf8')
+    for (const styles of [patch, installedStyles]) {
+      expect(styles).toContain('overflow-x: auto;')
+      expect(styles).toContain('scrollbar-width: thin;')
+      expect(styles).toContain('::-webkit-scrollbar-thumb')
+      expect(styles).toContain('height: 8px;')
+      expect(styles).toContain('background: var(--dsw-alias-label-tertiary, #9098a3);')
+    }
+    expect(installedStyles).not.toContain('overflow-x: hidden;')
+    expect(installedStyles).not.toMatch(
+      /\.tableScroll:global\(\.md-table-wide\):hover,[\s\S]*?overflow-x: auto;/u,
+    )
+  })
+
   it('marks the upstream Workspace browser as the desktop folder-drop target', () => {
     const patchPath = './patches/dsh-client-ui-workspace@0.1.1-rc.2.patch'
     expect(workspaceManifest.resolutions).toMatchObject({
@@ -757,6 +781,7 @@ describe('published package surface', () => {
     expect(manifest.build?.toolsets).toEqual({ nsis: '1.2.1' })
     expect(manifest.files).toEqual(expect.arrayContaining([
       'agent-presets/**',
+      'build/app-icon.ico',
       'build/app-icon.png',
       'build/app-icon-mac.png',
       'build/tray-icon.svg',
@@ -765,6 +790,7 @@ describe('published package surface', () => {
     ]))
     expect(manifest.build?.files).toEqual([
       'agent-presets/**',
+      'build/app-icon.ico',
       'build/app-icon.png',
       'build/app-icon-mac.png',
       'build/tray-icon.svg',
@@ -777,7 +803,7 @@ describe('published package surface', () => {
     expect(manifest.build?.mac?.icon).toBe('build/app-icon-mac.png')
     expect(manifest.build?.mac?.mergeASARs).toBe(false)
     expect(manifest.build?.mac?.signIgnore).toEqual(['\\.(?:pak|dat|wasm)$'])
-    expect(manifest.build?.win?.icon).toBe('build/app-icon.png')
+    expect(manifest.build?.win?.icon).toBe('build/app-icon.ico')
     expect(manifest.build?.win?.target).toEqual([{
       target: 'nsis',
       arch: ['x64'],
@@ -785,6 +811,7 @@ describe('published package surface', () => {
     expect(manifest.build?.win?.artifactName).toBe('DSH-Desktop-${version}-${arch}-Portable.${ext}')
     expect(manifest.build?.nsis).toEqual({
       include: 'installer.nsh',
+      installerIcon: 'build/app-icon.ico',
       license: 'THIRD_PARTY_NOTICES.md',
       oneClick: false,
       perMachine: false,
@@ -794,6 +821,7 @@ describe('published package surface', () => {
       createStartMenuShortcut: true,
       differentialPackage: false,
       shortcutName: 'DSH Desktop',
+      uninstallerIcon: 'build/app-icon.ico',
       useZip: false,
       artifactName: 'DSH-Desktop-${version}-${arch}-Setup.${ext}',
     })
@@ -837,6 +865,7 @@ describe('published package surface', () => {
   it('separates unsigned smoke packaging from the signed macOS release', () => {
     const packageDir = readFileSync(new URL('scripts/package-dir.mjs', packageRoot), 'utf8')
 
+    expect(manifest.scripts?.build).toContain('node scripts/generate-windows-app-icon.mjs')
     expect(manifest.scripts?.build).toContain('node scripts/generate-mac-app-icon.mjs')
     expect(manifest.scripts?.['package:dir']).toBe('yarn run build && node scripts/package-dir.mjs')
     expect(packageDir).toContain("CSC_IDENTITY_AUTO_DISCOVERY: 'false'")
@@ -960,6 +989,43 @@ describe('published package surface', () => {
       .digest('hex')
 
     expect(digest).toBe('315fbc6e57ff1f34894f21f66fb7f9f26deccf78333c71fad21a6cec64e7de80')
+  })
+
+  it('generates exact-DPI Windows application and installer icon frames', () => {
+    const icon = readFileSync(new URL('build/app-icon.ico', packageRoot))
+    const expectedSizes = [16, 20, 24, 28, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256]
+
+    expect(icon.readUInt16LE(0)).toBe(0)
+    expect(icon.readUInt16LE(2)).toBe(1)
+    expect(icon.readUInt16LE(4)).toBe(expectedSizes.length)
+
+    const entries = expectedSizes.map((expectedSize, index) => {
+      const offset = 6 + index * 16
+      const width = icon[offset] === 0 ? 256 : icon[offset]
+      const height = icon[offset + 1] === 0 ? 256 : icon[offset + 1]
+      const byteLength = icon.readUInt32LE(offset + 8)
+      const dataOffset = icon.readUInt32LE(offset + 12)
+      expect(width).toBe(expectedSize)
+      expect(height).toBe(expectedSize)
+      expect(icon.readUInt16LE(offset + 4)).toBe(1)
+      expect(icon.readUInt16LE(offset + 6)).toBe(32)
+      expect(dataOffset + byteLength).toBeLessThanOrEqual(icon.length)
+      return { size: expectedSize, byteLength, dataOffset }
+    })
+
+    for (const entry of entries.slice(0, -1)) {
+      expect(icon.readUInt32LE(entry.dataOffset)).toBe(40)
+      expect(icon.readInt32LE(entry.dataOffset + 4)).toBe(entry.size)
+      expect(icon.readInt32LE(entry.dataOffset + 8)).toBe(entry.size * 2)
+      expect(icon.readUInt16LE(entry.dataOffset + 12)).toBe(1)
+      expect(icon.readUInt16LE(entry.dataOffset + 14)).toBe(32)
+      expect(icon.readUInt32LE(entry.dataOffset + 16)).toBe(0)
+    }
+
+    const largest = entries.at(-1)
+    expect(largest).toBeDefined()
+    expect(icon.subarray(largest?.dataOffset, (largest?.dataOffset ?? 0) + 8))
+      .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   })
 
   it('generates a centered macOS icon with a 100-pixel visual inset', async () => {
