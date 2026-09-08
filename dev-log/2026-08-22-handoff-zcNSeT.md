@@ -306,6 +306,26 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 **挂着**：横切 P3 残余+遗留表 · P8 收官三部曲 · 上游 0.1.2 升级专项（档3 弹窗）· 声明窗 Escape/render-gone P3 · sso-gate 真机浏览器登录路径主动测一次（#67 后清 portal 票触发）· 遥测 P3 won't-fix 项。maxTokens 已拍板 32K 回退不填（2026-09-08）。
 **观察**：fleet 事件汇入 · 同事首 MR（MR-HANDLING.zh.md 冷启动）。
 
+### #67 崩→#68 真机全通（2026-09-08 10:35-11:10）
+**#67 崩**（a7e3d82b…）：Recovery 窗「Electron initialization / reading '_events'」——用户拿到完整堆栈：installWindowLifetimeGuard→_addListener。**根因=守卫首版把 app.on 抽出来解绑调用**（`const on = app.on as unknown as …; on(...)` → this=undefined → EventEmitter 内读 this._events 炸）；vi.fn 闭包 fake 盖不住（不依赖 this）——**「单测绿打包死」第五连**。修 a538160073：bind(app)+spec 换真 EventEmitter fake（解绑类错测试直接红）。
+**#68=34180706624（b68，SHA256 33894c1f…d2380）10:53 下载 asserts**，发布前抽 exe 快验 main.js 守卫带 bind（asar 取证管道复用：py7zr offset 232858→app68.7z→main.js grep）。
+**b68 真机验收全通**：P0 三步✓（同意→主窗出/重开不弹/日志头 2.0.3+b68）+P1 4/5/6✓（选择器/Kimi 对话/X 退出）。**库核实证**（DSH_LOG）：disclaimer agree 一行（11:02:50）、第二次启动零 disclaimer 行=同版不重弹、sso_login silent、catalog 双通道 seq16 stable+seq15 beta、Kimi 6 连发用量行 provider=Kimi input 27K→32K 递增。**桌面端四连雷全拆**（scheme 锚点→contextBridge 崩→空窗退出→解绑 _events）。
+**P1-7 沙箱铁律半成**：Kimi 首拒后升权选错档（请求升到 workspace-write=当前档→执行器正确拒「不严格更宽」→道歉停手违反铁律）；用户一句「你不是能弹窗吗」后正确升 danger-full-access→弹窗→批准→桌面写入成。**弹窗链路本身通，缺的是首拒升权目标指引**——修 b6521a6904：persona 加「请求必须严格宽于拒绪命名模式；工作区外路径=danger-full-access；重求当前档=no-op 被拒」。
+
+### Kimi 多模态+选择器组名（2026-09-08 11:00-11:20，#69 待发）
+**多模态**（e58509f526）：用户提示 kimi-k2.6 是多模态——上游 PiAiModelProfile.input?: PiAiModality[]，注释明说「声明 images 才让手写 vision 模型可用；手写模型不声明=纯文本」→ 不配图根本发不到 Kimi。blob v2 模型条目加可选 input（'text'/'image' 枚举/非空/去重，解码器+生成器双侧校验+5 红测），kimi-k2.6 烘 ['text','image']；DSV4 不声明（deepseek 是否吃图未确认，若确认加一行重烘即可）。
+**组名**（2863708742）：用户吐槽选择器「Company LLM Gateway>deepseek / Kimi>kimi-k2.6」不合理——运维名漏进用户面。改 provider displayName Company LLM Gateway→DeepSeek（零代码重烘）；**连费用量表 provider 列跟变**（旧存量行仍旧名，telemetry.zh.md 已注面板 SQL 用新值）。
+
+### 当前 TODO 快照（2026-09-08 11:21）
+**进行中·一步**：#69 发车（用户按住构建键，三个 commit 已在 master：多模态/升权指引/组名）→ asserts SHA → 用户重装验收。
+**#69 验收清单**：①选择器组 DeepSeek/Kimi ②Kimi 发图（拖一张图+问图中内容→能答=多模态通）③让 agent 写桌面文件→首拒后应直接带 danger-full-access+一句理由重试弹窗（不再道歉停手/不再重求同级）④其余回归（同意→主窗）。
+**发车后近期**：①fleet 群发（#69 验收过后，用户官室）②沙箱档2评估：若档1（提示词）+升权指引后首拒重试率仍不理想（用户再观察几天），上 desktop-exec 特权工具（~2-3 天）。
+**用户动作**：0.4.184 fleet 反馈；确认 deepseek-v4 是否也吃图（吃则重烘加 input）。
+**挂账·代码类**：①sso-gate 真机浏览器登录路径主动测一次（清 portal 票触发静默失败→出登录窗→浏览器流程，#69 后）②声明窗 Escape 键绑定+早期渲染死亡灰屏 P3③start-recovery 窗菜单英语化未动④上游 0.1.2 升级专项（档3 首拒自动弹窗，改上游 executor=红线内专项处理）⑤遥测 P3 won't-fix 项。
+**挂账·流程类**：①同事 onboarding 另 session（MR-HANDLING.zh.md 冷启动）②遇测 P8 收官三部曲③横切评审 P3 残余+遗留表④多打包 workflow 时构建号 seq 语义复审（评审 P3 注释已留）。
+**观察面**：fleet DSH_LOG 事件汇入 · 同事首 MR · Kimi 多模态真机表现 · 升权指引后的首拒重试行为。
+**事故台账（今天两起，共性=「单测绿打包死」第五连）**：解绑 _events（vi.fn fake 盖不住 this 依赖→真 EventEmitter fake 防再犯）；深等值 spec 漏改被 && 链带进 commit（grep 匹配成功≠全绿，看 Tests 行）。
+
 ## 会话收尾快照（2026-09-02 收工，下一会话冷启动入口）
 **当日闭环**：GitGuardian 泄露事故四层处置（blob 化→历史重写→1008 轮换→#43 直通）/ P5 usage 上报双构建实机入库 / #10 甲 CLI 钳制 + #11 lint 守护（评审批准，#44 回归通过）。master=1a8c03005c（全 push），工作树净。
 **进行中/阻塞**：无进行中代码。P6 卡在三问（脚本管道/description 脱敏/会话明文口径，用户在想）；logo 等 SVG；上游 0.1.2 等发版；测试组扩面用户主导中。
