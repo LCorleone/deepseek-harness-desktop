@@ -348,7 +348,8 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 
 ### 安全收尾三件（2026-09-08 18:10）
 **会话分工（2026-09-08 18:18 记）**
-**TODO 关闭（2026-09-08 18:20 用户拍板）**：⑤ deepseek-v4 输入模态——只有 Kimi 多模态，DeepSeek 保持纯文本声明=终态，关闭。⑩ 批1 图标/滚动条打包态目检——用户目检关闭。：同事插件仓 MR 审查/merge/发布线由另一个 pi session 负责（标题「审查同事提交的插件仓MR」）——查 MR 线改动/发布细节看那个 session。两 session 已实证可并行且会收敛（本 session 17:46 下架 dsh-context 签 seq19，另一 session 17:15+ 发 dai-agent-teams，最终 live beta=seq20 四条目合并对齐，state=20）。
+**TODO 关闭（2026-09-08 18:20 用户拍板）**
+**TODO 关闭·续（2026-09-08 18:21）**：② 泄露邮件（用户处理完毕关闭）③ push protection 不开（拍板）。① fleet 群发——已发，同事装机测试中（观察 DSH_LOG 看收敛：client_version→b71/boot_verify 零 rejected/事件汇入）。：⑤ deepseek-v4 输入模态——只有 Kimi 多模态，DeepSeek 保持纯文本声明=终态，关闭。⑩ 批1 图标/滚动条打包态目检——用户目检关闭。：同事插件仓 MR 审查/merge/发布线由另一个 pi session 负责（标题「审查同事提交的插件仓MR」）——查 MR 线改动/发布细节看那个 session。两 session 已实证可并行且会收敛（本 session 17:46 下架 dsh-context 签 seq19，另一 session 17:15+ 发 dai-agent-teams，最终 live beta=seq20 四条目合并对齐，state=20）。
 ① **主仓不迁移**（用户拍板）：GitGuardian/secret 扫描是 GitHub 全平台内容级扫描，换仓零隐蔽收益；真风险已关死（key 轮换作废+历史重写+零明文）；且迁移会砸构建号权威（bN=run_number 归 1 撞历史号）+CI/secrets 重配。若后续要加固：开 push protection（免费，推送时拦疑似密钥）——待用户点头。
 ② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
 ③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
