@@ -124,7 +124,7 @@ const FAKE_GATEWAY_BLOB = encodeModelGatewayBlob({
   providers: [
     {
       route: 'dsh-company-gateway',
-      displayName: 'Company LLM Gateway',
+      displayName: 'DeepSeek',
       apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
       baseUrl: 'https://gateway.company.example/v1',
       apiKey: 'fake-gateway-key',
@@ -166,7 +166,7 @@ function assistantMessage(
 const ATTRIBUTION = {
   userEmail: () => 'user@company.example',
   baseUrlFor: (provider: string) => provider === 'dsh-company-gateway' ? 'https://gateway.company.example/v1' : '',
-  displayNameFor: (provider: string) => provider === 'dsh-company-gateway' ? 'Company LLM Gateway' : provider === 'dsh-company-kimi' ? 'Kimi' : provider,
+  displayNameFor: (provider: string) => provider === 'dsh-company-gateway' ? 'DeepSeek' : provider === 'dsh-company-kimi' ? 'Kimi' : provider,
   clientVersion: '9.9.9-test',
 }
 
@@ -335,7 +335,7 @@ describe('model usage projection', () => {
     // Four disjoint buckets; reasoning is an output subset and never added.
     expect(row).toMatchObject({
       userEmail: 'user@company.example',
-      provider: 'Company LLM Gateway',
+      provider: 'DeepSeek',
       model: 'DSV4-DSH',
       baseUrl: 'https://gateway.company.example/v1',
       inputTokens: 100,
@@ -1024,7 +1024,7 @@ describe('model usage reporter plugin', () => {
     const byColumn = Object.fromEntries(columns.map((column, index) => [column, query?.values[index]]))
     expect(byColumn).toEqual({
       user_email: 'user@company.example',
-      provider: 'Company LLM Gateway',
+      provider: 'DeepSeek',
       model: 'DSV4-DSH',
       base_url: 'https://gateway.company.example/v1',
       input_tokens: 9,

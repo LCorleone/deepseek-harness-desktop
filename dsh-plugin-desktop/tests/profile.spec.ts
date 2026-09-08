@@ -957,12 +957,12 @@ describe('desktop profile composition', {
     // composed Loader graph, each profile names only its credential
     // reference, and nothing is written to the settings or credentials
     // documents. The model picker surfaces the display names: DSV4-DSH
-    // renders as deepseek-v4-flash under Company LLM Gateway, and kimi-k2.6
+    // renders as deepseek-v4-flash under DeepSeek, and kimi-k2.6
     // (no name) renders as its id under Kimi.
     expect(rows.find(row => row.id === 'llm-pi-ai')?.config).toMatchObject({
       providers: {
         'dsh-company-gateway': {
-          displayName: 'Company LLM Gateway',
+          displayName: 'DeepSeek',
           apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
           api: 'openai-completions',
           baseURL: gateway.providers[0]?.baseUrl,

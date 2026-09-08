@@ -13,7 +13,7 @@
  *
  * Usage:
  *   DSH_GATEWAY_PROVIDERS_JSON='{"providers":[
- *     {"route":"dsh-company-gateway","displayName":"Company LLM Gateway",
+ *     {"route":"dsh-company-gateway","displayName":"DeepSeek",
  *      "apiKeyEnv":"DSH_COMPANY_LLM_KEY","baseUrl":"https://gw.example/v1",
  *      "apiKey":"...","models":[{"id":"DSV4-DSH","name":"deepseek-v4-flash"}]},
  *     {"route":"dsh-company-kimi","displayName":"Kimi",

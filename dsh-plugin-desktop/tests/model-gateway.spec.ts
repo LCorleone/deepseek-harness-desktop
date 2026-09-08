@@ -114,7 +114,7 @@ describe('model gateway blob codec', () => {
     const [gatewayProvider, kimiProvider] = gateway.providers
     expect(gatewayProvider).toMatchObject({
       route: 'dsh-company-gateway',
-      displayName: 'Company LLM Gateway',
+      displayName: 'DeepSeek',
       apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
       models: [{ id: 'DSV4-DSH', name: 'deepseek-v4-flash', contextWindow: 512000 }],
     })
@@ -338,7 +338,7 @@ describe('managed gateway provider profile', () => {
     if (provider === undefined) throw new Error('test requires the gateway provider')
 
     expect(companyModelGatewayProviderProfile(provider)).toEqual({
-      displayName: 'Company LLM Gateway',
+      displayName: 'DeepSeek',
       apiKeyEnv: 'DSH_COMPANY_LLM_KEY',
       api: 'openai-completions',
       baseURL: provider.baseUrl,

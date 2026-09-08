@@ -17,6 +17,8 @@
 一次模型调用一行。列：`user_email, provider, model, base_url,
 input/cache_read/cache_write/output/reasoning/total_tokens, tokens_per_second,
 ttft_ms, latency_ms, session_id, turn, step, client_version, created_at`。
+`provider` 记名册 displayName：`DeepSeek`（2026-09-08 起，原 Company LLM
+Gateway）/ `Kimi`——面板 SQL 按新值过滤（b68 及以前的存量行仍是旧名）。
 写入节奏：内存队列 50 行或 10 秒双触发批量 flush；连不上退避重连（1s→60s），
 队列上限 5000 行溢出丢最老。
 
