@@ -339,8 +339,25 @@ export function apply(ctx: Context, config: Config): void {
       // client-connection row is active) so it can mint the browser-session
       // cookie before the plain renderer URL loads — otherwise the window
       // receives the 401 wall and the renderer never boots (#73).
-      readSessionSeedUrl: () => ctx.get('connection')
-        ?.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`),
+      // Mixed-fleet guard (review P1→P2): a 0.1.1 runtime's connection
+      // service exists WITHOUT the 0.1.2 `authenticatedUrl` method, and
+      // `?.` does not cover a missing method — the TypeError would surface
+      // outside the shell's mint degradation and abort the whole mount. A
+      // typeof guard degrades to the bare URL (the 401-wall-equivalent
+      // serving path the renderer health gate already owns) after one log
+      // line; an absent service stays the silent hand-built-tree case.
+      readSessionSeedUrl: () => {
+        const connection = ctx.get('connection') as
+          | { authenticatedUrl?: (baseUrl: string) => string }
+          | undefined
+        if (typeof connection?.authenticatedUrl !== 'function') {
+          if (connection !== undefined) {
+            ctx.logger.error('dsh-plugin-desktop: connection service exposes no authenticatedUrl (0.1.1 mixed fleet); the shell loads the unauthenticated desktop URL')
+          }
+          return undefined
+        }
+        return connection.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`)
+      },
       productName: 'Deloitte DSH Desktop',
       // Authenticated SSO builds suffix the visible caption with the account
       // email (one more native confirmation surface); every other launch

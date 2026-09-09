@@ -15,7 +15,7 @@ import { installDesktopPnpmRuntime } from '../lib/desktop-runtime-environment.js
 import { installProfilePackageResolver } from '../lib/module-resolution.js'
 import { healDesktopProfileModuleFallback, prepareDesktopProfile } from '../lib/profile.js'
 import { DesktopProfileService } from '../lib/profile-service.js'
-import { plantShellSessionCookie } from '../lib/shell-session.js'
+import { authenticateRendererSession } from '../lib/shell-session.js'
 
 const BIN_NAME = 'dsh-plugin-desktop-profile-smoke'
 const HOST_SERVICE_PLUGIN_NAME = 'dsh-desktop-host-services-smoke-plugin'
@@ -253,26 +253,47 @@ try {
   }
   // #73 gate — the native shell's exact serving path: the unauthenticated
   // desktop renderer URL must be the 401 wall (the packaged DOA shape), and
-  // the session cookie planted through the launcher's seeding module must
-  // turn that same URL into the assembled application document.
+  // the browser session authenticated through the launcher's seeding module
+  // (upstream v2.0.5 authenticateRendererSession semantics over a Node-fetch
+  // cookie-jar emulation — the Electron main process rides session.fetch)
+  // must turn that same URL into the assembled application document.
   const unauthenticated = await fetch(expectedUrl)
   await unauthenticated.body?.cancel()
   if (unauthenticated.status !== 401) {
     throw new Error(`unauthenticated desktop renderer URL returned HTTP ${String(unauthenticated.status)} instead of the 401 wall`)
   }
-  const planted = []
-  const plantedName = await plantShellSessionCookie(
-    ctx.connection.authenticatedUrl(expectedUrl),
-    new URL(expectedUrl).origin,
-    { set: async details => { planted.push(details) } },
-    (url, init) => fetch(url, init),
-  )
-  const plantedCookie = planted.find(entry => entry.name === plantedName)
-  if (plantedCookie === undefined || plantedCookie.url !== `${new URL(expectedUrl).origin}/`) {
-    throw new Error(`shell session seeding planted an unexpected jar entry: ${JSON.stringify(planted)}`)
+  // A cookie-jar emulation over Node's undici: stores Set-Cookie lines,
+  // replays them as a Cookie header, and walks redirect:'follow' by hand —
+  // the semantics the Electron main process gets natively from
+  // session.fetch + credentials:'include'. This exercises the REAL seeding
+  // module (lib/shell-session.js) against the REAL 0.1.2 BrowserAuth.
+  const jar = new Map()
+  const jarCookieHeader = () => [...jar.values()].join('; ')
+  const jarFetch = async (url, init) => {
+    const cookie = jarCookieHeader()
+    const response = await fetch(url, {
+      ...init,
+      redirect: 'manual',
+      headers: { ...(init.headers ?? {}), ...(cookie === '' ? {} : { cookie }) },
+    })
+    for (const line of response.headers.getSetCookie?.() ?? []) {
+      const pair = line.split(';', 1)[0] ?? ''
+      const name = pair.slice(0, pair.indexOf('='))
+      if (name !== '') jar.set(name, pair)
+    }
+    if (response.status >= 300 && response.status < 400 && init.redirect === 'follow') {
+      const location = new URL(response.headers.get('location') ?? '/', url).toString()
+      await response.body?.cancel()
+      return await jarFetch(location, init)
+    }
+    return response
+  }
+  await authenticateRendererSession(ctx.connection.authenticatedUrl(expectedUrl), { fetch: jarFetch })
+  if (jar.size === 0) {
+    throw new Error('shell browser-session authentication stored no cookie')
   }
   const response = await fetch(expectedUrl, {
-    headers: { Cookie: `${plantedCookie.name}=${plantedCookie.value}` },
+    headers: { Cookie: jarCookieHeader() },
   })
   const html = await response.text()
   if (response.status !== 200) {

@@ -1,107 +1,66 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
-  parseShellSessionCookie,
-  plantShellSessionCookie,
-  type ShellSessionCookieJar,
+  authenticateRendererSession,
+  type ShellRendererSession,
+  type ShellRendererSessionResponse,
 } from '../src/shell-session.ts'
 
-function mintResponse(setCookie: string[] | string | null): Response {
-  return new Response(null, {
-    status: 303,
-    headers: { 'set-cookie': Array.isArray(setCookie) ? setCookie.join(', ') : String(setCookie) },
-  }) as Response & { headers: { getSetCookie?: () => string[] } }
+function sessionWith(
+  respond: (url: string, init: unknown) => Promise<ShellRendererSessionResponse>,
+): ShellRendererSession & { fetch: ReturnType<typeof vi.fn> } {
+  return { fetch: vi.fn(respond) }
 }
 
-describe('parseShellSessionCookie', () => {
-  it('parses the BrowserAuth mint line with every emitted attribute', () => {
-    const expires = new Date('Wed, 09 Sep 2026 12:00:00 GMT')
-    const cookie = parseShellSessionCookie(
-      `dsh-auth-abc=v1.eyJ2ZXJzaW9uIjoxfQ.sig; Max-Age=2592000; Path=/; Expires=${expires.toUTCString()}; HttpOnly; SameSite=Strict`,
-    )
-    expect(cookie).toEqual({
-      name: 'dsh-auth-abc',
-      value: 'v1.eyJ2ZXJzaW9uIjoxfQ.sig',
-      path: '/',
-      httpOnly: true,
-      sameSite: 'strict',
-      expirationDate: Math.floor(expires.getTime() / 1000),
+describe('authenticateRendererSession', () => {
+  it('rides the window session through the follow-redirect mint (upstream v2.0.5 init)', async () => {
+    const session = sessionWith(async () => ({
+      status: 200,
+      body: { cancel: vi.fn(async () => undefined) },
+    }))
+
+    await authenticateRendererSession('http://127.0.0.1:43120/?token=launch', session)
+
+    // The exact upstream init: the 303 mint is walked by Chromium and the
+    // Set-Cookie lands in THIS session's jar (credentials include) — the
+    // manual-redirect surface Electron net-fetch cannot serve (electron#43715)
+    // is never touched.
+    expect(session.fetch.mock.calls[0]?.[1]).toEqual({
+      method: 'GET',
+      credentials: 'include',
+      redirect: 'follow',
+      cache: 'no-store',
     })
   })
 
-  it('rejects lines without a parsable pair or date', () => {
-    expect(parseShellSessionCookie('novalue')).toBeUndefined()
-    expect(parseShellSessionCookie('=value')).toBeUndefined()
-    expect(parseShellSessionCookie('a=b; Expires=not-a-date')).toBeUndefined()
-  })
-})
+  it('cancels the authenticated body without reading it', async () => {
+    const cancel = vi.fn(async () => undefined)
+    const session = sessionWith(async () => ({ status: 200, body: { cancel } }))
 
-describe('plantShellSessionCookie', () => {
-  function recordingJar(): ShellSessionCookieJar & { planted: unknown[] } {
-    const planted: unknown[] = []
-    return {
-      planted,
-      async set(details) { planted.push(details) },
-    }
-  }
+    await authenticateRendererSession('http://127.0.0.1:43120/?token=launch', session)
 
-  it('exchanges the seed URL for a planted authority cookie', async () => {
-    const jar = recordingJar()
-    const name = await plantShellSessionCookie(
-      'http://127.0.0.1:43120/?token=launch',
-      'http://127.0.0.1:43120',
-      jar,
-      async () => mintResponse(['dsh-auth-x=v1.payload.sig; Path=/; Expires=Fri, 09 Oct 2026 00:00:00 GMT; HttpOnly; SameSite=Strict']),
-    )
-    expect(name).toBe('dsh-auth-x')
-    expect(jar.planted).toEqual([{
-      url: 'http://127.0.0.1:43120/',
-      name: 'dsh-auth-x',
-      value: 'v1.payload.sig',
-      path: '/',
-      httpOnly: true,
-      sameSite: 'strict',
-      expirationDate: Math.floor(new Date('Fri, 09 Oct 2026 00:00:00 GMT').getTime() / 1000),
-    }])
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
-  it('uses the raw header when getSetCookie is unavailable', async () => {
-    const jar = recordingJar()
-    const response = {
-      status: 303,
-      headers: {
-        get: (name: string) => name.toLowerCase() === 'set-cookie'
-          ? 'dsh-auth-y=v1.p.s; Path=/; HttpOnly; SameSite=Strict'
-          : null,
-      },
-    }
-    const name = await plantShellSessionCookie(
-      'http://127.0.0.1:43120/?token=launch',
-      'http://127.0.0.1:43120',
-      jar,
-      async () => response,
-    )
-    expect(name).toBe('dsh-auth-y')
-    expect(jar.planted[0]).toMatchObject({ name: 'dsh-auth-y', httpOnly: true, sameSite: 'strict' })
+  it('fails loud on an authentication wall instead of loading it silently', async () => {
+    const session = sessionWith(async () => ({ status: 401, body: null }))
+
+    await expect(authenticateRendererSession('http://127.0.0.1:43120/?token=stale', session))
+      .rejects.toThrow('answered HTTP 401')
   })
 
-  it('fails loud on an authentication wall instead of planting nothing silently', async () => {
-    const jar = recordingJar()
-    await expect(plantShellSessionCookie(
-      'http://127.0.0.1:43120/?token=stale',
-      'http://127.0.0.1:43120',
-      jar,
-      async () => ({ status: 401, headers: { get: () => null } }),
-    )).rejects.toThrow('HTTP 401')
-    expect(jar.planted).toEqual([])
+  it('fails loud on any other non-application outcome', async () => {
+    const session = sessionWith(async () => ({ status: 307, body: null }))
+
+    await expect(authenticateRendererSession('http://127.0.0.1:43120/?token=launch', session))
+      .rejects.toThrow('answered HTTP 307')
   })
 
-  it('fails loud when the mint carries no cookie header', async () => {
-    const jar = recordingJar()
-    await expect(plantShellSessionCookie(
-      'http://127.0.0.1:43120/?token=launch',
-      'http://127.0.0.1:43120',
-      jar,
-      async () => ({ status: 303, headers: { get: () => null } }),
-    )).rejects.toThrow('no parsable Set-Cookie')
+  it('propagates transport failures (the dead-server shape) to the caller', async () => {
+    const session = sessionWith(async () => {
+      throw new Error('Redirect was cancelled')
+    })
+
+    await expect(authenticateRendererSession('http://127.0.0.1:43120/?token=launch', session))
+      .rejects.toThrow('Redirect was cancelled')
   })
 })

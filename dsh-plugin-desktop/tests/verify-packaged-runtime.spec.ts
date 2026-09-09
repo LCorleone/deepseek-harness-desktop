@@ -1024,4 +1024,34 @@ describe('packaged desktop runtime verification', () => {
     expect(() => verifyNativeUiWindowAssets(unpackedRoot, reader, () => true))
       .toThrow('references a missing or escaping asset assets/../../evil.js')
   })
+
+  it('pins every vite asset spelling: bare, ./-prefixed, and single-quoted references', () => {
+    const unpackedRoot = join('/build', 'resources', 'app.asar.unpacked')
+    const document = 'lib/native-ui/recovery.html'
+    // All three spellings must be caught by the gate (review P3): vite emits
+    // both `assets/x.js` and `./assets/x.js`, and hand-edited documents may
+    // quote either form with single quotes. Each recognized reference is
+    // existence-probed against the same-subtree assets directory.
+    const reader = (filename: string): string => filename === join(unpackedRoot, document)
+      ? [
+        '<script src="assets/bare.js"></script>',
+        "<script src='./assets/dotted.js'></script>",
+        '<link rel="stylesheet" href="./assets/style.css">',
+        "<link rel='stylesheet' href='assets/alt.css'>",
+      ].join('\n')
+      : completeRuntimeReader()(filename)
+    const probed: string[] = []
+    const exists = (filename: string): boolean => {
+      if (filename.endsWith('.js') || filename.endsWith('.css')) probed.push(filename)
+      return true
+    }
+
+    expect(() => verifyNativeUiWindowAssets(unpackedRoot, reader, exists)).not.toThrow()
+    expect(probed).toEqual(expect.arrayContaining([
+      join(unpackedRoot, 'lib/native-ui/assets/bare.js'),
+      join(unpackedRoot, 'lib/native-ui/assets/dotted.js'),
+      join(unpackedRoot, 'lib/native-ui/assets/style.css'),
+      join(unpackedRoot, 'lib/native-ui/assets/alt.css'),
+    ]))
+  })
 })

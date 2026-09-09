@@ -5,9 +5,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
-  net,
   Notification,
-  session,
   shell,
   Tray,
 } from 'electron'
@@ -20,7 +18,7 @@ import { desktopWindowOptions } from './window-options.ts'
 import type { DesktopRestartConfirmationCopy } from './tray-locale.ts'
 import type { RendererBootReport } from './renderer-boot-contract.ts'
 import { DesktopRendererRecovery } from './renderer-recovery.ts'
-import { plantShellSessionCookie } from './shell-session.ts'
+import { authenticateRendererSession } from './shell-session.ts'
 
 const MIN_ZOOM_LEVEL = -4
 const MAX_ZOOM_LEVEL = 4
@@ -281,26 +279,26 @@ export class ElectronShellGeneration {
 
     try {
       // 0.1.2 browser authentication: exchange the process launch token for
-      // the browser-session cookie and plant it in the Electron session jar
-      // BEFORE the renderer URL loads, so the plain desktop URL (query markers
-      // included) is answered with the application instead of the 401 wall
-      // (#73). A missing seed URL means a hand-built tree without a mounted
-      // client-connection row — nothing to seed.
+      // the browser-session cookie BEFORE the renderer URL loads, so the
+      // plain desktop URL (query markers included) is answered with the
+      // application instead of the 401 wall (#73). Upstream desktop v2.0.5
+      // `authenticateRendererSession` semantics: one `session.fetch` of the
+      // authenticated root with redirect:'follow' + credentials:'include' on
+      // the WINDOW'S OWN session — Chromium stores BrowserAuth's Set-Cookie
+      // directly in the jar the renderer then loads through (no manual
+      // redirect surface: Electron net-fetch rejects a manual 303,
+      // electron#43715). A missing seed URL means a hand-built tree without
+      // a mounted client-connection row — nothing to seed.
       const seedUrl = spec.readSessionSeedUrl?.()
       if (seedUrl !== undefined) {
         try {
-          await plantShellSessionCookie(
-            seedUrl,
-            origin,
-            {
-              set: async details => { await session.defaultSession.cookies.set(details) },
-            },
-            (url, init) => net.fetch(url, init),
-          )
+          await authenticateRendererSession(seedUrl, window.webContents.session)
         } catch (cause) {
           // Fail loud into the log but still load: the renderer health gate
-          // owns the verdict when the document cannot boot.
-          this.options.logError(`dsh-plugin-desktop: failed to seed the shell browser-session cookie: ${cause instanceof Error ? cause.message : String(cause)}`)
+          // owns the verdict when the document cannot boot (our degradation —
+          // upstream escalates to its recovery window, but a mixed 0.1.1
+          // fleet must not lose the whole boot to a missing mint).
+          this.options.logError(`dsh-plugin-desktop: failed to authenticate the shell browser session: ${cause instanceof Error ? cause.message : String(cause)}`)
         }
       }
       await window.loadURL(spec.url)

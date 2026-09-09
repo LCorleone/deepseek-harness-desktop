@@ -322,8 +322,11 @@ export function verifyNativeUiWindowAssets(
   }
   for (const document of NATIVE_UI_WINDOW_DOCUMENTS) {
     const html = read(join(unpackedRoot, document))
-    const assets = [...html.matchAll(/(?:src|href)="(assets\/[^"?]+)"/gu)]
-      .map(match => match[1])
+    // Vite emits both `assets/x.js` and `./assets/x.js` spellings, and hand-
+    // edited documents may quote either with single quotes — every reference
+    // form must resolve inside the same `lib/native-ui/assets/` subtree.
+    const assets = [...html.matchAll(/(?:src|href)=(["'])(?:\.\/)?(assets\/[^"'?]+)\1/gu)]
+      .map(match => match[2])
       .filter((asset): asset is string => asset !== undefined)
     for (const asset of assets) {
       if (asset.includes('..') || !exists(join(unpackedRoot, 'lib/native-ui', asset))) {

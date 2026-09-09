@@ -36,6 +36,7 @@ afterEach(() => { vi.useRealTimers() })
 
 interface PluginHarness {
   ctx: Context
+  logger: { error: ReturnType<typeof vi.fn> }
   runtime: DesktopRuntime
   shell(): DesktopShellSpec | undefined
   update: ReturnType<typeof vi.fn<(patch: object) => Promise<void>>>
@@ -124,6 +125,7 @@ function createHarness(
       replace: vi.fn(async () => {}),
     })),
   }
+  const logger = { warn: vi.fn(), error: vi.fn() }
   const ctx = {
     desktopRuntime: runtime,
     webServer: {
@@ -135,7 +137,7 @@ function createHarness(
       }),
     },
     settings,
-    logger: { warn: vi.fn(), error: vi.fn() },
+    logger,
     get: vi.fn((key: unknown) => String(key) === 'desktopRuntime' ? runtime : () => {}),
     effect: vi.fn((register: () => unknown) => register()),
     on: vi.fn((event: string, listener: (namespace: unknown, next: unknown) => void) => {
@@ -145,6 +147,7 @@ function createHarness(
   } as unknown as Context
   return {
     ctx,
+    logger,
     runtime,
     shell: () => shell,
     update,
@@ -249,6 +252,44 @@ describe('desktop Host plugin', () => {
 
     await harness.shell()?.requestModeChange('advanced')
     expect(harness.update).toHaveBeenCalledWith({ mode: 'advanced' })
+  })
+
+  it('mints the shell session seed URL from the settled connection service', () => {
+    const harness = createHarness()
+    apply(harness.ctx, config)
+    const authenticatedUrl = vi.fn((baseUrl: string) => `${baseUrl}?token=process-launch`)
+    vi.mocked(harness.ctx.get).mockImplementation((key: unknown) => (
+      String(key) === 'desktopRuntime' ? harness.runtime : { authenticatedUrl }
+    ))
+
+    expect(harness.shell()?.readSessionSeedUrl()).toBe('http://127.0.0.1:43120/?token=process-launch')
+    expect(authenticatedUrl).toHaveBeenCalledWith('http://127.0.0.1:43120/')
+  })
+
+  it('degrades to the bare URL when a mixed 0.1.1 connection service lacks authenticatedUrl', () => {
+    const harness = createHarness()
+    apply(harness.ctx, config)
+    // The b72 fleet-freeze shape: the connection row exists on 0.1.1 without
+    // the 0.1.2 method. `?.` alone would throw a TypeError that escapes the
+    // shell's mint degradation and aborts the whole mount (review P1→P2).
+    vi.mocked(harness.ctx.get).mockImplementation((key: unknown) => (
+      String(key) === 'desktopRuntime' ? harness.runtime : {}
+    ))
+
+    expect(harness.shell()?.readSessionSeedUrl()).toBeUndefined()
+    expect(harness.logger.error).toHaveBeenCalledOnce()
+    expect(harness.logger.error).toHaveBeenCalledWith(expect.stringContaining('exposes no authenticatedUrl'))
+  })
+
+  it('stays silent when no connection service is mounted at all', () => {
+    const harness = createHarness()
+    apply(harness.ctx, config)
+    vi.mocked(harness.ctx.get).mockImplementation((key: unknown) => (
+      String(key) === 'desktopRuntime' ? harness.runtime : undefined
+    ))
+
+    expect(harness.shell()?.readSessionSeedUrl()).toBeUndefined()
+    expect(harness.logger.error).not.toHaveBeenCalled()
   })
 
   it('marks the scheduled renderer URL with the policy lock for company builds', () => {

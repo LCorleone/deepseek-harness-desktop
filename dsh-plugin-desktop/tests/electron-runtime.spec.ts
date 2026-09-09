@@ -114,6 +114,10 @@ const electron = vi.hoisted(() => {
     on: vi.fn(),
     off: vi.fn(),
     reloadIgnoringCache: vi.fn(),
+    // The shell window's own session: the 0.1.2 browser authentication
+    // fetch rides `webContents.session.fetch` (upstream v2.0.5
+    // authenticateRendererSession semantics), never net.fetch.
+    session: { fetch: vi.fn() },
     setZoomLevel: vi.fn((level: number) => { zoomLevel = level }),
     setWindowOpenHandler: vi.fn(),
   }
@@ -402,6 +406,80 @@ describe('Electron desktop runtime', () => {
 
     await release()
     expect(electron.trays[0]?.off).toHaveBeenCalledWith('click', expect.any(Function))
+  })
+
+  it('seeds the browser session before loadURL: readSessionSeedUrl → session.fetch → loadURL, in order', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const readSessionSeedUrl = vi.fn(() => 'http://127.0.0.1:43120/?token=launch')
+    const seededSpec = { ...spec, readSessionSeedUrl }
+    const sessionFetch = electron.webContents.session.fetch as ReturnType<typeof vi.fn>
+    sessionFetch.mockResolvedValue({ status: 200, body: { cancel: async () => undefined } })
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(seededSpec)
+
+    await runtime.mountScheduled()
+
+    // The wiring pin (review P2, the sixth same-shape lesson): deleting the
+    // mint call inside mount must redden exactly here — the seed read, the
+    // authenticated fetch on the WINDOW'S OWN session, then loadURL, each
+    // strictly after the previous.
+    expect(readSessionSeedUrl).toHaveBeenCalledOnce()
+    expect(sessionFetch).toHaveBeenCalledOnce()
+    expect(sessionFetch).toHaveBeenCalledWith('http://127.0.0.1:43120/?token=launch', {
+      method: 'GET',
+      credentials: 'include',
+      redirect: 'follow',
+      cache: 'no-store',
+    })
+    expect(electron.loadURL).toHaveBeenCalledWith('http://127.0.0.1:43120/')
+    const seedOrder = readSessionSeedUrl.mock.invocationCallOrder[0]
+    const fetchOrder = sessionFetch.mock.invocationCallOrder[0]
+    const loadOrder = electron.loadURL.mock.invocationCallOrder[0]
+    expect(seedOrder).toBeDefined()
+    expect(fetchOrder).toBeGreaterThan(seedOrder!)
+    expect(loadOrder).toBeGreaterThan(fetchOrder!)
+    // The plain renderer URL stays token-free.
+    expect(electron.loadURL.mock.calls[0]?.[0]).not.toContain('token')
+
+    await release()
+  })
+
+  it('degrades a failed mint to logError + the ordinary loadURL (never aborts the mount)', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const readSessionSeedUrl = vi.fn(() => 'http://127.0.0.1:43120/?token=stale')
+    const seededSpec = { ...spec, readSessionSeedUrl }
+    const sessionFetch = electron.webContents.session.fetch as ReturnType<typeof vi.fn>
+    sessionFetch.mockRejectedValue(new Error('Redirect was cancelled'))
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(seededSpec)
+
+    await runtime.mountScheduled()
+
+    // Fail loud into the log, load anyway: the renderer health gate owns the
+    // dead-boot verdict — a mixed 0.1.1/0.1.2 fleet must not lose the boot.
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('failed to authenticate the shell browser session: Redirect was cancelled'))
+    expect(electron.loadURL).toHaveBeenCalledWith('http://127.0.0.1:43120/')
+    expect(electron.trays).toHaveLength(1)
+
+    await release()
+    stderr.mockRestore()
+  })
+
+  it('skips the mint entirely when no seed URL is available', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+    const runtime = new ElectronDesktopRuntime(async () => {})
+    const release = runtime.schedule(spec)
+
+    await runtime.mountScheduled()
+
+    expect(electron.webContents.session.fetch).not.toHaveBeenCalled()
+    expect(electron.loadURL).toHaveBeenCalledWith('http://127.0.0.1:43120/')
+
+    await release()
   })
 
   it('selects the restricted Linux platform adapter once for native capabilities', async () => {
