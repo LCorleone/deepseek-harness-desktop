@@ -78,7 +78,7 @@
     "test": "yarn workspace dsh-plugin-desktop test && yarn workspace dsh-community-market test",
     "test:bilingual-docs": "node --test scripts/bilingual-docs.test.mjs",
     "check:bilingual-docs": "yarn test:bilingual-docs && node scripts/verify-bilingual-docs.mjs",
-    "test:architecture-gates": "node --test scripts/market-dependency-direction.test.mjs",
+    "test:architecture-gates": "node --test scripts/market-dependency-direction.test.mjs scripts/dsh-runtime-version-parity.test.mjs",
     "check:architecture": "yarn test:architecture-gates && node scripts/verify-market-dependency-direction.mjs",
     "check:layout": "yarn check:bilingual-docs && yarn check:architecture && node scripts/verify-layout.mjs",
     "test:company-catalog": "node --test tools/company-catalog/tests/accept-handoff.test.mjs tools/company-catalog/tests/allowlist-tarball.test.mjs tools/company-catalog/tests/beta-channel.test.mjs tools/company-catalog/tests/dsh-free-search.test.mjs tools/company-catalog/tests/manifest-tarball.test.mjs tools/company-catalog/tests/pack-surface.test.mjs tools/company-catalog/tests/publish-removal-guard.test.mjs tools/company-catalog/tests/tarball-publish.test.mjs tools/company-catalog/tests/tarball.test.mjs tools/company-catalog/tests/verify-handoff.test.mjs",

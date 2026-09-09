@@ -168,10 +168,13 @@ const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024
  * The DSH runtime version this desktop build pins (P15 phase 1) — the same
  * value the market install gate compares plugin ranges against
  * (`DSH_RUNTIME_VERSION` in `dsh-community-market/src/install/service.ts`).
- * The two move together at every runtime upgrade by release discipline (see
- * dev-log/2026-09-08-dshmarket-1.17.1-compat-012.md), and the install gate
- * re-checks every install against its own copy, so a drift here can only
- * mis-classify update prompts — never what loads. Injectable through
+ * The two are one pin in two places, and their equality is enforced
+ * mechanically by `scripts/dsh-runtime-version-parity.test.mjs`
+ * (`yarn check:layout` — see dev-log/2026-09-08-dshmarket-1.17.1-compat-012.md
+ * for the release discipline); a runtime bump updates both in the same
+ * change or CI goes red. The install gate re-checks every install against
+ * its own copy, so a drift here can only mis-classify update prompts —
+ * never what loads. Injectable through
  * {@link DesktopBootVerificationOptions.dshRuntimeVersion} so tests can
  * simulate mixed-fleet machines on older runtimes.
  */
@@ -1385,11 +1388,17 @@ export function verifyDesktopBootBundles(
     const entry = findDesktopCompanyManifestPackageWithBeta(manifest, betaPackages, bundle.packageName, bundle.version)
     // Runtime-aware update classification (P15): the candidates are every
     // same-name entry (beta wholly replacing stable for a carried name),
-    // narrowed to the ones this build's runtime may install, and the update
-    // target is the newest of those. The installed version's own checks
-    // below are untouched — a runtime range never decides what loads.
+    // narrowed to the ones this build's runtime may install — and to entries
+    // that are not revoked, because the market install gate refuses a
+    // revoked pin, so advertising one would prompt an update the gate must
+    // then reject (the P15 phase 1 review dead-loop). The update target is
+    // the newest of what survives. The installed version's own checks below
+    // are untouched — a runtime range never decides what loads — and the
+    // deferred-window revocation kill below still reads the full candidate
+    // set, so the security refusal keeps biting.
     const candidates = bootClassificationCandidates(manifest, betaPackages, bundle.packageName)
-    const runtimeCandidates = candidates.filter(candidate => entryAcceptsDshRuntime(candidate, dshRuntimeVersion))
+    const runtimeCandidates = candidates.filter(candidate =>
+      !candidate.revoked && entryAcceptsDshRuntime(candidate, dshRuntimeVersion))
     const updateTarget = newestEntry(runtimeCandidates)
     const updateVersion = updateTarget !== undefined && semverNewer(updateTarget.version, bundle.version)
       ? updateTarget.version
@@ -1407,7 +1416,7 @@ export function verifyDesktopBootBundles(
         // market-managed install always a newer publication, because
         // install authority only ever allows the pinned version. P15 keeps
         // the class and its prompt semantics; the target is now the newest
-        // runtime-compatible pin instead of the first same-name entry.
+        // live runtime-compatible pin instead of the first same-name entry.
         reject(
           `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`,
           'not-pinned-newer-pinned',

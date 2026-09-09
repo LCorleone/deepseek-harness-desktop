@@ -726,6 +726,43 @@ describe('runtime-aware update classification (P15 phase 1)', () => {
     expect(result.rejected[0]?.reason).toContain('revoked in the signed company manifest')
   })
 
+  it('a revoked newer pin is never the advertised update target (phase 1 review: 不宣传已 retire 的版本)', () => {
+    // The installed 0.15.2 is still pinned and live; the same-name 0.18.1
+    // was retired by version (`revoked: true`) on a runtime line this
+    // machine accepts. Without the `!candidate.revoked` filter the retired
+    // pin becomes the update target — a P10 prompt pointing at the one
+    // version the market install gate must refuse, dead-looping the user
+    // (red without the filter; Phase 0 version-keyed retire made this a
+    // real catalog shape).
+    const result = verify(
+      signedManifestText([
+        windowEntry('0.15.2', newLine),
+        windowEntry('0.18.1', newLine, { revoked: true }),
+      ]),
+      [windowBundle('0.15.2')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    // Loads with the plain allow shape — no update offer may name 0.18.1.
+    expect(result.allowed).toEqual([{ packageName: sidebar, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([])
+    expect(pendingDesktopBootClientUpdates(result)).toEqual([])
+
+    // Control (regression): the same window with 0.18.1 alive keeps
+    // advertising it — the retire filter must not mute live pins.
+    const alive = verify(
+      signedManifestText([windowEntry('0.15.2', newLine), windowEntry('0.18.1', newLine)]),
+      [windowBundle('0.15.2')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(alive.rejected).toEqual([])
+    expect(alive.allowed[0]?.updateVersion).toBe('0.18.1')
+    expect(pendingDesktopBootPluginUpdates(alive)).toEqual([
+      { packageName: sidebar, installedVersion: '0.15.2', pinnedVersion: '0.18.1' },
+    ])
+  })
+
   it('class-a targets the newest runtime-compatible pin once the installed version is retired (目标选对)', () => {
     // Installed 0.15.2 is gone from the manifest; 0.20.0 is the newest
     // same-name pin but needs ^0.1.3, so a 0.1.2 machine must be pointed at

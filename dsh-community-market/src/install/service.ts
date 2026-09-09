@@ -32,6 +32,10 @@ const MAX_CANDIDATES = 10_000
 const MAX_RECEIPTS = 512
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare'] as const
 const BLOCKED_PRODUCT_PACKAGES = new Set(['dsh-plugin-desktop', 'dsh-community-market'])
+// One pin in two places: must equal DESKTOP_BOOT_DSH_RUNTIME_VERSION in
+// dsh-plugin-desktop/src/boot-verification.ts — asserted by
+// scripts/dsh-runtime-version-parity.test.mjs (yarn check:layout); bump both
+// in the same change.
 const DSH_RUNTIME_VERSION = '0.1.2-rc.1'
 const CORDIS_RUNTIME_VERSION = '4.0.2'
 const NODE_RUNTIME_VERSION = '24.18.1'
