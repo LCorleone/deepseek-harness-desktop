@@ -14,27 +14,38 @@
  * conversations, settings, the SSO session, and the disclaimer
  * acknowledgement all live under the Harness home root, and the company
  * market itself is launcher-owned. The market install ledger (the home
- * `settings.yaml` receipt array) IS cleared, because the receipts describe
- * packages that no longer exist in the rebuilt Profile; clearing it is what
- * returns every catalog entry to the installable state and resets the
- * sequence ratchet to its receipt-derived floor.
+ * `settings.yaml` receipt array) IS cleared — but only for the swapped
+ * Profile's own receipts, because the ledger is shared across Profiles and
+ * a receipt names the Profile it belongs to; clearing a sibling Profile's
+ * receipts would degrade its installed bundles to manifest-only and drop
+ * its sequence ratchet. Clearing the swapped Profile's receipts is what
+ * returns its catalog entries to the installable state.
+ *
+ * Set-aside directories are bounded: a swap moves a full Profile (including
+ * `node_modules`) aside, so only the newest {@link MAX_PROFILE_BACKUPS} per
+ * Profile are retained and older ones are removed best-effort. The active
+ * Profile's health checkpoint is invalidated after the rebuild, because the
+ * checkpoint is keyed by the Profile *path* (unchanged by a swap) and would
+ * otherwise restore the pre-swap composition into the rebuilt tree when the
+ * next boot fails before its first healthy capture.
  *
  * @module dsh-plugin-desktop/fresh-profile
  */
 
-import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { isSeq, parseDocument } from 'yaml'
-import { assertDesktopProfileName } from './profile-manager.ts'
+import { isMap, isSeq, parseDocument } from 'yaml'
+import { PROFILE_BACKUP_INFIX, assertDesktopProfileName } from './profile-manager.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 /** Persisted build-identity record name inside the Desktop user-data directory. */
 export const PROFILE_GENERATION_FILENAME = 'last-profile-generation.json'
 const PROFILE_GENERATION_VERSION = 1
 const MAX_GENERATION_STATE_BYTES = 4 * 1024
-/** Set-aside directory infix: `profiles/desktop.bak-20260909T073319264Z`. */
-const PROFILE_BACKUP_INFIX = '.bak-'
+/** Set-aside directories retained per Profile; older ones are removed. */
+const MAX_PROFILE_BACKUPS = 2
 /** Collision bound for two swaps inside the same millisecond. */
 const MAX_BACKUP_COLLISIONS = 100
 /** Community-market settings namespace owning the install receipt ledger. */
@@ -85,8 +96,10 @@ export function readProfileGenerationState(statePath: string): ProfileGeneration
 }
 
 /** Persist the build identity of the boot that just managed the Profile. */
-export function writeProfileGenerationState(statePath: string, state: ProfileGenerationState): void {
-  writeFileSync(statePath, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 })
+export async function writeProfileGenerationState(statePath: string, state: ProfileGenerationState): Promise<void> {
+  // Atomic replacement: a crash-truncated record would read as "no record",
+  // which now means "rebuild the existing Profile" — a spurious swap.
+  await writeFileAtomic(statePath, `${JSON.stringify(state)}\n`, { mode: 0o600 })
 }
 
 /** What one boot's build identity implies for the active Profile. */
@@ -95,19 +108,26 @@ export type FreshProfileResetDecision = 'unchanged' | 'record' | 'reset'
 /**
  * Decide the automatic layer's action. The switch is inert unless the build
  * is locked AND the policy enables it, so an unlocked or opted-out build
- * keeps byte-identical behavior (not even the record is written). A first
- * record with no history cannot reset — there is nothing to rebuild from —
- * and an unchanged identity is a pure read.
+ * keeps byte-identical behavior (not even the record is written). An
+ * unchanged identity is a pure read. A missing record is treated as a
+ * version change — the Profile was built by a build this one has never
+ * recorded, which is exactly the straddle the reset exists to end — except
+ * when no Profile manifest exists at all: a genuinely fresh install has no
+ * third-party composition to strip, so it only records (no set-aside
+ * directory, no redundant dependency synchronization).
  */
 export function freshProfileResetDecision(options: {
   readonly locked: boolean
   readonly resetOnVersionChange: boolean
   readonly previousAppBuildVersion?: string | undefined
   readonly appBuildVersion: string
+  /** Whether the active Profile manifest already exists on disk. */
+  readonly profileExists: boolean
 }): FreshProfileResetDecision {
   if (options.locked !== true || options.resetOnVersionChange !== true) return 'unchanged'
-  if (options.previousAppBuildVersion === undefined) return 'record'
-  return options.previousAppBuildVersion === options.appBuildVersion ? 'unchanged' : 'reset'
+  if (options.previousAppBuildVersion === options.appBuildVersion) return 'unchanged'
+  if (options.previousAppBuildVersion === undefined && !options.profileExists) return 'record'
+  return 'reset'
 }
 
 /** Filesystem-safe UTC stamp: `20260909T073319264Z`. */
@@ -121,12 +141,17 @@ export function profileBackupPath(profileDir: string, epochMs: number): string {
 }
 
 /**
- * Remove the market install receipt ledger from the shared settings document
- * and report how many receipts were dropped. Idempotent: an absent namespace,
- * key, or file writes nothing and returns 0. Comments and every other setting
- * survive the round trip because the document is edited as a YAML AST.
+ * Remove one Profile's market install receipts from the shared settings
+ * document and report how many were dropped. Receipts belonging to other
+ * Profiles are left untouched: the ledger is home-wide, and a swap of
+ * Profile A must never degrade Profile B's installed bundles to
+ * manifest-only. Idempotent: an absent namespace, key, or file, or a ledger
+ * with no receipt of this Profile, writes nothing and returns 0. Comments
+ * and every other setting survive the round trip because the document is
+ * edited as a YAML AST. The write is atomic, matching the document's owner
+ * (`settings-file`), so a crash cannot truncate the user's settings.
  */
-export function clearMarketInstallReceipts(settingsPath: string): number {
+export async function clearMarketInstallReceipts(settingsPath: string, profileName: string): Promise<number> {
   let text: string
   try {
     text = readFileSync(settingsPath, 'utf8')
@@ -143,10 +168,19 @@ export function clearMarketInstallReceipts(settingsPath: string): number {
   }
   const receipts = document.getIn([MARKET_SETTINGS_NAMESPACE, MARKET_RECEIPTS_KEY])
   if (receipts === undefined || receipts === null) return 0
-  const count = isSeq(receipts) ? receipts.items.length : 0
-  document.deleteIn([MARKET_SETTINGS_NAMESPACE, MARKET_RECEIPTS_KEY])
-  writeFileSync(settingsPath, document.toString(), { encoding: 'utf8', mode: 0o600 })
-  return count
+  if (!isSeq(receipts)) {
+    // A shapeless ledger is unusable for every Profile; drop the key.
+    document.deleteIn([MARKET_SETTINGS_NAMESPACE, MARKET_RECEIPTS_KEY])
+    await writeFileAtomic(settingsPath, document.toString(), { mode: 0o600, dirMode: 0o700 })
+    return 0
+  }
+  const kept = receipts.items.filter(item => !(isMap(item) && item.get('profileName') === profileName))
+  const cleared = receipts.items.length - kept.length
+  if (cleared === 0) return 0
+  if (kept.length === 0) document.deleteIn([MARKET_SETTINGS_NAMESPACE, MARKET_RECEIPTS_KEY])
+  else receipts.items = kept
+  await writeFileAtomic(settingsPath, document.toString(), { mode: 0o600, dirMode: 0o700 })
+  return cleared
 }
 
 /** Inputs the caller (Electron main) owns; this module stays Electron-free. */
@@ -163,6 +197,13 @@ export interface FreshProfileSwapOptions {
   readonly materialize?: (() => Promise<boolean>) | undefined
   /** Clock seam for the backup stamp. */
   readonly now?: (() => number) | undefined
+  /**
+   * Invalidate the active Profile's health checkpoint after the rebuild. The
+   * checkpoint is keyed by Profile path, which a swap does not change, so a
+   * stale snapshot would otherwise be restored into the rebuilt tree by the
+   * next failed startup and silently undo the swap.
+   */
+  readonly clearCheckpoint?: (() => void | Promise<void>) | undefined
   /** Receives a one-line warning when the market ledger cannot be cleared. */
   readonly logError?: ((message: string) => void) | undefined
 }
@@ -203,22 +244,75 @@ function setAsideProfileDirectory(profileDir: string, epochMs: number): string |
 }
 
 /**
+ * Bound the set-aside directories one Profile keeps. Every swap moves a full
+ * Profile (including `node_modules`) aside, so without a bound a fleet would
+ * accumulate one copy per upgrade. The newest `keep` directories survive
+ * (lexicographic order of the fixed-width stamp; same-millisecond collision
+ * suffixes are equivalent); removal is best-effort and never fatal.
+ * @returns Names of the directories removed.
+ */
+export function pruneProfileBackups(
+  profileDir: string,
+  keep: number = MAX_PROFILE_BACKUPS,
+  logError?: ((message: string) => void) | undefined,
+): readonly string[] {
+  const parent = dirname(profileDir)
+  const prefix = `${basename(profileDir)}${PROFILE_BACKUP_INFIX}`
+  let entries: string[]
+  try {
+    entries = readdirSync(parent).filter(entry => entry.startsWith(prefix)
+      && /^\d{8}T\d{9}Z(?:-\d+)?$/u.test(entry.slice(prefix.length)))
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return []
+    logError?.(`could not list profile backups beside ${profileDir}: ${cause instanceof Error ? cause.message : String(cause)}`)
+    return []
+  }
+  const removed: string[] = []
+  for (const entry of entries.sort().reverse().slice(keep)) {
+    const target = join(parent, entry)
+    try {
+      const item = lstatSync(target)
+      if (item.isSymbolicLink() || !item.isDirectory()) continue
+      rmSync(target, { recursive: true, force: true })
+      removed.push(entry)
+    } catch (cause) {
+      logError?.(`could not remove the old profile backup ${target}: ${cause instanceof Error ? cause.message : String(cause)}`)
+    }
+  }
+  return removed
+}
+
+/**
  * Rebuild the active Profile from scratch. Ordered so every crash window
  * leaves a usable state: the previous Profile is set aside first (never
- * deleted), then the fresh Profile is created, then the market ledger is
- * cleared, then dependencies are synchronized. A failure before the create
- * step leaves the set-aside Profile recoverable by hand; a failure after it
- * leaves a bootable fresh Profile. Callers decide whether a failure blocks
- * the boot — the desktop degrades to the existing Profile instead.
+ * deleted, and older set-asides beyond the retention bound are pruned), then
+ * the fresh Profile is created, then its stale health checkpoint is
+ * invalidated, then its market receipts are cleared, then dependencies are
+ * synchronized. A failure before the create step leaves the set-aside
+ * Profile recoverable by hand; a failure after it leaves a bootable fresh
+ * Profile. Callers decide whether a failure blocks the boot — the desktop
+ * degrades to the existing Profile instead.
  */
 export async function freshProfileSwap(options: FreshProfileSwapOptions): Promise<FreshProfileSwapResult> {
   assertDesktopProfileName(options.profileName)
   const profileDir = resolveProfileDir(options.profileName, options.home)
   const backupDir = setAsideProfileDirectory(profileDir, (options.now ?? Date.now)())
+  pruneProfileBackups(profileDir, MAX_PROFILE_BACKUPS, options.logError)
   options.createProfile()
+  if (options.clearCheckpoint !== undefined) {
+    try {
+      await options.clearCheckpoint()
+    } catch (cause) {
+      options.logError?.(
+        `could not clear the health checkpoint after rebuilding profile ${options.profileName}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      )
+    }
+  }
   let receiptsCleared = 0
   try {
-    receiptsCleared = clearMarketInstallReceipts(options.settingsDocumentPath)
+    receiptsCleared = await clearMarketInstallReceipts(options.settingsDocumentPath, options.profileName)
   } catch (cause) {
     options.logError?.(
       `could not clear the market install receipts after rebuilding profile ${options.profileName}: ${

@@ -2,6 +2,7 @@
 
 import { app, crashReporter, dialog, net, session, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -1021,6 +1022,9 @@ async function start(): Promise<void> {
             else createDesktopWebProfile(homeDir, activeProfileName)
           },
           materialize: () => materializeFreshProfile(resolveProfileDir(activeProfileName, homeDir)),
+          clearCheckpoint: () => {
+            clearDesktopProfileCheckpoint(app.getPath('userData'), resolveProfileDir(activeProfileName, homeDir))
+          },
           logError: message => { electronLogger.error(`${BIN_NAME}: ${maskSecrets(message)}`) },
         })
         electronLogger.error(
@@ -1056,8 +1060,8 @@ async function start(): Promise<void> {
     // rebuild leaves the record untouched, so the next boot retries it.
     const profileGenerationPath = profileGenerationStatePath(app.getPath('userData'))
     const storedProfileGeneration = readProfileGenerationState(profileGenerationPath)
-    const recordProfileGeneration = (): void => {
-      writeProfileGenerationState(profileGenerationPath, {
+    const recordProfileGeneration = async (): Promise<void> => {
+      await writeProfileGenerationState(profileGenerationPath, {
         version: 1,
         appBuildVersion,
         updatedAt: new Date().toISOString(),
@@ -1070,16 +1074,19 @@ async function start(): Promise<void> {
         ? {}
         : { previousAppBuildVersion: storedProfileGeneration.appBuildVersion }),
       appBuildVersion,
+      // No manifest means a genuinely fresh install: there is no third-party
+      // composition to strip, so a missing record only records the build.
+      profileExists: existsSync(join(activeProfileDir, 'package.json')),
     })
     if (freshProfileDecision === 'reset') {
       electronLogger.error(
         `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}); rebuilding profile ${activeProfileName}`,
       )
       if (await runFreshProfileSwap('version-change')) {
-        recordProfileGeneration()
+        await recordProfileGeneration()
       }
     } else if (freshProfileDecision === 'record') {
-      recordProfileGeneration()
+      await recordProfileGeneration()
     }
     startupRecoveryConfigurationPaths = {
       settingsDocument: join(homeDir, 'settings.yaml'),
@@ -1513,6 +1520,10 @@ async function start(): Promise<void> {
     // the way out for the case the automatic layer cannot cover — a bad
     // install with no build-identity change — and it stays available on a
     // healthy machine too (idempotent: the rebuilt Profile is simply fresh).
+    // The button exists only once the boot reaches this assignment: a failure
+    // during profile composition or boot verification happens earlier, in the
+    // same window the existing last-known-good rollback covers, so those early
+    // failures are not offered this action.
     freshProfileStart = async (token: string) => {
       if (token !== recoveryProfileToken || profileRecoveryActionUsed) {
         throw new Error(`${BIN_NAME}: the Profile recovery action is no longer valid`)

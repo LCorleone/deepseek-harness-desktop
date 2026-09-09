@@ -58,6 +58,9 @@ describe('desktop profile discovery', () => {
     expect(() => assertDesktopProfileName('name.')).toThrow('invalid desktop profile name')
     expect(() => assertDesktopProfileName('name ')).toThrow('invalid desktop profile name')
     expect(() => assertDesktopProfileName('é'.repeat(128))).toThrow('invalid desktop profile name')
+    // The fresh-Profile set-aside namespace is reserved: a backup is never a profile.
+    expect(() => assertDesktopProfileName('desktop.bak-20260909T073319264Z'))
+      .toThrow('invalid desktop profile name')
   })
 
   it('creates a Web profile from the shipped template and publishes all files together', () => {
@@ -139,6 +142,22 @@ describe('desktop profile discovery', () => {
       'work',
       'wrong-order',
     ])
+  })
+
+  it('hides set-aside fresh-Profile backups from discovery and refuses to select them', () => {
+    const home = temporaryRoot()
+    writeProfile(home, 'work', ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    const backupDir = writeProfile(home, 'desktop.bak-20260909T073319264Z', [
+      '@deepseek-ai/dsh-base',
+      '@deepseek-ai/dsh-web-app',
+      'stale-plugin',
+    ])
+
+    expect(listDesktopProfiles(home).map(profile => profile.name)).toEqual(['desktop', 'web', 'work'])
+    // The backup itself is untouched by discovery.
+    expect(existsSync(join(backupDir, 'package.json'))).toBe(true)
+    expect(() => selectDesktopProfile(join(home, 'state.json'), home, 'desktop.bak-20260909T073319264Z'))
+      .toThrow('invalid desktop profile name')
   })
 
   it('treats an existing repairable desktop profile as managed but rejects malformed metadata', () => {

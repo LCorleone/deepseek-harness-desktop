@@ -38,6 +38,14 @@ const STATE_DIRECTORY_MODE = 0o700
 const STATE_FILE_MODE = 0o600
 const MAX_PROFILE_NAME_BYTES = 255
 
+/**
+ * Reserved infix of the fresh-Profile set-aside directories
+ * (`profiles/desktop.bak-20260909T073319264Z`). A backup is forensic state,
+ * never a profile: it must not be discovered, selected, or written to the
+ * selection state, and no user-visible profile may carry the infix.
+ */
+export const PROFILE_BACKUP_INFIX = '.bak-'
+
 /** One discovered or lazily available DSH profile. */
 export interface DesktopProfileSummary {
   /** Profile name passed to `dsh --profile`. */
@@ -114,7 +122,8 @@ function defaultState(): DesktopProfileStateV1 {
 export function assertDesktopProfileName(name: string): void {
   if (typeof name !== 'string' || name.length === 0
     || name.includes('/') || name.includes('\\') || name === '.' || name === '..'
-    || name === 'node_modules' || Buffer.byteLength(name, 'utf8') > MAX_PROFILE_NAME_BYTES
+    || name === 'node_modules' || name.includes(PROFILE_BACKUP_INFIX)
+    || Buffer.byteLength(name, 'utf8') > MAX_PROFILE_NAME_BYTES
     || /[\0-\x1f\x7f-\x9f]/.test(name)
     || /[<>:"|?*]/.test(name) || /[. ]$/.test(name)
     || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(name)) {
@@ -243,6 +252,10 @@ export function listDesktopProfiles(home: string): DesktopProfileSummary[] {
   try {
     for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
       if (entry.name === 'node_modules' || (!entry.isDirectory() && !entry.isSymbolicLink())) continue
+      // A set-aside backup holds the previous composition (including its
+      // node_modules) and passes the general name rules, so it is skipped
+      // explicitly here as well as rejected by the name assertion.
+      if (entry.name.includes(PROFILE_BACKUP_INFIX)) continue
       try {
         assertDesktopProfileName(entry.name)
       } catch {

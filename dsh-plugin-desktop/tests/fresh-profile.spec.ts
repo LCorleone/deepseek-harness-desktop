@@ -15,6 +15,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -31,6 +32,7 @@ import {
   profileBackupPath,
   profileBackupStamp,
   profileGenerationStatePath,
+  pruneProfileBackups,
   readProfileGenerationState,
   writeProfileGenerationState,
 } from '../src/fresh-profile.ts'
@@ -83,6 +85,9 @@ function seededSettings(home: string): string {
     '    - receiptId: receipt-2',
     '      profileName: desktop',
     '      packageName: dsh-free-search',
+    '    - receiptId: receipt-3',
+    '      profileName: work',
+    '      packageName: dsh-work-plugin',
     '',
   ].join('\n'))
   return settingsPath
@@ -93,6 +98,18 @@ function bundlesOf(profileDir: string): string[] {
   return ((manifest.dsh?.profile as { bundles?: string[] } | undefined)?.bundles ?? [])
 }
 
+function swapOptions(home: string, overrides: Record<string, unknown> = {}) {
+  return {
+    home,
+    profileName: 'desktop',
+    settingsDocumentPath: join(home, 'settings.yaml'),
+    createProfile: () => { ensureDesktopProfile(home) },
+    materialize: async () => true,
+    now: () => Date.parse('2026-09-09T07:33:19.264Z'),
+    ...overrides,
+  }
+}
+
 describe('fresh profile reset decision', () => {
   it('triggers on an upgrade and on a downgrade', () => {
     for (const appBuildVersion of ['2.0.3+b76', '2.0.3+b74']) {
@@ -101,6 +118,7 @@ describe('fresh profile reset decision', () => {
         resetOnVersionChange: true,
         previousAppBuildVersion: '2.0.3+b75',
         appBuildVersion,
+        profileExists: true,
       })).toBe('reset')
     }
   })
@@ -111,14 +129,25 @@ describe('fresh profile reset decision', () => {
       resetOnVersionChange: true,
       previousAppBuildVersion: '2.0.3+b75',
       appBuildVersion: '2.0.3+b75',
+      profileExists: true,
     })).toBe('unchanged')
   })
 
-  it('records the first observed build identity instead of resetting', () => {
+  it('treats a missing record as a version change and rebuilds an existing Profile', () => {
     expect(freshProfileResetDecision({
       locked: true,
       resetOnVersionChange: true,
-      appBuildVersion: '2.0.3+b75',
+      appBuildVersion: '2.0.3+b76',
+      profileExists: true,
+    })).toBe('reset')
+  })
+
+  it('only records the first identity when no Profile exists (a genuinely fresh install)', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: true,
+      appBuildVersion: '2.0.3+b76',
+      profileExists: false,
     })).toBe('record')
   })
 
@@ -132,19 +161,20 @@ describe('fresh profile reset decision', () => {
         ...options,
         previousAppBuildVersion: '2.0.3+b74',
         appBuildVersion: '2.0.3+b75',
+        profileExists: true,
       })).toBe('unchanged')
     }
   })
 })
 
 describe('profile generation record', () => {
-  it('round-trips the build identity and reads back undefined for anything else', () => {
+  it('round-trips the build identity and reads back undefined for anything else', async () => {
     const home = temporaryHome()
     const statePath = profileGenerationStatePath(home)
     expect(statePath).toBe(join(home, 'last-profile-generation.json'))
     expect(readProfileGenerationState(statePath)).toBeUndefined()
 
-    writeProfileGenerationState(statePath, {
+    await writeProfileGenerationState(statePath, {
       version: 1,
       appBuildVersion: '2.0.3+b75',
       updatedAt: '2026-09-09T07:33:19.264Z',
@@ -175,59 +205,95 @@ describe('profile backup naming', () => {
 })
 
 describe('market install receipt clearing', () => {
-  it('drops the ledger, keeps every other setting and comment, and is idempotent', () => {
+  it('drops only this Profile\'s receipts, keeps every other setting and comment, and is idempotent', async () => {
     const home = temporaryHome()
     const settingsPath = seededSettings(home)
 
-    expect(clearMarketInstallReceipts(settingsPath)).toBe(2)
+    expect(await clearMarketInstallReceipts(settingsPath, 'desktop')).toBe(2)
     const cleared = readFileSync(settingsPath, 'utf8')
-    expect(cleared).not.toContain('installReceipts')
     expect(cleared).not.toContain('receipt-1')
+    expect(cleared).not.toContain('receipt-2')
+    // The sibling Profile's receipt is home-shared state and must survive.
+    expect(cleared).toContain('receipt-3')
+    expect(cleared).toContain('profileName: work')
     expect(cleared).toContain('# user settings survive the swap')
     expect(cleared).toContain('theme: dark')
     expect(cleared).toContain('sources: []')
 
-    expect(clearMarketInstallReceipts(settingsPath)).toBe(0)
+    expect(await clearMarketInstallReceipts(settingsPath, 'desktop')).toBe(0)
     expect(readFileSync(settingsPath, 'utf8')).toBe(cleared)
-  })
 
-  it('reads a missing document, missing key, or shapeless ledger as nothing to clear', () => {
-    const home = temporaryHome()
-    expect(clearMarketInstallReceipts(join(home, 'absent.yaml'))).toBe(0)
-
-    const settingsPath = join(home, 'settings.yaml')
-    writeFileSync(settingsPath, 'theme: dark\n')
-    expect(clearMarketInstallReceipts(settingsPath)).toBe(0)
-    expect(readFileSync(settingsPath, 'utf8')).toBe('theme: dark\n')
-
-    writeFileSync(settingsPath, 'dsh-community-market:\n  installReceipts: nope\n')
-    expect(clearMarketInstallReceipts(settingsPath)).toBe(0)
+    expect(await clearMarketInstallReceipts(settingsPath, 'work')).toBe(1)
     expect(readFileSync(settingsPath, 'utf8')).not.toContain('installReceipts')
   })
 
-  it('refuses to rewrite an unparseable document', () => {
+  it('reads a missing document, missing key, or shapeless ledger as nothing to clear', async () => {
+    const home = temporaryHome()
+    expect(await clearMarketInstallReceipts(join(home, 'absent.yaml'), 'desktop')).toBe(0)
+
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, 'theme: dark\n')
+    expect(await clearMarketInstallReceipts(settingsPath, 'desktop')).toBe(0)
+    expect(readFileSync(settingsPath, 'utf8')).toBe('theme: dark\n')
+
+    writeFileSync(settingsPath, 'dsh-community-market:\n  installReceipts: nope\n')
+    expect(await clearMarketInstallReceipts(settingsPath, 'desktop')).toBe(0)
+    expect(readFileSync(settingsPath, 'utf8')).not.toContain('installReceipts')
+  })
+
+  it('refuses to rewrite an unparseable document', async () => {
     const home = temporaryHome()
     const settingsPath = join(home, 'settings.yaml')
     writeFileSync(settingsPath, 'a: [b\n')
 
-    expect(() => clearMarketInstallReceipts(settingsPath)).toThrow('is not parseable YAML')
+    await expect(clearMarketInstallReceipts(settingsPath, 'desktop')).rejects.toThrow('is not parseable YAML')
     expect(readFileSync(settingsPath, 'utf8')).toBe('a: [b\n')
   })
 })
 
-describe('fresh profile swap', () => {
-  function swapOptions(home: string, overrides: Record<string, unknown> = {}) {
-    return {
-      home,
-      profileName: 'desktop',
-      settingsDocumentPath: join(home, 'settings.yaml'),
-      createProfile: () => { ensureDesktopProfile(home) },
-      materialize: async () => true,
-      now: () => Date.parse('2026-09-09T07:33:19.264Z'),
-      ...overrides,
-    }
-  }
+describe('profile backup retention', () => {
+  it('keeps only the newest set-aside directories and leaves lookalikes alone', () => {
+    const home = temporaryHome()
+    const profileDir = join(home, 'profiles', 'desktop')
+    mkdirSync(profileDir, { recursive: true })
+    const stamps = [
+      '20260909T073319264Z',
+      '20260910T073319264Z',
+      '20260911T073319264Z',
+      '20260912T073319264Z',
+    ]
+    for (const stamp of stamps) mkdirSync(`${profileDir}.bak-${stamp}`, { recursive: true })
+    // Not a swap stamp: never pruned by the retention bound.
+    mkdirSync(`${profileDir}.bak-notes`, { recursive: true })
 
+    const removed = [...pruneProfileBackups(profileDir)].sort()
+
+    expect(removed).toEqual([`desktop.bak-${stamps[0]}`, `desktop.bak-${stamps[1]}`])
+    for (const stamp of stamps.slice(0, 2)) expect(existsSync(`${profileDir}.bak-${stamp}`)).toBe(false)
+    for (const stamp of stamps.slice(2)) expect(existsSync(`${profileDir}.bak-${stamp}`)).toBe(true)
+    expect(existsSync(`${profileDir}.bak-notes`)).toBe(true)
+  })
+
+  it('prunes the oldest backup after a swap so the fleet cannot accumulate one per upgrade', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    seededSettings(home)
+
+    await freshProfileSwap(swapOptions(home))
+    const second = await freshProfileSwap(swapOptions(home, {
+      now: () => Date.parse('2026-09-10T07:33:19.264Z'),
+    }))
+    await freshProfileSwap(swapOptions(home, { now: () => Date.parse('2026-09-11T07:33:19.264Z') }))
+
+    expect(second.backupDir).toBe(join(home, 'profiles', 'desktop.bak-20260910T073319264Z'))
+    expect(readdirSync(join(home, 'profiles')).filter(name => name.includes('.bak-')).sort()).toEqual([
+      'desktop.bak-20260910T073319264Z',
+      'desktop.bak-20260911T073319264Z',
+    ])
+  })
+})
+
+describe('fresh profile swap', () => {
   it('sets the old Profile aside and rebuilds a Profile with no third-party plugin', async () => {
     const home = temporaryHome()
     const profileDir = seededProfile(home)
@@ -248,10 +314,51 @@ describe('fresh profile swap', () => {
     ])
     expect(existsSync(join(result.backupDir!, 'node_modules', THIRD_PARTY))).toBe(true)
     // The rebuilt Profile is the shipped first-run composition: zero
-    // third-party plugins, and no market ledger left to claim otherwise.
+    // third-party plugins, and no receipt of this Profile left to claim
+    // otherwise — while the sibling Profile's receipt survives.
     expect(bundlesOf(profileDir)).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
     expect(existsSync(join(profileDir, 'node_modules', THIRD_PARTY))).toBe(false)
-    expect(readFileSync(settingsPath, 'utf8')).not.toContain('installReceipts')
+    const settings = readFileSync(settingsPath, 'utf8')
+    expect(settings).not.toContain('receipt-1')
+    expect(settings).toContain('receipt-3')
+  })
+
+  it('invalidates the Profile health checkpoint once the rebuild succeeded', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    seededSettings(home)
+    const clearCheckpoint = vi.fn()
+
+    await freshProfileSwap(swapOptions(home, { clearCheckpoint }))
+
+    expect(clearCheckpoint).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not touch the checkpoint when the Profile could not be created', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    const clearCheckpoint = vi.fn()
+
+    await expect(freshProfileSwap(swapOptions(home, {
+      clearCheckpoint,
+      createProfile: () => { throw new Error('create failed') },
+    }))).rejects.toThrow('create failed')
+    expect(clearCheckpoint).not.toHaveBeenCalled()
+  })
+
+  it('reports a checkpoint invalidation failure without failing the rebuild', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    seededSettings(home)
+    const logError = vi.fn()
+
+    const result = await freshProfileSwap(swapOptions(home, {
+      clearCheckpoint: () => { throw new Error('checkpoint locked') },
+      logError,
+    }))
+
+    expect(result.materialized).toBe(true)
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('could not clear the health checkpoint'))
   })
 
   it('is idempotent: a second swap rebuilds again and clears nothing', async () => {

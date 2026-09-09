@@ -32,9 +32,13 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(autoLayerAt).toBeLessThan(bootInputsAt)
     expect(autoLayerAt).toBeLessThan(prepareAt)
     expect(autoLayerAt).toBeLessThan(bootAt)
-    // The market ledger is cleared before boot verification reads the
-    // receipts out of the same settings document.
-    expect(source.indexOf('clearMarketInstallReceipts(')).toBeLessThan(bootInputsAt)
+    // The market ledger is cleared inside the awaited swap primitive, which
+    // therefore runs before boot verification reads the receipts out of the
+    // same settings document.
+    const swapCallAt = source.indexOf('const result = await freshProfileSwap({', swapHelperAt)
+    expect(swapCallAt).toBeGreaterThan(swapHelperAt)
+    expect(source.indexOf('settingsDocumentPath,', swapCallAt)).toBeGreaterThan(swapCallAt)
+    expect(swapCallAt).toBeLessThan(bootInputsAt)
   })
 
   it('gates the automatic layer on the locked policy switch and records the build identity', () => {
@@ -45,9 +49,18 @@ describe('fresh Profile swap wiring (P14)', () => {
     // The record is written only after a successful swap (a failure retries
     // on the next boot) and on the first observation of a build identity.
     const resetAt = source.indexOf("if (await runFreshProfileSwap('version-change')) {")
-    expect(source.indexOf('recordProfileGeneration()', resetAt)).toBeGreaterThan(resetAt)
-    expect(source).toContain("} else if (freshProfileDecision === 'record') {\n      recordProfileGeneration()")
+    expect(source.indexOf('await recordProfileGeneration()', resetAt)).toBeGreaterThan(resetAt)
+    expect(source).toContain("} else if (freshProfileDecision === 'record') {\n      await recordProfileGeneration()")
     expect(source).toContain('writeProfileGenerationState(profileGenerationPath, {')
+    expect(source).toContain("profileExists: existsSync(join(activeProfileDir, 'package.json')),")
+  })
+
+  it('invalidates the rebuilt Profile health checkpoint so a failed boot cannot undo the swap', () => {
+    const helper = source.slice(swapHelperAt, autoLayerAt)
+
+    expect(helper).toContain(
+      "clearCheckpoint: () => {\n            clearDesktopProfileCheckpoint(app.getPath('userData'), resolveProfileDir(activeProfileName, homeDir))",
+    )
   })
 
   it('mounts the manual action on the recovery window with the token guard and a Host quiesce', () => {
