@@ -262,6 +262,7 @@ const spec: DesktopShellSpec = {
   productName: 'Deloitte DSH Desktop',
   windowTitle: 'Deloitte DSH Desktop',
   iconPath: '/tmp/app-icon.png',
+  readSessionSeedUrl: vi.fn(() => undefined),
   trayIcons: {
     templatePath: '/tmp/tray-iconTemplate.png',
     bluePath: '/tmp/tray-icon-blue.png',

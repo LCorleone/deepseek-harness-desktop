@@ -26,6 +26,7 @@
 import { fileURLToPath } from 'node:url'
 import { BrowserWindow, app, ipcMain } from 'electron'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
+import { nativeUiDocumentUrl } from './native-ui-document.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import { DISCLAIMER_ITEMS, DISCLAIMER_TITLE } from './disclaimer-text.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
@@ -229,7 +230,7 @@ export class DesktopDisclaimerWindow {
     })
     const model: DisclaimerViewModel = { title: DISCLAIMER_TITLE, items: DISCLAIMER_ITEMS }
     const state = Buffer.from(JSON.stringify(model), 'utf8').toString('base64url')
-    await window.loadFile(DISCLAIMER_DOCUMENT, { query: { state } })
+    await window.loadURL(nativeUiDocumentUrl(DISCLAIMER_DOCUMENT, { state }))
     return await result
   }
 

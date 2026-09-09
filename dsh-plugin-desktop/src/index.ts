@@ -334,6 +334,13 @@ export function apply(ctx: Context, config: Config): void {
         runtime.platform,
         runtime.locked,
       ),
+      // 0.1.2 authenticates every index request: hand the native shell the
+      // process-token root (read lazily after the tree settles, when the
+      // client-connection row is active) so it can mint the browser-session
+      // cookie before the plain renderer URL loads — otherwise the window
+      // receives the 401 wall and the renderer never boots (#73).
+      readSessionSeedUrl: () => ctx.get('connection')
+        ?.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}/`),
       productName: 'Deloitte DSH Desktop',
       // Authenticated SSO builds suffix the visible caption with the account
       // email (one more native confirmation surface); every other launch

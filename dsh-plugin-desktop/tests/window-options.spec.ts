@@ -23,6 +23,7 @@ const spec: DesktopShellSpec = {
     bluePath: '/tmp/tray-icon-blue.png',
   },
   readLocalePreference: () => undefined,
+  readSessionSeedUrl: () => undefined,
   readThemeSource: () => 'system',
   requestQuit: () => {},
   requestModeChange: async () => {},

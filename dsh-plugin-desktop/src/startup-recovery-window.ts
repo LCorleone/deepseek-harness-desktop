@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
+import { nativeUiDocumentUrl } from './native-ui-document.ts'
 import type { DesktopLocale } from './runtime.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
 import {
@@ -798,7 +799,10 @@ export class DesktopStartupRecoveryWindow {
       ...(this.options.rollbackLastKnownGood === undefined ? {} : { rollbackLastKnownGoodAvailable: true }),
     }
     const state = Buffer.from(JSON.stringify(model), 'utf8').toString('base64url')
-    await window.loadFile(RECOVERY_DOCUMENT, { query: { state } })
+    // loadURL + pathToFileURL (not loadFile+query): the packaged Windows
+    // builds reject loadFile's non-canonical file URL with the state query
+    // (#73 雷B, electron/electron#39831).
+    await window.loadURL(nativeUiDocumentUrl(RECOVERY_DOCUMENT, { state }))
   }
 
   private finish(result: RecoveryWindowResult): void {

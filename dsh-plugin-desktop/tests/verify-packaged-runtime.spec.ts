@@ -18,6 +18,7 @@ import {
   REQUIRED_MACOS_UNIVERSAL_ENTRIES,
   REQUIRED_PACKAGED_RUNTIME_ENTRIES,
   REQUIRED_RUN_AS_NODE_FUSE,
+  NATIVE_UI_WINDOW_DOCUMENTS,
   REQUIRED_UNPACKED_PACKAGE_SPECIFIERS,
   REQUIRED_UNPACKED_RUNTIME_ENTRIES,
   REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES,
@@ -39,6 +40,8 @@ import {
   verifyPackagedFuseWire,
   verifyRunAsNodeFuseStage,
   verifyUnpackedArchiveMirror,
+  verifyPackagedClientComposition,
+  verifyNativeUiWindowAssets,
   verifyPackagedRuntime,
   type ArchiveLister,
   type CompanyReleaseChecklistSources,
@@ -97,6 +100,26 @@ function completePackageResolver(unpackedRoot: string): PackageResolver {
 function completeFileProbe(unpackedRoot: string): FileProbe {
   return filename => !REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES
     .some(entry => filename === join(unpackedRoot, entry))
+}
+
+/** Packaged manifest + window-document reader for success fixtures (#73 gates). */
+function completeRuntimeReader(): (filename: string) => string {
+  const injectTarget = '@deepseek-ai/dsh-client-ui-renderer'
+  return (filename: string) => {
+    if (filename.includes(`${injectTarget}/package.json`)) {
+      return JSON.stringify({
+        dsh: { client: { platform: 'web' } },
+        exports: { './client': { default: './lib/client.js' } },
+      })
+    }
+    if (filename.endsWith('package.json')) {
+      return JSON.stringify({ dsh: { client: { inject: [injectTarget], platform: 'web' } } })
+    }
+    if (filename.endsWith('.html')) {
+      return '<html><head><script type="module" src="assets/recovery-test.js"></script></head></html>'
+    }
+    throw new Error(`fixture reader has no file: ${filename}`)
+  }
 }
 
 const catalogKeyId = 'company-catalog-2026.01'
@@ -696,7 +719,7 @@ describe('packaged desktop runtime verification', () => {
     const exists = vi.fn<FileProbe>(completeFileProbe(unpackedRoot))
     const resolvePackage = vi.fn<PackageResolver>(completePackageResolver(unpackedRoot))
 
-    verifyPackagedRuntime(context('/build', platform), list, exists, resolvePackage)
+    verifyPackagedRuntime(context('/build', platform), list, exists, resolvePackage, completeRuntimeReader())
 
     expect(resolvePackagedAsarPath(context('/build', platform))).toBe(expectedPath)
     expect(list).toHaveBeenCalledOnce()
@@ -706,7 +729,10 @@ describe('packaged desktop runtime verification', () => {
       REQUIRED_UNPACKED_RUNTIME_ENTRIES.length
         + (platform === 'win32' ? REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES.length : 0)
         + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
-        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length,
+        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length
+        + NATIVE_UI_WINDOW_DOCUMENTS.length
+        + 1 // inject-target client bundle (#73 composition gate)
+        + NATIVE_UI_WINDOW_DOCUMENTS.length, // one referenced asset per document (#73 window gate)
     )
     expect(resolvePackage.mock.calls.map(([specifier]) => specifier))
       .toEqual(REQUIRED_UNPACKED_PACKAGE_SPECIFIERS)
@@ -738,13 +764,17 @@ describe('packaged desktop runtime verification', () => {
       () => completeArchiveEntries(),
       exists,
       completePackageResolver(unpackedRoot),
+      completeRuntimeReader(),
     )
     expect(exists).toHaveBeenCalledTimes(
       REQUIRED_UNPACKED_RUNTIME_ENTRIES.length
         + REQUIRED_MACOS_UNIVERSAL_ENTRIES.length
         + FORBIDDEN_MACOS_UNIVERSAL_ENTRIES.length
         + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
-        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length,
+        + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length
+        + NATIVE_UI_WINDOW_DOCUMENTS.length
+        + 1 // inject-target client bundle (#73 composition gate)
+        + NATIVE_UI_WINDOW_DOCUMENTS.length, // one referenced asset per document (#73 window gate)
     )
   })
 
@@ -892,6 +922,7 @@ describe('packaged desktop runtime verification', () => {
       () => completeArchiveEntries(),
       completeFileProbe(unpackedRoot),
       resolvePackage,
+      completeRuntimeReader(),
     )).toThrow(
       `packaged runtime at ${unpackedRoot} cannot resolve required package export dsh-plugin-desktop/profiles`,
     )
@@ -911,6 +942,7 @@ describe('packaged desktop runtime verification', () => {
       () => completeArchiveEntries(),
       completeFileProbe(unpackedRoot),
       resolvePackage,
+      completeRuntimeReader(),
     )).toThrow(
       `packaged runtime at ${unpackedRoot} cannot resolve required package export ${specifier}`,
     )
@@ -930,8 +962,66 @@ describe('packaged desktop runtime verification', () => {
       () => completeArchiveEntries(),
       completeFileProbe(unpackedRoot),
       resolvePackage,
+      completeRuntimeReader(),
     )).toThrow(
       `required package export @deepseek-ai/dsh-base/package.json resolved outside ${unpackedRoot}: ${escapedPath}`,
     )
+  })
+
+  it('rejects a packaged client composition whose inject target lost its physical bundle (#73 雷A)', () => {
+    const runtimeContext = context('/build', 'win32')
+    const unpackedRoot = resolvePackagedUnpackedRoot(runtimeContext)
+    const target = '@deepseek-ai/dsh-client-ui-renderer'
+    const reader = (filename: string): string => {
+      if (filename === join(unpackedRoot, 'package.json')) {
+        return JSON.stringify({ dsh: { client: { inject: [target], platform: 'web' } } })
+      }
+      throw new Error(`ENOENT: no such file: ${filename}`)
+    }
+
+    expect(() => verifyPackagedRuntime(
+      runtimeContext,
+      () => completeArchiveEntries(),
+      completeFileProbe(unpackedRoot),
+      completePackageResolver(unpackedRoot),
+      reader,
+    )).toThrow(`client composition target ${target} has no physical package manifest`)
+  })
+
+  it('rejects a packaged client composition target that is no web client package (#73 雷A)', () => {
+    const unpackedRoot = join('/build', 'resources', 'app.asar.unpacked')
+    const target = '@deepseek-ai/dsh-client-ui-renderer'
+    const reader = (filename: string): string => {
+      if (filename === join(unpackedRoot, 'package.json')) {
+        return JSON.stringify({ dsh: { client: { inject: [target] } } })
+      }
+      if (filename === join(unpackedRoot, 'node_modules', ...target.split('/'), 'package.json')) {
+        return JSON.stringify({ dsh: { client: { platform: 'node' } } })
+      }
+      throw new Error(`ENOENT: no such file: ${filename}`)
+    }
+
+    expect(() => verifyPackagedClientComposition(unpackedRoot, reader, () => true))
+      .toThrow(`client composition target ${target} does not declare a web dsh.client face`)
+  })
+
+  it('rejects a native-ui window document missing from the unpacked tree (#73 雷B)', () => {
+    const unpackedRoot = join('/build', 'resources', 'app.asar.unpacked')
+    const document = 'lib/native-ui/recovery.html'
+    const exists = (filename: string): boolean => filename !== join(unpackedRoot, document)
+
+    expect(() => verifyNativeUiWindowAssets(
+      unpackedRoot,
+      completeRuntimeReader(),
+      exists,
+    )).toThrow(`native-ui window documents are missing from the unpacked tree: ${document}`)
+  })
+
+  it('rejects a native-ui window document whose built asset escapes the file-origin subtree (#73 雷B)', () => {
+    const unpackedRoot = join('/build', 'resources', 'app.asar.unpacked')
+    const reader = (): string => '<script src="assets/../../evil.js"></script>'
+
+    expect(() => verifyNativeUiWindowAssets(unpackedRoot, reader, () => true))
+      .toThrow('references a missing or escaping asset assets/../../evil.js')
   })
 })

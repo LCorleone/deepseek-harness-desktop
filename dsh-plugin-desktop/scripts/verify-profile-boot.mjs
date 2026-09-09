@@ -15,6 +15,7 @@ import { installDesktopPnpmRuntime } from '../lib/desktop-runtime-environment.js
 import { installProfilePackageResolver } from '../lib/module-resolution.js'
 import { healDesktopProfileModuleFallback, prepareDesktopProfile } from '../lib/profile.js'
 import { DesktopProfileService } from '../lib/profile-service.js'
+import { plantShellSessionCookie } from '../lib/shell-session.js'
 
 const BIN_NAME = 'dsh-plugin-desktop-profile-smoke'
 const HOST_SERVICE_PLUGIN_NAME = 'dsh-desktop-host-services-smoke-plugin'
@@ -209,6 +210,13 @@ try {
   if (mountedSpec?.url !== expectedUrl) {
     throw new Error(`desktop plugin produced an unexpected renderer URL: ${String(mountedSpec?.url)}`)
   }
+  // 0.1.2 browser authentication: the assembled profile mounts the
+  // client-connection row, so the shell must carry the process-token mint
+  // URL or the packaged renderer loads the 401 wall (#73).
+  const seedUrl = mountedSpec?.readSessionSeedUrl?.()
+  if (typeof seedUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+$/u.test(seedUrl)) {
+    throw new Error(`desktop plugin produced an invalid shell session seed URL: ${String(seedUrl)}`)
+  }
   if (mountedSpec?.mode !== 'advanced') {
     throw new Error(`desktop plugin produced an unexpected shell mode: ${String(mountedSpec?.mode)}`)
   }
@@ -243,7 +251,29 @@ try {
   if (cookie.length === 0) {
     throw new Error('browser authentication exchange did not mint a cookie')
   }
-  const response = await fetch(expectedUrl, { headers: { Cookie: cookie } })
+  // #73 gate — the native shell's exact serving path: the unauthenticated
+  // desktop renderer URL must be the 401 wall (the packaged DOA shape), and
+  // the session cookie planted through the launcher's seeding module must
+  // turn that same URL into the assembled application document.
+  const unauthenticated = await fetch(expectedUrl)
+  await unauthenticated.body?.cancel()
+  if (unauthenticated.status !== 401) {
+    throw new Error(`unauthenticated desktop renderer URL returned HTTP ${String(unauthenticated.status)} instead of the 401 wall`)
+  }
+  const planted = []
+  const plantedName = await plantShellSessionCookie(
+    ctx.connection.authenticatedUrl(expectedUrl),
+    new URL(expectedUrl).origin,
+    { set: async details => { planted.push(details) } },
+    (url, init) => fetch(url, init),
+  )
+  const plantedCookie = planted.find(entry => entry.name === plantedName)
+  if (plantedCookie === undefined || plantedCookie.url !== `${new URL(expectedUrl).origin}/`) {
+    throw new Error(`shell session seeding planted an unexpected jar entry: ${JSON.stringify(planted)}`)
+  }
+  const response = await fetch(expectedUrl, {
+    headers: { Cookie: `${plantedCookie.name}=${plantedCookie.value}` },
+  })
   const html = await response.text()
   if (response.status !== 200) {
     throw new Error(`assembled Web root returned HTTP ${String(response.status)}`)

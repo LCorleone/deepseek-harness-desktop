@@ -233,6 +233,108 @@ export const REQUIRED_MACOS_UNIVERSAL_ENTRIES = [
   ...MACOS_UNIVERSAL_NATIVE_ENTRIES.map(entry => entry.path),
 ] as const
 
+/** Every native-ui window document the launcher can open, with its query carrier. */
+export const NATIVE_UI_WINDOW_DOCUMENTS = [
+  'lib/native-ui/recovery.html',
+  'lib/native-ui/sso-gate.html',
+  'lib/native-ui/profile-create.html',
+  'lib/native-ui/disclaimer.html',
+  'lib/native-ui/agent-browser.html',
+] as const
+
+/**
+ * Pin the packaged client composition (#73 雷A): every `dsh.client.inject`
+ * target of the shipped manifest must be a physical web client package whose
+ * `./client` export resolves to an existing bundle in the unpacked tree.
+ * The composition itself booted green in unpacked gates while the packaged
+ * tree silently drifted once — this check keeps layout regressions failing
+ * at package time instead of on the user machine.
+ * @param unpackedRoot - absolute path to app.asar.unpacked.
+ * @param read - physical manifest reader seam.
+ * @param exists - physical-file probe.
+ */
+export function verifyPackagedClientComposition(
+  unpackedRoot: string,
+  read: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
+  exists: FileProbe = existsSync,
+): void {
+  const manifest = JSON.parse(read(join(unpackedRoot, 'package.json'))) as {
+    dsh?: { client?: { inject?: unknown } }
+  }
+  const inject = manifest.dsh?.client?.inject
+  if (!Array.isArray(inject) || inject.length === 0
+    || inject.some(entry => typeof entry !== 'string' || entry.length === 0)) {
+    throw new Error(
+      'dsh-plugin-desktop: packaged manifest has no non-empty dsh.client.inject client composition',
+    )
+  }
+  for (const packageName of inject as readonly string[]) {
+    const packageManifestPath = join(unpackedRoot, 'node_modules', ...packageName.split('/'), 'package.json')
+    let pkg: Record<string, any>
+    try {
+      pkg = JSON.parse(read(packageManifestPath))
+    } catch (cause) {
+      throw new Error(
+        `dsh-plugin-desktop: packaged client composition target ${packageName} has no physical package manifest`,
+        { cause },
+      )
+    }
+    if (pkg.dsh?.client?.platform !== 'web') {
+      throw new Error(
+        `dsh-plugin-desktop: packaged client composition target ${packageName} does not declare a web dsh.client face`,
+      )
+    }
+    const clientRel = pkg.exports?.['./client']?.default ?? pkg.exports?.['./client']
+    if (typeof clientRel !== 'string') {
+      throw new Error(
+        `dsh-plugin-desktop: packaged client composition target ${packageName} exports no ./client bundle`,
+      )
+    }
+    const bundle = join(unpackedRoot, 'node_modules', ...packageName.split('/'), ...clientRel.replace(/^\.\//u, '').split('/'))
+    if (!exists(bundle)) {
+      throw new Error(
+        `dsh-plugin-desktop: packaged client composition target ${packageName} is missing its physical client bundle ${clientRel}`,
+      )
+    }
+  }
+}
+
+/**
+ * Pin the native-ui window documents and their built assets (#73 雷B): every
+ * window document must exist physically (it loads over `file://` through
+ * `pathToFileURL`), and every vite asset it references must ship inside the
+ * same `lib/native-ui/assets/` subtree — the file-origin boundary the windows'
+ * CSP and the fuse rely on.
+ * @param unpackedRoot - absolute path to app.asar.unpacked.
+ * @param read - physical document reader seam.
+ * @param exists - physical-file probe.
+ */
+export function verifyNativeUiWindowAssets(
+  unpackedRoot: string,
+  read: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
+  exists: FileProbe = existsSync,
+): void {
+  const missing = NATIVE_UI_WINDOW_DOCUMENTS.filter(entry => !exists(join(unpackedRoot, entry)))
+  if (missing.length > 0) {
+    throw new Error(
+      `dsh-plugin-desktop: packaged native-ui window documents are missing from the unpacked tree: ${missing.join(', ')}`,
+    )
+  }
+  for (const document of NATIVE_UI_WINDOW_DOCUMENTS) {
+    const html = read(join(unpackedRoot, document))
+    const assets = [...html.matchAll(/(?:src|href)="(assets\/[^"?]+)"/gu)]
+      .map(match => match[1])
+      .filter((asset): asset is string => asset !== undefined)
+    for (const asset of assets) {
+      if (asset.includes('..') || !exists(join(unpackedRoot, 'lib/native-ui', asset))) {
+        throw new Error(
+          `dsh-plugin-desktop: packaged native-ui document ${document} references a missing or escaping asset ${asset}`,
+        )
+      }
+    }
+  }
+}
+
 /** Package exports that profile fallback links must resolve from the physical application tree. */
 export const REQUIRED_UNPACKED_PACKAGE_SPECIFIERS = [
   'dsh-plugin-desktop',
@@ -1072,6 +1174,7 @@ export function verifyPackagedRuntime(
   list: ArchiveLister = listPackage,
   exists: FileProbe = existsSync,
   resolvePackage?: PackageResolver,
+  read: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
 ): void {
   const archiveEntries = verifyPackagedAsar(resolvePackagedAsarPath(context), list)
   const unpackedRoot = resolvePackagedUnpackedRoot(context)
@@ -1097,6 +1200,8 @@ export function verifyPackagedRuntime(
   }
   verifyUnpackedArchiveMirror(archiveEntries, unpackedRoot, exists)
   verifyArchiveOnlyPartition(unpackedRoot, exists)
+  verifyPackagedClientComposition(unpackedRoot, read, exists)
+  verifyNativeUiWindowAssets(unpackedRoot, read, exists)
   verifyUnpackedPackageResolution(unpackedRoot, resolvePackage)
 }
 

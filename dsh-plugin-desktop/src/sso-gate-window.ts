@@ -20,6 +20,7 @@ import { BrowserWindow, app, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { DESKTOP_SSO_GATE_SIGN_IN_CHANNEL } from './sso-gate-contract.ts'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
+import { nativeUiDocumentUrl } from './native-ui-document.ts'
 import { formatDesktopExitCode } from './desktop-logger.ts'
 import type { DesktopLocale } from './runtime.ts'
 import { applicationNeedsReveal, revealApplication } from './electron-reveal.ts'
@@ -271,7 +272,7 @@ export class DesktopSsoGateWindow {
       ...(this.errorDetail.length === 0 ? {} : { errorDetail: this.errorDetail }),
     }
     const state = Buffer.from(JSON.stringify(model), 'utf8').toString('base64url')
-    await window.loadFile(SSO_GATE_DOCUMENT, { query: { state } })
+    await window.loadURL(nativeUiDocumentUrl(SSO_GATE_DOCUMENT, { state }))
   }
 
   private finish(result: SsoGateResult): void {

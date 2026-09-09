@@ -5,7 +5,9 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  net,
   Notification,
+  session,
   shell,
   Tray,
 } from 'electron'
@@ -18,6 +20,7 @@ import { desktopWindowOptions } from './window-options.ts'
 import type { DesktopRestartConfirmationCopy } from './tray-locale.ts'
 import type { RendererBootReport } from './renderer-boot-contract.ts'
 import { DesktopRendererRecovery } from './renderer-recovery.ts'
+import { plantShellSessionCookie } from './shell-session.ts'
 
 const MIN_ZOOM_LEVEL = -4
 const MAX_ZOOM_LEVEL = 4
@@ -277,6 +280,29 @@ export class ElectronShellGeneration {
     }
 
     try {
+      // 0.1.2 browser authentication: exchange the process launch token for
+      // the browser-session cookie and plant it in the Electron session jar
+      // BEFORE the renderer URL loads, so the plain desktop URL (query markers
+      // included) is answered with the application instead of the 401 wall
+      // (#73). A missing seed URL means a hand-built tree without a mounted
+      // client-connection row — nothing to seed.
+      const seedUrl = spec.readSessionSeedUrl?.()
+      if (seedUrl !== undefined) {
+        try {
+          await plantShellSessionCookie(
+            seedUrl,
+            origin,
+            {
+              set: async details => { await session.defaultSession.cookies.set(details) },
+            },
+            (url, init) => net.fetch(url, init),
+          )
+        } catch (cause) {
+          // Fail loud into the log but still load: the renderer health gate
+          // owns the verdict when the document cannot boot.
+          this.options.logError(`dsh-plugin-desktop: failed to seed the shell browser-session cookie: ${cause instanceof Error ? cause.message : String(cause)}`)
+        }
+      }
       await window.loadURL(spec.url)
       tray = new Tray(prepareTrayIcon(spec.trayIcons, platform.platform))
       this.tray = tray

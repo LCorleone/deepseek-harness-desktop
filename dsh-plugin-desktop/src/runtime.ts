@@ -143,6 +143,14 @@ export interface DesktopTerminalSpec {
 export interface DesktopShellSpec extends DesktopWindowConfig {
   /** Unmodified Web root served by the active DSH profile. */
   url: string
+  /**
+   * Lazy authenticated root URL (process launch token) for the 0.1.2
+   * browser-session cookie mint, read after the Host tree settles. The native
+   * shell exchanges it out of band and plants the resulting cookie before
+   * loading {@link DesktopShellSpec.url}; undefined in hand-built trees
+   * without a mounted client-connection row.
+   */
+  readSessionSeedUrl(): string | undefined
   /** Native application and tray label. */
   productName: string
   /** Visible native caption on platforms that retain a title. */

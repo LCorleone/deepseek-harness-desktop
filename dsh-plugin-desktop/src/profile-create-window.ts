@@ -3,6 +3,7 @@
 import { BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { unpackedAsarPath } from './packaged-runtime-path.ts'
+import { nativeUiDocumentUrl } from './native-ui-document.ts'
 import type { DesktopLocale } from './runtime.ts'
 
 const PROFILE_CREATE_SCHEME = 'dsh-profile-create:'
@@ -128,7 +129,7 @@ export class ProfileCreateWindow {
       // Accessing window.webContents here can itself throw during a restart.
       if (this.window === window) this.window = undefined
     })
-    void window.loadFile(PROFILE_CREATE_DOCUMENT, { query: { locale: this.options.locale } }).catch(() => {
+    void window.loadURL(nativeUiDocumentUrl(PROFILE_CREATE_DOCUMENT, { locale: this.options.locale })).catch(() => {
       if (!this.disposed && this.window === window) window.close()
     })
   }

@@ -55,11 +55,9 @@ const electron = vi.hoisted(() => {
       setWindowOpenHandler: vi.fn(() => ({ action: 'deny' })),
     }
     readonly events = emitter()
-    readonly loadFile = vi.fn(async (
-      _document: string,
-      options: { readonly query: { readonly state: string } },
-    ): Promise<void> => {
-      this.states.push(options.query.state)
+    readonly loadURL = vi.fn(async (target: string): Promise<void> => {
+      const state = new URL(target).searchParams.get('state')
+      if (state !== null) this.states.push(state)
     })
     readonly destroy = vi.fn()
     readonly removeMenu = vi.fn()

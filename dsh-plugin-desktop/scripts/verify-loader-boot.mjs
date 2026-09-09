@@ -168,6 +168,12 @@ try {
   if (mountedSpec?.url !== 'http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin') {
     throw new Error(`desktop plugin produced an unexpected renderer URL: ${String(mountedSpec?.url)}`)
   }
+  // 0.1.2 browser authentication: the minimal smoke tree carries no
+  // client-connection row, so the seed reader must degrade to undefined —
+  // the packaged composition provides it and its own gate asserts the URL.
+  if (mountedSpec.readSessionSeedUrl() !== undefined) {
+    throw new Error('desktop plugin produced a session seed URL without a mounted connection row')
+  }
 } finally {
   try {
     await ctx?.fiber.dispose()
