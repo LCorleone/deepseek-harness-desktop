@@ -429,11 +429,19 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **节奏：0+1+2+3 四阶段·六轮评审·四批修复，评审全 APPROVED，全绿收官**：
 - **Phase 0 目录多版本+retire** `1730e119fc` → 评审 APPROVED（留 2×P2+2×P3，记档 `10fcdcced9`）→ 修批 `e39a66b458`（吊销改版本键控/e2e 换真实桌面验证器/retire 崩溃收敛注释/SOP 补「旧钉字节随 artifact 携带」）。
 - **Phase 1 boot 分类+`client-update-required`** `e848eac2f7` → 评审 APPROVED（留 2×P2+1×P3）→ 修批 `dd39233659`（revoked 不作被宣传的更新目标 + runtime 常量对交叉断言）。
-- **Phase 2 市场按 runtime 选版+安装闸** `deda379cdd` → 评审 APPROVED（留 1×P2+2×P3）→ 修批与本文档并行落地（overlay 不兼容整包消失钉测试/representability 次序/market 侧谓词去重，market 文件与 Phase 3 不相交，收官报告补号）。
+- **Phase 2 市场按 runtime 选版+安装闸** `deda379cdd` → 评审 APPROVED（留 1×P2+2×P3）→ 修批与本文档并行落地（overlay 不兼容整包消失钉测试/representability 次序/market 侧谓词去重，market 文件与 Phase 3 不相交，收官报告补号→`59c5148b2f`）。
 - **Phase 3 遥测+SOP+收口**（本提交）：boot_verify 补 `deferredUpdates[]`（loaded 含延迟 bundle）；RELEASE §D2 三行语义 Phase 0 已写齐、MR-HANDLING 补「市场视图按客户端 runtime 展示」；P15 卡记终态（遗留签收：overlay 消失＝列表语义；谓词跨包双份＝方向禁令接受项+交叉断言守值）。
 - 测试基线：desktop 2206+7skip / market 464 只增不减；typecheck 0。
 
 **TODO 快照刷新（01:31）**：P15 四阶段全落地，**未构建未发目录**——客户端代码随下下个构建进 fleet（b81 不含 P15）；明早 b81 下载/验证链不变（连装 3 插件终判+详情无源码按钮+sebtang MR），promote 纪律照 21:21 快照。**P15 首战＝下次 sidebar promote 双钉（0.15.2 保留 stable）**，需先发带 P15 代码的客户端版本才有意义——目录先行只护老客户端精确查找，更新提示/市场选版要新客户端。
+
+### 当前 TODO 快照（2026-09-10 07:30，晨）
+**就绪待验**：b81 安装包已下载（asserts 目录，SHA `1ce1b61e0c…9f856d`，含 pnpm 闸修复/收尾批/按钮隐藏；**不含 P15**）。
+**今天顺序**：①用户装 b81 → 连装 3 插件（第二装必败终判）+ 详情弹窗无「打开源码仓库」按钮；②sebtang 装 b81（市场卡死修复+换新）+ 提两个 MR（compat.json 已放行 2.0.4/seq22）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。
+**P15 状态**：四阶段全落地（`1730e119fc`→`59c5148b2f`，六轮评审 APPROVED，终验全绿），**未构建未发目录**。上 fleet=下下个构建（b82+ 系）；**首战条件**=fleet 有 P15 客户端后 sidebar promote 双钉（0.15.2 保留 stable）——在那之前 promote 仍守「全员升级后」纪律。
+**排队**：P11 捆绑 Python（M）→ free-search rebase（可选）。
+**挂账**：沙箱档2评估 · sso-gate 浏览器路径主动测 · 0.4.184 fleet 反馈 · P12 正式吸收进 P15（已完成）· 遥测 deferredUpdates 真机观察（P15 客户端上线后）。
+**基线**：desktop 2206+7skip · market 466 · catalog e2e PASS · HEAD `59c5148b2f`（fork+backup 已推）。
 
 ### 当前 TODO 快照（2026-09-09 17:34）
 **进行中**：b78 装机验证（P14 EBUSY 修复终判：bak 出现+插件清空+plugin_reset outcome=swapped）。
