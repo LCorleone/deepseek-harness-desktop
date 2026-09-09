@@ -283,6 +283,14 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **GitLab 真推送演练（2026-09-03）**：P7 仅剩外部依赖①落地。`pack-tarball --from-allowlist` 复打包（对拍口径说明：allowlist 的 pack-artifact 形态按设计不携带 inline integrity——`lib/allowlist.mjs` 强制 path 与 integrity 互斥，integrity 构建时从打包文件计算——故对拍基准=两次独立复打包字节级一致 + 独立 hashlib oracle 复算同值；体积较旧演练 24924 B→25851 B 系 `ef0f55c60c` 评审修复改源（+46/-12）所致，非漂移）。产物 25851 B / 7 files，`sha512-19pLLIG3LWcxgdNw3itdu/S7YMlyRsmHsD8UM9W0Sjb8dIKqQzpLE8NB2b+kUylTvFI11svdLDKi1jKav3bhaw==`，treeDigest 本 Linux 实测 `0c800aba…`（照旧不入库）。推送：浅 clone julu/dsh-desktop-config → 仅新增 `packages/dsh-free-search-0.4.181.tgz` 一个文件（commit `6665896`，`packages: stage hardened dsh-free-search 0.4.181 (drill, manifest untouched)`，`128df14..6665896` master）→ push 成功。验证：raw URL `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz` 下载 HTTP 200 / 25851 B，与本地件 sha256 同（`510a8c4b…`）逐字节一致，sha512 与 pack 记录一致；**manifest 前后对拍逐字节一致**（sequence 10 / dsh-better-sidebar 0.15.2 npm 通道，sha256 `1d743452…` 未动）——fleet 未升级、绝不触碰已部署 manifest 的门禁语义全程守住。留存决策：tarball 留 `packages/`（无 manifest 引用=对客户端零影响；未来真发布时 measure-and-publish→fleet 门禁确认→publish-local 直接复用该文件，publish-local 的既有文件字节校验会因复打包确定性直接通过）。凭据卫生：临时 clone 用毕即删（token-bearing remote URL 一并消失）。
 
+## P14 · 恢复窗一键「卸载全部插件并启动」—— 立卡 2026-09-09（用户拍板）
+
+**动机**：#73 事故实证——一个不兼容 host 插件炸整棵树=客户端全死，同事（电脑小白）无 CLI 能力自救。需要恢复窗一个按钮：清空全部第三方插件→干净进桌面。上游有同族先例 recovery-plugin-uninstall.ts（恢复窗内做 profile 插件变更，profileActionToken 模式）可咨询手法。
+
+**设计骨架**：startup-recovery-window 增动作「卸载全部插件并启动」→主进程 handler 把 profile 拉回基础组合（package.json 移除全部第三方插件依赖+cordis.patch.yml includes 清第三方+删 .dsh-market-tarballs+清市场回执/state 使市场回到干净态）→重启 boot（boot 验证见零插件=绿）。**信任方向=纯收缩**（不装任何东西，只卸），无需扩大任何信任面。边界：公司市场/桌面本体不属于「第三方插件」不清；确认对话框（双语）防误触；完成后市场全部条目回到可安装态。
+
+**规模**：S-M（~1 天+测试）。**排期**：#74 出门后。**验收**：装着坏插件炸树的机器→恢复窗一键→干净进桌面→市场四件全部重新可装；正常机器该按钮同样可用（幂等）；测试钉 profile 重写/cordis.patch 清理/回执清空/确认对话框。
+
 ## P12 · runtime 感知门（client-update-required）—— 立卡 2026-09-09
 
 **动机（用户抓出的真雷）**：目录钉新版=强制全量更新（boot 验证按 包名+版本 精确找条目，找不到→拒载 not-pinned-newer-pinned）。混编 fleet 过渡期：老客户端（旧 runtime）+ 目录钉了要新 runtime 的插件版 → 老插件每次 boot 被砖 + 更新装不上（peer 冲突 WAL 回滚）直到客户端升级。
