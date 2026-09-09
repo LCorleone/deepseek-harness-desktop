@@ -136,6 +136,27 @@ describe('disclaimer starting state (the post-agree loading surface)', () => {
     expect(host.textContent).not.toContain('正在启动 DSH Desktop…')
   })
 
+  it('mounts straight into the loading surface when the view model carries starting', () => {
+    stubNavigatorLanguage('zh-CN')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const state = Buffer.from(JSON.stringify({
+      title: DISCLAIMER_TITLE,
+      items: [...DISCLAIMER_ITEMS],
+      starting: true,
+    }), 'utf8').toString('base64url')
+    Object.defineProperty(window, 'location', { value: { search: `?state=${state}` }, writable: true })
+    ;(window as unknown as Record<string, unknown>)[DESKTOP_DISCLAIMER_BRIDGE] = { decide: vi.fn() }
+    root = createRoot(host)
+    act(() => { root!.render(createElement(DisclaimerApp)) })
+
+    // The P14 deferred-retry face: no decision UI, spinner copy on screen.
+    expect(host.querySelector('[role="status"]')).not.toBeNull()
+    expect(host.querySelectorAll('button')).toHaveLength(0)
+    expect(host.textContent).toContain('正在启动 DSH Desktop')
+    expect(document.title).toBe('正在启动 DSH Desktop…')
+  })
+
   it('Escape after agree stays silent — the made decision cannot be un-made', () => {
     const decide = vi.fn()
     const host = mountApp({ decide })

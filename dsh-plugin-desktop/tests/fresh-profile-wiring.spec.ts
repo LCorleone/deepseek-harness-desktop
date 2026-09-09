@@ -45,11 +45,13 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(autoLayerAt).toBeGreaterThan(-1)
     expect(source).toContain('resetOnVersionChange: policy.pluginResetOnVersionChange,')
     expect(source).toContain('locked: policy.locked,')
-    expect(source).toContain("if (await runFreshProfileSwap('version-change')) {")
-    // The record is written only after a successful swap (a failure retries
-    // on the next boot) and on the first observation of a build identity.
-    const resetAt = source.indexOf("if (await runFreshProfileSwap('version-change')) {")
-    expect(source.indexOf('await recordProfileGeneration()', resetAt)).toBeGreaterThan(resetAt)
+    // The record is written only after a successful swap (a deferred or
+    // failed rebuild retries on the next boot) and on the first observation
+    // of a build identity. Pin the AUTOMATIC layer's swap call, not the
+    // earlier deferred-retry one.
+    const autoResetAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", autoLayerAt)
+    expect(autoResetAt).toBeGreaterThan(autoLayerAt)
+    expect(source.indexOf('await recordProfileGeneration()', autoResetAt)).toBeGreaterThan(autoResetAt)
     expect(source).toContain("} else if (freshProfileDecision === 'record') {\n      await recordProfileGeneration()")
     expect(source).toContain('writeProfileGenerationState(profileGenerationPath, {')
     expect(source).toContain("profileExists: existsSync(join(activeProfileDir, 'package.json')),")
@@ -73,6 +75,19 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(source).toContain('...(freshProfileStart === undefined ? {} : { freshProfileStart }),')
   })
 
+  it('tells the recovery window a deferred manual swap completes after restart instead of failing', () => {
+    const manualAt = source.indexOf('freshProfileStart = async (token: string) => {')
+    const outcomeAt = source.indexOf("const outcome = await runFreshProfileSwap('recovery-window')", manualAt)
+    const manualEnd = source.indexOf("startupStage = 'host-boot'", outcomeAt)
+
+    expect(outcomeAt).toBeGreaterThan(manualAt)
+    expect(manualEnd).toBeGreaterThan(outcomeAt)
+    const outcomeBody = source.slice(outcomeAt, manualEnd)
+    expect(outcomeBody).toContain("outcome === 'deferred'")
+    expect(outcomeBody).toContain('will complete automatically after DSH Desktop restarts')
+    expect(outcomeBody).toContain("outcome === 'failed'")
+  })
+
   it('rebuilds through the shipped first-run mechanism plus the retrying dependency synchronization', () => {
     expect(source).toContain('if (activeProfileName === DESKTOP_PROFILE_NAME) ensureDesktopProfile(homeDir)')
     expect(source).toContain('else createDesktopWebProfile(homeDir, activeProfileName)')
@@ -91,37 +106,73 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(helper).toContain("clientEvents?.pluginReset(pluginResetEvent(trigger, {")
     expect(helper).toContain("outcome: 'swapped'")
     expect(helper).toContain("outcome: 'failed'")
-    // A failed rebuild returns false instead of throwing into the startup
-    // path it exists to rescue; the recovery window stays the way out.
-    expect(helper).toContain('return false')
+    // A failed rebuild returns an outcome instead of throwing into the
+    // startup path it exists to rescue; the recovery window stays the way out.
+    expect(helper).toContain("return 'failed'")
   })
 
   it('reads the deferred marker before the pnpm runtime and any Profile read, then retries before the automatic layer', () => {
     const markerReadAt = source.indexOf('const pendingFreshProfileReset = readFreshProfilePending(freshProfilePendingPath)')
     const pnpmRuntimeAt = source.indexOf('const pnpmRuntime = installDesktopPnpmRuntime({')
     const selectionAt = source.indexOf('profileStartup = beginDesktopProfileStartup(')
-    const pendingRetryAt = source.indexOf('const freshProfileResetEnabled = policy.locked')
+    const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
 
     expect(markerReadAt).toBeGreaterThan(-1)
     // The marker is the only thing read this early: it lives in userData, so
     // the retry can fire before the runtime install or any profile file.
     expect(markerReadAt).toBeLessThan(pnpmRuntimeAt)
     expect(markerReadAt).toBeLessThan(selectionAt)
-    expect(pendingRetryAt).toBeGreaterThan(swapHelperAt)
-    expect(pendingRetryAt).toBeLessThan(autoLayerAt)
-    // A landed retry clears the marker and records the build identity.
-    expect(source.indexOf('clearFreshProfilePending(freshProfilePendingPath)', pendingRetryAt)).toBeGreaterThan(pendingRetryAt)
-    expect(source.indexOf('await recordProfileGeneration()', pendingRetryAt)).toBeGreaterThan(pendingRetryAt)
+    expect(pendingActionAt).toBeGreaterThan(swapHelperAt)
+    expect(pendingActionAt).toBeLessThan(autoLayerAt)
+    // The retry branch is the only place the deferred rename is attempted,
+    // and it clears the marker and records the build identity only after the
+    // swap landed (the slice ends at the branch's own finally block).
+    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+    expect(retryAt).toBeGreaterThan(pendingActionAt)
+    expect(retryAt).toBeLessThan(autoLayerAt)
+    const retryBody = source.slice(retryAt, source.indexOf('} finally {', retryAt))
+    expect(retryBody).toContain('clearFreshProfilePending(freshProfilePendingPath)')
+    expect(retryBody).toContain('await recordProfileGeneration()')
     // The automatic layer cannot fire a second rename after the deferred retry.
     expect(source).toContain("if (freshProfileDecision === 'reset' && !pendingFreshProfileHandled) {")
+  })
+
+  it('keeps a marker for another Profile and drops it only when the policy turns the reset off', () => {
+    const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
+    const dropAt = source.indexOf("pendingFreshProfileAction === 'drop'", pendingActionAt)
+    const keepAt = source.indexOf("pendingFreshProfileAction === 'keep'", pendingActionAt)
+    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+
+    expect(dropAt).toBeGreaterThan(pendingActionAt)
+    expect(keepAt).toBeGreaterThan(dropAt)
+    expect(retryAt).toBeGreaterThan(keepAt)
+    // The keep branch logs and leaves the marker file alone — no clear.
+    expect(source.slice(keepAt, retryAt)).not.toContain('clearFreshProfilePending')
+    // The drop branch is the only non-retry clear of the marker.
+    expect(source.slice(dropAt, keepAt)).toContain('clearFreshProfilePending(freshProfilePendingPath)')
+  })
+
+  it('holds a visible loading surface for the deferred retry instead of waiting silently', () => {
+    const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
+    const surfaceAt = source.indexOf('await retrySurface.openLoadingSurface()', pendingActionAt)
+    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+
+    expect(surfaceAt).toBeGreaterThan(pendingActionAt)
+    expect(surfaceAt).toBeLessThan(retryAt)
+    const finallyAt = source.indexOf('} finally {', retryAt)
+    expect(finallyAt).toBeGreaterThan(retryAt)
+    expect(source.indexOf('if (retrySurfaceOwned) disposeDisclaimerLoading()', finallyAt)).toBeGreaterThan(finallyAt)
   })
 
   it('writes the marker and reports outcome deferred when the retry is still locked, recording no build identity', () => {
     const deferredAt = source.indexOf('if (result.deferred === true) {')
     expect(deferredAt).toBeGreaterThan(swapHelperAt)
     expect(source.indexOf('await writeFreshProfilePending(freshProfilePendingPath, {', deferredAt)).toBeGreaterThan(deferredAt)
+    // The marker's schema version comes from the module constant, never a
+    // hardcoded literal that can drift from the reader (review P3-2).
+    expect(source.indexOf('version: FRESH_PROFILE_PENDING_VERSION,', deferredAt)).toBeGreaterThan(deferredAt)
     expect(source.indexOf("outcome: 'deferred'", deferredAt)).toBeGreaterThan(deferredAt)
-    const deferredEnd = source.indexOf('return false', deferredAt)
+    const deferredEnd = source.indexOf("return 'deferred'", deferredAt)
     expect(deferredEnd).toBeGreaterThan(deferredAt)
     // The version record stays unwritten on the deferred path, so the next
     // boot still sees a version change to retry.

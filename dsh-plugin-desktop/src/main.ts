@@ -152,7 +152,9 @@ import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profi
 import { materializeProfileWithRetry, ProfileMaterializationError, PROFILE_MATERIALIZATION_ATTEMPTS } from './profile-materializer.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import {
+  FRESH_PROFILE_PENDING_VERSION,
   clearFreshProfilePending,
+  freshProfilePendingAction,
   freshProfilePendingStatePath,
   freshProfileResetDecision,
   freshProfileSwap,
@@ -1028,7 +1030,7 @@ async function start(): Promise<void> {
     // A failed rebuild logs and reports telemetry, then lets the boot
     // continue on the existing Profile (the recovery window stays the way
     // out) — it must never crash the startup path it exists to rescue.
-    const runFreshProfileSwap = async (trigger: 'version-change' | 'recovery-window'): Promise<boolean> => {
+    const runFreshProfileSwap = async (trigger: 'version-change' | 'recovery-window'): Promise<'swapped' | 'deferred' | 'failed'> => {
       const settingsDocumentPath = join(homeDir, 'settings.yaml')
       try {
         const result = await freshProfileSwap({
@@ -1052,7 +1054,7 @@ async function start(): Promise<void> {
           // opens anything, and the generation record is deliberately left
           // unwritten so the version change is still pending.
           await writeFreshProfilePending(freshProfilePendingPath, {
-            version: 1,
+            version: FRESH_PROFILE_PENDING_VERSION,
             profileName: result.profileName,
             appBuildVersion,
             reason: result.reasonCode ?? 'EBUSY',
@@ -1067,7 +1069,7 @@ async function start(): Promise<void> {
             materialized: false,
             receiptsCleared: 0,
           }))
-          return false
+          return 'deferred'
         }
         electronLogger.error(
           `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
@@ -1078,7 +1080,7 @@ async function start(): Promise<void> {
           materialized: result.materialized,
           receiptsCleared: result.receiptsCleared,
         }))
-        return true
+        return 'swapped'
       } catch (cause) {
         electronLogger.error(
           `${BIN_NAME}: fresh profile rebuild failed (${trigger}): ${maskSecrets(cause instanceof Error ? cause.message : String(cause))}`,
@@ -1089,7 +1091,7 @@ async function start(): Promise<void> {
           materialized: false,
           receiptsCleared: 0,
         }))
-        return false
+        return 'failed'
       }
     }
     // Automatic layer (P14): a locked build whose policy sets
@@ -1112,30 +1114,69 @@ async function start(): Promise<void> {
     // Deferred-retry layer (P14, Windows EBUSY): the previous boot wrote a
     // marker when the set-aside rename stayed locked through every retry.
     // Handled BEFORE the automatic layer so one boot never renames the same
-    // directory twice. A marker for a Profile that is no longer active, or
-    // one written under a policy that no longer enables the reset, is
-    // dropped — the marked Profile's version-change reset re-fires the next
-    // time it is active, because the deferred path never recorded its build
-    // identity. A retry that lands clears the marker and records the build;
-    // one that defers again leaves the marker and lets the boot continue.
+    // directory twice. The marker is dropped only when the policy no longer
+    // enables the reset; when it names a Profile that is not active this boot
+    // it is KEPT and the retry is skipped — dropping it would lose the pending
+    // rebuild forever, because the deferred path never recorded the marked
+    // Profile's build identity and the automatic layer below records the
+    // CURRENT build for whichever Profile is active. A retry that lands clears
+    // the marker and records the build; one that defers again leaves the
+    // marker and lets the boot continue.
     const freshProfileResetEnabled = policy.locked === true && policy.pluginResetOnVersionChange === true
+    const pendingFreshProfileAction = pendingFreshProfileReset === undefined
+      ? undefined
+      : freshProfilePendingAction({
+        markerProfileName: pendingFreshProfileReset.profileName,
+        activeProfileName,
+        resetEnabled: freshProfileResetEnabled,
+      })
     let pendingFreshProfileHandled = false
-    if (pendingFreshProfileReset !== undefined) {
-      if (freshProfileResetEnabled && pendingFreshProfileReset.profileName === activeProfileName) {
-        pendingFreshProfileHandled = true
-        electronLogger.error(
-          `${BIN_NAME}: retrying the deferred profile rebuild for ${activeProfileName} (last rename ${pendingFreshProfileReset.reason})`,
-        )
-        if (await runFreshProfileSwap('version-change')) {
+    if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'drop') {
+      electronLogger.error(
+        `${BIN_NAME}: dropping the deferred profile rebuild marker for ${pendingFreshProfileReset.profileName} `
+          + `(reset enabled=${String(freshProfileResetEnabled)})`,
+      )
+      clearFreshProfilePending(freshProfilePendingPath)
+    } else if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'keep') {
+      electronLogger.error(
+        `${BIN_NAME}: keeping the deferred profile rebuild marker for ${pendingFreshProfileReset.profileName} `
+          + `(active profile ${activeProfileName}); it retries when that Profile is active`,
+      )
+    } else if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'retry') {
+      pendingFreshProfileHandled = true
+      electronLogger.error(
+        `${BIN_NAME}: retrying the deferred profile rebuild for ${activeProfileName} (last rename ${pendingFreshProfileReset.reason})`,
+      )
+      // The retry can spend the whole rename backoff (~6.3 s) on a boot that
+      // has no other window (an everyday cold start whose disclaimer was
+      // already acked). Hold a visible loading face for the wait: the
+      // disclaimer window's post-agree surface, already on screen when this
+      // boot asked the disclaimer, or a fresh one opened here.
+      const retrySurfaceOwned = disclaimerWindow === undefined
+      const retrySurface = retrySurfaceOwned
+        ? new DesktopDisclaimerWindow({
+            logError: message => { electronLogger.error(maskSecrets(message)) },
+          })
+        : undefined
+      if (retrySurface !== undefined) {
+        disclaimerWindow = retrySurface
+        try {
+          await retrySurface.openLoadingSurface()
+        } catch (cause) {
+          electronLogger.error(
+            `${BIN_NAME}: could not open the deferred-rebuild loading surface: ${maskSecrets(cause instanceof Error ? cause.message : String(cause))}`,
+          )
+        }
+      }
+      try {
+        if (await runFreshProfileSwap('version-change') === 'swapped') {
           clearFreshProfilePending(freshProfilePendingPath)
           await recordProfileGeneration()
         }
-      } else {
-        electronLogger.error(
-          `${BIN_NAME}: dropping the deferred profile rebuild marker for ${pendingFreshProfileReset.profileName} `
-            + `(active profile ${activeProfileName}, reset enabled=${String(freshProfileResetEnabled)})`,
-        )
-        clearFreshProfilePending(freshProfilePendingPath)
+      } finally {
+        // Only retire the surface this layer opened; a disclaimer window the
+        // boot already owns stays until the first successor face.
+        if (retrySurfaceOwned) disposeDisclaimerLoading()
       }
     }
     const freshProfileDecision = freshProfileResetDecision({
@@ -1156,7 +1197,7 @@ async function start(): Promise<void> {
       electronLogger.error(
         `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}); rebuilding profile ${activeProfileName}`,
       )
-      if (await runFreshProfileSwap('version-change')) {
+      if (await runFreshProfileSwap('version-change') === 'swapped') {
         await recordProfileGeneration()
       }
     } else if (freshProfileDecision === 'record') {
@@ -1608,7 +1649,16 @@ async function start(): Promise<void> {
       if (!await generation.quiesceForRecovery()) {
         throw new Error(`${BIN_NAME}: Host could not be stopped safely for a fresh Profile start`)
       }
-      if (!await runFreshProfileSwap('recovery-window')) {
+      const outcome = await runFreshProfileSwap('recovery-window')
+      if (outcome === 'deferred') {
+        // The marker is written: the rebuild is queued for the next startup,
+        // not failed. Say exactly that instead of reporting a failure the
+        // user would try to "fix" by pressing the button again.
+        throw new Error(
+          `${BIN_NAME}: the Profile directory is locked by another process; the rebuild is queued and will complete automatically after DSH Desktop restarts`,
+        )
+      }
+      if (outcome === 'failed') {
         throw new Error(`${BIN_NAME}: the fresh Profile start failed; see the desktop log for details`)
       }
     }

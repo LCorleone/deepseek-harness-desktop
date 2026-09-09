@@ -43,6 +43,11 @@ const DISCLAIMER_HEIGHT = 640
 export interface DisclaimerViewModel {
   readonly title: string
   readonly items: readonly string[]
+  /**
+   * Render the post-agree loading surface directly, with no decision UI.
+   * Set by {@link DesktopDisclaimerWindow.openLoadingSurface}.
+   */
+  readonly starting?: boolean
 }
 
 /** Outcome of {@link DesktopDisclaimerWindow.run}: the user's decision. */
@@ -160,6 +165,23 @@ export class DesktopDisclaimerWindow {
   /** Open the window, render the statement once, and settle on the decision. */
   async run(): Promise<DisclaimerResult> {
     const result = new Promise<DisclaimerResult>(resolve => { this.resolveResult = resolve })
+    await this.openWindow(false)
+    return await result
+  }
+
+  /**
+   * Open the same window directly on its post-agree loading face (P14
+   * deferred rebuild): a boot waiting out the rename backoff gets a visible
+   * face even when it has no disclaimer to ask. No decision is awaited — the
+   * window is settled up front, so a close is a plain no-op and the caller
+   * retires it with {@link dispose} once the wait is over.
+   */
+  async openLoadingSurface(): Promise<void> {
+    this.settled = true
+    await this.openWindow(true)
+  }
+
+  private async openWindow(loadingSurface: boolean): Promise<void> {
     const window = new BrowserWindow({
       title: `${DISCLAIMER_TITLE} - Deloitte DSH Desktop`,
       width: DISCLAIMER_WIDTH,
@@ -228,10 +250,13 @@ export class DesktopDisclaimerWindow {
       // treats it exactly like 「不同意」.
       this.finish('disagree')
     })
-    const model: DisclaimerViewModel = { title: DISCLAIMER_TITLE, items: DISCLAIMER_ITEMS }
+    const model: DisclaimerViewModel = {
+      title: DISCLAIMER_TITLE,
+      items: DISCLAIMER_ITEMS,
+      ...(loadingSurface ? { starting: true } : {}),
+    }
     const state = Buffer.from(JSON.stringify(model), 'utf8').toString('base64url')
     await window.loadURL(nativeUiDocumentUrl(DISCLAIMER_DOCUMENT, { state }))
-    return await result
   }
 
   /** Bring an already open disclaimer window to the foreground (second-instance handling). */

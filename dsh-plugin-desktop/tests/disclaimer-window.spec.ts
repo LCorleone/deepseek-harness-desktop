@@ -377,4 +377,27 @@ describe('DesktopDisclaimerWindow lifecycle', () => {
 
     expect(disclaimer.results).toEqual(['disagree'])
   })
+
+  it('opens directly on the loading surface when asked, with no decision to settle', async () => {
+    const host = new DesktopDisclaimerWindow()
+    const opened = host.openLoadingSurface()
+    const window = electron.windows[0]
+    if (window === undefined) throw new Error('loading surface window was not created')
+    await vi.waitFor(() => expect(window.states).toHaveLength(1))
+    expect(renderedModels(window)).toEqual([{
+      title: DISCLAIMER_TITLE,
+      items: [...DISCLAIMER_ITEMS],
+      starting: true,
+    }])
+    await opened
+    // No decision is awaited: a late decide IPC is a no-op and dispose is the
+    // only retirement path.
+    electron.ipcMain.emit('dsh-disclaimer:decide', { sender: { id: window.webContents.id } }, 'agree')
+    await flushAsync()
+    expect(window.destroy).not.toHaveBeenCalled()
+    host.dispose()
+    expect(window.destroy).toHaveBeenCalledOnce()
+    window.events.emit('closed')
+    await flushAsync()
+  })
 })

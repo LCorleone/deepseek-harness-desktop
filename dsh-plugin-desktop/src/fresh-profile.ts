@@ -150,7 +150,8 @@ export async function writeProfileGenerationState(statePath: string, state: Prof
 
 /** Persisted marker of a rebuild deferred by a locked set-aside rename. */
 export const FRESH_PROFILE_PENDING_FILENAME = 'fresh-profile-pending.json'
-const FRESH_PROFILE_PENDING_VERSION = 1
+/** Schema version of the deferred-rebuild marker (shared with its writer). */
+export const FRESH_PROFILE_PENDING_VERSION = 1
 const MAX_PENDING_STATE_BYTES = 4 * 1024
 
 /**
@@ -221,6 +222,29 @@ export async function writeFreshProfilePending(statePath: string, state: FreshPr
 /** Drop the deferred-rebuild marker after the retry landed. */
 export function clearFreshProfilePending(statePath: string): void {
   rmSync(statePath, { force: true })
+}
+
+/** What one boot does with a deferred-rebuild marker. */
+export type FreshProfilePendingAction = 'retry' | 'keep' | 'drop'
+
+/**
+ * Decide the deferred marker's fate for this boot. The policy switch is the
+ * ONLY reason to drop a marker: turning the reset off is the operator saying
+ * the rebuild must not happen. A marker naming a Profile that is not active
+ * this boot is KEPT and the retry is simply skipped — dropping it would lose
+ * the pending rebuild permanently, because the deferred path never recorded
+ * the marked Profile's build identity and the automatic layer records the
+ * current build for whichever Profile IS active; returning to the marked
+ * Profile would then read as an unchanged version and never rebuild.
+ */
+export function freshProfilePendingAction(options: {
+  readonly markerProfileName: string
+  readonly activeProfileName: string
+  /** The automatic reset is still enabled (locked build + policy switch on). */
+  readonly resetEnabled: boolean
+}): FreshProfilePendingAction {
+  if (options.resetEnabled !== true) return 'drop'
+  return options.markerProfileName === options.activeProfileName ? 'retry' : 'keep'
 }
 
 /** What one boot's build identity implies for the active Profile. */
@@ -438,6 +462,11 @@ async function setAsideProfileDirectory(
       } catch (cause) {
         const code = (cause as NodeJS.ErrnoException).code
         if (code === undefined || !RETRYABLE_RENAME_CODES.has(code)) throw cause
+        // The destination appeared between the existsSync probe and the
+        // rename (another swap won this stamp). Retrying the SAME target can
+        // never succeed, so move to the next collision suffix instead of
+        // spending the whole backoff schedule on a dead path.
+        if (existsSync(backup)) break
         const delayMs = delays[attempt]
         if (delayMs === undefined) {
           throw new ProfileRenameLockedError(profileDir, code as ProfileRenameLockedCode, attempt + 1)

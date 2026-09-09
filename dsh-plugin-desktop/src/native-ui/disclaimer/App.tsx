@@ -48,6 +48,8 @@ function startingCopy(): StartingCopy {
 interface DisclaimerState {
   readonly title: string
   readonly items: readonly string[]
+  /** View-model flag: mount straight into the loading surface (P14 retry). */
+  readonly starting?: boolean
 }
 
 function decodeState(): DisclaimerState | undefined {
@@ -66,7 +68,11 @@ function decodeState(): DisclaimerState | undefined {
     if (typeof record.title !== 'string' || record.title.length === 0) return undefined
     if (!Array.isArray(record.items) || record.items.length === 0) return undefined
     if (!record.items.every(item => typeof item === 'string')) return undefined
-    return { title: record.title, items: record.items as readonly string[] }
+    return {
+      title: record.title,
+      items: record.items as readonly string[],
+      ...(record.starting === true ? { starting: true } : {}),
+    }
   } catch { /* Render the bounded fallback below. */ }
   return undefined
 }
@@ -127,8 +133,10 @@ export function DisclaimerApp(): JSX.Element {
   const state = decodeState()
   const degraded = bridgeMissing()
   // The starting state flips locally on the 同意 click — instant feedback,
-  // no IPC round-trip wait; the decide('agree') message still goes out.
-  const [starting, setStarting] = useState(false)
+  // no IPC round-trip wait; the decide('agree') message still goes out. A
+  // main-process view model may also open the window already on the loading
+  // surface (P14 deferred-retry wait).
+  const [starting, setStarting] = useState(state?.starting === true)
   useEffect(() => { document.title = state === undefined ? FALLBACK_TITLE : state.title }, [state])
   useEffect(() => {
     if (!starting) return

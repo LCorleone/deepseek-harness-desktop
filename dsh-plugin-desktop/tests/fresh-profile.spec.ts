@@ -30,6 +30,7 @@ import {
   FRESH_PROFILE_PENDING_FILENAME,
   clearFreshProfilePending,
   clearMarketInstallReceipts,
+  freshProfilePendingAction,
   freshProfilePendingStatePath,
   freshProfileResetDecision,
   freshProfileSwap,
@@ -564,6 +565,39 @@ describe('locked set-aside rename (Windows EBUSY)', () => {
     await expect(freshProfileSwap(swapOptions(home, { rename, sleep }))).rejects.toThrow('EXDEV')
     expect(sleep).not.toHaveBeenCalled()
   })
+
+  it('moves to the next collision suffix instead of retrying a destination that just appeared', async () => {
+    const home = temporaryHome()
+    const profileDir = seededProfile(home)
+    seededSettings(home)
+    const logError = vi.fn()
+    const slept: number[] = []
+    const firstTarget = profileBackupPath(profileDir, Date.parse('2026-09-09T07:33:19.264Z'))
+    const rename = vi.fn((from: string, to: string) => {
+      if (to === firstTarget) {
+        // Another swap won this stamp between the existsSync probe and the
+        // rename: the destination now exists and the rename can never land.
+        mkdirSync(to, { recursive: true })
+        const error = new Error('ENOTEMPTY: directory not empty, rename failed') as NodeJS.ErrnoException
+        error.code = 'ENOTEMPTY'
+        throw error
+      }
+      renameSync(from, to)
+    })
+
+    const result = await freshProfileSwap(swapOptions(home, {
+      logError,
+      rename,
+      sleep: async (ms: number) => { slept.push(ms) },
+    }))
+
+    expect(result.deferred).toBeUndefined()
+    expect(result.backupDir).toBe(`${firstTarget}-1`)
+    // No backoff was spent on the dead target — the collision suffix moved on
+    // immediately.
+    expect(slept).toEqual([])
+    expect(rename).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('deferred rebuild marker', () => {
@@ -642,5 +676,73 @@ describe('deferred rebuild marker', () => {
     clearFreshProfilePending(statePath)
     expect(readFreshProfilePending(statePath)).toBeUndefined()
     expect(bundlesOf(join(home, 'profiles', 'desktop'))).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+  })
+})
+
+describe('deferred marker across Profiles (review a963dced P2-1)', () => {
+  it('keeps a marker for a Profile that is not active instead of dropping it', () => {
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: true }))
+      .toBe('keep')
+  })
+
+  it('retries a kept marker on the boot where the marked Profile is active, unchanged version or not', () => {
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: true }))
+      .toBe('retry')
+  })
+
+  it('drops the marker only when the policy turns the reset off', () => {
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: false }))
+      .toBe('drop')
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: false }))
+      .toBe('drop')
+  })
+
+  it('keeps the marker file across a mismatched boot, then lands the retry on the marked Profile', async () => {
+    const home = temporaryHome()
+    const userData = temporaryHome()
+    const statePath = freshProfilePendingStatePath(userData)
+    const betaDir = join(home, 'profiles', 'beta')
+    mkdirSync(join(betaDir, 'node_modules', THIRD_PARTY), { recursive: true })
+    writeFileSync(join(betaDir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-beta',
+      private: true,
+      dependencies: { [THIRD_PARTY]: '0.15.2' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', THIRD_PARTY] } },
+    }, undefined, 2)}\n`)
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: 'beta',
+      appBuildVersion: '2.0.3+b77',
+      reason: 'EBUSY',
+    })
+
+    // Boot with desktop active: the marker is kept, not dropped — dropping it
+    // would lose beta's pending rebuild once the automatic layer records the
+    // current build for desktop.
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: true }))
+      .toBe('keep')
+    expect(readFreshProfilePending(statePath)?.profileName).toBe('beta')
+
+    // Later boot with beta active and the SAME build version: the marker alone
+    // still forces the rebuild (the deferred path never wrote beta's record),
+    // and the retry lands and clears it.
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: true }))
+      .toBe('retry')
+    const retried = await freshProfileSwap(swapOptions(home, {
+      profileName: 'beta',
+      createProfile: () => {
+        mkdirSync(betaDir, { recursive: true })
+        writeFileSync(join(betaDir, 'package.json'), `${JSON.stringify({
+          name: 'dsh-profile-beta',
+          private: true,
+          dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
+        }, undefined, 2)}\n`)
+      },
+    }))
+    expect(retried.deferred).toBeUndefined()
+    expect(retried.backupDir).toBe(`${betaDir}.bak-20260909T073319264Z`)
+    clearFreshProfilePending(statePath)
+    expect(readFreshProfilePending(statePath)).toBeUndefined()
+    expect(bundlesOf(betaDir)).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
   })
 })
