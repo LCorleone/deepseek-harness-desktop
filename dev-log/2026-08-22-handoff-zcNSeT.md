@@ -356,6 +356,9 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
 ③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
 
+### 战略定调：desktop 自有产品化（2026-09-09 11:59 用户拍板）
+**上游 desktop（anywhere-labs/dsh-desktop）摘取线永久关闭**——批1/2/3 为最后三批，B 类观察（Safe Mode/compat chrome）关闭。desktop=我们自己的产品自维护；上游依赖只剩 DSH runtime（deepseek-harness 子模块+@deepseek-ai 包），其升级=我们的适配项目。上游 desktop remote 降级为咨询地图（runtime 升级时参考其适配手法，不跟其产品功能）。代价签收：Electron/shell 层修复与安全更新自扛。**新硬门槛（#73 教训制度化）：每次 runtime 升级必须过①自有 client 面（市场/品牌/五窗/遥测面）适配审计②打包态渲染器冒烟——解包态门禁对此类断点天生失明。**原「P13 回归上游主干」议题随之消解。
+
 ### #73 打包态全灭事故（2026-09-09 10:18-11:00，第六次「单测绿打包死」最大案）
 真机 #73（升级版）启动失败→诊断包破案，**四雷**：A 渲染器打包态死亡（零插件上报 30s 超时，疑 client-runtime→client-ui-renderer 注入改向 asar 落位断）；B 恢复窗打包态 ERR_FAILED（recovery.html asarUnpack 错位=兜底 UI 也死）；C **profile 恢复机制毁现场**——启动失败→健康检查点回滚：检查点比装插件旧→`.dsh-market-tarballs/` 整目录蒸发（tarball 三件 unresolved 根因）+卸载的 agent-teams 被复活又炸树+「restored profile dependency synchronization failed」半残；D boot 拒绝未剔除 loader 入口（rejected dsh-dai-agent-teams 后 loader 照样 apply #agent-teams→一坏炸全树）。**处置**：用户机回滚 b72 恢复（现场 OK）；#73 封存不发 fleet（仅用户机装过）；fleet 冻结 b72。**修复**：brief dev-log/briefs/2026-09-09-73-packaged-triple-fix.md，双 worker 并行（fix-packaged-ab=雷A+B 允许本地构建做打包态验证；fix-restore-cd=雷C+D 先出检查点策略设计再动手）。**教训**：解包态门禁系统性盖不住 client asar 组合/asarUnpack 落位——verify-packaged-runtime 必须扩面，修复后 #74 要过「本地构建+asar 取证抽查+真机」三关。另：loader「一坏炸全树」语义使插件兼容性=客户端可用性硬前置（sebtang 适配 agent-teams 前不能 fleet）。
 
