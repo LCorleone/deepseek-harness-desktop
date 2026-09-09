@@ -10,7 +10,7 @@
   "companyManifestUrl": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json",
   "locked": true,
   "managedModels": true,
-  "pluginResetOnVersionChange": true,
+  "pluginResetOnVersionChange": false,
   "requireSso": true,
   "trustRoots": [
     {

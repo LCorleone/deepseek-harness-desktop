@@ -391,10 +391,11 @@ describe('shipped desktop policy assets', () => {
     // reporter against the company telemetry database; the dev variant
     // stays fully unwired.
     expect(policy.usageReport).toBe(true)
-    // P14 automatic layer: the company build rebuilds the active Profile
-    // whenever the build identity changes, so one installer serves a fleet
-    // whose plugin sets never straddle two builds.
-    expect(policy.pluginResetOnVersionChange).toBe(true)
+    // P14 automatic layer: the per-build force is off in release builds, so
+    // the company build rebuilds the active Profile only when the product
+    // version changes (2.0.3 -> 2.0.4); the switch is flipped on for the
+    // single build that carries a DSH runtime upgrade.
+    expect(policy.pluginResetOnVersionChange).toBe(false)
     // Origin mode: the signed catalog manifest is fetched at runtime from the
     // pinned GitLab origin instead of the embedded content-mode asset.
     expect(policy.companyCatalogOrigin).toBe('https://gitlab.s.dai.deloitte.cn')
