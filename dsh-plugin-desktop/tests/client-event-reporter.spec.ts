@@ -486,6 +486,37 @@ describe('plugin reset projection', () => {
     }).trigger).toBe('recovery-window')
   })
 
+  it('carries the reset rule so the real machine can tell which one fired', () => {
+    expect(pluginResetEvent('version-change', {
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 0,
+      rule: 'version',
+    })).toEqual({
+      trigger: 'version-change',
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 0,
+      rule: 'version',
+    })
+    expect(pluginResetEvent('version-change', {
+      profileName: 'desktop',
+      outcome: 'deferred',
+      materialized: false,
+      receiptsCleared: 0,
+      rule: 'forced',
+    }).rule).toBe('forced')
+    // The recovery window's manual action is not a rule and omits the field.
+    expect(pluginResetEvent('recovery-window', {
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 0,
+    })).not.toHaveProperty('rule')
+  })
+
   it('never emits a negative or fractional receipt count', () => {
     for (const receiptsCleared of [-1, 1.5, Number.NaN]) {
       expect(pluginResetEvent('recovery-window', {

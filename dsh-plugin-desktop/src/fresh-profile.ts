@@ -123,11 +123,26 @@ const MARKET_RECEIPTS_KEY = 'installReceipts'
 /** Read bound for the settings document carrying the market ledger. */
 const MAX_SETTINGS_BYTES = 8 * 1024 * 1024
 
+/**
+ * Product-version base of a build identity: `2.0.3+b75` → `2.0.3`. Records
+ * written before the field existed are read back through this instead of a
+ * schema bump, so an old record stays a valid record.
+ */
+export function buildVersionProductBase(appBuildVersion: string | undefined): string | undefined {
+  return appBuildVersion === undefined ? undefined : appBuildVersion.replace(/\+b\d+$/u, '')
+}
+
 /** Persisted build identity of the last boot that managed the Profile. */
 export interface ProfileGenerationState {
   readonly version: typeof PROFILE_GENERATION_VERSION
   /** Build-distinguishing identity (`2.0.3+b75`) of that boot. */
   readonly appBuildVersion: string
+  /**
+   * Product version (`2.0.3`) of that boot. The reset rule compares this when
+   * `pluginResetOnVersionChange` is off, so a build-counter-only change does
+   * not rebuild the Profile.
+   */
+  readonly appVersion: string
   /** ISO timestamp of the write, for log-side forensics. */
   readonly updatedAt: string
 }
@@ -161,7 +176,18 @@ export function readProfileGenerationState(statePath: string): ProfileGeneration
   if (typeof record.appBuildVersion !== 'string' || record.appBuildVersion.length === 0
     || record.appBuildVersion.includes('\0')) return undefined
   if (typeof record.updatedAt !== 'string') return undefined
-  return { version: PROFILE_GENERATION_VERSION, appBuildVersion: record.appBuildVersion, updatedAt: record.updatedAt }
+  // Records written before `appVersion` existed derive their product version
+  // from the build identity, so they keep meaning the same thing.
+  const appVersion = typeof record.appVersion === 'string' && record.appVersion.length > 0
+    && !record.appVersion.includes('\0')
+    ? record.appVersion
+    : buildVersionProductBase(record.appBuildVersion) ?? record.appBuildVersion
+  return {
+    version: PROFILE_GENERATION_VERSION,
+    appBuildVersion: record.appBuildVersion,
+    appVersion,
+    updatedAt: record.updatedAt,
+  }
 }
 
 /** Persist the build identity of the boot that just managed the Profile. */
@@ -274,10 +300,19 @@ export function freshProfilePendingAction(options: {
 export type FreshProfileResetDecision = 'unchanged' | 'record' | 'reset'
 
 /**
- * Decide the automatic layer's action. The switch is inert unless the build
- * is locked AND the policy enables it, so an unlocked or opted-out build
- * keeps byte-identical behavior (not even the record is written). An
- * unchanged identity is a pure read. A missing record is treated as a
+ * Decide the automatic layer's action. An unlocked build is always inert, so
+ * it keeps byte-identical behavior (not even the record is written). A locked
+ * build compares identities by the policy's rule:
+ *
+ * - `pluginResetOnVersionChange` on (a build that carries a DSH-base upgrade)
+ *   compares the full build identity, so every build counter bumps the
+ *   Profile: one installer serves a fleet whose plugin sets can never
+ *   straddle two builds, and a rollback lands on a clean tree too.
+ * - off (the default) compares the product-version base only, so a build
+ *   counter change (`2.0.3+b78` → `2.0.3+b79`) keeps the Profile and only a
+ *   product version change (`2.0.3` → `2.0.4`) rebuilds it.
+ *
+ * An unchanged identity is a pure read. A missing record is treated as a
  * version change — the Profile was built by a build this one has never
  * recorded, which is exactly the straddle the reset exists to end — except
  * when no Profile manifest exists at all: a genuinely fresh install has no
@@ -289,18 +324,29 @@ export function freshProfileResetDecision(options: {
   readonly resetOnVersionChange: boolean
   readonly previousAppBuildVersion?: string | undefined
   readonly appBuildVersion: string
+  /** Product-version base of the previous boot; derived from its build identity when absent. */
+  readonly previousAppVersion?: string | undefined
+  /** Product-version base of this boot; derived from its build identity when absent. */
+  readonly appVersion?: string | undefined
   /** Whether the active Profile manifest already exists on disk. */
   readonly profileExists: boolean
 }): FreshProfileResetDecision {
-  if (options.locked !== true || options.resetOnVersionChange !== true) return 'unchanged'
-  if (options.previousAppBuildVersion === options.appBuildVersion) return 'unchanged'
+  if (options.locked !== true) return 'unchanged'
+  if (options.resetOnVersionChange === true) {
+    if (options.previousAppBuildVersion === options.appBuildVersion) return 'unchanged'
+    if (options.previousAppBuildVersion === undefined && !options.profileExists) return 'record'
+    return 'reset'
+  }
+  const previousAppVersion = options.previousAppVersion ?? buildVersionProductBase(options.previousAppBuildVersion)
+  const appVersion = options.appVersion ?? buildVersionProductBase(options.appBuildVersion)
+  if (previousAppVersion === appVersion) return 'unchanged'
   // A missing record plus no manifest is a genuinely first boot: there is no
   // recorded build to straddle and no third-party composition to strip, so a
   // version change records the identity instead of swapping. A missing record
   // WITH a manifest is a straddle and resets; a recorded build that differs
   // resets even without a manifest, because the record proves this home was
   // managed by another build.
-  if (options.previousAppBuildVersion === undefined && !options.profileExists) return 'record'
+  if (previousAppVersion === undefined && !options.profileExists) return 'record'
   return 'reset'
 }
 

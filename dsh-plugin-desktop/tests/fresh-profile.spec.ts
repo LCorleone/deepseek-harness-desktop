@@ -28,6 +28,7 @@ import { ensureDesktopProfile } from '../src/profile.ts'
 import { readProfileManifest } from '@deepseek-ai/dsh-app-boot'
 import {
   FRESH_PROFILE_PENDING_FILENAME,
+  buildVersionProductBase,
   clearFreshProfilePending,
   clearMarketInstallReceipts,
   freshProfilePendingAction,
@@ -177,9 +178,8 @@ describe('fresh profile reset decision', () => {
     })).toBe('record')
   })
 
-  it('stays inert when the policy switch is off or the build is unlocked', () => {
+  it('stays inert on an unlocked build whatever the switch says', () => {
     for (const options of [
-      { locked: true, resetOnVersionChange: false },
       { locked: false, resetOnVersionChange: true },
       { locked: false, resetOnVersionChange: false },
     ]) {
@@ -193,6 +193,90 @@ describe('fresh profile reset decision', () => {
   })
 })
 
+/**
+ * The default posture (`pluginResetOnVersionChange` off) only rebuilds the
+ * Profile when the PRODUCT version changes; the build counter is our own
+ * release cadence and must not churn a user's plugin set. The switch stays
+ * the forced per-build rule for DSH-base upgrade builds.
+ */
+describe('fresh profile reset decision (product-version rule)', () => {
+  it('ignores a build-counter change while the switch is off', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      previousAppBuildVersion: '2.0.3+b78',
+      previousAppVersion: '2.0.3',
+      appBuildVersion: '2.0.3+b79',
+      appVersion: '2.0.3',
+      profileExists: true,
+    })).toBe('unchanged')
+  })
+
+  it('rebuilds when the product version changes while the switch is off', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      previousAppBuildVersion: '2.0.3+b78',
+      previousAppVersion: '2.0.3',
+      appBuildVersion: '2.0.4+b80',
+      appVersion: '2.0.4',
+      profileExists: true,
+    })).toBe('reset')
+  })
+
+  it('only records the first identity when a product version change finds no record and no Profile', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      appBuildVersion: '2.0.4+b80',
+      appVersion: '2.0.4',
+      profileExists: false,
+    })).toBe('record')
+  })
+
+  it('keeps the forced per-build rule when the switch is on', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: true,
+      previousAppBuildVersion: '2.0.3+b78',
+      previousAppVersion: '2.0.3',
+      appBuildVersion: '2.0.3+b79',
+      appVersion: '2.0.3',
+      profileExists: true,
+    })).toBe('reset')
+  })
+
+  it('derives the product version from the build identity when the caller omits it', () => {
+    // An unpackaged run (seq 0) has no build metadata: both identities are
+    // the plain product version and must never trigger.
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      previousAppBuildVersion: '2.0.3',
+      appBuildVersion: '2.0.3',
+      profileExists: true,
+    })).toBe('unchanged')
+    // A packed build with no explicit base versions compares the derived ones.
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      previousAppBuildVersion: '2.0.3+b78',
+      appBuildVersion: '2.0.3+b79',
+      profileExists: true,
+    })).toBe('unchanged')
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      previousAppBuildVersion: '2.0.3+b78',
+      appBuildVersion: '2.0.4+b80',
+      profileExists: true,
+    })).toBe('reset')
+    expect(buildVersionProductBase('2.0.3+b78')).toBe('2.0.3')
+    expect(buildVersionProductBase('2.0.3')).toBe('2.0.3')
+    expect(buildVersionProductBase(undefined)).toBeUndefined()
+  })
+})
+
 describe('profile generation record', () => {
   it('round-trips the build identity and reads back undefined for anything else', async () => {
     const home = temporaryHome()
@@ -203,14 +287,24 @@ describe('profile generation record', () => {
     await writeProfileGenerationState(statePath, {
       version: 1,
       appBuildVersion: '2.0.3+b75',
+      appVersion: '2.0.3',
       updatedAt: '2026-09-09T07:33:19.264Z',
     })
 
     expect(readProfileGenerationState(statePath)).toEqual({
       version: 1,
       appBuildVersion: '2.0.3+b75',
+      appVersion: '2.0.3',
       updatedAt: '2026-09-09T07:33:19.264Z',
     })
+
+    // A record written before `appVersion` existed derives its product
+    // version from the build identity instead of reading as malformed.
+    writeFileSync(statePath, '{"version":1,"appBuildVersion":"2.0.3+b75","updatedAt":"y"}')
+    expect(readProfileGenerationState(statePath)?.appVersion).toBe('2.0.3')
+    // A garbled stored base falls back to the derivation too.
+    writeFileSync(statePath, '{"version":1,"appBuildVersion":"2.0.4+b9","appVersion":"","updatedAt":"y"}')
+    expect(readProfileGenerationState(statePath)?.appVersion).toBe('2.0.4')
 
     for (const body of ['{broken', '[]', '{"version":2,"appBuildVersion":"x","updatedAt":"y"}',
       '{"version":1,"appBuildVersion":"","updatedAt":"y"}', '{"version":1,"appBuildVersion":"x"}']) {

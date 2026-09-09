@@ -226,6 +226,12 @@ export interface PluginResetSwapView {
    * previous Profile, a deferred retry, and a failed rebuild.
    */
   readonly method?: 'rename' | 'content-move' | 'none'
+  /**
+   * Which automatic rule fired: `forced` = `pluginResetOnVersionChange` on
+   * (any build identity change), `version` = the switch off (product-version
+   * change only). Omitted for the recovery window's manual action.
+   */
+  readonly rule?: 'forced' | 'version'
 }
 
 /** `plugin_reset`: one fresh-Profile rebuild (P14) — the automatic
@@ -240,6 +246,8 @@ export interface PluginResetEventDetail {
   readonly receiptsCleared: number
   /** Set-aside strategy that landed; omitted when the swap did not land. */
   readonly method?: 'rename' | 'content-move' | 'none'
+  /** Which automatic rule fired; omitted for the manual recovery-window action. */
+  readonly rule?: 'forced' | 'version'
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +662,7 @@ export function pluginResetEvent(
       ? swap.receiptsCleared
       : 0,
     ...(swap.method === undefined ? {} : { method: swap.method }),
+    ...(swap.rule === undefined ? {} : { rule: swap.rule }),
   }
 }
 

@@ -1030,7 +1030,11 @@ async function start(): Promise<void> {
     // A failed rebuild logs and reports telemetry, then lets the boot
     // continue on the existing Profile (the recovery window stays the way
     // out) — it must never crash the startup path it exists to rescue.
-    const runFreshProfileSwap = async (trigger: 'version-change' | 'recovery-window'): Promise<'swapped' | 'deferred' | 'failed'> => {
+    const runFreshProfileSwap = async (
+      trigger: 'version-change' | 'recovery-window',
+      /** Which automatic rule fired; omitted for the recovery window's manual action. */
+      rule?: 'forced' | 'version',
+    ): Promise<'swapped' | 'deferred' | 'failed'> => {
       const settingsDocumentPath = join(homeDir, 'settings.yaml')
       try {
         const result = await freshProfileSwap({
@@ -1069,11 +1073,12 @@ async function start(): Promise<void> {
             materialized: false,
             receiptsCleared: 0,
             method: 'none',
+            ...(rule === undefined ? {} : { rule }),
           }))
           return 'deferred'
         }
         electronLogger.error(
-          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; method ${result.method ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
+          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}${rule === undefined ? '' : `; rule ${rule}`}; backup ${result.backupDir ?? 'none'}; method ${result.method ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
         )
         clientEvents?.pluginReset(pluginResetEvent(trigger, {
           profileName: result.profileName,
@@ -1081,6 +1086,7 @@ async function start(): Promise<void> {
           materialized: result.materialized,
           receiptsCleared: result.receiptsCleared,
           method: result.method ?? 'none',
+          ...(rule === undefined ? {} : { rule }),
         }))
         return 'swapped'
       } catch (cause) {
@@ -1093,24 +1099,29 @@ async function start(): Promise<void> {
           materialized: false,
           receiptsCleared: 0,
           method: 'none',
+          ...(rule === undefined ? {} : { rule }),
         }))
         return 'failed'
       }
     }
-    // Automatic layer (P14): a locked build whose policy sets
-    // `pluginResetOnVersionChange` rebuilds the active Profile whenever the
-    // build identity changes — upgrade or downgrade alike — so one
-    // installer serves a fleet whose plugin sets can never straddle two
-    // builds, and a rollback lands on a clean tree too. The record lives in
-    // userData; an unchanged identity is a pure read (no write, no swap) and
-    // an unlocked or opted-out build never even writes the record. A failed
-    // rebuild leaves the record untouched, so the next boot retries it.
+    // Automatic layer (P14): a locked build rebuilds the active Profile when
+    // the identity its policy rule watches changes — upgrade or downgrade
+    // alike — so one installer serves a fleet whose plugin sets can never
+    // straddle two builds, and a rollback lands on a clean tree too. With
+    // `pluginResetOnVersionChange` on, that rule is the full build identity
+    // (every build counter). With it off, the rule is the product-version
+    // base only: a `2.0.3+b78` → `2.0.3+b79` build bump keeps the Profile,
+    // and only `2.0.3` → `2.0.4` rebuilds it. The record lives in userData;
+    // an unchanged identity is a pure read (no write, no swap) and an
+    // unlocked build never even writes the record. A failed rebuild leaves
+    // the record untouched, so the next boot retries it.
     const profileGenerationPath = profileGenerationStatePath(app.getPath('userData'))
     const storedProfileGeneration = readProfileGenerationState(profileGenerationPath)
     const recordProfileGeneration = async (): Promise<void> => {
       await writeProfileGenerationState(profileGenerationPath, {
         version: 1,
         appBuildVersion,
+        appVersion,
         updatedAt: new Date().toISOString(),
       })
     }
@@ -1182,13 +1193,22 @@ async function start(): Promise<void> {
         if (retrySurfaceOwned) disposeDisclaimerLoading()
       }
     }
+    // Which rule this build compares identities by: the policy switch on is
+    // the forced per-build rule, off is the product-version rule. Reported in
+    // the log and `plugin_reset` telemetry so a real machine says which one
+    // fired.
+    const resetRule: 'forced' | 'version' = policy.pluginResetOnVersionChange === true ? 'forced' : 'version'
     const freshProfileDecision = freshProfileResetDecision({
       locked: policy.locked,
       resetOnVersionChange: policy.pluginResetOnVersionChange,
       ...(storedProfileGeneration === undefined
         ? {}
-        : { previousAppBuildVersion: storedProfileGeneration.appBuildVersion }),
+        : {
+            previousAppBuildVersion: storedProfileGeneration.appBuildVersion,
+            previousAppVersion: storedProfileGeneration.appVersion,
+          }),
       appBuildVersion,
+      appVersion,
       // No manifest means a genuinely fresh install: there is no third-party
       // composition to strip, so a missing record only records the build
       // instead of rebuilding. (A recorded build that differs still resets
@@ -1198,9 +1218,9 @@ async function start(): Promise<void> {
     })
     if (freshProfileDecision === 'reset' && !pendingFreshProfileHandled) {
       electronLogger.error(
-        `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}); rebuilding profile ${activeProfileName}`,
+        `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}; rule ${resetRule}); rebuilding profile ${activeProfileName}`,
       )
-      if (await runFreshProfileSwap('version-change') === 'swapped') {
+      if (await runFreshProfileSwap('version-change', resetRule) === 'swapped') {
         await recordProfileGeneration()
       }
     } else if (freshProfileDecision === 'record') {

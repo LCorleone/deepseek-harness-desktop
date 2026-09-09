@@ -45,11 +45,15 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(autoLayerAt).toBeGreaterThan(-1)
     expect(source).toContain('resetOnVersionChange: policy.pluginResetOnVersionChange,')
     expect(source).toContain('locked: policy.locked,')
+    // The switch picks the rule; the base product version always rides along
+    // so the off posture ignores a build-counter-only change.
+    expect(source).toContain("const resetRule: 'forced' | 'version' = policy.pluginResetOnVersionChange === true ? 'forced' : 'version'")
+    expect(source).toContain('previousAppVersion: storedProfileGeneration.appVersion,')
     // The record is written only after a successful swap (a deferred or
     // failed rebuild retries on the next boot) and on the first observation
     // of a build identity. Pin the AUTOMATIC layer's swap call, not the
     // earlier deferred-retry one.
-    const autoResetAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", autoLayerAt)
+    const autoResetAt = source.indexOf("if (await runFreshProfileSwap('version-change', resetRule) === 'swapped') {", autoLayerAt)
     expect(autoResetAt).toBeGreaterThan(autoLayerAt)
     expect(source.indexOf('await recordProfileGeneration()', autoResetAt)).toBeGreaterThan(autoResetAt)
     expect(source).toContain("} else if (freshProfileDecision === 'record') {\n      await recordProfileGeneration()")
