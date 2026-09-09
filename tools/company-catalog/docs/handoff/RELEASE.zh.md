@@ -81,6 +81,41 @@ node tools/company-catalog/cli.mjs revoke <名>@<版本>
 # 客户端下次市场刷新即不可装；已装机器重启时 boot 拦截加载
 ```
 
+## E. 同版本不可重发 → 必须 bump 版本（换版重打包）
+
+**硬事实（dai-context 0.41.4 实证，2026-09-09）**：公司目录的托管 tarball 内容
+不可变。同版本重发会被 publish-local 的字节闸 fail-closed 挡下（`publish-local.mjs:865-877`）：
+
+> packages/&lt;名&gt;-&lt;版本&gt;.tgz already exists on master with different bytes
+> (hosted sha512-QXcxeFB…, artifact sha512-kDYAj+…) — &lt;名&gt;@&lt;版本&gt; was already
+> published and a hosted tarball is immutable; publish changed content as a
+> new version (fail closed; nothing was pushed)
+
+根因不是内容改了，而是**打包器换代漂移**：容器字节取决于当次 CI 链接的
+Node/zlib（`lib/tarball.mjs:45-51`——同一 Node/zlib 内字节稳定，换 zlib 版本
+deflate 流与 gzip OS 字节都可能变），所以同一份源码在新打包器下也产不出
+托管文件当年的字节。**唯一正确做法=换版本号重打包**（dai-context 0.41.3 →
+0.41.4 即如此）。
+
+步骤（以 0.41.3 → 0.41.4 为范例）：
+
+```bash
+# 1. 目录换版（内容不动，只动版本号）
+git mv tools/company-catalog/plugin-sources/<名>-<旧版本> \
+       tools/company-catalog/plugin-sources/<名>-<新版本>
+# 2. 目录内 package.json 的 version 改新版本
+# 3. allowlist 条目改 version / repository / source.url / source.path，
+#    并去掉旧条目的 treeDigest（该字段可选，未测前应省略；lib/allowlist.mjs:326-331）
+# 4. CI 干跑看签名产物（默认 dry-run）
+gh workflow run "Company catalog publish" -f channel=beta
+# 5. 真发 → gh run download → publish-local 推送（同 A.2；
+#    fleet-upgrade 门禁按「门禁速查」过闸）
+# 6. state 棘轮推进（本次 21 -> 22，同 A.3）
+```
+
+**注意**：换版=新条目，旧版本若仍在清单里需单独 revoke；只想让新包灰度时
+保持 beta-only（dai-context 0.41.4 即 beta-only，stable 未动）。
+
 ## 门禁速查（publish-local 会拦你时的过闸姿势）
 
 | 拦截信息 | 含义 | 过闸 |

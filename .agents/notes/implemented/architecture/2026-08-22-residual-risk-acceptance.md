@@ -41,6 +41,8 @@ becomes available.
 | R5 | v1 receipts from pre-upgrade installs are all refused after upgrade | User-visible reinstall burden | Release-notes guidance (dev-log risk ①) |
 | R6 | Linux targets: asar integrity fuse is a no-op | Linux builds rely on L1/L2 only | Documented in README packaging section |
 | R7 | Self-built modified client is undetectable | Out of scope without OS-level enforcement | See upgrade path |
+| R8 | Fresh-Profile swap (P14): the set-aside rename is refused because an external process holds a directory handle inside the Profile (Windows `EBUSY`) | The rebuild does not happen on that boot; the version change stays pending | Accepted: the swap defers instead of failing (six backoff steps, then a `fresh-profile-pending.json` marker and `plugin_reset.outcome=deferred`), the existing Profile keeps booting (no brick), and the next startup retries the rename before any component opens the Profile. Root cause is evidenced — a user editor opening a file inside the Profile keeps a watcher handle on the directory: child entries are individually renamable while the directory itself is not. Rare; the manual recovery window states the rebuild completes after restart |
+| R9 | External manual deletion or modification of a Profile directory is unsupported | A colleague's hand-deletion of `profiles\desktop` left market install receipts naming it, which pinned the market's installed list in an error state no restart cleared | Degraded, not promised: the record branch now clears a Profile's residual receipts when no manifest exists at boot (`fresh-profile.ts` `clearFreshProfileRecordReceipts`). Manual edits to a Profile's contents remain outside the supported surface |
 
 ## Future IT upgrade points (zero client change)
 

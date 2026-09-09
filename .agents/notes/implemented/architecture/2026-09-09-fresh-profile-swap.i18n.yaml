@@ -1,5 +1,5 @@
 # Bilingual-pair consistency record: the git blob hash of each side as of the last
 # confirmed-consistent state. Both languages carry equal authority. Update both files
 # and re-record their hashes with git hash-object after editing either side.
-2026-08-22-residual-risk-acceptance.md: 52019a4d4c1fecf8b3f7e4d2c85f470ab21da8cf
-2026-08-22-residual-risk-acceptance.zh.md: 8d2f50a5204fad3b920048e33061ed0ca88f4eb0
+2026-09-09-fresh-profile-swap.md: 3e43244e13ed8c52db62c5b79a88836f4688b08c
+2026-09-09-fresh-profile-swap.zh.md: 0d52eda1aab336b0e66f571b0e10bf54acc5e8c7

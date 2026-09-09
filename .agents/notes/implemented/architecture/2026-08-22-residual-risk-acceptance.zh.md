@@ -25,6 +25,8 @@
 | R5 | 升级前 v1 receipts 用户全部拒载 | 用户可感知的重装负担 | 发布说明引导（dev-log 风险①） |
 | R6 | Linux 目标 asar integrity fuse 为 no-op | Linux 构建仅靠 L1/L2 | 已在 README 打包节标注 |
 | R7 | 自建魔改客户端不可检测 | 无 OS 级强制则无法覆盖 | 见升级路径 |
+| R8 | 全新 Profile 换新（P14）：外部进程持有 profile 内目录句柄，靠边改名被拒（Windows `EBUSY`） | 该次启动不换新；版本变更保持 pending | 已签收：换新改为 deferred 而非失败（六步退避后写 `fresh-profile-pending.json` 标记 + `plugin_reset.outcome=deferred`），现有 profile 照常启动（不砖），下次启动在任何组件打开 profile 前重试改名。根因已实证——用户编辑器打开 profile 内文件会对目录持 watcher 句柄：子项逐个可改、目录本身不可改。罕见；手动恢复窗提示重启后自动完成 |
+| R9 | 外部手工删改 profile 目录不受支持 | 同事手删 `profiles\desktop` 后市场安装回执仍指向它，使市场已装清单卡死在错误态、重启不清 | 已降级、不承诺：record 分支在启动时无 profile manifest 时清掉该 profile 残留回执（`fresh-profile.ts` `clearFreshProfileRecordReceipts`）。手工改 profile 内容仍不在支持面内 |
 
 ## 未来 IT 升级点（客户端零改动）
 
