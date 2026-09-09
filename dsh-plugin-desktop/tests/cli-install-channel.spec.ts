@@ -1190,6 +1190,52 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     `${BETA_NAME}@${BETA_VERSION}`,
   ]
 
+  it('denies a file: target whose hand-off is the beta-only registry form (forms never cross-authorize)', async () => {
+    // Review P2 on the #60 fix: the two hand-off forms must never borrow each
+    // other's authority. A beta-only registry hand-off carries no staged
+    // tarball, so it can never admit the controlled `file:` target.
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'cross-form')
+    const stagedPath = stageBetaFixture(profileDir)
+    writeBetaNpmManifest(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(
+      ['--save-exact', '--registry=https://registry.npmjs.org/', `file:${stagedPath}`],
+      policy,
+      { fetch: { request: serveCatalog(assetPath) }, tarballHandoff: npmBetaHandoff(profileDir), profileDir },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('carries no staged tarball')
+    }
+  })
+
+  it('denies an npm target whose beta entry is tarball-channel (beta form never admits a registry install)', async () => {
+    // Review P2: the mirror image — a beta manifest entry that carries a
+    // tarball `source` cannot be installed from the registry, even though the
+    // hand-off (npm form) verified.
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'beta-tarball-entry')
+    writeBetaNpmManifest(profileDir, {
+      entry: {
+        treeDigest: 'cd'.repeat(32),
+        source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+      },
+    })
+
+    const decision = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: npmBetaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('carries no staged tarball for it')
+    }
+  })
+
   it('round-trips the beta pair canonically and rejects every malformed spelling', () => {
     const profileDir = join(roots, 'profiles', 'parse')
     const handoff = betaHandoff(profileDir)
