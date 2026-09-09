@@ -1056,9 +1056,20 @@ export class MarketInstallService {
     if (receipts.length === 0) return []
     let snapshot: InstalledProfileSnapshot
     try { snapshot = await loadInstalledProfileSnapshot(profile) }
-    catch {
+    catch (cause) {
       operationSignal.throwIfAborted()
-      throw new MarketInstallError('operation-failed', 'The active desktop profile could not be verified.')
+      // A receipt outlives the profile it was written for: a profile the user
+      // deleted by hand, or one whose first materialization never wrote its
+      // lockfile, cannot prove any installed bundle. Degrade to "nothing
+      // installed" instead of failing the whole list — a residual receipt
+      // must never pin the market's installed view to an error, which no
+      // restart can clear.
+      console.warn(
+        `dsh-community-market: could not read the active desktop profile ${JSON.stringify(profile.name)} `
+        + `for installed-plugin verification (${cause instanceof Error ? cause.message : String(cause)}); `
+        + 'reporting no installed plugins',
+      )
+      return []
     }
     const verified: MarketInstallReceipt[] = []
     for (const receipt of receipts) {

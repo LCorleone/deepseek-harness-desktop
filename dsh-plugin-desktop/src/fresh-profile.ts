@@ -399,6 +399,46 @@ export async function clearMarketInstallReceipts(settingsPath: string, profileNa
   })
 }
 
+/**
+ * Drop a Profile's residual market install receipts when a boot only RECORDS
+ * its build identity for a manifest-less Profile.
+ *
+ * The record branch covers two shapes: a genuinely fresh install (no manifest
+ * ever existed) and a Profile directory the user deleted by hand. In both, any
+ * receipt still in the home ledger names a Profile that cannot prove an
+ * installed bundle — the market would read an empty Profile and fail its whole
+ * installed list, which no restart clears. The manifest fact is the gate,
+ * never the decision string: the product-version rule also returns 'record'
+ * for a Profile that still has its manifest and plugins, and clearing there
+ * would hide real installs. Failures are logged and swallowed: a ledger that
+ * could not be rewritten must never block the boot (the swap's own posture).
+ */
+export async function clearFreshProfileRecordReceipts(options: {
+  /** Whether the active Profile manifest already existed at boot. */
+  readonly profileExists: boolean
+  readonly settingsDocumentPath: string
+  readonly profileName: string
+  readonly logError?: (message: string) => void
+}): Promise<number> {
+  if (options.profileExists) return 0
+  try {
+    const cleared = await clearMarketInstallReceipts(options.settingsDocumentPath, options.profileName)
+    if (cleared > 0) {
+      options.logError?.(
+        `cleared ${String(cleared)} stale market install receipt(s) for the fresh profile ${options.profileName}`,
+      )
+    }
+    return cleared
+  } catch (cause) {
+    options.logError?.(
+      `could not clear stale market install receipts for the fresh profile ${options.profileName}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    )
+    return 0
+  }
+}
+
 /** Inputs the caller (Electron main) owns; this module stays Electron-free. */
 export interface FreshProfileSwapOptions {
   /** Harness home containing the shared `profiles/` directory. */

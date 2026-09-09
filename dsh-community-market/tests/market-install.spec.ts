@@ -1305,6 +1305,98 @@ describe('market install service', () => {
       { verb: 'remove', aborted: false },
     ])
   })
+
+  it('degrades to no installed plugins when the active profile cannot be read, instead of failing the list', async () => {
+    const profileDir = await createProfile()
+    await writeInstalledPlugin(profileDir)
+    // The empty-profile shape a user-deleted directory leaves behind: the
+    // receipt survives in the home ledger, the lockfile does not.
+    await rm(join(profileDir, 'pnpm-lock.yaml'), { force: true })
+    const receipt: MarketInstallReceipt = {
+      receiptId: 'receipt:stale-profile-0001',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'source-1',
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      itemId: 'example/dsh-plugin-safe',
+      displayName: 'Safe Plugin',
+      installedAt: '2026-08-18T00:00:00.000Z',
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const service = new MarketInstallService(
+        memoryScope([receipt]).scope,
+        () => ({ name: 'web', dir: profileDir }),
+        runner(profileDir, []),
+        { verify: vi.fn(async () => verification) },
+      )
+
+      await expect(service.listVerifiedReceipts()).resolves.toEqual([])
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dsh-community-market:'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"web"'))
+      service.dispose()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('still verifies each receipt against a readable profile and skips the ones that no longer prove a bundle', async () => {
+    const profileDir = await createProfile()
+    await writeInstalledPlugin(profileDir)
+    const installedReceipt: MarketInstallReceipt = {
+      receiptId: 'receipt:readable-profile-0001',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'source-1',
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      itemId: 'example/dsh-plugin-safe',
+      displayName: 'Safe Plugin',
+      installedAt: '2026-08-18T00:00:00.000Z',
+    }
+    const staleReceipt: MarketInstallReceipt = {
+      ...installedReceipt,
+      receiptId: 'receipt:stale-bundle-0001',
+      packageName: `${packageName}-gone`,
+      itemId: `example/${packageName}-gone`,
+    }
+    const service = new MarketInstallService(
+      memoryScope([installedReceipt, staleReceipt]).scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn(async () => verification) },
+    )
+
+    await expect(service.listVerifiedReceipts()).resolves.toEqual([installedReceipt])
+    service.dispose()
+  })
+
+  it('returns early with an empty ledger without reading a profile at all', async () => {
+    const profileDir = await createProfile()
+    // No manifest, lockfile, or node_modules: an empty ledger must never
+    // reach the snapshot read (the degraded path logs, this one does not).
+    await rm(join(profileDir, 'package.json'), { force: true })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const service = new MarketInstallService(
+        memoryScope().scope,
+        () => ({ name: 'web', dir: profileDir }),
+        runner(profileDir, []),
+        { verify: vi.fn(async () => verification) },
+      )
+
+      await expect(service.listVerifiedReceipts()).resolves.toEqual([])
+      expect(warn).not.toHaveBeenCalled()
+      service.dispose()
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })
 
 describe('market install Host routes', () => {
@@ -1773,6 +1865,69 @@ describe('market install Host routes', () => {
     finishOperation()
     await pending
     expect(res.end).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('logs the cause behind an unexpected install failure while keeping the generic 500 shape', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
+    const ctx = {
+      logger: { error: logError },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      listVerifiedReceipts: vi.fn(async () => { throw new Error('unexpected list failure') }),
+      listInstallable: vi.fn(),
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const desktopPlugins = {
+      list: vi.fn(() => []),
+      disabledPackageNames: vi.fn(() => []),
+    }
+    const dispose = registerMarketRoutes(
+      ctx as never,
+      memoryScope().scope,
+      { get: () => install },
+      undefined,
+      { get: () => desktopPlugins as never },
+    )
+    const req = Object.assign(new EventEmitter(), {
+      method: 'GET',
+      url: marketRoutes.installations,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    await handlers.get(marketRoutes.installations)!(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(JSON.parse(responseBody)).toEqual({ error: 'market package operation failed', code: 'operation-failed' })
+    expect(logError).toHaveBeenCalledOnce()
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('dsh-community-market:'))
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('unexpected list failure'))
     dispose()
   })
 })

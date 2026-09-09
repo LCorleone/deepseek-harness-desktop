@@ -154,6 +154,7 @@ import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import {
   FRESH_PROFILE_PENDING_VERSION,
   clearFreshProfilePending,
+  clearFreshProfileRecordReceipts,
   freshProfilePendingAction,
   freshProfilePendingStatePath,
   freshProfileResetDecision,
@@ -1199,6 +1200,13 @@ async function start(): Promise<void> {
     // the log and `plugin_reset` telemetry so a real machine says which one
     // fired.
     const resetRule: 'forced' | 'version' = policy.pluginResetOnVersionChange === true ? 'forced' : 'version'
+    // No manifest means a genuinely fresh install: there is no third-party
+    // composition to strip, so a missing record only records the build
+    // instead of rebuilding. (A recorded build that differs still resets
+    // even without a manifest — the record proves another build managed
+    // this home.) Kept as its own fact because the record branch below also
+    // gates on it: a user-deleted Profile directory leaves the same shape.
+    const profileExists = existsSync(join(activeProfileDir, 'package.json'))
     const freshProfileDecision = freshProfileResetDecision({
       locked: policy.locked,
       resetOnVersionChange: policy.pluginResetOnVersionChange,
@@ -1210,12 +1218,7 @@ async function start(): Promise<void> {
           }),
       appBuildVersion,
       appVersion,
-      // No manifest means a genuinely fresh install: there is no third-party
-      // composition to strip, so a missing record only records the build
-      // instead of rebuilding. (A recorded build that differs still resets
-      // even without a manifest — the record proves another build managed
-      // this home.)
-      profileExists: existsSync(join(activeProfileDir, 'package.json')),
+      profileExists,
     })
     if (freshProfileDecision === 'reset' && !pendingFreshProfileHandled) {
       electronLogger.error(
@@ -1226,6 +1229,18 @@ async function start(): Promise<void> {
       }
     } else if (freshProfileDecision === 'record') {
       await recordProfileGeneration()
+      // A manifest-less Profile at boot only gets its identity recorded, but
+      // a residual market ledger from that Profile's previous life must not
+      // survive: its receipts can never verify against the empty directory
+      // and would pin the market's installed list to an error. Gated on the
+      // manifest fact, not the decision string — the version rule also
+      // records for a Profile that still has plugins.
+      await clearFreshProfileRecordReceipts({
+        profileExists,
+        settingsDocumentPath: join(homeDir, 'settings.yaml'),
+        profileName: activeProfileName,
+        logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+      })
     }
     startupRecoveryConfigurationPaths = {
       settingsDocument: join(homeDir, 'settings.yaml'),

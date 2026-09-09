@@ -58,7 +58,21 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(source.indexOf('await recordProfileGeneration()', autoResetAt)).toBeGreaterThan(autoResetAt)
     expect(source).toContain("} else if (freshProfileDecision === 'record') {\n      await recordProfileGeneration()")
     expect(source).toContain('writeProfileGenerationState(profileGenerationPath, {')
-    expect(source).toContain("profileExists: existsSync(join(activeProfileDir, 'package.json')),")
+    expect(source).toContain("const profileExists = existsSync(join(activeProfileDir, 'package.json'))")
+    expect(source).toContain('profileExists,')
+  })
+
+  it('drops a residual market ledger only when the recorded Profile had no manifest', () => {
+    const recordAt = source.indexOf("} else if (freshProfileDecision === 'record') {", autoLayerAt)
+    expect(recordAt).toBeGreaterThan(autoLayerAt)
+    const recordBody = source.slice(recordAt, source.indexOf('startupRecoveryConfigurationPaths', recordAt))
+    // The manifest fact, captured before the decision, is the only gate — the
+    // decision string also reads 'record' for a Profile that still has
+    // plugins, and clearing there would hide real installs.
+    expect(recordBody).toContain('await clearFreshProfileRecordReceipts({')
+    expect(recordBody).toContain('profileExists,')
+    expect(recordBody).toContain("settingsDocumentPath: join(homeDir, 'settings.yaml'),")
+    expect(recordBody).toContain('profileName: activeProfileName,')
   })
 
   it('invalidates the rebuilt Profile health checkpoint so a failed boot cannot undo the swap', () => {

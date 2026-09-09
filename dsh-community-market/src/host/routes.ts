@@ -132,8 +132,23 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body)
 }
 
-function sendInstallError(res: ServerResponse, cause: unknown): void {
+/** One-line cause digest (message plus the first stack frames) for the generic install-failure log. */
+function installFailureDetail(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause)
+  const frames = cause.stack?.split('\n').slice(1, 4).map(line => line.trim()).filter(line => line !== '').join(' <- ')
+  return frames === undefined || frames === '' ? `${cause.name}: ${cause.message}` : `${cause.name}: ${cause.message} [${frames}]`
+}
+
+function sendInstallError(
+  res: ServerResponse,
+  cause: unknown,
+  logger: Pick<Context['logger'], 'error'>,
+): void {
   if (!(cause instanceof MarketInstallError)) {
+    // The generic fallback used to answer 500 with no trace of what failed,
+    // which left real-machine failures invisible in the packaged logs. Name
+    // the cause so the next machine points at the failing call site.
+    logger.error(`dsh-community-market: install operation failed unexpectedly: ${installFailureDetail(cause)}`)
     sendJson(res, 500, { error: 'market package operation failed', code: 'operation-failed' })
     return
   }
@@ -1096,7 +1111,7 @@ export function registerMarketRoutes(
           actions.openTerminal()
           if (!signal.aborted && !res.destroyed) sendJson(res, 200, { ok: true })
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
+          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
         } finally {
           stopWatching()
         }
@@ -1148,7 +1163,7 @@ export function registerMarketRoutes(
             void persistCatalogResponse(preview, index.source.sourceRecordId, localeKey)
           }
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
+          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
         } finally {
           stopWatching()
         }
@@ -1168,7 +1183,7 @@ export function registerMarketRoutes(
           const installations = reconcileInstallations(await install.listVerifiedReceipts(), desktopPlugins.list())
           if (!generationController.signal.aborted && !res.destroyed) sendJson(res, 200, { installations })
         } catch (cause) {
-          if (!generationController.signal.aborted && !res.destroyed) sendInstallError(res, cause)
+          if (!generationController.signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
         }
       }}),
       ctx.webServer.register({ kind: 'exact', path: ROUTE_OPERATION_PREVIEW, handler: async (req, res) => {
@@ -1278,7 +1293,7 @@ export function registerMarketRoutes(
             if (!signal.aborted && !res.destroyed) sendJson(res, 200, { ...summary, previewId: intent })
           }
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
+          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
         } finally {
           stopWatching()
         }
@@ -1382,7 +1397,7 @@ export function registerMarketRoutes(
           }
           if (!signal.aborted && !res.destroyed) sendJson(res, 200, result)
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
+          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
         } finally {
           stopWatching()
         }
@@ -1426,7 +1441,7 @@ export function registerMarketRoutes(
           ctx.logger.error('dsh-community-market: desktop restart request failed')
         }
       } catch (cause) {
-        if (!signal.aborted && !res.destroyed) sendInstallError(res, cause)
+        if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
       } finally {
         stopWatching()
       }

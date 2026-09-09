@@ -30,6 +30,7 @@ import {
   FRESH_PROFILE_PENDING_FILENAME,
   buildVersionProductBase,
   clearFreshProfilePending,
+  clearFreshProfileRecordReceipts,
   clearMarketInstallReceipts,
   freshProfilePendingAction,
   freshProfilePendingStatePath,
@@ -371,6 +372,59 @@ describe('market install receipt clearing', () => {
     writeFileSync(settingsPath, 'a: [b\n')
 
     await expect(clearMarketInstallReceipts(settingsPath, 'desktop')).rejects.toThrow('is not parseable YAML')
+    expect(readFileSync(settingsPath, 'utf8')).toBe('a: [b\n')
+  })
+
+  it('clears the recorded Profile\'s residual receipts only when its manifest was missing at boot', async () => {
+    const home = temporaryHome()
+    const settingsPath = seededSettings(home)
+    const logError = vi.fn()
+
+    expect(await clearFreshProfileRecordReceipts({
+      profileExists: false,
+      settingsDocumentPath: settingsPath,
+      profileName: 'desktop',
+      logError,
+    })).toBe(2)
+    const cleared = readFileSync(settingsPath, 'utf8')
+    expect(cleared).not.toContain('receipt-1')
+    expect(cleared).not.toContain('receipt-2')
+    // The sibling Profile's receipt is home-shared state and must survive.
+    expect(cleared).toContain('receipt-3')
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('cleared 2 stale market install receipt(s)'))
+  })
+
+  it('leaves the ledger untouched when the recorded Profile still has its manifest', async () => {
+    const home = temporaryHome()
+    const settingsPath = seededSettings(home)
+    const before = readFileSync(settingsPath, 'utf8')
+    const logError = vi.fn()
+
+    // The product-version rule also decides 'record' for a Profile that still
+    // has plugins; the manifest fact is the only gate that may clear.
+    expect(await clearFreshProfileRecordReceipts({
+      profileExists: true,
+      settingsDocumentPath: settingsPath,
+      profileName: 'desktop',
+      logError,
+    })).toBe(0)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(before)
+    expect(logError).not.toHaveBeenCalled()
+  })
+
+  it('reports a ledger that cannot be rewritten and never blocks the boot', async () => {
+    const home = temporaryHome()
+    const settingsPath = join(home, 'settings.yaml')
+    writeFileSync(settingsPath, 'a: [b\n')
+    const logError = vi.fn()
+
+    await expect(clearFreshProfileRecordReceipts({
+      profileExists: false,
+      settingsDocumentPath: settingsPath,
+      profileName: 'desktop',
+      logError,
+    })).resolves.toBe(0)
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('could not clear stale market install receipts'))
     expect(readFileSync(settingsPath, 'utf8')).toBe('a: [b\n')
   })
 
