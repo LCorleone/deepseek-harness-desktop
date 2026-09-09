@@ -484,6 +484,7 @@ describe('published package surface', () => {
     expect(config).toContain("'windows-agent-presets': 'src/windows-agent-presets.ts'")
     expect(config).toContain("'company-agent-presets': 'src/company-agent-presets.ts'")
     expect(config).toContain("'desktop-node-runtime': 'src/desktop-node-runtime.ts'")
+    expect(config).toContain("'desktop-python-runtime': 'src/desktop-python-runtime.ts'")
     expect(config).not.toContain('windows-acl-runner')
     expect(config).toContain("'desktop-cli': 'src/desktop-cli.ts'")
     expect(config).toContain("'desktop-runtime-environment': 'src/desktop-runtime-environment.ts'")
@@ -756,8 +757,9 @@ describe('published package surface', () => {
     })
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },
+      { from: 'build/python-runtime', to: 'python-runtime' },
     ])
-    expect(manifest.build?.beforePack).toBe('./scripts/prepare-bundled-node.ts')
+    expect(manifest.build?.beforePack).toBe('./scripts/prepare-bundled-runtimes.ts')
     expect(manifest.build?.toolsets).toEqual({ nsis: '1.2.1' })
     expect(manifest.files).toEqual(expect.arrayContaining([
       'agent-presets/**',

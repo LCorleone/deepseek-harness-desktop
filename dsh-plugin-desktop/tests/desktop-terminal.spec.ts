@@ -1,6 +1,6 @@
 import { spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -560,5 +560,49 @@ describe('desktop terminal environment', () => {
     expect(() => openDesktopTerminal(newline)).toThrow('must not contain NUL or newlines')
     expect(() => lstatSync(newline.stateDir)).toThrow()
     expect(harness.calls).toHaveLength(1)
+  })
+
+  it('generates the python aliases beside the node shim when Python ships', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+    const options = windowsOptions(stateDir, harness.spawn)
+    options.pythonExecutable = 'C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe'
+
+    const launch = openDesktopTerminal(options)
+
+    expect(launch.pythonShimPaths).toEqual([
+      join(launch.shimDir, 'py.cmd'),
+      join(launch.shimDir, 'python.cmd'),
+      join(launch.shimDir, 'python3.cmd'),
+    ])
+    const pythonShim = readFileSync(launch.pythonShimPaths![0]!, 'utf8')
+    expect(pythonShim).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      '"%DSH_DESKTOP_PYTHON_EXECUTABLE%" %*',
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
+    for (const shimPath of launch.pythonShimPaths!) {
+      expect(readFileSync(shimPath, 'utf8')).toBe(pythonShim)
+      expect(pythonShim).not.toContain('ELECTRON_RUN_AS_NODE')
+    }
+    // The launcher environment carries the command the aliases execute, and
+    // the welcome script's shim-directory PATH prepend covers them all.
+    expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PYTHON_EXECUTABLE).toBe(options.pythonExecutable)
+    const welcome = readFileSync(launch.welcomePath, 'utf8')
+    expect(welcome).toContain('$env:DSH_DESKTOP_SHIM_DIRECTORY')
+    expect(harness.unref).toHaveBeenCalledOnce()
+  })
+
+  it('ships a terminal without python aliases when no Python command is available', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+
+    const launch = openDesktopTerminal(windowsOptions(stateDir, harness.spawn))
+
+    expect(launch.pythonShimPaths).toBeUndefined()
+    expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pnpm.cmd'])
+    expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PYTHON_EXECUTABLE')
   })
 })

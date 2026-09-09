@@ -20,6 +20,8 @@ import { isDesktopInstallerQuitRequest } from './desktop-installer-quit.ts'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
+  installDesktopPythonRuntime,
+  type DesktopPythonRuntimeInstallation,
 } from './desktop-runtime-environment.ts'
 import { desktopProductVersion, ElectronDesktopRuntime } from './electron-runtime.ts'
 import { desktopBuildVersion } from './desktop-build-version.ts'
@@ -50,6 +52,7 @@ import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } 
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
+import { resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
 import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
@@ -937,6 +940,30 @@ async function start(): Promise<void> {
       environment: process.env,
     })
     const releasePnpmRuntime = generation.own(() => { pnpmRuntime.dispose() })
+    // The bundled Python runtime is Windows-only (embeddable CPython), and a
+    // missing or unverifiable distribution disables only this command
+    // surface instead of failing application startup — the digest gate is
+    // fail-closed per surface, not per application.
+    let pythonRuntime: DesktopPythonRuntimeInstallation | undefined
+    if (process.platform === 'win32') {
+      try {
+        pythonRuntime = installDesktopPythonRuntime({
+          platform: process.platform,
+          pythonExecutable: resolveDesktopPythonExecutable(import.meta.url, {
+            platform: process.platform,
+            environment: process.env,
+          }),
+          stateDir: join(app.getPath('userData'), 'python-runtime-commands'),
+          environment: process.env,
+        })
+      } catch (cause) {
+        electronLogger.error(
+          `${BIN_NAME}: the bundled Python runtime is unavailable; python commands stay disabled: `
+          + `${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+    }
+    const releasePythonRuntime = generation.own(() => { pythonRuntime?.dispose() })
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')
     const pluginManagementStatePath = join(app.getPath('userData'), 'plugin-management', 'state.json')
     const startupRecoveryStatePath = join(app.getPath('userData'), 'startup-recovery', 'state.json')
@@ -1804,6 +1831,12 @@ async function start(): Promise<void> {
           () => releasePnpmRuntime,
           'dsh-plugin-desktop: packaged pnpm runtime PATH',
         )
+        if (pythonRuntime !== undefined) {
+          hostCtx.effect(
+            () => releasePythonRuntime,
+            'dsh-plugin-desktop: packaged python runtime PATH',
+          )
+        }
         if (dshRuntime !== undefined) {
           hostCtx.effect(
             () => releaseDshRuntime,

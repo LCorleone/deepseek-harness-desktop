@@ -331,9 +331,13 @@
       {
         "from": "build/node-runtime",
         "to": "node-runtime"
+      },
+      {
+        "from": "build/python-runtime",
+        "to": "python-runtime"
       }
     ],
-    "beforePack": "./scripts/prepare-bundled-node.ts",
+    "beforePack": "./scripts/prepare-bundled-runtimes.ts",
     "afterPack": "./scripts/verify-packaged-runtime.ts",
     "electronFuses": {
       "runAsNode": false,

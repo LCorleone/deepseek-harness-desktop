@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
+  installDesktopPythonRuntime,
   type DesktopPnpmRuntimeOptions,
 } from '../src/desktop-runtime-environment.ts'
 import { desktopPolicyEnvironmentEntries } from '../src/desktop-policy.ts'
@@ -483,5 +484,127 @@ describe('desktop Host dsh runtime', () => {
     installation.dispose()
     installation.dispose()
     expect(environment).toEqual(original)
+  })
+})
+
+describe('desktop Host python runtime', () => {
+  function pythonOptions(
+    stateDir: string,
+    environment: NodeJS.ProcessEnv,
+    overrides: Partial<Parameters<typeof installDesktopPythonRuntime>[0]> = {},
+  ) {
+    return {
+      platform: 'win32' as const,
+      pythonExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe',
+      stateDir,
+      environment,
+      ...overrides,
+    }
+  }
+
+  it('creates the three public aliases and an idempotent, reversible PATH entry', () => {
+    const stateDir = join(temporaryDirectory(), 'python-runtime-state')
+    const environment: NodeJS.ProcessEnv = {
+      Path: 'C:\\Windows\\System32;C:\\Windows',
+      KEEP: 'value',
+    }
+    const original = { ...environment }
+
+    const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment))
+
+    expect(readdirSync(installation.pathDir)).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readdirSync(installation.pythonRuntimeDir)).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
+    const python = readFileSync(installation.pythonShimPath, 'utf8')
+    expect(python).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      '"C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe" %*',
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
+    // The three names are interchangeable aliases of one shim body.
+    expect(readFileSync(installation.python3ShimPath, 'utf8')).toBe(python)
+    expect(readFileSync(installation.pyShimPath, 'utf8')).toBe(python)
+    expect(python).not.toContain('ELECTRON_RUN_AS_NODE')
+    // The private mirror stays unpublished: only the public bin joins PATH.
+    expect(environment).toEqual({
+      Path: `${installation.pathDir};C:\\Windows\\System32;C:\\Windows`,
+      KEEP: 'value',
+    })
+
+    installation.dispose()
+    installation.dispose()
+    expect(environment).toEqual(original)
+  })
+
+  it('does not duplicate a PATH component another owner supplied', () => {
+    const stateDir = join(temporaryDirectory(), 'python-runtime')
+    const pathDir = join(stateDir, 'bin')
+    const environment: NodeJS.ProcessEnv = { Path: `${pathDir};C:\\Windows` }
+
+    const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment))
+
+    expect(environment.Path).toBe(`${pathDir};C:\\Windows`)
+    installation.dispose()
+    expect(environment.Path).toBe(`${pathDir};C:\\Windows`)
+  })
+
+  it('recovers from stray command files instead of failing startup', () => {
+    const root = temporaryDirectory()
+    const stateDir = join(root, 'python-runtime')
+    const pathDir = join(stateDir, 'bin')
+    const pythonRuntimeDir = join(stateDir, 'private', 'python-runtime')
+    mkdirSync(pathDir, { recursive: true })
+    mkdirSync(pythonRuntimeDir, { recursive: true })
+    writeFileSync(join(pathDir, 'node.cmd'), 'stray')
+    writeFileSync(join(pythonRuntimeDir, 'stale.cmd'), 'stray')
+    const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment))
+
+    expect(readdirSync(pathDir)).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readdirSync(pythonRuntimeDir)).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(environment.Path).toBe(`${pathDir};C:\\Windows`)
+    expect(stderr).toHaveBeenCalledTimes(2)
+    installation.dispose()
+  })
+
+  it('refuses an unexpected directory in the public command directory', () => {
+    const root = temporaryDirectory()
+    const stateDir = join(root, 'python-runtime')
+    mkdirSync(join(stateDir, 'bin', 'venv'), { recursive: true })
+    const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
+
+    expect(() => installDesktopPythonRuntime(pythonOptions(stateDir, environment)))
+      .toThrow('contains an unexpected directory: venv')
+    expect(environment).toEqual({ Path: 'C:\\Windows' })
+  })
+
+  it('rejects symlinked state directories before changing PATH', () => {
+    const root = temporaryDirectory()
+    const target = join(root, 'target')
+    const stateDir = join(root, 'python-runtime')
+    mkdirSync(target)
+    symlinkSync(target, stateDir)
+    const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
+
+    expect(() => installDesktopPythonRuntime(pythonOptions(stateDir, environment)))
+      .toThrow('not a private directory')
+    expect(environment).toEqual({ Path: 'C:\\Windows' })
+  })
+
+  it('fails loud for unsupported platforms and unsafe generated values', () => {
+    const root = temporaryDirectory()
+    expect(() => installDesktopPythonRuntime(pythonOptions(
+      join(root, 'runtime'),
+      { PATH: '/usr/bin' },
+      { platform: 'darwin' },
+    ))).toThrow('unsupported on darwin')
+    expect(() => installDesktopPythonRuntime(pythonOptions(
+      join(root, 'newline-runtime'),
+      { Path: 'C:\\Windows' },
+      { pythonExecutable: 'C:\\python.exe\nmalicious' },
+    ))).toThrow('must not contain NUL or newlines')
   })
 })

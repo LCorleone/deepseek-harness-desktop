@@ -83,6 +83,37 @@ export interface DesktopDshRuntimeInstallation {
   dispose(): void
 }
 
+/** Alias shims the Python runtime publishes, in reconciliation order. */
+export const DESKTOP_PYTHON_ALIAS_NAMES = ['py.cmd', 'python.cmd', 'python3.cmd'] as const
+
+/** Inputs used to install the app-local Python command environment. */
+export interface DesktopPythonRuntimeOptions {
+  /** Host platform; only the Windows embeddable distribution is bundled. */
+  platform: NodeJS.Platform
+  /** Windows Python command the generated aliases execute; packaged builds pass the bundled distribution. */
+  pythonExecutable: string
+  /** Private application-owned directory receiving generated files. */
+  stateDir: string
+  /** Parent environment whose PATH is updated; defaults to `process.env`. */
+  environment?: NodeJS.ProcessEnv
+}
+
+/** Files and reversible PATH update created for the Python command surface. */
+export interface DesktopPythonRuntimeInstallation {
+  /** Public directory prepended to the Host PATH; it contains only the Python aliases. */
+  pathDir: string
+  /** Public `python` alias shim. */
+  pythonShimPath: string
+  /** Public `python3` alias shim. */
+  python3ShimPath: string
+  /** Public `py` alias shim. */
+  pyShimPath: string
+  /** Private alias directory, invisible on PATH, reserved for app-owned process trees. */
+  pythonRuntimeDir: string
+  /** Remove this installation's PATH entry without deleting persistent generated files. */
+  dispose(): void
+}
+
 /** Reject a value that cannot be represented in a generated command file. */
 function assertScriptValue(label: string, value: string): void {
   if (value.length === 0) {
@@ -242,6 +273,17 @@ function windowsNodeShim(nodeExecutable: string): string {
     '@echo off',
     'setlocal DisableDelayedExpansion',
     `${quoteBatchWord(nodeExecutable)} %*`,
+    'exit /b %errorlevel%',
+    '',
+  ].join('\r\n')
+}
+
+/** Build one public Windows Python alias backed by the bundled distribution. */
+function windowsPythonAliasShim(pythonExecutable: string): string {
+  return [
+    '@echo off',
+    'setlocal DisableDelayedExpansion',
+    `${quoteBatchWord(pythonExecutable)} %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -431,6 +473,57 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
     pnpmShimPath,
     nodeBinDir,
     nodeShimPath,
+    dispose: installPathDirectory(options.environment ?? process.env, pathDir, options.platform),
+  }
+}
+
+/**
+ * Install the packaged Python aliases into this Electron process's PATH.
+ *
+ * The Windows package exposes the bundled embeddable CPython distribution
+ * through three interchangeable command names — `python`, `python3`, and `py`
+ * — so scripts written against any of them work unmodified. The aliases live
+ * in the public `bin` directory this installation prepends to PATH (matching
+ * the pnpm runtime's non-clobbering semantics), and the same alias set is
+ * mirrored into a private directory no PATH entry exposes, reserved for
+ * app-owned process trees that need Python without republishing it.
+ * @param options - packaged executable path, platform, private state, and parent environment.
+ * @returns generated file paths and an idempotent PATH disposer.
+ */
+export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions): DesktopPythonRuntimeInstallation {
+  if (options.platform !== 'win32') {
+    throw new Error(`dsh-plugin-desktop: python runtime is unsupported on ${options.platform}`)
+  }
+  for (const [label, value] of [
+    ['Python command', options.pythonExecutable],
+    ['state directory', options.stateDir],
+  ] as const) assertScriptValue(label, value)
+
+  const pathDir = join(options.stateDir, 'bin')
+  const pythonRuntimeDir = join(options.stateDir, 'private', 'python-runtime')
+  preparePrivateDirectory(options.stateDir)
+  preparePrivateDirectory(pathDir)
+  preparePrivateDirectory(pythonRuntimeDir)
+
+  for (const alias of DESKTOP_PYTHON_ALIAS_NAMES) {
+    removeStaleTemporaryFiles(pathDir, alias)
+    removeStaleTemporaryFiles(pythonRuntimeDir, alias)
+  }
+  reconcileOwnedDirectoryEntries(pathDir, [...DESKTOP_PYTHON_ALIAS_NAMES])
+  reconcileOwnedDirectoryEntries(pythonRuntimeDir, [...DESKTOP_PYTHON_ALIAS_NAMES])
+  const shim = windowsPythonAliasShim(options.pythonExecutable)
+  for (const directory of [pathDir, pythonRuntimeDir]) {
+    for (const alias of DESKTOP_PYTHON_ALIAS_NAMES) {
+      replacePrivateFile(join(directory, alias), shim, PRIVATE_FILE_MODE)
+    }
+  }
+
+  return {
+    pathDir,
+    pythonShimPath: join(pathDir, 'python.cmd'),
+    python3ShimPath: join(pathDir, 'python3.cmd'),
+    pyShimPath: join(pathDir, 'py.cmd'),
+    pythonRuntimeDir,
     dispose: installPathDirectory(options.environment ?? process.env, pathDir, options.platform),
   }
 }

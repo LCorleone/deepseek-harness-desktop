@@ -16,6 +16,19 @@ import { desktopTerminalStateDirectory, openDesktopTerminal } from './desktop-te
 import { desktopInstallRecoveryStatePath } from './install-recovery.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
+import { resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
+
+/** Resolve the Python command for terminal aliases without failing the terminal itself. */
+function optionalDesktopPythonExecutable(): string | undefined {
+  try {
+    return resolveDesktopPythonExecutable(import.meta.url, {
+      platform: process.platform,
+      environment: process.env,
+    })
+  } catch {
+    return undefined
+  }
+}
 import { ElectronShellGeneration } from './electron-shell-generation.ts'
 import { electronPlatformStrategy, type ElectronPlatformStrategy } from './electron-platform.ts'
 import type {
@@ -374,12 +387,16 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         throw new Error('dsh-plugin-desktop: terminal requires the Electron runtime version')
       }
       const terminalSpec: DesktopTerminalSpec = spec
+      const pythonExecutable = optionalDesktopPythonExecutable()
       openDesktopTerminal({
         platform: this.platform,
         nodeExecutable: resolveDesktopNodeExecutable(import.meta.url, {
           platform: process.platform,
           environment: process.env,
         }),
+        // A missing or unverifiable Python distribution removes only the
+        // terminal's python aliases; the terminal itself must still open.
+        ...(pythonExecutable === undefined ? {} : { pythonExecutable }),
         dshBootstrapPath: unpackedAsarPath(
           fileURLToPath(new URL('./desktop-cli.js', import.meta.url)),
         ),
