@@ -1072,20 +1072,18 @@ async function start(): Promise<void> {
             outcome: 'deferred',
             materialized: false,
             receiptsCleared: 0,
-            method: 'none',
             ...(rule === undefined ? {} : { rule }),
           }))
           return 'deferred'
         }
         electronLogger.error(
-          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}${rule === undefined ? '' : `; rule ${rule}`}; backup ${result.backupDir ?? 'none'}; method ${result.method ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
+          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}${rule === undefined ? '' : `; rule ${rule}`}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
         )
         clientEvents?.pluginReset(pluginResetEvent(trigger, {
           profileName: result.profileName,
           outcome: 'swapped',
           materialized: result.materialized,
           receiptsCleared: result.receiptsCleared,
-          method: result.method ?? 'none',
           ...(rule === undefined ? {} : { rule }),
         }))
         return 'swapped'
@@ -1098,7 +1096,6 @@ async function start(): Promise<void> {
           outcome: 'failed',
           materialized: false,
           receiptsCleared: 0,
-          method: 'none',
           ...(rule === undefined ? {} : { rule }),
         }))
         return 'failed'
@@ -1128,27 +1125,31 @@ async function start(): Promise<void> {
     // Deferred-retry layer (P14, Windows EBUSY): the previous boot wrote a
     // marker when the set-aside rename stayed locked through every retry.
     // Handled BEFORE the automatic layer so one boot never renames the same
-    // directory twice. The marker is dropped only when the policy no longer
-    // enables the reset; when it names a Profile that is not active this boot
-    // it is KEPT and the retry is skipped — dropping it would lose the pending
-    // rebuild forever, because the deferred path never recorded the marked
-    // Profile's build identity and the automatic layer below records the
-    // CURRENT build for whichever Profile is active. A retry that lands clears
-    // the marker and records the build; one that defers again leaves the
-    // marker and lets the boot continue.
-    const freshProfileResetEnabled = policy.locked === true && policy.pluginResetOnVersionChange === true
+    // directory twice. The marker is dropped only when the policy is
+    // UNLOCKED — a build that can never reset has no use for it. The
+    // `pluginResetOnVersionChange` switch is not part of this gate: with it
+    // off the automatic layer still rebuilds on a product-version change, so
+    // dropping the marker would lose that pending rebuild. When the marker
+    // names a Profile that is not active this boot it is KEPT and the retry
+    // is skipped — dropping it would lose the pending rebuild forever,
+    // because the deferred path never recorded the marked Profile's build
+    // identity and the automatic layer below records the CURRENT build for
+    // whichever Profile is active. A retry that lands clears the marker and
+    // records the build; one that defers again leaves the marker and lets the
+    // boot continue.
+    const freshProfileResetMarkerPolicyLocked = policy.locked === true
     const pendingFreshProfileAction = pendingFreshProfileReset === undefined
       ? undefined
       : freshProfilePendingAction({
         markerProfileName: pendingFreshProfileReset.profileName,
         activeProfileName,
-        resetEnabled: freshProfileResetEnabled,
+        policyLocked: freshProfileResetMarkerPolicyLocked,
       })
     let pendingFreshProfileHandled = false
     if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'drop') {
       electronLogger.error(
         `${BIN_NAME}: dropping the deferred profile rebuild marker for ${pendingFreshProfileReset.profileName} `
-          + `(reset enabled=${String(freshProfileResetEnabled)})`,
+          + `(policy locked=${String(freshProfileResetMarkerPolicyLocked)})`,
       )
       clearFreshProfilePending(freshProfilePendingPath)
     } else if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'keep') {

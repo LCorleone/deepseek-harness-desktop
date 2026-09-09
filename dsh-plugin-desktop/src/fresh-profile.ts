@@ -33,21 +33,16 @@
  *
  * On Windows the set-aside rename can be refused for seconds while any
  * process holds a handle inside the Profile (`EBUSY` and friends). The rename
- * therefore backs off over a fixed schedule. A *directory-level* handle — an
- * editor watcher on a file inside the Profile, an indexer, a process whose
- * working directory IS the Profile — refuses the whole-directory rename
- * indefinitely while every child still moves, so when the backoff is spent
- * the swap falls back to moving the Profile's top-level entries into the
- * backup directory one at a time (strategy B). Only if that also fails does
- * the swap defer: it returns a deferred result, the desktop writes a marker
- * in userData, keeps booting the existing Profile, and the next startup
- * retries before it opens anything. The build-identity record stays unwritten
- * on that path, so the version change remains pending.
+ * therefore backs off over a fixed schedule; if it is still locked, the swap
+ * does not fail: it returns a deferred result, the desktop writes a marker in
+ * userData, keeps booting the existing Profile, and the next startup retries
+ * the rename before it opens anything. The build-identity record stays
+ * unwritten on that path, so the version change remains pending.
  *
  * @module dsh-plugin-desktop/fresh-profile
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
@@ -75,27 +70,9 @@ const MAX_BACKUP_COLLISIONS = 100
 const RETRYABLE_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES'])
 /** Six backoff steps (~6.3 s total) before a locked rename is declared deferred. */
 const RENAME_RETRY_DELAYS_MS: readonly number[] = [100, 200, 400, 800, 1600, 3200]
-/**
- * Content-move fallback (strategy B): attempts per top-level entry and the
- * short pause between them. A held *directory* handle (an editor watcher on a
- * file inside the Profile, an indexer, a process whose CWD is the Profile)
- * refuses the whole-directory rename while every child inside it still moves,
- * so after strategy A spends its backoff the swap relocates the children one
- * by one instead of deferring.
- */
-const CONTENT_MOVE_ATTEMPTS = 3
-const CONTENT_MOVE_RETRY_DELAY_MS = 150
 
 /** Error code of the last rename refused by the OS after every retry. */
 export type ProfileRenameLockedCode = 'EBUSY' | 'EPERM' | 'ENOTEMPTY' | 'EACCES'
-
-/**
- * How a swap set the previous Profile aside: `rename` is the whole-directory
- * rename (strategy A), `content-move` is the fallback that relocates the
- * Profile's top-level entries into an otherwise identical backup directory
- * because the directory itself was held.
- */
-export type ProfileBackupMethod = 'rename' | 'content-move'
 
 /**
  * A set-aside rename the OS kept refusing (`EBUSY` and friends) through the
@@ -277,22 +254,26 @@ export function clearFreshProfilePending(statePath: string): void {
 export type FreshProfilePendingAction = 'retry' | 'keep' | 'drop'
 
 /**
- * Decide the deferred marker's fate for this boot. The policy switch is the
- * ONLY reason to drop a marker: turning the reset off is the operator saying
- * the rebuild must not happen. A marker naming a Profile that is not active
- * this boot is KEPT and the retry is simply skipped — dropping it would lose
- * the pending rebuild permanently, because the deferred path never recorded
- * the marked Profile's build identity and the automatic layer records the
- * current build for whichever Profile IS active; returning to the marked
- * Profile would then read as an unchanged version and never rebuild.
+ * Decide the deferred marker's fate for this boot. The policy LOCK is the only
+ * reason to drop a marker: an unlocked build can never perform the rebuild, so
+ * the marker would otherwise sit there forever. The `pluginResetOnVersionChange`
+ * switch is deliberately NOT part of this gate — with it off the automatic
+ * layer still rebuilds on a product-version change, so the pending rebuild
+ * stays meaningful and dropping it would lose it permanently. A marker naming
+ * a Profile that is not active this boot is KEPT and the retry is simply
+ * skipped — dropping it would lose the pending rebuild permanently, because
+ * the deferred path never recorded the marked Profile's build identity and the
+ * automatic layer records the current build for whichever Profile IS active;
+ * returning to the marked Profile would then read as an unchanged version and
+ * never rebuild.
  */
 export function freshProfilePendingAction(options: {
   readonly markerProfileName: string
   readonly activeProfileName: string
-  /** The automatic reset is still enabled (locked build + policy switch on). */
-  readonly resetEnabled: boolean
+  /** The policy lock is on, so a rebuild can still happen on some boot. */
+  readonly policyLocked: boolean
 }): FreshProfilePendingAction {
-  if (options.resetEnabled !== true) return 'drop'
+  if (options.policyLocked !== true) return 'drop'
   return options.markerProfileName === options.activeProfileName ? 'retry' : 'keep'
 }
 
@@ -312,12 +293,16 @@ export type FreshProfileResetDecision = 'unchanged' | 'record' | 'reset'
  *   counter change (`2.0.3+b78` → `2.0.3+b79`) keeps the Profile and only a
  *   product version change (`2.0.3` → `2.0.4`) rebuilds it.
  *
- * An unchanged identity is a pure read. A missing record is treated as a
- * version change — the Profile was built by a build this one has never
- * recorded, which is exactly the straddle the reset exists to end — except
- * when no Profile manifest exists at all: a genuinely fresh install has no
- * third-party composition to strip, so it only records (no set-aside
- * directory, no redundant dependency synchronization).
+ * An unchanged identity is a pure read. The rules differ on a missing
+ * record, because only the forced rule ever wrote one for every build:
+ *
+ * - forced: a missing record with a Profile manifest is a straddle and
+ *   resets; with no manifest it is a genuinely fresh install and only
+ *   records.
+ * - version: a missing record is a first observation — builds running with
+ *   the switch off wrote no record before this one, so there is nothing to
+ *   compare against — and only records; a RECORDED product version that
+ *   differs resets.
  */
 export function freshProfileResetDecision(options: {
   readonly locked: boolean
@@ -340,13 +325,12 @@ export function freshProfileResetDecision(options: {
   const previousAppVersion = options.previousAppVersion ?? buildVersionProductBase(options.previousAppBuildVersion)
   const appVersion = options.appVersion ?? buildVersionProductBase(options.appBuildVersion)
   if (previousAppVersion === appVersion) return 'unchanged'
-  // A missing record plus no manifest is a genuinely first boot: there is no
-  // recorded build to straddle and no third-party composition to strip, so a
-  // version change records the identity instead of swapping. A missing record
-  // WITH a manifest is a straddle and resets; a recorded build that differs
-  // resets even without a manifest, because the record proves this home was
-  // managed by another build.
-  if (previousAppVersion === undefined && !options.profileExists) return 'record'
+  // The off rule never wrote a record before this build, so a missing record
+  // is a first observation, not a straddle: record the identity and leave the
+  // Profile alone. Only a RECORDED product version that differs rebuilds it
+  // (even without a manifest — the record proves another build managed this
+  // home).
+  if (previousAppVersion === undefined) return 'record'
   return 'reset'
 }
 
@@ -461,8 +445,6 @@ export interface FreshProfileSwapResult {
   readonly profileDir: string
   /** Set-aside previous Profile directory; absent when none existed. */
   readonly backupDir?: string
-  /** How the previous Profile was set aside; absent when none existed. */
-  readonly method?: ProfileBackupMethod
   /** Whether the dependency synchronization completed. */
   readonly materialized: boolean
   /** Market install receipts dropped by the ledger clear. */
@@ -489,114 +471,14 @@ export interface FreshProfileSwapResult {
 /** Real timer used when the caller does not inject a sleep seam. */
 const defaultSleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms) })
 
-/** The rename/log/sleep seams both set-aside strategies share. */
-interface ProfileRenameSeams {
-  readonly logError?: ((message: string) => void) | undefined
-  readonly sleep: (ms: number) => Promise<void>
-  readonly rename: (from: string, to: string) => void
-}
-
-/** Outcome of one short-retry rename: success, or the last refusal. */
-type ShortRenameOutcome =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly code: string | undefined; readonly cause: unknown }
-
 /**
- * Rename one path with the short retry schedule strategy B uses per entry.
- * A transient lock backs off {@linkcode CONTENT_MOVE_ATTEMPTS} times; a
- * non-transient code (`EXDEV`, …) is reported at once because retrying can
- * never help.
- */
-async function renameShortRetry(from: string, to: string, seams: ProfileRenameSeams): Promise<ShortRenameOutcome> {
-  let lastCode: string | undefined
-  let lastCause: unknown
-  for (let attempt = 1; attempt <= CONTENT_MOVE_ATTEMPTS; attempt += 1) {
-    try {
-      seams.rename(from, to)
-      return { ok: true }
-    } catch (cause) {
-      lastCause = cause
-      lastCode = (cause as NodeJS.ErrnoException).code
-      if (lastCode === undefined || !RETRYABLE_RENAME_CODES.has(lastCode)) break
-      if (attempt === CONTENT_MOVE_ATTEMPTS) break
-      seams.logError?.(
-        `profile content ${from} -> ${to} is locked (move attempt ${String(attempt)} of ${String(CONTENT_MOVE_ATTEMPTS)}: ${lastCode}); retrying in ${String(CONTENT_MOVE_RETRY_DELAY_MS)}ms`,
-      )
-      await seams.sleep(CONTENT_MOVE_RETRY_DELAY_MS)
-    }
-  }
-  return { ok: false, code: lastCode, cause: lastCause }
-}
-
-/**
- * Strategy B of the set-aside step: the Profile directory itself is held, so
- * move its top-level entries into the backup directory one at a time. An
- * empty live directory is equivalent to the rename for every consumer —
- * `createProfile` refills it and the fresh-profile test is `package.json`.
+ * Rename the existing Profile directory aside, returning the backup path.
  *
- * Any entry that cannot be moved rolls the already-moved entries back, so the
- * caller sees either a whole Profile (locked → deferred) or the original
- * error — never a half-empty Profile. A transient lock that survives the
- * short schedule raises {@linkcode ProfileRenameLockedError} (the existing
- * deferred semantics); any other error is re-thrown, exactly like strategy A.
- */
-async function moveProfileContentsAside(
-  profileDir: string,
-  backup: string,
-  seams: ProfileRenameSeams,
-  directoryAttempts: number,
-): Promise<ProfileBackupMethod> {
-  mkdirSync(backup, { recursive: true })
-  const moved: string[] = []
-  let failure: { readonly name: string; readonly code: string | undefined; readonly cause: unknown } | undefined
-  for (const entry of readdirSync(profileDir, { withFileTypes: true })) {
-    const outcome = await renameShortRetry(join(profileDir, entry.name), join(backup, entry.name), seams)
-    if (outcome.ok) {
-      moved.push(entry.name)
-      continue
-    }
-    failure = { name: entry.name, code: outcome.code, cause: outcome.cause }
-    break
-  }
-  if (failure === undefined) return 'content-move'
-  seams.logError?.(
-    `could not move profile content ${join(profileDir, failure.name)} aside (${failure.code ?? 'unknown error'}); rolling back ${String(moved.length)} moved entr${moved.length === 1 ? 'y' : 'ies'}`,
-  )
-  for (const name of moved.reverse()) {
-    const outcome = await renameShortRetry(join(backup, name), join(profileDir, name), seams)
-    if (!outcome.ok) {
-      seams.logError?.(
-        `could not move profile content ${name} back to ${profileDir} during rollback (${outcome.code ?? 'unknown error'}); it stays in ${backup}`,
-      )
-    }
-  }
-  // `rmdirSync` only removes an empty directory, so a failed rollback keeps
-  // the backup as the only place the stranded entry still exists.
-  try {
-    rmdirSync(backup)
-  } catch (cause) {
-    seams.logError?.(
-      `could not remove the set-aside directory ${backup} after rollback: ${cause instanceof Error ? cause.message : String(cause)}`,
-    )
-  }
-  if (failure.code === undefined || !RETRYABLE_RENAME_CODES.has(failure.code)) throw failure.cause
-  throw new ProfileRenameLockedError(profileDir, failure.code as ProfileRenameLockedCode, directoryAttempts)
-}
-
-/**
- * Set the existing Profile directory aside, returning the backup path and how
- * it was set aside.
- *
- * Strategy A renames the whole directory and retries a transient OS lock
- * (Windows keeps a directory un-renamable while any handle inside it is open)
- * on a fixed backoff; each refused attempt logs the attempt number and error
- * code, and a collision with a destination that appeared mid-flight moves to
- * the next suffix instead of spending the schedule on a dead path. When the
- * backoff is spent the directory itself is held, not its contents, so
- * strategy B moves the top-level entries one by one (see
- * {@linkcode moveProfileContentsAside}); only if that fails too does the
- * swap defer through {@linkcode ProfileRenameLockedError}. Every other error
- * is immediate.
+ * A transient OS lock (Windows keeps a directory un-renamable while any
+ * handle inside it is open) is retried on a fixed backoff before giving up:
+ * each refused attempt logs the attempt number and error code, and the last
+ * refusal after the schedule raises {@linkcode ProfileRenameLockedError} so
+ * the swap can defer instead of failing. Every other error is immediate.
  */
 async function setAsideProfileDirectory(
   profileDir: string,
@@ -607,7 +489,7 @@ async function setAsideProfileDirectory(
     readonly sleep?: ((ms: number) => Promise<void>) | undefined
     readonly rename?: ((from: string, to: string) => void) | undefined
   } = {},
-): Promise<{ readonly backupDir: string; readonly method: ProfileBackupMethod } | undefined> {
+): Promise<string | undefined> {
   let item
   try {
     item = lstatSync(profileDir)
@@ -621,21 +503,15 @@ async function setAsideProfileDirectory(
   const delays = options.retryDelaysMs ?? RENAME_RETRY_DELAYS_MS
   const sleep = options.sleep ?? defaultSleep
   const rename = options.rename ?? renameSync
-  const seams: ProfileRenameSeams = {
-    ...(options.logError === undefined ? {} : { logError: options.logError }),
-    sleep,
-    rename,
-  }
   for (let collision = 0; collision <= MAX_BACKUP_COLLISIONS; collision += 1) {
     const backup = collision === 0
       ? profileBackupPath(profileDir, epochMs)
       : `${profileBackupPath(profileDir, epochMs)}-${String(collision)}`
     if (existsSync(backup)) continue
-    let lockedCode: ProfileRenameLockedCode | undefined
     for (let attempt = 0; ; attempt += 1) {
       try {
         rename(profileDir, backup)
-        return { backupDir: backup, method: 'rename' }
+        return backup
       } catch (cause) {
         const code = (cause as NodeJS.ErrnoException).code
         if (code === undefined || !RETRYABLE_RENAME_CODES.has(code)) throw cause
@@ -646,25 +522,12 @@ async function setAsideProfileDirectory(
         if (existsSync(backup)) break
         const delayMs = delays[attempt]
         if (delayMs === undefined) {
-          lockedCode = code as ProfileRenameLockedCode
-          break
+          throw new ProfileRenameLockedError(profileDir, code as ProfileRenameLockedCode, attempt + 1)
         }
         options.logError?.(
           `profile directory ${profileDir} -> ${backup} is locked (rename attempt ${String(attempt + 1)} of ${String(delays.length + 1)}: ${code}); retrying in ${String(delayMs)}ms`,
         )
         await sleep(delayMs)
-      }
-    }
-    if (lockedCode !== undefined) {
-      // Strategy A spent its whole backoff on a held directory handle. That
-      // handle does not block renames of the entries INSIDE the directory,
-      // so fall back to a content move before declaring the swap deferred.
-      options.logError?.(
-        `profile directory ${profileDir} stayed locked after ${String(delays.length + 1)} rename attempts (${lockedCode}); falling back to moving its contents into ${backup}`,
-      )
-      return {
-        backupDir: backup,
-        method: await moveProfileContentsAside(profileDir, backup, seams, delays.length + 1),
       }
     }
   }
@@ -728,9 +591,9 @@ export async function pruneProfileBackups(
 export async function freshProfileSwap(options: FreshProfileSwapOptions): Promise<FreshProfileSwapResult> {
   assertDesktopProfileName(options.profileName)
   const profileDir = resolveProfileDir(options.profileName, options.home)
-  let setAside: { readonly backupDir: string; readonly method: ProfileBackupMethod } | undefined
+  let backupDir: string | undefined
   try {
-    setAside = await setAsideProfileDirectory(profileDir, (options.now ?? Date.now)(), {
+    backupDir = await setAsideProfileDirectory(profileDir, (options.now ?? Date.now)(), {
       ...(options.logError === undefined ? {} : { logError: options.logError }),
       ...(options.renameRetryDelaysMs === undefined ? {} : { retryDelaysMs: options.renameRetryDelaysMs }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -789,7 +652,7 @@ export async function freshProfileSwap(options: FreshProfileSwapOptions): Promis
   return {
     profileName: options.profileName,
     profileDir,
-    ...(setAside === undefined ? {} : { backupDir: setAside.backupDir, method: setAside.method }),
+    ...(backupDir === undefined ? {} : { backupDir }),
     materialized,
     receiptsCleared,
     pruneBackups,

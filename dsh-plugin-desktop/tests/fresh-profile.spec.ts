@@ -106,25 +106,6 @@ function bundlesOf(profileDir: string): string[] {
   return ((manifest.dsh?.profile as { bundles?: string[] } | undefined)?.bundles ?? [])
 }
 
-/** Recursive, order-stable byte snapshot of a tree (dirs, files, contents). */
-function snapshotTree(root: string): string[] {
-  const out: string[] = []
-  const walk = (dir: string, prefix: string): void => {
-    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-      const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`
-      if (entry.isDirectory()) {
-        out.push(`d ${relative}`)
-        walk(join(dir, entry.name), relative)
-      } else {
-        out.push(`f ${relative} ${readFileSync(join(dir, entry.name), 'utf8')}`)
-      }
-    }
-  }
-  walk(root, '')
-  return out
-}
-
 function swapOptions(home: string, overrides: Record<string, unknown> = {}) {
   return {
     home,
@@ -232,6 +213,29 @@ describe('fresh profile reset decision (product-version rule)', () => {
       appVersion: '2.0.4',
       profileExists: false,
     })).toBe('record')
+  })
+
+  it('records instead of rebuilding when the switch is off and no record exists, even with a manifest (review P2-b)', () => {
+    // Builds running with the switch off wrote no records before this one, so
+    // a missing record is a first observation, not a straddle: the Profile is
+    // left alone and the identity is recorded.
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: false,
+      appBuildVersion: '2.0.4+b80',
+      appVersion: '2.0.4',
+      profileExists: true,
+    })).toBe('record')
+  })
+
+  it('still rebuilds on a missing record with a manifest when the switch forces every build', () => {
+    expect(freshProfileResetDecision({
+      locked: true,
+      resetOnVersionChange: true,
+      appBuildVersion: '2.0.4+b80',
+      appVersion: '2.0.4',
+      profileExists: true,
+    })).toBe('reset')
   })
 
   it('keeps the forced per-build rule when the switch is on', () => {
@@ -479,7 +483,6 @@ describe('fresh profile swap', () => {
       profileName: 'desktop',
       profileDir,
       backupDir: `${profileDir}.bak-20260909T073319264Z`,
-      method: 'rename',
       materialized: true,
       receiptsCleared: 2,
       pruneBackups: expect.any(Promise),
@@ -634,7 +637,7 @@ describe('locked set-aside rename (Windows EBUSY)', () => {
     expect(logError.mock.calls[1]![0]).toContain('rename attempt 2 of 7: EBUSY')
   })
 
-  it('defers instead of failing when the directory and every content move stay locked, leaving the old Profile bootable', async () => {
+  it('defers instead of failing when every rename retry stays locked, leaving the old Profile bootable', async () => {
     const home = temporaryHome()
     const profileDir = seededProfile(home)
     const logError = vi.fn()
@@ -658,16 +661,8 @@ describe('locked set-aside rename (Windows EBUSY)', () => {
       receiptsCleared: 0,
     })
     expect(result.backupDir).toBeUndefined()
-    expect(result.method).toBeUndefined()
-    // Strategy A spent its whole backoff (100/200/400/800/1600/3200), then
-    // strategy B tried the first entry twice at the short 150ms interval.
-    expect(slept).toEqual([100, 200, 400, 800, 1600, 3200, 150, 150])
-    // Six backoff lines, the fallback line, two content-move refusals, and
-    // the rollback line naming what failed.
-    expect(logError).toHaveBeenCalledTimes(10)
-    expect(logError.mock.calls[6]![0]).toContain('falling back to moving its contents')
-    expect(logError.mock.calls[8]![0]).toContain('move attempt 2 of 3: EBUSY')
-    expect(logError.mock.calls[9]![0]).toContain('rolling back 0 moved entries')
+    expect(slept).toEqual([100, 200, 400, 800, 1600, 3200])
+    expect(logError).toHaveBeenCalledTimes(6)
     expect(createProfile).not.toHaveBeenCalled()
     // Nothing was renamed or rebuilt: the same Profile is still on disk, whole.
     expect(bundlesOf(profileDir)).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', THIRD_PARTY])
@@ -719,138 +714,6 @@ describe('locked set-aside rename (Windows EBUSY)', () => {
     // immediately.
     expect(slept).toEqual([])
     expect(rename).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe('content-move fallback (a held Profile directory)', () => {
-  /** The real-machine failure: the directory is held, its children are not. */
-  const directoryHeld = (profileDir: string) => (from: string, to: string): void => {
-    if (from === profileDir) throw busyError()
-    renameSync(from, to)
-  }
-
-  it('falls back to moving the entries when the directory rename stays locked, and reports content-move', async () => {
-    const home = temporaryHome()
-    const profileDir = seededProfile(home)
-    const before = readdirSync(profileDir).sort()
-    const logError = vi.fn()
-    const slept: number[] = []
-    const createProfile = vi.fn()
-
-    const result = await freshProfileSwap(swapOptions(home, {
-      // Empty strategy-A schedule: one refusal is enough to reach the fallback.
-      renameRetryDelaysMs: [],
-      rename: directoryHeld(profileDir),
-      sleep: async (ms: number) => { slept.push(ms) },
-      createProfile,
-      materialize: undefined,
-      logError,
-    }))
-
-    expect(result.method).toBe('content-move')
-    expect(result.backupDir).toBe(`${profileDir}.bak-20260909T073319264Z`)
-    expect(result.deferred).toBeUndefined()
-    // The live directory is empty — equivalent to the rename for the rebuild
-    // that follows — and the backup holds every top-level entry.
-    expect(readdirSync(profileDir)).toEqual([])
-    expect(readdirSync(result.backupDir!).sort()).toEqual(before)
-    expect(createProfile).toHaveBeenCalledTimes(1)
-    expect(logError.mock.calls[0]![0]).toContain('falling back to moving its contents')
-    expect(slept).toEqual([])
-    // Retention runs against the content-move backup like any other: the
-    // only backup is the newest, so nothing is pruned.
-    await expect(result.pruneBackups).resolves.toEqual([])
-    expect(existsSync(result.backupDir!)).toBe(true)
-  })
-
-  it('rolls back a partial content move byte for byte and still defers', async () => {
-    const home = temporaryHome()
-    const profileDir = seededProfile(home)
-    const before = snapshotTree(profileDir)
-    const backupPrefix = `${profileDir}.bak-`
-    const logError = vi.fn()
-    const createProfile = vi.fn()
-    let forwardMoves = 0
-    const rename = (from: string, to: string): void => {
-      if (from === profileDir) throw busyError()
-      // Rollback (backup -> live) must always land; only the forward pass is
-      // scripted to fail after the first entry.
-      if (from.startsWith(backupPrefix)) {
-        renameSync(from, to)
-        return
-      }
-      forwardMoves += 1
-      if (forwardMoves > 1) throw busyError()
-      renameSync(from, to)
-    }
-
-    const result = await freshProfileSwap(swapOptions(home, {
-      renameRetryDelaysMs: [],
-      rename,
-      sleep: async () => {},
-      createProfile,
-      logError,
-    }))
-
-    // The fallback's `ProfileRenameLockedError` is what `freshProfileSwap`
-    // turns into a deferred result: the boot keeps the existing Profile.
-    expect(result).toMatchObject({ deferred: true, reasonCode: 'EBUSY' })
-    expect(result.method).toBeUndefined()
-    // The live Profile is byte-identical to before the call, no half-empty
-    // directory, and the backup is gone (its only entry moved back).
-    expect(snapshotTree(profileDir)).toEqual(before)
-    expect(readdirSync(join(home, 'profiles')).some(name => name.includes('.bak-'))).toBe(false)
-    expect(createProfile).not.toHaveBeenCalled()
-    expect(logError.mock.calls.some(call => String(call[0]).includes('rolling back 1 moved entry'))).toBe(true)
-    expect(logError.mock.calls.some(call => String(call[0]).includes('could not move profile content'))).toBe(true)
-  })
-
-  it('does not attempt the fallback when the directory rename lands on the first try', async () => {
-    const home = temporaryHome()
-    const profileDir = seededProfile(home)
-    seededSettings(home)
-    const rename = vi.fn(renameSync)
-
-    const result = await freshProfileSwap(swapOptions(home, { rename }))
-
-    expect(result.method).toBe('rename')
-    expect(result.backupDir).toBe(`${profileDir}.bak-20260909T073319264Z`)
-    // One rename total: the children were never touched (strategy B skipped).
-    expect(rename).toHaveBeenCalledTimes(1)
-    expect(rename).toHaveBeenCalledWith(profileDir, `${profileDir}.bak-20260909T073319264Z`)
-  })
-
-  it('retries a locked content move twice before it lands', async () => {
-    const home = temporaryHome()
-    const profileDir = seededProfile(home)
-    const target = join(profileDir, 'package.json')
-    const logError = vi.fn()
-    const slept: number[] = []
-    let refusals = 2
-    const rename = (from: string, to: string): void => {
-      if (from === profileDir) throw busyError()
-      if (from === target && refusals > 0) {
-        refusals -= 1
-        throw busyError()
-      }
-      renameSync(from, to)
-    }
-
-    const result = await freshProfileSwap(swapOptions(home, {
-      renameRetryDelaysMs: [],
-      rename,
-      sleep: async (ms: number) => { slept.push(ms) },
-      createProfile: () => {},
-      materialize: undefined,
-      logError,
-    }))
-
-    expect(result.method).toBe('content-move')
-    expect(slept).toEqual([150, 150])
-    expect(logError.mock.calls.some(call => String(call[0]).includes('move attempt 1 of 3: EBUSY'))).toBe(true)
-    expect(logError.mock.calls.some(call => String(call[0]).includes('move attempt 2 of 3: EBUSY'))).toBe(true)
-    expect(existsSync(join(result.backupDir!, 'package.json'))).toBe(true)
-    expect(readdirSync(profileDir)).toEqual([])
   })
 })
 
@@ -935,19 +798,26 @@ describe('deferred rebuild marker', () => {
 
 describe('deferred marker across Profiles (review a963dced P2-1)', () => {
   it('keeps a marker for a Profile that is not active instead of dropping it', () => {
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: true }))
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', policyLocked: true }))
+      .toBe('keep')
+  })
+
+  it('keeps a non-active marker while the policy is locked, whatever the version rule (review P1-b)', () => {
+    // The off posture still resets on a product-version change, so its marker
+    // must survive a boot with another Profile active. Only the lock decides.
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', policyLocked: true }))
       .toBe('keep')
   })
 
   it('retries a kept marker on the boot where the marked Profile is active, unchanged version or not', () => {
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: true }))
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', policyLocked: true }))
       .toBe('retry')
   })
 
-  it('drops the marker only when the policy turns the reset off', () => {
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: false }))
+  it('drops the marker only when the policy is unlocked, because that build can never rebuild', () => {
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', policyLocked: false }))
       .toBe('drop')
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: false }))
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', policyLocked: false }))
       .toBe('drop')
   })
 
@@ -973,14 +843,14 @@ describe('deferred marker across Profiles (review a963dced P2-1)', () => {
     // Boot with desktop active: the marker is kept, not dropped — dropping it
     // would lose beta's pending rebuild once the automatic layer records the
     // current build for desktop.
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', resetEnabled: true }))
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'desktop', policyLocked: true }))
       .toBe('keep')
     expect(readFreshProfilePending(statePath)?.profileName).toBe('beta')
 
     // Later boot with beta active and the SAME build version: the marker alone
     // still forces the rebuild (the deferred path never wrote beta's record),
     // and the retry lands and clears it.
-    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', resetEnabled: true }))
+    expect(freshProfilePendingAction({ markerProfileName: 'beta', activeProfileName: 'beta', policyLocked: true }))
       .toBe('retry')
     const retried = await freshProfileSwap(swapOptions(home, {
       profileName: 'beta',

@@ -110,11 +110,6 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(helper).toContain("clientEvents?.pluginReset(pluginResetEvent(trigger, {")
     expect(helper).toContain("outcome: 'swapped'")
     expect(helper).toContain("outcome: 'failed'")
-    // The set-aside strategy that landed is logged and reported, so a real
-    // machine's log/telemetry says whether the content-move fallback ran.
-    expect(helper).toContain("method ${result.method ?? 'none'}")
-    expect(helper).toContain("method: result.method ?? 'none',")
-    expect(helper).toContain("method: 'none',")
     // A failed rebuild returns an outcome instead of throwing into the
     // startup path it exists to rescue; the recovery window stays the way out.
     expect(helper).toContain("return 'failed'")
@@ -146,11 +141,20 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(source).toContain("if (freshProfileDecision === 'reset' && !pendingFreshProfileHandled) {")
   })
 
-  it('keeps a marker for another Profile and drops it only when the policy turns the reset off', () => {
+  it('keeps a marker for another Profile and drops it only when the policy is unlocked (review P1-b)', () => {
     const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
     const dropAt = source.indexOf("pendingFreshProfileAction === 'drop'", pendingActionAt)
     const keepAt = source.indexOf("pendingFreshProfileAction === 'keep'", pendingActionAt)
     const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+
+    // The keep/drop gate is the policy LOCK alone: with the version switch off
+    // the automatic layer still resets on a product-version change, so a
+    // marker for a non-active Profile must survive the boot.
+    const gateAt = source.indexOf('const freshProfileResetMarkerPolicyLocked = policy.locked === true')
+    expect(gateAt).toBeGreaterThan(-1)
+    expect(gateAt).toBeLessThan(pendingActionAt)
+    expect(source.slice(gateAt, pendingActionAt)).not.toContain('pluginResetOnVersionChange')
+    expect(source).toContain('policyLocked: freshProfileResetMarkerPolicyLocked,')
 
     expect(dropAt).toBeGreaterThan(pendingActionAt)
     expect(keepAt).toBeGreaterThan(dropAt)
