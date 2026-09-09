@@ -760,23 +760,32 @@ export function createDesktopProfileCheckpoint(options: ProfileCheckpointOptions
   return new DesktopProfileCheckpoint(options)
 }
 
-/** Remove the latest health checkpoint for one profile without touching others. */
+/**
+ * Remove the health checkpoint for one profile without touching others.
+ *
+ * The whole per-profile key directory goes, not just `latest`: a capture that
+ * died between its two renames leaves a `latest.old-<id>` sibling, and
+ * {@link DesktopProfileCheckpoint} promotes exactly that sibling back to
+ * `latest` when `latest` is missing (see `recoverOrphanedLatest`). Deleting
+ * only `latest` would therefore let the next failed startup restore the
+ * pre-swap composition this clear exists to invalidate.
+ */
 export function clearDesktopProfileCheckpoint(userDataDir: string, profileDir: string): void {
   const userData = realDirectory('userDataDir', userDataDir)
   const profile = assertAbsolute('profileDir', profileDir)
   const profileIdentity = hash(profile)
-  const snapshotDirectory = join(userData, SNAPSHOT_ROOT, hash(profileIdentity), LATEST_DIRECTORY)
+  const checkpointDirectory = join(userData, SNAPSHOT_ROOT, hash(profileIdentity))
   let item
   try {
-    item = lstatSync(snapshotDirectory)
+    item = lstatSync(checkpointDirectory)
   } catch (cause) {
     if (isENOENT(cause)) return
     throw cause
   }
   if (item.isSymbolicLink() || !item.isDirectory()) {
-    fail('profile checkpoint latest directory has unsafe type')
+    fail('profile checkpoint directory has unsafe type')
   }
-  rmSync(snapshotDirectory, { recursive: true, force: false })
+  rmSync(checkpointDirectory, { recursive: true, force: false })
 }
 
 /** Compatibility aliases for embedders that call this a health checkpoint. */

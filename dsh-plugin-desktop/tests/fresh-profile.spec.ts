@@ -249,10 +249,40 @@ describe('market install receipt clearing', () => {
     await expect(clearMarketInstallReceipts(settingsPath, 'desktop')).rejects.toThrow('is not parseable YAML')
     expect(readFileSync(settingsPath, 'utf8')).toBe('a: [b\n')
   })
+
+  it('reads under the document owner\'s writer lock so a concurrent commit is never overwritten', async () => {
+    const home = temporaryHome()
+    const settingsPath = seededSettings(home)
+    // Hold the same cross-process writer lock `settings-file` takes.
+    writeFileSync(`${settingsPath}.lock`, `${process.pid}\n`)
+    let settled = false
+    const clearing = clearMarketInstallReceipts(settingsPath, 'desktop').finally(() => { settled = true })
+    await new Promise(resolve => setTimeout(resolve, 60))
+    // Blocked on the lock: nothing was read or rewritten yet.
+    expect(settled).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toContain('receipt-1')
+    // The owner commits another Profile's receipt while the lock is held, then
+    // releases it. The clear must read after acquiring the lock, so that
+    // receipt survives instead of being clobbered by our rename.
+    const held = readFileSync(settingsPath, 'utf8')
+    const committed = held.replace(
+      '      packageName: dsh-work-plugin\n',
+      '      packageName: dsh-work-plugin\n    - receiptId: receipt-4\n      profileName: work\n      packageName: dsh-work-two\n',
+    )
+    expect(committed).not.toBe(held)
+    writeFileSync(settingsPath, committed)
+    rmSync(`${settingsPath}.lock`, { force: true })
+
+    expect(await clearing).toBe(2)
+    const after = readFileSync(settingsPath, 'utf8')
+    expect(after).toContain('receipt-4')
+    expect(after).not.toContain('receipt-1')
+    expect(after).not.toContain('receipt-2')
+  })
 })
 
 describe('profile backup retention', () => {
-  it('keeps only the newest set-aside directories and leaves lookalikes alone', () => {
+  it('keeps only the newest set-aside directories and leaves lookalikes alone', async () => {
     const home = temporaryHome()
     const profileDir = join(home, 'profiles', 'desktop')
     mkdirSync(profileDir, { recursive: true })
@@ -266,7 +296,7 @@ describe('profile backup retention', () => {
     // Not a swap stamp: never pruned by the retention bound.
     mkdirSync(`${profileDir}.bak-notes`, { recursive: true })
 
-    const removed = [...pruneProfileBackups(profileDir)].sort()
+    const removed = [...await pruneProfileBackups(profileDir)].sort()
 
     expect(removed).toEqual([`desktop.bak-${stamps[0]}`, `desktop.bak-${stamps[1]}`])
     for (const stamp of stamps.slice(0, 2)) expect(existsSync(`${profileDir}.bak-${stamp}`)).toBe(false)
@@ -279,17 +309,41 @@ describe('profile backup retention', () => {
     seededProfile(home)
     seededSettings(home)
 
-    await freshProfileSwap(swapOptions(home))
+    const first = await freshProfileSwap(swapOptions(home))
     const second = await freshProfileSwap(swapOptions(home, {
       now: () => Date.parse('2026-09-10T07:33:19.264Z'),
     }))
-    await freshProfileSwap(swapOptions(home, { now: () => Date.parse('2026-09-11T07:33:19.264Z') }))
+    const third = await freshProfileSwap(swapOptions(home, { now: () => Date.parse('2026-09-11T07:33:19.264Z') }))
+    await Promise.all([first.pruneBackups, second.pruneBackups, third.pruneBackups])
 
     expect(second.backupDir).toBe(join(home, 'profiles', 'desktop.bak-20260910T073319264Z'))
     expect(readdirSync(join(home, 'profiles')).filter(name => name.includes('.bak-')).sort()).toEqual([
       'desktop.bak-20260910T073319264Z',
       'desktop.bak-20260911T073319264Z',
     ])
+  })
+
+  it('returns from the swap before the recursive backup removal runs', async () => {
+    const home = temporaryHome()
+    const profileDir = seededProfile(home)
+    seededSettings(home)
+    for (const stamp of ['20260905T073319264Z', '20260906T073319264Z', '20260907T073319264Z']) {
+      mkdirSync(`${profileDir}.bak-${stamp}`, { recursive: true })
+    }
+
+    const result = await freshProfileSwap(swapOptions(home))
+
+    // Detached: the swap already returned while the recursive removal is
+    // still in flight, so a multi-hundred-megabyte prune never blocks the
+    // startup path that spawned it.
+    expect(existsSync(`${profileDir}.bak-20260905T073319264Z`)).toBe(true)
+    expect(await result.pruneBackups).toEqual(expect.arrayContaining([
+      'desktop.bak-20260905T073319264Z',
+      'desktop.bak-20260906T073319264Z',
+    ]))
+    expect(existsSync(`${profileDir}.bak-20260905T073319264Z`)).toBe(false)
+    expect(existsSync(`${profileDir}.bak-20260906T073319264Z`)).toBe(false)
+    expect(existsSync(`${profileDir}.bak-20260907T073319264Z`)).toBe(true)
   })
 })
 
@@ -307,6 +361,7 @@ describe('fresh profile swap', () => {
       backupDir: `${profileDir}.bak-20260909T073319264Z`,
       materialized: true,
       receiptsCleared: 2,
+      pruneBackups: expect.any(Promise),
     })
     // The old Profile is preserved for forensics/rollback, byte for byte.
     expect(bundlesOf(result.backupDir!)).toEqual([

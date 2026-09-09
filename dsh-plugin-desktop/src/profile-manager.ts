@@ -118,7 +118,17 @@ function defaultState(): DesktopProfileStateV1 {
   }
 }
 
-/** Reject profile names that cannot safely cross the persisted state boundary. */
+/**
+ * Reject profile names that cannot safely cross the persisted state boundary.
+ *
+ * The `.bak-` infix is reserved for swap set-aside directories, so a Profile a
+ * previous version created with that infix is no longer selectable: it
+ * disappears from {@link listDesktopProfiles} and, when it is the persisted
+ * `active` or `lastKnownGood`, {@link parseState} rejects the whole document
+ * and the caller falls back to the `desktop` default. Accepted surface: such a
+ * name can only come from a hand-edit or a pre-P14 build, and admitting it
+ * would let a forensic backup be selected as a live Profile.
+ */
 export function assertDesktopProfileName(name: string): void {
   if (typeof name !== 'string' || name.length === 0
     || name.includes('/') || name.includes('\\') || name === '.' || name === '..'
@@ -393,6 +403,9 @@ function parseState(text: string): DesktopProfileStateV1 {
   if (state.pending !== undefined && typeof state.pending !== 'string') {
     throw new Error('selection state pending profile must be a string')
   }
+  // A persisted name carrying the reserved `.bak-` infix (or any other
+  // now-invalid name) invalidates the whole document; the caller falls back
+  // to the `desktop` default instead of selecting a set-aside directory.
   assertDesktopProfileName(state.active)
   assertDesktopProfileName(state.lastKnownGood)
   if (state.pending !== undefined) assertDesktopProfileName(state.pending)

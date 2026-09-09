@@ -1075,7 +1075,10 @@ async function start(): Promise<void> {
         : { previousAppBuildVersion: storedProfileGeneration.appBuildVersion }),
       appBuildVersion,
       // No manifest means a genuinely fresh install: there is no third-party
-      // composition to strip, so a missing record only records the build.
+      // composition to strip, so a missing record only records the build
+      // instead of rebuilding. (A recorded build that differs still resets
+      // even without a manifest — the record proves another build managed
+      // this home.)
       profileExists: existsSync(join(activeProfileDir, 'package.json')),
     })
     if (freshProfileDecision === 'reset') {

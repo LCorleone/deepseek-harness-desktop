@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -18,6 +19,7 @@ import { desktopMarketTarballStagingPath } from '../src/company-tarball-handoff.
 import { desktopBootLockIntegrity, readDesktopBootLockfile } from '../src/boot-verification.ts'
 import {
   DesktopProfileCheckpoint,
+  clearDesktopProfileCheckpoint,
   type ProfileCheckpointOptions,
 } from '../src/profile-checkpoint.ts'
 
@@ -273,5 +275,31 @@ describe('Desktop profile checkpoint market tarballs (#73 defect C)', () => {
     fresh.checkpoint.captureHealthy()
     expect(() => fresh.checkpoint.setDependencySyncPending(true)).toThrow('no restore attempt is available to mark')
     expect(fresh.checkpoint.dependencySyncPending()).toBe(false)
+  })
+
+  it('clears a crashed-capture .old- sibling so a failed boot cannot revive the pre-swap snapshot', () => {
+    const target = fixture()
+    // clearDesktopProfileCheckpoint derives the snapshot key from the Profile
+    // path, so the checkpoint must carry that same identity.
+    const checkpoint = new DesktopProfileCheckpoint({
+      userDataDir: target.userData,
+      profileDir: target.profile,
+      profileName: 'work',
+      provider: 'dsh-market',
+    })
+    const captured = checkpoint.captureHealthy()
+    // A capture that died between its two renames: `latest` was moved aside
+    // and the staged replacement never landed.
+    renameSync(captured.snapshotDirectory, `${captured.snapshotDirectory}.old-deadbeef`)
+    // The Profile was rebuilt since the capture (post-swap composition).
+    writeFileSync(join(target.profile, 'package.json'), '{"name":"post-swap"}\n')
+
+    clearDesktopProfileCheckpoint(target.userData, target.profile)
+
+    // Without the sibling cleanup, recoverOrphanedLatest would promote the
+    // pre-swap snapshot back to `latest` and restore it into the rebuilt tree.
+    expect(checkpoint.inspectRestore()).toMatchObject({ snapshotExists: false })
+    expect(() => checkpoint.restoreLatest('generation-1')).toThrow('no healthy profile checkpoint exists')
+    expect(readFileSync(join(target.profile, 'package.json'), 'utf8')).toBe('{"name":"post-swap"}\n')
   })
 })
