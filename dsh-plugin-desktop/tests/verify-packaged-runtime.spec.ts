@@ -105,7 +105,10 @@ function completeFileProbe(unpackedRoot: string): FileProbe {
 /** Packaged manifest + window-document reader for success fixtures (#73 gates). */
 function completeRuntimeReader(): (filename: string) => string {
   const injectTarget = '@deepseek-ai/dsh-client-ui-renderer'
-  return (filename: string) => {
+  return (rawFilename: string) => {
+    // The gate builds paths with the platform separator; the fixture keys are
+    // POSIX, so normalize before matching (Windows CI runs these specs).
+    const filename = rawFilename.replaceAll('\\', '/')
     if (filename.includes(`${injectTarget}/package.json`)) {
       return JSON.stringify({
         dsh: { client: { platform: 'web' } },
