@@ -371,6 +371,9 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ### DSH 运行时 0.1.2-rc.1 升级·全链闭环（2026-09-09 08:20）
 worker `f8068af04e`→amend `e4f3aa26f7`（110 文件 +4715/−7427）：pin 纯指针 b150a551→a66e470204（官方 tag）；deps/resolutions 全量+注入改向 client-runtime→client-ui-renderer；补丁 10 重做+2 重定位（win32-process/api-session-controller，上游逐字节/等价验证）+3 原生吸收换 marker 守卫（atomic-write-retry spec 删因 win32 门控 Linux 测不动，marker 钉死无删测躲红）+新增 dsh-settings patch（=上游 v2.0.5 同名恢复逐字节同，救活 dshmarket 1.17.1——专项文档 dshmarket-1.17.1-compat-012.md）；src 适配（SessionProvider/presets 路径/PTC 改名/patchReload/locale 收窄/company preset 刷新含 fetch:true 合规同步仍受 managed-models 门控）。评审 review-dsh-upgrade2 **APPROVED**（子模块零改动铁证/补丁忠实抽验/锁定层无弱化/门禁数字亲跑复现：desktop 2052+7skip·market 441·catalog 172+e2e·closure 228·typecheck 全 0）；3 P3 全记录性已 amend 进 commit body（icon 2 字节重生成/preset fetch 同步/peerRange 警告观察）。**未 push 未构建**——回退锚=tag v2.0.3-b72。等用户构建口令。真机验证清单：升级包首启（声明不弹=base 版语义）/已装插件 boot_verify 零拒绝/市场装卸/终端/杀渲染自愈回归。
 
+### npm-beta 缺口修复真机闭环（2026-09-09 16:11）
+b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成功且可用**（遥测 16:09:45 `plugin_install sidebar 0.18.1 channel=beta outcome=installed` @ b76；beta-overlay seq21 applied）。=npm 通道 beta 条目安装缺口（87f859474f 三形态 handoff + b4ffd8b5cd 测试钉）**真机闭环**；0.18.1 在 0.1.2 上功能验证通过 → 等 fleet 升完 promote 到 stable。fleet 发版链就绪：P14（复审 APPROVED，二轮修复中）→ #77 构建 → 群发 → 全员确认 → promote sidebar。
+
 ### 2026-09-09 全天战报（b73 事故 → b75 上线 → beta 修复）
 **主线**：DSH 0.1.2-rc.1 升级（f8068af04e/e4f3aa26f7，1735 commits 积压）→ **打包态全灭事故**（四雷：A 渲染器 401 墙/B 恢复窗 loadFile 契约/C 检查点内容物/D 拒绝不剔除）→ 逐雷修复+评审（edcb691d9a 铸币 session.fetch、064ecea339 恢复窗 pathToFileURL+组合门、fbfd70b4b4+e46c8716dd 检查点降级、a4dd67c7 P0 复审修正）→ **#74 首次构建红**（Windows CI fixture reader 只认正斜杠，误报；修 e579a0c1be）→ **b75 上线并真机三过**（①进桌面=雷A 破案 ②首启加载窗 ③市场闪窗修复回归）。
 **战略定调**：desktop=自有产品自维护（上游 desktop 摘取线永久关闭，remote 降为咨询地图）；上游依赖只剩 DSH runtime；**每次 runtime 升级必须过「自有 client 面审计+打包态渲染器冒烟」硬门槛**。
