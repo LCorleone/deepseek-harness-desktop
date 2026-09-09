@@ -62,3 +62,19 @@ Var pid
 
   dsh_installer_app_stopped:
 !macroend
+
+; Only the visible shortcut name moved to "Deloitte DSH Desktop"; productName
+; stays "DSH Desktop" so userData, $INSTDIR, the executable and the uninstall
+; entry keep their identity. electron-builder renames the shortcut it recorded
+; in the registry (setLinkVars reads ShortcutName), but when the keep-shortcuts
+; path is not taken the old-name link is left in place and the upgrade would
+; show two icons. Delete only those exact legacy names; Delete is a no-op when
+; the file is absent, and no directory is removed here. Without menuCategory
+; electron-builder places the Start Menu link directly under $SMPROGRAMS; the
+; folder form is kept for a manually created legacy layout.
+!macro customInstall
+  Delete "$DESKTOP\DSH Desktop.lnk"
+  Delete "$SMPROGRAMS\DSH Desktop.lnk"
+  Delete "$SMPROGRAMS\DSH Desktop\DSH Desktop.lnk"
+!macroend
+

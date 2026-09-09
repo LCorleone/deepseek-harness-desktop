@@ -409,7 +409,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "differentialPackage": false,
-      "shortcutName": "DSH Desktop",
+      "shortcutName": "Deloitte DSH Desktop",
       "uninstallerIcon": "build/app-icon.ico",
       "useZip": false,
       "artifactName": "DSH-Desktop-${version}-${arch}-Setup.${ext}"

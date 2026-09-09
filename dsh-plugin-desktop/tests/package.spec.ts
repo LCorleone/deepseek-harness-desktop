@@ -724,6 +724,10 @@ describe('published package surface', () => {
 
   it('fixes the installed application identity', () => {
     expect(manifest.version).toBe(workspaceManifest.version)
+    // productName is the installed identity: it names %APPDATA%\DSH Desktop
+    // (profiles, build history, checkpoints, market ledger), $INSTDIR, the exe
+    // and the uninstall entry. Only the visible shortcut label may change, so
+    // this assertion is a guard against a future accidental rename.
     expect(manifest.build?.productName).toBe('DSH Desktop')
     expect(manifest.build?.appId).toBe('ai.deepseek.dsh.desktop')
     expect(manifest.build?.asarUnpack).toEqual([
@@ -796,12 +800,28 @@ describe('published package surface', () => {
       createDesktopShortcut: true,
       createStartMenuShortcut: true,
       differentialPackage: false,
-      shortcutName: 'DSH Desktop',
+      shortcutName: 'Deloitte DSH Desktop',
       uninstallerIcon: 'build/app-icon.ico',
       useZip: false,
       artifactName: 'DSH-Desktop-${version}-${arch}-Setup.${ext}',
     })
     expect(manifest.build?.linux?.icon).toBe('build/app-icon.png')
+  })
+
+  it('removes the legacy DSH Desktop shortcut on upgrade', () => {
+    const script = readFileSync(new URL('build/installer.nsh', packageRoot), 'utf8')
+
+    // The icon label is "Deloitte DSH Desktop" while productName stays
+    // "DSH Desktop". electron-builder renames the registered shortcut, but a
+    // leftover old-name link can survive when the keep-shortcuts path is not
+    // taken; customInstall deletes those exact legacy names and nothing else.
+    expect(manifest.build?.nsis?.shortcutName).toBe('Deloitte DSH Desktop')
+    expect(script).toContain('!macro customInstall')
+    expect(script).toContain('Delete "$DESKTOP\\DSH Desktop.lnk"')
+    expect(script).toContain('Delete "$SMPROGRAMS\\DSH Desktop.lnk"')
+    expect(script).toContain('Delete "$SMPROGRAMS\\DSH Desktop\\DSH Desktop.lnk"')
+    expect(script).not.toContain('RMDir /r')
+    expect(script).not.toMatch(/Delete\s+"[^"]*\*/)
   })
 
   it('hands bundled-Node subprocesses the physical unpacked CLI bootstrap', () => {
