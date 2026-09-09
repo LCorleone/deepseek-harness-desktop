@@ -72,7 +72,19 @@ function controlledSubprocess(): ControlledSubprocess {
     collected: {},
     done: outcome.promise,
     terminate: vi.fn(),
-    waitForExit: vi.fn(() => tree.promise),
+    // Mirrors subprocess-local's waitForExit semantics: `true` once the whole
+    // tree is gone, `false` when the caller's abort signal fires first — the
+    // bounded settle grace relies on exactly that race.
+    waitForExit: vi.fn((signal?: AbortSignal) => new Promise<boolean>(resolve => {
+      const settle = (exited: boolean): void => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve(exited)
+      }
+      const onAbort = (): void => settle(false)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted === true) onAbort()
+      tree.promise.then(() => settle(true), () => settle(true))
+    })),
     resolveDone: value => { outcome.resolve(value) },
     rejectDone: cause => { outcome.reject(cause) },
     resolveTree: (exited = true) => { tree.resolve(exited) },
@@ -206,7 +218,7 @@ describe('desktop pnpm Host service', () => {
 
       finish(child)
       await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
-      expect(child.waitForExit).toHaveBeenCalledWith()
+      expect(child.waitForExit).toHaveBeenCalledWith(expect.any(AbortSignal))
       await harness.dispose()
       expect(harness.ctx.get('desktopPnpm')).toBeUndefined()
     })
@@ -646,6 +658,98 @@ describe('desktop pnpm Host service', () => {
       expect(harness.spawn).toHaveBeenCalledTimes(2)
       finish(second)
       await secondOperation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('releases the operation gate once the bounded tree-settle grace expires', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-'))
+    const first = controlledSubprocess()
+    const second = controlledSubprocess()
+    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 })
+    try {
+      const firstOperation = harness.service.run(['install'])
+
+      // The direct child exits but a daemonized descendant keeps the whole
+      // tree alive forever: the gate must still release after the grace.
+      first.resolveDone({ exitCode: 0, signal: null })
+      await firstOperation.done
+      expect(first.waitForExit).toHaveBeenCalledWith(expect.any(AbortSignal))
+
+      const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
+      expect(harness.spawn).toHaveBeenCalledTimes(2)
+      finish(second)
+      await secondOperation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still seals a recoverable install whose process tree outlives the settle grace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-seal-'))
+    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 }
+    const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: {} }))
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const pending = harness.service.installPlugin({
+        pnpmOptions: ['--save-exact'],
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'example-plugin',
+          packageVersion: '1.0.0',
+          receiptId: 'receipt:test-grace-seal-0001',
+        },
+      })
+      const operation = await pending
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'example-plugin': '1.0.0' } }))
+      child.resolveDone({ exitCode: 0, signal: null })
+
+      await expect(operation.done).resolves.toEqual({ exitCode: 0, signal: null })
+      expect(JSON.parse(readFileSync(selectedBootstrap.installRecoveryStatePath, 'utf8'))).toMatchObject({
+        packageName: 'example-plugin',
+        packageVersion: '1.0.0',
+        receiptId: 'receipt:test-grace-seal-0001',
+        phase: 'awaiting-restart',
+      })
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still rolls back a failed recoverable install whose process tree outlives the settle grace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-rollback-'))
+    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 }
+    const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
+    const child = controlledSubprocess()
+    const originalManifest = JSON.stringify({ dependencies: {} })
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(manifestPath, originalManifest)
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const pending = harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'broken-plugin',
+          packageVersion: '1.0.0',
+          receiptId: 'receipt:test-grace-rollback-0001',
+        },
+      })
+      const operation = await pending
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'broken-plugin': '1.0.0' } }))
+      child.resolveDone({ exitCode: 1, signal: null })
+
+      await expect(operation.done).resolves.toEqual({ exitCode: 1, signal: null })
+      expect(readFileSync(manifestPath, 'utf8')).toBe(originalManifest)
+      expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
       await harness.dispose()
     } finally {
       rmSync(root, { recursive: true, force: true })

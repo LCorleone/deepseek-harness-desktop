@@ -1668,7 +1668,16 @@ export class MarketInstallService {
             signal: combinedSignal,
           })
     }
-    catch { throw new MarketInstallError('operation-failed', 'The desktop package manager could not start.') }
+    // Deliberately keep surfacing the start failure's own reason (e.g. the
+    // desktop pnpm gate still held by a previous operation) instead of a
+    // bare "could not start": the text flows through the same UI display and
+    // log redaction pipeline as every other surfaced detail below.
+    catch (cause) {
+      throw new MarketInstallError(
+        'operation-failed',
+        'The desktop package manager could not start: ' + (cause instanceof Error ? cause.message : String(cause)),
+      )
+    }
     // Keep the tail of the package manager's stderr so failures carry the
     // actual pnpm error (TLS, registry, peer conflicts) into the surfaced
     // MarketInstallError instead of a generic "did not complete".

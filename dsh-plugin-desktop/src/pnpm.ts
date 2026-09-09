@@ -110,6 +110,9 @@ function pnpmTlsEnvironmentEntries(source: NodeJS.ProcessEnv): Record<string, st
 }
 const TERMINATION_GRACE_MS = 3_000
 
+/** Default wait before the operation gate releases while pnpm's tree still has live descendants. */
+const DEFAULT_PNPM_TREE_SETTLE_GRACE_MS = 15_000
+
 /**
  * One `file:` install spelling's path with its separators normalized to `/`.
  * The real pnpm records lockfile-relative spellings portably but preserves the
@@ -149,6 +152,12 @@ export interface DesktopPnpmBootstrap {
   readonly generationId: string
   /** Whether the selected Market provider may use the non-WAL external install boundary. */
   readonly externalMarketInstallEnabled: boolean
+  /**
+   * Bounded grace the operation gate waits for the pnpm process tree to die
+   * after the child exits; a daemonized descendant would otherwise hold the
+   * gate open forever. Test harnesses shrink it to keep the suite fast.
+   */
+  readonly pnpmTreeSettleGraceMs?: number
   /**
    * Launcher-injected policy environment hand-off for spawned desktop-cli
    * children (installs): the packaged CLI cannot read the in-archive policy
@@ -405,6 +414,10 @@ function validateBootstrap(bootstrap: DesktopPnpmBootstrap): void {
   if (bootstrap.generationId.length < 8 || bootstrap.generationId.includes('\0')) {
     throw new Error(`${BIN_NAME}: desktop pnpm generation id is invalid`)
   }
+  const treeSettleGraceMs = bootstrap.pnpmTreeSettleGraceMs
+  if (treeSettleGraceMs !== undefined && (!Number.isInteger(treeSettleGraceMs) || treeSettleGraceMs <= 0)) {
+    throw new Error(`${BIN_NAME}: desktop pnpm tree settle grace must be a positive integer of milliseconds`)
+  }
 }
 
 /** Cordis adapter implementing the public Desktop package-operation interface. */
@@ -413,6 +426,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
   private installPreparationActive = false
   private closed = false
   private readonly installRecovery: DesktopInstallRecoveryStore
+  private readonly treeSettleGraceMs: number
 
   /**
    * Register the service for one immutable desktop profile generation.
@@ -429,6 +443,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
   ) {
     validateBootstrap(bootstrap)
     super(ctx, 'desktopPnpm')
+    this.treeSettleGraceMs = bootstrap.pnpmTreeSettleGraceMs ?? DEFAULT_PNPM_TREE_SETTLE_GRACE_MS
     this.installRecovery = new DesktopInstallRecoveryStore({
       statePath: bootstrap.installRecoveryStatePath,
       profileName: bootstrap.activeProfileName,
@@ -847,7 +862,12 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
   }
 
-  /** Keep the operation gate held until the complete process tree is gone. */
+  /**
+   * Keep the operation gate held until the complete process tree is gone —
+   * bounded by {@link DesktopPnpmService.treeSettleGraceMs}, because a
+   * daemonized pnpm descendant otherwise holds `waitForExit` (whole-tree
+   * liveness) open forever and wedges every later install behind the gate.
+   */
   private async settle(active: ActiveOperation): Promise<DesktopPnpmOutcome> {
     let outcome: SubprocessOutcome | undefined
     try {
@@ -855,7 +875,13 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
       return { exitCode: outcome.exitCode, signal: outcome.signal }
     } finally {
       try {
-        await active.child.waitForExit()
+        const treeExited = await active.child.waitForExit(AbortSignal.timeout(this.treeSettleGraceMs))
+        if (!treeExited) {
+          this.ctx.logger.warn(
+            `dsh-plugin-desktop: pnpm process tree still alive after ${this.treeSettleGraceMs} ms; `
+            + `releasing the package-manager gate${active.recoveryTransactionId === undefined ? '' : ` (recovery transaction ${active.recoveryTransactionId})`}`,
+          )
+        }
         if (active.recoveryTransactionId !== undefined) {
           if (outcome?.exitCode === 0 && outcome.signal === null) {
             await this.installRecovery.seal(active.recoveryTransactionId)

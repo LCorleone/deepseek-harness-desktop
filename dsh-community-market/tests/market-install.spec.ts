@@ -948,6 +948,33 @@ describe('market install service', () => {
     expect(settings.receipts()).toEqual([])
   })
 
+  it('surfaces the underlying reason when the package manager cannot start', async () => {
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      recoverableRunner(profileDir, {
+        runPlugin() {
+          // The real desktop gate throws synchronously when the previous
+          // operation's process tree still holds the package-manager gate.
+          throw new Error('dsh-plugin-desktop: another desktop pnpm operation is already running')
+        },
+      }),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const failure = await service.executeInstall(preview.intent, new AbortController().signal)
+      .then(() => { throw new Error('expected the failed install to reject') }, cause => cause as MarketInstallError)
+
+    expect(failure).toBeInstanceOf(MarketInstallError)
+    expect(failure.code).toBe('operation-failed')
+    expect(failure.message).toContain('The desktop package manager could not start: ')
+    expect(failure.message).toContain('another desktop pnpm operation is already running')
+    expect(settings.receipts()).toEqual([])
+  })
+
   it('rolls back a direct dependency written before a rejected add completion', async () => {
     const profileDir = await createProfile()
     const calls: string[] = []
