@@ -418,7 +418,7 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 
 ### 当前 TODO 快照（2026-09-09 21:21，日终版）
 **今晚**：b81 构建中（run 34356466457，含 pnpm 闸修复 `9746b63084`/收尾批 `bd5218e284`/按钮隐藏 `db313713b2`/注释收编 `1d63a781a6`）→ 下载到 asserts。
-**待确认（用户）**：桌面图标名是否已显示 `Deloitte DSH Desktop`（b80 装后，问过未答）。
+**已确认（2026-09-09 21:21 用户）**：桌面图标名显示 `Deloitte DSH Desktop` ✓（b80 实测）。
 **明天顺序**：①用户装 b81 验「连装 3 插件」（第二装必败的终判）+ 详情弹窗无源码按钮；②sebtang 装 b81（市场卡死修复+2.0.4 换新 rule=version）+ 提交两个 MR（compat.json 已翻 2.0.4/seq22，fail-closed 闸放行；handoff 须声明 dsh 0.1.2-rc.1；beta 通道语义见 MR-HANDLING）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。**注意**：P15 Phase 0 未做，promote 仍守「全员升级后」纪律（0.15.2 不双钉，老客户端会被断载——所以顺序是先全员升级再 promote）。
 **排队**：P11 捆绑 Python（M）→ P15 Phase 1-3（Phase 0 目录侧用户暂留）；sebtang 侧 agent-teams 适配 + dai-context 官方版。
 **挂账**：free-search rebase v0.4.19+ · 沙箱档2评估 · sso-gate 浏览器路径主动测 · 0.4.184 fleet 反馈。
