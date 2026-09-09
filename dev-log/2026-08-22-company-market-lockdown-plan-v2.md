@@ -333,6 +333,14 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **排期**：Phase 0 可先于 P11 立即做（fleet promote 就要用）；Phase 1-3 排 P11 后或并行（用户定）。
 **Phase 0 评审遗留（2026-09-10 凌晨，APPROVED+2×P2+2×P3，修批待做）**：①`desktop-market.ts:1043` `stableRevoked` 按**名**扫描——retire 使「按版本吊销」成常态后，同包 beta 浸泡条目会被误强制 revoked，需改版本键控（并入客户端侧修批）；②e2e 需加「双条目清单过真实桌面验证器」一步（现仅 Array.find 模拟）；③retire 崩溃收敛注释不准（cli.mjs:791）；④SOP 未写明「旧钉 tgz 字节须随每次 artifact 携带」（4d fail-closed）。
 
+**终态（2026-09-10 凌晨，四阶段全落地·评审全 APPROVED）**：
+- **Phase 0** 目录多版本+显式 retire `1730e119fc`（评审 APPROVED 留 2×P2+2×P3，四条记档 `10fcdcced9`）→ 修批 `e39a66b458`：四条全清（吊销改版本键控/e2e 换真实桌面验证器/retire 崩溃收敛注释订正/SOP 补「旧钉字节随每次 artifact 携带」）。
+- **Phase 1** boot 分类+`client-update-required` `e848eac2f7`（评审 APPROVED 留 2×P2+1×P3）→ 修批 `dd39233659`：revoked 条目不再成为被宣传的更新目标 + runtime 常量对交叉断言。
+- **Phase 2** 市场按 runtime 选版+安装闸 `deda379cdd`（评审 APPROVED 留 1×P2+2×P3）→ 修批并行落地（overlay 不兼容整包消失钉测试/representability 次序测试/market 侧谓词去重）。
+- **Phase 3** 遥测（boot_verify 补 `deferredUpdates[]`）+SOP 收口+本终态 = 收口提交。
+- **遗留签收**：①overlay 不兼容＝整包不出列表（市场列表级语义，非缺陷，签收）；②runtime 兼容谓词 boot 与 market 跨包各持一份＝market→desktop 方向禁令下的接受项，靠交叉断言守值。
+- **fleet 首战条件**：下次 sidebar promote 双钉（0.15.2 保留 stable）即 P15 首战——但更新提示/市场选版/安装闸的新语义要**发带 P15 代码的客户端版本**才有意义；目录先行只护老客户端精确查找（boot 名@版本 精确命中旧条目，老客户端零新代码），更新提示与市场选版要新客户端。
+
 **关系**：**P12（runtime 感知门）并入本卡**——P12 是「隐藏不兼容钉版」的缓解，兼容窗是「保留多钉版按客户端选」的治本；P15 落地后 P12 场景自然消失。
 
 （旧排期与验收已并入上方分阶段计划与验收矩阵，2026-09-09 晚。）

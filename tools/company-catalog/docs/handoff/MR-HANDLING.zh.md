@@ -91,6 +91,10 @@ beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state
   静默删旧版条目会被 publish-local 版本下窗守卫拦红。
 - **保留策略**：上一条 runtime 线的最新版默认保留直至显式 retire；不确定就
   留着，manifest 体积微增可忽略。
+- **市场视图按客户端 runtime 展示（P15 Phase 2）**：多版本目录下，客户端市场
+  列表每包只显示与本机 runtime 兼容的最高钉版——老客户端只见兼容版，整包无
+  兼容钉版即不出列表（详见 RELEASE §D2）；处理 MR 时同事问「为什么我看不到
+  新版」，答案就是「先升 DSH Desktop」。
 
 ## 5. 纪律红线（每次过一遍）
 

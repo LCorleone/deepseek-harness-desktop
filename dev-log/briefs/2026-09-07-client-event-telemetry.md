@@ -30,6 +30,11 @@ MySQL 库（新表 `dsh_client_events`，**已建好**，勿再动 DDL）：老�
   'compat-unsupported'|'manifest-missing'|'manifest-invalid'|'other'`。
   **事件**：`boot_verify`，detail={rejected:[{packageName,code}], loaded:N}（每 boot 一行，
   仅在有 rejected 或按需——**默认仅 rejected>0 时上报**+成功不打扰，减噪声）。
+  **[2026-09-10 P15 Phase 1 补记]**：触发条件扩为 rejected>0 **或 deferredUpdates>0**；
+  detail 增可选 `deferredUpdates:[{packageName, requiredRuntime}]`（client-update-required
+  延迟窗：已装版按安装回执继续加载、等客户端升级才能更新，**loaded 计数含延迟
+  bundle**）；拒绝码 9 个（增 `client-update-required`；本段早期草拟的码名与实现
+  不符，实际联合以 dsh-plugin-desktop/docs/telemetry.zh.md §2 为准）。
 - `src/desktop-market.ts` — 市场编排（含 findDesktopCompanyManifestPackageWithBeta）。
 
 **dsh-community-market（独立包，红线：不得 import dsh-plugin-desktop）**

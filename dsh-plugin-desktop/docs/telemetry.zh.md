@@ -35,7 +35,7 @@ Gateway）/ `Kimi`——面板 SQL 按新值过滤（b68 及以前的存量行�
 | `sso_login` | 每次登录尝试（静默+浏览器两条路径） | `result` success/failure · `mode` silent/browser · `reason`（失败时，掩码+240 上限） |
 | `catalog_refresh` | 每次启动各通道目录解析（稳定+beta 叠加各一条） | `outcome` applied/fetch-failed/no-sso-identity/not-a-tester… · `sequence` · `entries`（applied 时） · `channel` stable/beta-overlay |
 | `plugin_install` | 安装/升级/卸载/回滚/失败 | `packageName` · `version` · `outcome` installed/updated-in-place/**uninstalled**/rolled-back/failed · `channel`（**uninstalled 无此字段**——被删版本的交付渠道不可知，不猜） · `reasonCode`（失败码） · `reason`（仅固定词汇安全码才有） |
-| `boot_verify` | **仅当启动有插件被拒**（成功不打扰） | `rejected:[{packageName, code}]`（8 码：not-pinned-newer-pinned/revoked/digest-mismatch/signature-invalid/compat-unsupported/manifest-missing/manifest-invalid/other）· `loaded` |
+| `boot_verify` | **仅当启动有插件被拒或有更新被延迟**（成功不打扰；P15 起延迟窗也触发一行） | `rejected:[{packageName, code}]`（9 码：not-pinned-newer-pinned/not-in-manifest/revoked/integrity-mismatch/tree-mismatch/unresolved/no-lock-integrity/**client-update-required**/other）· `loaded`（**计数含延迟加载的 bundle**——它确实加载了，延迟事实由 deferredUpdates 承载）· `deferredUpdates:[{packageName, requiredRuntime}]`（**仅当有 bundle 走 client-update-required 延迟窗才出现**：已装版被目录判「离窗、只剩别的 runtime 线」，按安装回执 treeDigest 继续加载、等桌面客户端升级才能更新；`requiredRuntime`=等待更新的钉版条目所要求的 `runtime.dshRuntimeVersion` 区间串（如 `^0.1.2-rc.1`）——读数含义是「升客户端而非逛市场」） |
 | `disclaimer` | 内测声明弹窗决策：**仅弹窗真出现才报**（装后无 ack / 升级版本变 / 声明改版哈希变，三者各弹一次；日常启动不弹不报） | `decision` agree/disagree · `clientVersion`（本次同意的版本） · `textHash`（声明文案 JSON 的 sha256，改版即变） |
 | `plugin_reset` | P14 全新 Profile 重建（自动层=构建身份变化按 `rule` 换新；手动层=恢复窗一键） | `trigger` version-change/recovery-window · `rule` **forced/version**（仅自动层带；forced=`pluginResetOnVersionChange` 开，任何构建身份变化都换新，含 `2.0.3+b78`→`2.0.3+b79`；version=开关关（2.0.4 起默认），仅产品版本号变化换新，`2.0.3`→`2.0.4` 清、构建号变化不清） · `profileName` · `outcome` swapped/failed/**deferred**（Windows 外部进程持 profile 目录句柄致改名退避 6 次仍失败：旧 Profile 继续启动，写 `fresh-profile-pending.json` 标记待下次启动最早时刻重试，版本记录不写） · `materialized`（pnpm 同步是否成功） · `receiptsCleared`（清掉的市场装权台账条数） |
 
@@ -110,5 +110,6 @@ DSH_REPORT_DB_PASSWORD=… DSH_REPORT_DB_DATABASE=… \
 - policy `usageReport:false` = 两条链路整体不接线（合规开关）
 - policy `pluginResetOnVersionChange` + `locked` = P14 自动层换新规则分级：**true**（仅载 DSH 底座升级的那版构建翻 true，如 b78）= 任何构建身份变化都换新；**false**（release 默认，2.0.4 起）= 仅产品版本号变化换新、构建号变化不清（CLI 子进程侧恒为 false）。记录文件 userData `last-profile-generation.json` 含 `appVersion`+`appBuildVersion`（老记录无 `appVersion` 时从 `appBuildVersion` 剥 `+bNNN` 推导，schema 仍 v1）
 - 真机实证：2026-09-07 四类事件全落库（#62，julu 机器）
+- boot_verify P15 延迟窗（2026-09-10 起）：`deferredUpdates` 是可选字段（健康 boot 不带）；`client-update-required` 码**不随延迟本身上报**——只在延迟 fail-closed（拿不到可用安装回执、只能拒载）时才出现在 `rejected` 里；revoked 版照拒不进延迟窗（安全击杀不宽恕）
 - 遗留 P3：`conflict` 码 reason 在 Linux 自定义 profile 目录下可漏目录名
   （desktop 侧路径遮蔽盖默认布局）；`/var`、`/srv` 前缀不在遮蔽表
