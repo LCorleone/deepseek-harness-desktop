@@ -598,7 +598,7 @@ describe('market tarball install channel beta overlay (P9)', () => {
         new AbortController().signal,
       )).resolves.toBeDefined()
       const { service, captured } = capturingService()
-      const handle = await channel.divertCompanyTarballInstall({
+      const handle = await channel.divertCompanyMarketInstall({
         invokingDir: root,
         recovery: { packageName: 'company-beta-plugin', packageVersion: '0.9.0', receiptId: 'receipt:beta-handoff-0001' },
       }, service)
@@ -624,6 +624,126 @@ describe('market tarball install channel beta overlay (P9)', () => {
       expect(request?.betaManifest?.path).toBe(desktopBetaManifestHandoffStagingPath(profileDir))
       expect(existsSync(request?.betaManifest?.path ?? '')).toBe(false)
       expect(readFileSync(request?.marketTarball?.path ?? '')).toEqual(betaTarballBytes)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('a roster machine\u2019s beta-only npm entry diverts to the registry install carrying the staged beta manifest (#60)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-beta-channel-npm-handoff-'))
+    try {
+      const profileDir = join(root, 'profiles', 'web')
+      const betaText = signedText(unsignedManifest({
+        sequence: 43,
+        packages: [entry({
+          packageName: 'dsh-better-sidebar',
+          version: '0.18.1',
+          integrity: `sha512-${Buffer.alloc(64, 21).toString('base64')}`,
+          repository: { url: 'https://github.com/example/dsh-better-sidebar' },
+        })],
+        testers: ['julu@deloittecn.com.cn'],
+      }))
+      const beta = verifyDesktopCompanyManifest(betaText, {
+        trustRoots, companyCatalogOrigin: origin, now, channel: 'beta',
+      })
+      expect(beta.ok).toBe(true)
+      if (!beta.ok) return
+      const channel = createDesktopCompanyMarketTarballInstallChannel({
+        policy: fullPolicy,
+        profileDir,
+        fetchManifestText: async () => stableText,
+        betaOverlay: async () => ({
+          packages: beta.manifest.packages,
+          sequence: beta.manifest.sequence,
+          manifestText: betaText,
+        }),
+      })
+      // The market's tarball seam stays silent for an npm entry: the registry
+      // verifier resolves it, exactly today's behavior.
+      await expect(channel.verifyTarballEntry(
+        { packageName: 'dsh-better-sidebar', version: '0.18.1' },
+        new AbortController().signal,
+      )).resolves.toBeUndefined()
+
+      const { service: capturing, captured } = capturingService()
+      // Record whether the staged roster-carrying manifest is on disk at the
+      // exact moment the boundary launches the registry install, and hold the
+      // child open so the post-settle cleanup is observed deterministically.
+      let stagedAtInstall: boolean | undefined
+      let settleChild!: () => void
+      const childSettled = new Promise<void>(resolve => { settleChild = resolve })
+      const service = {
+        installPlugin: async (request: import('../src/pnpm.js').DesktopPluginInstallRequest): Promise<DesktopPnpmHandle> => {
+          stagedAtInstall = existsSync(desktopBetaManifestHandoffStagingPath(profileDir))
+          const handle = await capturing.installPlugin(request)
+          return { ...handle, done: childSettled.then(() => ({ exitCode: 1, signal: null })) }
+        },
+        rollbackPluginInstall: async () => false,
+      } as unknown as DesktopPnpm
+
+      const handle = await channel.divertCompanyMarketInstall({
+        invokingDir: root,
+        recovery: { packageName: 'dsh-better-sidebar', packageVersion: '0.18.1', receiptId: 'receipt:npm-beta-handoff-0001' },
+      }, service)
+      expect(handle).toBeDefined()
+      const request = captured()
+      expect(request).toBeDefined()
+      // The install target stays the registry spec: no controlled tarball
+      // descriptor is fabricated for an npm-channel entry.
+      expect(request?.marketTarball).toBeUndefined()
+      expect(request?.betaManifest).toEqual({
+        path: desktopBetaManifestHandoffStagingPath(profileDir),
+        sequence: 43,
+      })
+      // Hygiene: the staged beta manifest carries the testers roster in
+      // cleartext, so it exists for the install window only.
+      expect(stagedAtInstall).toBe(true)
+      expect(existsSync(desktopBetaManifestHandoffStagingPath(profileDir))).toBe(true)
+      settleChild()
+      await expect(handle!.done).resolves.toEqual({ exitCode: 1, signal: null })
+      expect(existsSync(desktopBetaManifestHandoffStagingPath(profileDir))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a stable npm target on the registry path with no staged beta manifest (#60 zero change)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-beta-channel-npm-stable-'))
+    try {
+      const profileDir = join(root, 'profiles', 'web')
+      const stableNpmText = signedText(unsignedManifest({ packages: [entry()] }))
+      const betaText = signedText(unsignedManifest({
+        sequence: 43,
+        packages: [entry({ packageName: 'dsh-better-sidebar', version: '0.18.1' })],
+        testers: ['julu@deloittecn.com.cn'],
+      }))
+      const beta = verifyDesktopCompanyManifest(betaText, {
+        trustRoots, companyCatalogOrigin: origin, now, channel: 'beta',
+      })
+      expect(beta.ok).toBe(true)
+      if (!beta.ok) return
+      const channel = createDesktopCompanyMarketTarballInstallChannel({
+        policy: fullPolicy,
+        profileDir,
+        fetchManifestText: async () => stableNpmText,
+        betaOverlay: async () => ({
+          packages: beta.manifest.packages,
+          sequence: beta.manifest.sequence,
+          manifestText: betaText,
+        }),
+      })
+      // Prime the channel's verified manifest (the diversion consults only
+      // what the channel itself verified in this generation).
+      await expect(channel.verifyTarballEntry(
+        { packageName: 'dsh-better-sidebar', version: '0.18.1' },
+        new AbortController().signal,
+      )).resolves.toBeUndefined()
+      const { service } = capturingService()
+      await expect(channel.divertCompanyMarketInstall({
+        invokingDir: root,
+        recovery: { packageName: 'company-plugin', packageVersion: '1.0.0', receiptId: 'receipt:stable-npm-0001' },
+      }, service)).resolves.toBeUndefined()
+      expect(existsSync(desktopBetaManifestHandoffStagingPath(profileDir))).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -680,7 +800,7 @@ describe('market tarball install channel beta overlay (P9)', () => {
         new AbortController().signal,
       )).resolves.toBeDefined()
       const { service, captured } = capturingService()
-      const handle = await channel.divertCompanyTarballInstall({
+      const handle = await channel.divertCompanyMarketInstall({
         invokingDir: root,
         recovery: { packageName: 'company-plugin', packageVersion: '1.0.0', receiptId: 'receipt:stable-handoff-0001' },
       }, service)
@@ -709,7 +829,7 @@ describe('market tarball install channel beta overlay (P9)', () => {
         new AbortController().signal,
       )).resolves.toBeUndefined()
       const { service: bareService } = capturingService()
-      await expect(bare.divertCompanyTarballInstall({
+      await expect(bare.divertCompanyMarketInstall({
         invokingDir: root,
         recovery: { packageName: 'company-beta-plugin', packageVersion: '0.9.0', receiptId: 'receipt:beta-nonroster-0001' },
       }, bareService)).resolves.toBeUndefined()

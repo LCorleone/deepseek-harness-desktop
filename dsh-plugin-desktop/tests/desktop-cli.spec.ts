@@ -591,6 +591,68 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
+  it('allows a beta-only npm add when the hand-off carries the beta-only registry form (#60)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-npm-beta-handoff-'))
+    const homeDir = join(root, 'home')
+    const profileDir = join(homeDir, 'profiles', 'desktop')
+    // The stable catalog (sequence 42) does not pin the beta entry — the
+    // b75 shape: dsh-better-sidebar@0.18.1 beta-only on the npm channel.
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({
+      packages: [catalogEntry({ packageName: 'example-plugin', version: '1.0.0' })],
+    }))
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    const originalExitCode = process.exitCode
+    try {
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({ dependencies: {} }))
+      // The beta publication pins the npm-channel entry: no `source` at all,
+      // so the registry spec is the install and only the lookup must widen.
+      const betaUnsigned = unsignedCatalog({
+        sequence: 43,
+        packages: [catalogEntry({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          repository: { url: 'https://github.com/example/example-beta-plugin' },
+        })],
+        testers: ['julu@deloittecn.com.cn'],
+      })
+      const betaSignature = createCompanyManifestSignature(
+        asUnsignedCatalog(betaUnsigned), catalogKey.privateKey, catalogKeyId,
+      )
+      mkdirSync(dirname(betaManifestPath), { recursive: true })
+      writeFileSync(betaManifestPath, canonicalJsonText({ ...betaUnsigned, signature: betaSignature }))
+      const load = vi.fn(async () => undefined)
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', 'example-beta-plugin@0.4.184']
+      const environment = {
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+        [DESKTOP_COMPANY_MANIFEST_FILE_ENV]: assetPath,
+        [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+          packageName: 'example-beta-plugin',
+          version: '0.4.184',
+          betaManifestPath,
+          betaSequence: 43,
+        }),
+      }
+
+      await runDesktopDshCli(environment, load, argv, companyLockedOriginPolicy(), assetPath)
+
+      // The re-verified beta manifest widened the gate's catalog to stable ∪
+      // beta while the install target stayed the registry spec, and the
+      // hand-off was consumed before the upstream import.
+      expect(load).toHaveBeenCalledOnce()
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add',
+        '--save-exact', '--registry=https://registry.npmjs.org/', 'example-beta-plugin@0.4.184',
+      ])
+      expect(environment[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]).toBeUndefined()
+    } finally {
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('refuses the beta-pinned file: add when the staged beta manifest fails verification (#59)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-beta-handoff-bad-'))
     const homeDir = join(root, 'home')

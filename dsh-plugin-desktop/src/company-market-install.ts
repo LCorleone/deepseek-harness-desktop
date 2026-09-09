@@ -47,14 +47,18 @@
  * pnpm boundary for exactly these spawns), which the gate admits only after
  * re-binding it to the signed catalog entry and re-hashing the staged bytes
  * — see `company-tarball-handoff.ts` and `cli-install-channel.ts`.
- * When the resolved entry is beta-pinned (#59) — a roster machine's verified
- * beta overlay carries it and the stable manifest does not — the channel
- * additionally stages the exact verified beta manifest bytes at the
+ * When the resolved entry is beta-pinned (#59/#60) — a roster machine's
+ * verified beta overlay carries it and the stable manifest does not — the
+ * channel additionally stages the exact verified beta manifest bytes at the
  * profile's deterministic staging path and rides them, with their sequence,
  * in the same hand-off, so the child's gate can re-verify them and widen its
- * lookup to stable ∪ beta instead of denying the beta-only target. Only this
- * in-process channel, bound to a manifest it verified itself, can divert an
- * install onto the tarball target.
+ * lookup to stable ∪ beta instead of denying the beta-only target. A
+ * beta-pinned npm-channel entry has no tarball at all: the channel stages the
+ * same bytes and takes the request over as the plain registry install
+ * carrying the beta-only hand-off, so the target stays the `name@version`
+ * spec the catalog signed for the npm channel. Only this in-process channel,
+ * bound to a manifest it verified itself, can divert an install onto the
+ * tarball target or attach the staged beta manifest to a registry install.
  */
 
 import { readFileSync } from 'node:fs'
@@ -80,6 +84,7 @@ import {
 import type { DesktopPolicy } from './desktop-policy.ts'
 import type {
   DesktopPnpmCompanyMarketChannel,
+  DesktopPnpmHandle,
   DesktopPnpmOutcome,
 } from './pnpm.ts'
 import type { UpdateChannelRequest } from './update-manifest.ts'
@@ -120,10 +125,12 @@ export interface DesktopCompanyMarketTarballInstallOptions {
   /**
    * Beta overlay resolver (P9): resolves the verified, roster-admitted beta
    * entries next to the stable manifest (the host's shared beta resolver —
-   * same trust roots, same SSO session). A beta tarball entry the stable
-   * manifest does not pin verifies through this overlay instead of failing
-   * the registry cross-check; `undefined` (non-roster machines, beta
-   * unverified) keeps the channel on the stable manifest alone.
+   * same trust roots, same SSO session). A beta entry the stable manifest
+   * does not pin resolves through this overlay: a tarball entry verifies
+   * through the market seam instead of failing the registry cross-check, and
+   * an npm entry diverts to the registry install carrying the staged beta
+   * manifest (#60). `undefined` (non-roster machines, beta unverified) keeps
+   * the channel on the stable manifest alone.
    */
   readonly betaOverlay?: () => Promise<DesktopBetaChannelOverlay | undefined>
   /** Tarball download boundary; defaults to `globalThis.fetch` (the Electron composition injects `net.fetch`). */
@@ -213,24 +220,22 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     return verification.manifest
   }
 
-  /** The resolved tarball-channel entry and whether the beta overlay supplied it (#59). */
-  interface ResolvedTarballEntry {
+  /** One resolved catalog entry (stable ∪ beta) and whether the beta overlay supplied it (#59/#60). */
+  interface ResolvedCatalogEntry {
     readonly entry: DesktopCompanyManifestPackage
     readonly fromBeta: boolean
   }
 
-  const findTarballEntry = (
+  const findCatalogEntry = (
     manifest: DesktopCompanyManifest,
     packageName: string,
     version: string,
-  ): ResolvedTarballEntry | undefined => {
+  ): ResolvedCatalogEntry | undefined => {
     // Beta first (P9): a roster-admitted beta entry wins over the stable
     // manifest's entry for the same name@version — the market catalog's
     // merge rule — and beta-only entries resolve here too.
     const entry = findDesktopCompanyManifestPackageWithBeta(manifest, verifiedBeta?.packages, packageName, version)
     if (entry === undefined) return undefined
-    const source = entry.source ?? { kind: 'npm' as const }
-    if (source.kind !== 'tarball') return undefined
     // The winning entry came from the beta overlay exactly when the overlay
     // carries this name@version (revocation stickiness may still mark it
     // revoked through the stable manifest — that flag refuses the install
@@ -248,7 +253,7 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       signal.throwIfAborted()
       const manifest = await acquireManifest(signal)
       if (manifest === undefined) return undefined
-      const resolved = findTarballEntry(manifest, candidate.packageName, candidate.version)
+      const resolved = findCatalogEntry(manifest, candidate.packageName, candidate.version)
       if (resolved === undefined || resolved.entry.revoked) return undefined
       const source = resolved.entry.source
       if (source === undefined || source.kind !== 'tarball') return undefined
@@ -259,18 +264,55 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       }
     },
 
-    async divertCompanyTarballInstall(request, service) {
+    async divertCompanyMarketInstall(request, service) {
       // Only a request the channel itself can ground in a manifest it
       // verified is divertible; anything else keeps the registry path.
       if (request.marketTarball !== undefined) return undefined
       const manifest = verified?.manifest
       if (manifest === undefined) return undefined
       const { packageName, packageVersion } = request.recovery
-      const resolved = findTarballEntry(manifest, packageName, packageVersion)
+      const resolved = findCatalogEntry(manifest, packageName, packageVersion)
       if (resolved === undefined) return undefined
       const { entry, fromBeta } = resolved
-      const source = entry.source
-      if (source === undefined || source.kind !== 'tarball') return undefined
+      const source = entry.source ?? { kind: 'npm' as const }
+      // npm-channel beta target (#60): the registry install is exactly what
+      // the catalog signed for it — no tarball is staged and no controlled
+      // target exists — but the packaged CLI child's gate consults the
+      // stable manifest alone unless the staged beta manifest rides the
+      // hand-off. Stage the exact bytes this channel verified and
+      // roster-admitted, hand the registry install the pair through the
+      // boundary (which injects the beta-only hand-off), and remove the
+      // staged file — the roster in cleartext — as soon as that install
+      // settles. A stable-resolving npm target, a revoked entry, or a
+      // non-roster machine keeps the registry path byte-for-byte.
+      if (source.kind !== 'tarball') {
+        if (!fromBeta || verifiedBeta === undefined || entry.revoked) return undefined
+        const betaManifestPath = desktopBetaManifestHandoffStagingPath(options.profileDir)
+        await writeFileAtomic(betaManifestPath, verifiedBeta.manifestText, { mode: 0o600, dirMode: 0o700 })
+        let handle: DesktopPnpmHandle
+        try {
+          handle = await service.installPlugin({
+            ...request,
+            betaManifest: { path: betaManifestPath, sequence: verifiedBeta.sequence },
+          })
+        } catch (cause) {
+          await rm(betaManifestPath, { force: true }).catch(() => {})
+          throw cause
+        }
+        const installed = handle.done
+        return {
+          stdout: handle.stdout,
+          stderr: handle.stderr,
+          cancel: () => { handle.cancel() },
+          done: (async (): Promise<DesktopPnpmOutcome> => {
+            try {
+              return await installed
+            } finally {
+              await rm(betaManifestPath, { force: true }).catch(() => {})
+            }
+          })(),
+        }
+      }
       const cancel = new AbortController()
       const signal = request.signal === undefined
         ? cancel.signal

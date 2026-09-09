@@ -31,7 +31,7 @@
  * stays denied, so the terminal red line is unchanged: without the
  * launcher's hand-off no `file:` argument ever reaches pnpm.
  *
- * Beta-pinned targets (#59): the market's host-side install seam is
+ * Beta-pinned targets (#59/#60): the market's host-side install seam is
  * beta-aware — a roster machine's verified beta overlay can carry the entry
  * the stable manifest does not pin — but this child previously consulted the
  * stable manifest alone, so the beta-only market install died exactly here
@@ -44,12 +44,15 @@
  * hand-off's claim and to sit at or above the stable manifest's own sequence
  * (anti-downgrade), and only then widens the target lookup to stable ∪ beta
  * (the market catalog's own merge rule, revocation stickiness included). A
- * beta entry still faces the identical tarball-channel authorization: the
- * npm channel stays denied behind a `file:` target, the entry's signed
- * sha512 must equal the hand-off's integrity pin, and a fresh hash of the
- * staged bytes must match. Without the beta pair in the hand-off, or when
- * any step of its re-verification fails, the decision runs on the stable
- * manifest alone — byte-for-byte today's behavior, fail-closed.
+ * beta entry still faces the identical channel authorization it would face
+ * without the overlay: a tarball entry needs the `file:` target, the entry's
+ * signed sha512 must equal the hand-off's integrity pin, and a fresh hash of
+ * the staged bytes must match; an npm entry needs the exact registry spec,
+ * and the hand-off must carry the beta pair alone — no staged-tarball fields
+ * — so the two forms can never borrow each other's authorization. Without
+ * the beta pair in the hand-off, or when any step of its re-verification
+ * fails, the decision runs on the stable manifest alone — byte-for-byte
+ * today's behavior, fail-closed.
  *
  * Acquisition modes: content-mode builds read the manifest asset embedded in
  * the application bundle synchronously (milliseconds, no network); origin-
@@ -153,15 +156,18 @@ export interface LockedPluginAddOptions {
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
   /**
-   * The launcher's market-orchestrated tarball hand-off
+   * The launcher's market-orchestrated hand-off
    * (`DSH_COMPANY_TARBALL_HANDOFF`), already strictly parsed by the CLI
-   * bootstrap. When present, the one package argument must be exactly the
-   * hand-off's own `file:<staged path>` target, and that target is admitted
-   * only after the double verification below. Without it, every `file:`
-   * argument stays a non-exact-spec denial. A hand-off for a beta-pinned
-   * target additionally carries the launcher-staged beta manifest bytes and
-   * their sequence (#59): re-verified here under the same trust roots, then
-   * the target lookup widens to stable ∪ beta — never a softer authorization.
+   * bootstrap. Two forms: the controlled tarball hand-off, when present,
+   * requires the one package argument to be exactly its own `file:<staged
+   * path>` target, admitted only after the double verification below; the
+   * beta-only registry form (#60) instead requires the exact
+   * `name@version` spec of its own target and carries no staged-tarball
+   * fields. Without a hand-off, every `file:` argument stays a
+   * non-exact-spec denial and every npm argument takes the stable-only
+   * catalog decision. Either form's beta pair (#59/#60) is re-verified here
+   * under the same trust roots before the target lookup widens to stable ∪
+   * beta — never a softer authorization.
    */
   readonly tarballHandoff?: CompanyTarballHandoff
   /**
@@ -284,6 +290,11 @@ export async function authorizeLockedPluginAdd(
     if (handoff === undefined) {
       return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
     }
+    // A beta-only registry hand-off (#60) carries no staged tarball at all:
+    // it can never admit a `file:` target.
+    if (handoff.integrity === undefined || handoff.path === undefined) {
+      return denied(`the launcher hand-off for ${handoff.packageName}@${handoff.version} carries no staged tarball, so '${spec}' cannot be its controlled install target. ${MARKET_GUIDANCE}`)
+    }
     if (options.profileDir === undefined) {
       return denied(`the controlled tarball hand-off for ${handoff.packageName}@${handoff.version} cannot be confined without the active profile directory. ${MARKET_GUIDANCE}`)
     }
@@ -299,12 +310,25 @@ export async function authorizeLockedPluginAdd(
     }
     target = { packageName: handoff.packageName, version: handoff.version }
   } else {
-    if (handoff !== undefined) {
-      return denied(`the controlled tarball hand-off for ${handoff.packageName}@${handoff.version} is only valid for its own file: install target, but the command asked for '${spec}'. ${MARKET_GUIDANCE}`)
-    }
     const parsed = parseExactPluginAddSpec(spec)
     if (parsed === undefined) {
       return denied(`'${spec}' is not a <package>@<exact version> spec; tags and ranges like 'latest' or '^1.0.0' are not accepted in locked builds. ${MARKET_GUIDANCE}`)
+    }
+    if (handoff !== undefined) {
+      // A staged-tarball hand-off belongs to its own `file:` target alone:
+      // an npm spec is never the controlled install the catalog signed for
+      // a tarball entry.
+      if (handoff.integrity !== undefined || handoff.path !== undefined) {
+        return denied(`the controlled tarball hand-off for ${handoff.packageName}@${handoff.version} is only valid for its own file: install target, but the command asked for '${spec}'. ${MARKET_GUIDANCE}`)
+      }
+      // The beta-only registry form must name exactly the command's target
+      // and must carry the beta pair — it has nothing else to authorize.
+      if (handoff.betaManifestPath === undefined || handoff.betaSequence === undefined) {
+        return denied(`the launcher hand-off for ${handoff.packageName}@${handoff.version} carries neither a staged tarball nor a staged beta manifest. ${MARKET_GUIDANCE}`)
+      }
+      if (handoff.packageName !== parsed.packageName || handoff.version !== parsed.version) {
+        return denied(`the launcher hand-off names ${handoff.packageName}@${handoff.version}, but the command asked for '${spec}'. ${MARKET_GUIDANCE}`)
+      }
     }
     target = parsed
   }
@@ -432,6 +456,14 @@ export async function authorizeLockedPluginAdd(
         `${target.packageName}@${target.version} is published on the tarball channel of the signed company plugin catalog and cannot be installed from the public registry. ${MARKET_GUIDANCE}`,
       )
     }
+    if (handoff.integrity === undefined || handoff.path === undefined) {
+      // The beta-only registry hand-off never authorizes a `file:` target:
+      // the entry is tarball-channel, the command is not its controlled
+      // install.
+      return denied(
+        `${target.packageName}@${target.version} is published on the tarball channel of the signed company plugin catalog, but the launcher hand-off carries no staged tarball for it. ${MARKET_GUIDANCE}`,
+      )
+    }
     // Market-orchestrated install — double verification (双验) before the
     // one `file:` target is admitted: the hand-off must carry exactly the
     // entry's signed sha512, and a fresh hash of the staged bytes must
@@ -455,10 +487,12 @@ export async function authorizeLockedPluginAdd(
         `the staged tarball ${handoff.path} for ${target.packageName}@${target.version} does not match the integrity pinned in the signed company plugin catalog. ${MARKET_GUIDANCE}`,
       )
     }
-  } else if (handoff !== undefined) {
-    // A `file:` target (the only shape a hand-off admits) is never valid for
-    // an npm-channel entry: its signed integrity is the registry dist's, and
-    // the controlled pipeline is not what the catalog signed for it.
+  } else if (handoff !== undefined && (handoff.integrity !== undefined || handoff.path !== undefined)) {
+    // A `file:` target (the only shape a staged-tarball hand-off admits) is
+    // never valid for an npm-channel entry: its signed integrity is the
+    // registry dist's, and the controlled pipeline is not what the catalog
+    // signed for it. The beta-only registry form carries no staged-tarball
+    // fields, so it reaches the allow below after its own binding checks.
     return denied(
       `${target.packageName}@${target.version} is not published on the tarball channel of the signed company plugin catalog — the controlled file: install target is not valid for it. ${MARKET_GUIDANCE}`,
     )

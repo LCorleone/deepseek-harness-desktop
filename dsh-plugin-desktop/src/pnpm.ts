@@ -216,13 +216,15 @@ export interface DesktopPluginInstallRequest {
   readonly marketTarball?: DesktopControlledMarketTarball
   /**
    * Launcher-staged beta manifest for the packaged CLI child's locked add
-   * gate (#59): the deterministic staging path of the beta manifest bytes
+   * gate (#59/#60): the deterministic staging path of the beta manifest bytes
    * the market channel verified and roster-admitted, plus their sequence.
    * Only ever constructed in-process by the Desktop market path for an
-   * install whose resolved entry came from the beta overlay, and only valid
-   * alongside a controlled `marketTarball` descriptor — it rides the same
-   * trusted spawn hand-off, and the child re-verifies the bytes against the
-   * deployment trust roots before its gate widens to stable ∪ beta.
+   * install whose resolved entry came from the beta overlay. It rides the
+   * trusted spawn hand-off either way — alongside a controlled
+   * `marketTarball` descriptor for a tarball-channel target, or alone for an
+   * npm-channel target, whose registry spec is the install — and the child
+   * re-verifies the bytes against the deployment trust roots before its gate
+   * widens to stable ∪ beta.
    */
   readonly betaManifest?: {
     readonly path: string
@@ -258,26 +260,29 @@ export interface DesktopPnpm {
 
 /**
  * Host-injected diversion of market install requests whose signed company
- * catalog entry is published on the tarball channel (P7 2c). The pnpm
- * boundary stays package-manager-generic: it hands one install request that
- * carries no controlled tarball descriptor to the channel before opening any
- * recovery transaction, and the channel either takes the request over —
- * downloading, staging, and installing through {@link installPlugin} with a
- * `marketTarball` descriptor, i.e. the one constructible controlled target —
- * or returns undefined and the registry path runs unchanged. The channel is
- * constructed in-process by the Desktop market path (`main.ts` provides the
- * `desktopCompanyMarketTarballInstall` capability); a user argument can
- * never reach it because every user-facing argument surface still audits
- * against the npm-spec-only rules.
+ * catalog entry is published on the tarball channel (P7 2c), or is a
+ * beta-pinned npm-channel entry (the #60 fix). The pnpm boundary stays
+ * package-manager-generic: it hands one install request that carries no
+ * controlled tarball descriptor to the channel before opening any recovery
+ * transaction, and the channel either takes the request over — a tarball
+ * entry through download, staging, and {@link installPlugin} with a
+ * `marketTarball` descriptor (the one constructible controlled target), an
+ * npm beta entry through the registry target plus the staged beta manifest
+ * hand-off — or returns undefined and the registry path runs unchanged. The
+ * channel is constructed in-process by the Desktop market path (`main.ts`
+ * provides the `desktopCompanyMarketTarballInstall` capability); a user
+ * argument can never reach it because every user-facing argument surface
+ * still audits against the npm-spec-only rules.
  */
 export interface DesktopPnpmCompanyMarketChannel {
   /**
-   * Take over one install whose verified signed entry is a tarball entry, or
-   * return undefined to keep the registry path. The returned handle follows
-   * the {@link DesktopPnpmHandle} contract; failures surface as a settled
-   * nonzero outcome with the readable reason on the handle's stderr.
+   * Take over one install whose verified signed entry is a tarball entry or
+   * a beta-pinned npm entry, or return undefined to keep the registry path.
+   * The returned handle follows the {@link DesktopPnpmHandle} contract;
+   * failures surface as a settled nonzero outcome with the readable reason
+   * on the handle's stderr.
    */
-  divertCompanyTarballInstall(
+  divertCompanyMarketInstall(
     request: DesktopPluginInstallRequest,
     service: DesktopPnpm,
   ): Promise<DesktopPnpmHandle | undefined>
@@ -413,7 +418,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
    * Register the service for one immutable desktop profile generation.
    * @param ctx - Host context providing the managed subprocess capability.
    * @param bootstrap - launcher-resolved profile and packaged runtime paths.
-   * @param companyMarketChannel - optional Host-injected tarball-channel
+   * @param companyMarketChannel - optional Host-injected market-channel
    * diversion for signed catalog entries (see {@link DesktopPnpmCompanyMarketChannel});
    * absent in standalone compositions and focused tests.
    */
@@ -620,18 +625,22 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     }
     auditInstallOptions(resolvedOptions)
     assertAbsolutePath('plugin invoking directory', request.invokingDir)
-    // Tarball-channel diversion (P7 2c): a request without a controlled
-    // tarball descriptor whose signed catalog entry is published as a
-    // tarball is handed to the Host channel before the workspace approval
-    // is widened or any recovery transaction is opened — the channel runs
-    // the controlled pipeline (stage → install through the one
-    // constructible `marketTarball` target → installed-bundle and signed
-    // tree re-verification → rollback on divergence) and settles its own
-    // handle. Every other request keeps the registry path below unchanged;
-    // a request that already carries a descriptor (the channel's own
+    // Tarball-channel diversion (P7 2c) and beta-pinned npm diversion (#60):
+    // a request without a controlled tarball descriptor whose signed catalog
+    // entry is published as a tarball — or is a beta-only npm entry — is
+    // handed to the Host channel before the workspace approval is widened or
+    // any recovery transaction is opened. The channel runs the controlled
+    // pipeline (stage → install → installed-bundle and signed tree
+    // re-verification → rollback on divergence) for a tarball entry, or the
+    // registry install carrying the staged beta manifest hand-off for an npm
+    // beta entry, and settles its own handle. Every other request keeps the
+    // registry path below unchanged; a request that already carries a
+    // descriptor or the channel's staged beta pair (the channel's own
     // callback) always passes through.
-    if (request.marketTarball === undefined && this.companyMarketChannel !== undefined) {
-      const diverted = await this.companyMarketChannel.divertCompanyTarballInstall(request, this)
+    if (request.marketTarball === undefined
+      && request.betaManifest === undefined
+      && this.companyMarketChannel !== undefined) {
+      const diverted = await this.companyMarketChannel.divertCompanyMarketInstall(request, this)
       if (diverted !== undefined) return diverted
     }
     // The controlled tarball target is validated before the workspace
@@ -640,18 +649,16 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     if (request.marketTarball !== undefined) {
       await this.assertControlledMarketTarball(request.marketTarball, request.recovery)
     }
-    // The optional beta manifest pair (#59) rides the same spawn hand-off for
-    // an install whose entry resolved from the roster-admitted beta overlay.
-    // The boundary re-validates what it injects, mirroring the tarball
-    // descriptor's own discipline: the pair exists only with a controlled
-    // tarball descriptor, the path is exactly the active profile's
-    // deterministic beta staging path, and the sequence is a safe positive
-    // integer. The child still re-verifies the staged bytes' signature and
-    // sequence binding before its gate widens to stable ∪ beta.
+    // The optional beta manifest pair (#59/#60) rides the same spawn hand-off
+    // for an install whose entry resolved from the roster-admitted beta
+    // overlay. The boundary re-validates what it injects, mirroring the
+    // tarball descriptor's own discipline: the path is exactly the active
+    // profile's deterministic beta staging path and the sequence is a safe
+    // positive integer. A tarball target carries it alongside its integrity
+    // and staged path; an npm target carries it alone — the registry spec is
+    // the install. The child still re-verifies the staged bytes' signature
+    // and sequence binding before its gate widens to stable ∪ beta.
     if (request.betaManifest !== undefined) {
-      if (request.marketTarball === undefined) {
-        throw new Error(`${BIN_NAME}: the beta manifest hand-off belongs to a controlled market tarball install`)
-      }
       if (typeof request.betaManifest.path !== 'string'
         || request.betaManifest.path !== desktopBetaManifestHandoffStagingPath(this.bootstrap.activeProfileDir)) {
         throw new Error(`${BIN_NAME}: the beta manifest hand-off must name the staged beta manifest at the active profile's market staging path`)
@@ -669,22 +676,27 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     // version, the descriptor's sha512, and the staged path so the gate can
     // re-bind them to the signed catalog entry and re-hash the staged bytes
     // before admitting exactly this target. A beta-pinned install additionally
-    // carries the staged beta manifest's path and sequence (#59), which the
-    // gate re-verifies before widening its catalog lookup to stable ∪ beta.
-    // Injected for this spawn only — never part of the generation-wide policy
-    // environment — and length-bounded on the CLI side so a hostile value can
-    // never widen the gate.
-    const controlledTarballEnvironment = request.marketTarball === undefined ? undefined : {
-      [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
-        packageName: request.recovery.packageName,
-        version: request.recovery.packageVersion,
-        integrity: request.marketTarball.integrity,
-        path: request.marketTarball.path,
-        ...(request.betaManifest === undefined
-          ? {}
-          : { betaManifestPath: request.betaManifest.path, betaSequence: request.betaManifest.sequence }),
-      }),
-    }
+    // carries the staged beta manifest's path and sequence (#59/#60), which the
+    // gate re-verifies before widening its catalog lookup to stable ∪ beta; for
+    // an npm-channel beta target the pair is the hand-off's whole payload —
+    // the registry spec needs no controlled target. Injected for this spawn
+    // only — never part of the generation-wide policy environment — and
+    // length-bounded on the CLI side so a hostile value can never widen the
+    // gate.
+    const controlledInstallEnvironment = request.marketTarball === undefined && request.betaManifest === undefined
+      ? undefined
+      : {
+          [DESKTOP_COMPANY_TARBALL_HANDOFF_ENV]: companyTarballHandoffText({
+            packageName: request.recovery.packageName,
+            version: request.recovery.packageVersion,
+            ...(request.marketTarball === undefined
+              ? {}
+              : { integrity: request.marketTarball.integrity, path: request.marketTarball.path }),
+            ...(request.betaManifest === undefined
+              ? {}
+              : { betaManifestPath: request.betaManifest.path, betaSequence: request.betaManifest.sequence }),
+          }),
+        }
     // Approve the trusted builds before the recovery WAL snapshots the
     // profile, so a later rollback restores a workspace that still carries
     // the approval instead of stripping it from under the next install. The
@@ -720,7 +732,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
         cwd: request.invokingDir,
         recoveryTransactionId: transaction.transactionId,
         allowInstallPreparation: true,
-        ...(controlledTarballEnvironment === undefined ? {} : { environment: controlledTarballEnvironment }),
+        ...(controlledInstallEnvironment === undefined ? {} : { environment: controlledInstallEnvironment }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       })
       this.installPreparationActive = false

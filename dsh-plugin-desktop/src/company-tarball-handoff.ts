@@ -32,13 +32,23 @@
  * under the same trust roots and origin binding, requires its sequence to
  * match the hand-off's claim and to sit at or above the stable manifest's
  * own sequence (anti-downgrade), and only then widens the target lookup to
- * stable ∪ beta — a beta entry still faces the same tarball-channel and
- * integrity double check a stable one does. Without the beta pair, or when
- * any step of that re-verification fails, the child decides on the stable
- * manifest alone, exactly today's behavior. A hand-typed copy of the
- * environment value can therefore never widen the gate beyond content the
- * company signed on the beta channel; the roster admission itself stays a
- * host-side visibility decision, and only the host makes it.
+ * stable ∪ beta — a beta entry still faces the same channel and integrity
+ * double check a stable one does. Without the beta pair, or when any step of
+ * that re-verification fails, the child decides on the stable manifest
+ * alone, exactly today's behavior. A hand-typed copy of the environment
+ * value can therefore never widen the gate beyond content the company signed
+ * on the beta channel; the roster admission itself stays a host-side
+ * visibility decision, and only the host makes it.
+ *
+ * The beta pair also rides a registry target (the #60 fix): an npm-channel
+ * beta entry has no staged tarball at all, so that hand-off form carries the
+ * package target plus the beta pair and deliberately no `integrity`/`path` —
+ * the child's lookup widens to stable ∪ beta for exactly the command's
+ * `name@version`, while the target itself stays the registry spec the gate
+ * has always admitted. The two forms are mutually exclusive by schema: a
+ * hand-off with `integrity`/`path` is a controlled `file:` target, one
+ * without them is the beta-only registry form, and neither can borrow the
+ * other's authorization.
  *
  * This module stays dependency-free (Node builtins only): the CLI bootstrap
  * imports it eagerly, so it must never drag the market bundle, Cordis, or
@@ -62,7 +72,7 @@ const BIN_NAME = 'dsh-plugin-desktop'
  */
 export const DESKTOP_COMPANY_TARBALL_HANDOFF_ENV = 'DSH_COMPANY_TARBALL_HANDOFF'
 
-/** Upper bound of the hand-off value: the four base fields plus the optional beta pair, canonical JSON. */
+/** Upper bound of the hand-off value: the base target fields plus the optional beta pair, canonical JSON. */
 export const COMPANY_TARBALL_HANDOFF_MAX_BYTES = 4_096
 
 /**
@@ -191,9 +201,16 @@ export async function sha512OfStagedFile(path: string): Promise<Buffer> {
 }
 
 /**
- * The launcher side of one market-orchestrated controlled tarball install:
- * the receipt's package and version, the signed sha512 the orchestration
- * already verified over the staged bytes, and the deterministic staged path.
+ * The launcher side of one market-orchestrated install. Two mutually
+ * exclusive forms share the target fields:
+ *
+ * - the controlled tarball form (`integrity` + `path`): the receipt's package
+ *   and version, the signed sha512 the orchestration already verified over
+ *   the staged bytes, and the deterministic staged path;
+ * - the beta-only registry form (#60): the package target plus the beta pair
+ *   and no staged tarball at all — an npm-channel beta entry installs from
+ *   the registry, so there is no integrity or path to pin.
+ *
  * Encoded as {@linkcode DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}; every field is
  * strictly re-validated on the CLI side, so only the shape crosses the
  * process boundary, never trust.
@@ -201,14 +218,17 @@ export async function sha512OfStagedFile(path: string): Promise<Buffer> {
 export interface CompanyTarballHandoff {
   readonly packageName: string
   readonly version: string
-  readonly integrity: string
-  readonly path: string
+  /** Signed sha512 of the staged tarball — present exactly for the controlled `file:` form. */
+  readonly integrity?: string
+  /** Deterministic staged tarball path — present exactly for the controlled `file:` form. */
+  readonly path?: string
   /**
-   * Staged beta manifest bytes for a beta-pinned target (#59): the absolute
-   * {@linkcode desktopBetaManifestHandoffStagingPath} of the exact manifest
-   * text the launcher verified and roster-admitted. Optional; present only
-   * for installs whose resolved entry came from the beta overlay, and always
-   * paired with {@linkcode betaSequence}.
+   * Staged beta manifest bytes for a beta-pinned target (#59/#60): the
+   * absolute {@linkcode desktopBetaManifestHandoffStagingPath} of the exact
+   * manifest text the launcher verified and roster-admitted. Optional;
+   * present only for installs whose resolved entry came from the beta
+   * overlay, and always paired with {@linkcode betaSequence}. Mandatory for
+   * the beta-only registry form (which carries nothing else).
    */
   readonly betaManifestPath?: string
   /** Sequence of the verified beta manifest at {@linkcode betaManifestPath}; the child re-verifies and must observe the same value. */
@@ -219,8 +239,9 @@ export interface CompanyTarballHandoff {
  * Encode one hand-off as canonical JSON: sorted keys, no whitespace, minimal
  * string escaping — for this flat, string-and-number document the explicit
  * construction below is exactly the market library's `canonicalJsonText`
- * serialization (the optional beta pair is emitted only when present, keeping
- * the stable-only spelling byte-identical with the original four-field one).
+ * serialization (each optional field is emitted only when present, keeping
+ * the stable-only spelling byte-identical with the original four-field one
+ * and the beta-only registry form at its four fields).
  * The CLI side re-parses and re-validates every field against the strict
  * patterns, so a non-canonical spelling of the same values could never widen
  * what the gate admits.
@@ -231,9 +252,9 @@ export function companyTarballHandoffText(handoff: CompanyTarballHandoff): strin
   return JSON.stringify({
     ...(handoff.betaManifestPath === undefined ? {} : { betaManifestPath: handoff.betaManifestPath }),
     ...(handoff.betaSequence === undefined ? {} : { betaSequence: handoff.betaSequence }),
-    integrity: handoff.integrity,
+    ...(handoff.integrity === undefined ? {} : { integrity: handoff.integrity }),
     packageName: handoff.packageName,
-    path: handoff.path,
+    ...(handoff.path === undefined ? {} : { path: handoff.path }),
     version: handoff.version,
   })
 }
@@ -248,11 +269,13 @@ function isHandoffSequence(value: unknown): value is number {
 
 /**
  * Strictly parse one hand-off environment value: length-bounded canonical
- * JSON with exactly the four base keys — or exactly those plus the beta pair
- * (`betaManifestPath` and `betaSequence` arrive together or not at all) — the
- * strict catalog name and plain-version grammars, a well-formed sha512, and
- * absolute paths without NUL. Anything else is undefined — callers fail
- * closed on it.
+ * JSON in exactly one of the three admissible key sets — the four controlled
+ * tarball fields, those plus the beta pair, or the beta-only registry form
+ * (`packageName`, `version`, and the beta pair; `betaManifestPath` and
+ * `betaSequence` always arrive together or not at all) — with the strict
+ * catalog name and plain-version grammars, a well-formed sha512 and absolute
+ * paths without NUL where the form carries them. Anything else is undefined —
+ * callers fail closed on it.
  * @param value - raw environment value of {@linkcode DESKTOP_COMPANY_TARBALL_HANDOFF_ENV}.
  * @returns the validated hand-off, or undefined for every non-matching spelling.
  */
@@ -268,31 +291,54 @@ export function parseCompanyTarballHandoff(value: string): CompanyTarballHandoff
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
   const keys = Object.keys(parsed).sort()
-  const withBeta = keys.length === 6 && keys[0] === 'betaManifestPath' && keys[1] === 'betaSequence'
-  if (!withBeta && keys.length !== 4) return undefined
-  if (keys[withBeta ? 2 : 0] !== 'integrity'
-    || keys[withBeta ? 3 : 1] !== 'packageName'
-    || keys[withBeta ? 4 : 2] !== 'path'
-    || keys[withBeta ? 5 : 3] !== 'version') {
+  const withBeta = keys[0] === 'betaManifestPath' && keys[1] === 'betaSequence'
+  const offset = withBeta ? 2 : 0
+  const withTarball = keys[offset] === 'integrity' && keys[offset + 1] === 'packageName'
+  if (withTarball) {
+    if (keys.length !== offset + 4
+      || keys[offset] !== 'integrity'
+      || keys[offset + 1] !== 'packageName'
+      || keys[offset + 2] !== 'path'
+      || keys[offset + 3] !== 'version') {
+      return undefined
+    }
+  } else if (!withBeta
+    || keys.length !== 4
+    || keys[0] !== 'betaManifestPath'
+    || keys[1] !== 'betaSequence'
+    || keys[2] !== 'packageName'
+    || keys[3] !== 'version') {
+    // The beta-only registry form is the sole shape without a staged tarball.
     return undefined
   }
   const record = parsed as Record<string, unknown>
-  if (typeof record.integrity !== 'string' || !isSha512Integrity(record.integrity)) return undefined
   if (typeof record.packageName !== 'string' || !PACKAGE_NAME_PATTERN.test(record.packageName)) return undefined
-  if (typeof record.path !== 'string' || !isAbsolute(record.path) || record.path.includes('\0')) return undefined
   if (typeof record.version !== 'string' || !EXACT_VERSION_PATTERN.test(record.version)) return undefined
-  if (!withBeta) return { packageName: record.packageName, version: record.version, integrity: record.integrity, path: record.path }
-  if (typeof record.betaManifestPath !== 'string' || !isAbsolute(record.betaManifestPath) || record.betaManifestPath.includes('\0')) {
-    return undefined
+  let integrity: string | undefined
+  let path: string | undefined
+  if (withTarball) {
+    if (typeof record.integrity !== 'string' || !isSha512Integrity(record.integrity)) return undefined
+    if (typeof record.path !== 'string' || !isAbsolute(record.path) || record.path.includes('\0')) return undefined
+    integrity = record.integrity
+    path = record.path
   }
-  if (!isHandoffSequence(record.betaSequence)) return undefined
+  let betaManifestPath: string | undefined
+  let betaSequence: number | undefined
+  if (withBeta) {
+    if (typeof record.betaManifestPath !== 'string' || !isAbsolute(record.betaManifestPath) || record.betaManifestPath.includes('\0')) {
+      return undefined
+    }
+    if (!isHandoffSequence(record.betaSequence)) return undefined
+    betaManifestPath = record.betaManifestPath
+    betaSequence = record.betaSequence
+  }
   return {
     packageName: record.packageName,
     version: record.version,
-    integrity: record.integrity,
-    path: record.path,
-    betaManifestPath: record.betaManifestPath,
-    betaSequence: record.betaSequence,
+    ...(integrity === undefined ? {} : { integrity }),
+    ...(path === undefined ? {} : { path }),
+    ...(betaManifestPath === undefined ? {} : { betaManifestPath }),
+    ...(betaSequence === undefined ? {} : { betaSequence }),
   }
 }
 

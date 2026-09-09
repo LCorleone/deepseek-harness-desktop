@@ -849,7 +849,46 @@ describe('pnpm controlled market tarball install target', () => {
     }
   })
 
-  it('rejects a beta manifest hand-off that is unconfined, unsafely sequenced, or without a controlled tarball (#59)', async () => {
+  it('rides the beta-only registry hand-off for an npm-channel beta target (#60)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-npm-beta-'))
+    const selectedBootstrap = bootstrap(root)
+    const betaManifestPath = desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir)
+    const child = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(join(selectedBootstrap.activeProfileDir, 'package.json'), '{}\n')
+      const harness = await createHarness([child], selectedBootstrap)
+
+      const operation = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'dsh-better-sidebar',
+          packageVersion: '0.18.1',
+          receiptId: 'receipt:npm-beta-0001',
+        },
+        betaManifest: { path: betaManifestPath, sequence: 21 },
+      })
+
+      const spec = harness.spawn.mock.calls[0]?.[0]
+      // The install target stays the registry spec: no controlled file:
+      // descriptor is forged for an npm-channel entry.
+      expect(spec?.argv.slice(-1)[0]).toBe('dsh-better-sidebar@0.18.1')
+      const environment = spec?.env as Record<string, string | undefined>
+      expect(parseCompanyTarballHandoff(environment?.[DESKTOP_COMPANY_TARBALL_HANDOFF_ENV] ?? '')).toEqual({
+        packageName: 'dsh-better-sidebar',
+        version: '0.18.1',
+        betaManifestPath,
+        betaSequence: 21,
+      })
+      finish(child)
+      await operation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a beta manifest hand-off that is unconfined or unsafely sequenced (#59)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-tarball-beta-bad-'))
     const selectedBootstrap = bootstrap(root)
     const stagedPath = desktopMarketTarballStagingPath(selectedBootstrap.activeProfileDir, 'company-hardened-plugin', '2.1.0')
@@ -882,12 +921,17 @@ describe('pnpm controlled market tarball install target', () => {
         marketTarball,
         betaManifest: { path: desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir), sequence: 0 },
       })).rejects.toThrow('beta manifest hand-off sequence must be a safe positive integer')
-      // The pair belongs to a controlled tarball install alone.
+      // The npm form is held to the same confinement and sequence rules.
       await expect(harness.service.installPlugin({
         invokingDir: '/workspace',
         recovery,
-        betaManifest: { path: desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir), sequence: 43 },
-      })).rejects.toThrow('beta manifest hand-off belongs to a controlled market tarball install')
+        betaManifest: { path: join(root, 'planted-beta.json'), sequence: 43 },
+      })).rejects.toThrow('beta manifest hand-off must name the staged beta manifest')
+      await expect(harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery,
+        betaManifest: { path: desktopBetaManifestHandoffStagingPath(selectedBootstrap.activeProfileDir), sequence: 0 },
+      })).rejects.toThrow('beta manifest hand-off sequence must be a safe positive integer')
       expect(harness.spawn).not.toHaveBeenCalled()
       expect(existsSync(selectedBootstrap.installRecoveryStatePath)).toBe(false)
       await harness.dispose()

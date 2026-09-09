@@ -384,14 +384,16 @@ export async function runDesktopDshCli(
     environment,
     DESKTOP_COMPANY_MANIFEST_FILE_ENV,
   )
-  // Market-orchestrated tarball hand-off (P7 fix): when the trusted launcher
+  // Market-orchestrated install hand-off (P7 fix): when the trusted launcher
   // spawns this child for a controlled market tarball install, it names the
   // one `file:` target the locked add gate may admit. A beta-pinned target
-  // (#59) additionally carries the staged beta manifest bytes' path and
+  // (#59/#60) additionally carries the staged beta manifest bytes' path and
   // sequence, which the gate re-verifies before widening its catalog lookup
-  // to stable ∪ beta. Consumed here so the upstream CLI and its pnpm children
-  // never inherit it; strictly parsed below — a present-but-malformed value
-  // fails the add closed.
+  // to stable ∪ beta — for an npm-channel beta target that pair is the
+  // hand-off's whole payload and the install stays the registry spec.
+  // Consumed here so the upstream CLI and its pnpm children never inherit it;
+  // strictly parsed below — a present-but-malformed value fails the add
+  // closed.
   const companyTarballHandoffRaw = takeEnvironmentValue(
     environment,
     DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
@@ -447,10 +449,12 @@ export async function runDesktopDshCli(
       // The sequence floor rides the receipts ratchet boot verification also
       // reconciles against (see cli-install-channel.ts for the rationale).
       //
-      // A launcher tarball hand-off, when present, is strictly parsed first:
-      // the launcher only ever injects the canonical four-field document, so
-      // anything else is a malformed (or hostile) value and fails closed
-      // before the manifest is even consulted.
+      // A launcher hand-off, when present, is strictly parsed first: the
+      // launcher only ever injects a canonical document in one of the three
+      // admissible shapes (the four-field tarball form, that plus the beta
+      // pair, or the beta-only registry form), so anything else is a
+      // malformed (or hostile) value and fails closed before the manifest is
+      // even consulted.
       let tarballHandoff: ReturnType<typeof parseCompanyTarballHandoff> = undefined
       if (companyTarballHandoffRaw !== undefined) {
         tarballHandoff = parseCompanyTarballHandoff(companyTarballHandoffRaw)

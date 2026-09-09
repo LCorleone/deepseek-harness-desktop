@@ -1105,7 +1105,14 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
   function betaHandoff(
     profileDir: string,
     overrides: { readonly handoff?: Record<string, unknown>; readonly betaSequence?: number } = {},
-  ): CompanyTarballHandoff {
+  ): {
+    readonly packageName: string
+    readonly version: string
+    readonly integrity: string
+    readonly path: string
+    readonly betaManifestPath: string
+    readonly betaSequence: number
+  } {
     return {
       packageName: BETA_NAME,
       version: BETA_VERSION,
@@ -1114,7 +1121,14 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
       betaManifestPath: desktopBetaManifestHandoffStagingPath(profileDir),
       betaSequence: overrides.betaSequence ?? 43,
       ...overrides.handoff,
-    } as CompanyTarballHandoff
+    } as {
+      packageName: string
+      version: string
+      integrity: string
+      path: string
+      betaManifestPath: string
+      betaSequence: number
+    }
   }
 
   /** The locked add exactly as the pnpm boundary spawns it for this target. */
@@ -1126,6 +1140,55 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
 
   /** Set by the outside-the-staging-path forgery case: the hand-off's planted beta manifest path. */
   let plantedBetaManifestPath: string | undefined
+
+  /** The launcher's beta-only registry hand-off for one staged npm beta target (#60). */
+  const npmBetaHandoff = (
+    profileDir: string,
+    overrides: Record<string, unknown> = {},
+  ): CompanyTarballHandoff => ({
+    packageName: BETA_NAME,
+    version: BETA_VERSION,
+    betaManifestPath: desktopBetaManifestHandoffStagingPath(profileDir),
+    betaSequence: 43,
+    ...overrides,
+  }) as CompanyTarballHandoff
+
+  /** One signed beta manifest whose single entry is npm-channel (no `source`). */
+  function writeBetaNpmManifest(
+    profileDir: string,
+    overrides: {
+      readonly entry?: Record<string, unknown>
+      readonly manifest?: Record<string, unknown>
+      readonly key?: ReturnType<typeof generateKeyPairSync>['privateKey']
+    } = {},
+  ): { readonly path: string; readonly text: string } {
+    const unsigned = unsignedCatalog({
+      sequence: 43,
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+        approvedBuilds: ['@company/signed-beta-builder'],
+        ...overrides.entry,
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+      ...overrides.manifest,
+    })
+    const signature = createCompanyManifestSignature(asUnsigned(unsigned), overrides.key ?? privateKey, keyId)
+    const text = canonicalJsonText({ ...unsigned, signature })
+    const path = desktopBetaManifestHandoffStagingPath(profileDir)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text)
+    return { path, text }
+  }
+
+  /** The locked add exactly as the pnpm boundary spawns it for an npm beta target (#60). */
+  const npmBetaAddArguments = (): readonly string[] => [
+    '--save-exact',
+    '--registry=https://registry.npmjs.org/',
+    `${BETA_NAME}@${BETA_VERSION}`,
+  ]
 
   it('round-trips the beta pair canonically and rejects every malformed spelling', () => {
     const profileDir = join(roots, 'profiles', 'parse')
@@ -1161,6 +1224,30 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaSequence: '43' }))).toBeUndefined()
     expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, betaManifestPath: 'relative/beta.json' }))).toBeUndefined()
     expect(parseCompanyTarballHandoff(JSON.stringify({ ...handoff, extra: 1 }))).toBeUndefined()
+
+    // The beta-only registry form (#60): the beta pair plus the target, no
+    // staged-tarball fields.
+    const npmForm = {
+      packageName: handoff.packageName,
+      version: handoff.version,
+      betaManifestPath: handoff.betaManifestPath,
+      betaSequence: handoff.betaSequence,
+    }
+    expect(companyTarballHandoffText(npmForm)).toBe(JSON.stringify({
+      betaManifestPath: handoff.betaManifestPath,
+      betaSequence: handoff.betaSequence,
+      packageName: handoff.packageName,
+      version: handoff.version,
+    }))
+    expect(parseCompanyTarballHandoff(companyTarballHandoffText(npmForm))).toEqual(npmForm)
+    // Neither form may borrow the other's shape: the beta pair alone never
+    // admits a `file:` target, and a target with no authorization at all
+    // (no tarball, no beta pair) is not a hand-off.
+    expect(parseCompanyTarballHandoff(JSON.stringify({ packageName: handoff.packageName, version: handoff.version }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...npmForm, integrity: handoff.integrity }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ ...npmForm, path: handoff.path }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ integrity: handoff.integrity, packageName: handoff.packageName, version: handoff.version }))).toBeUndefined()
+    expect(parseCompanyTarballHandoff(JSON.stringify({ packageName: handoff.packageName, path: handoff.path, version: handoff.version }))).toBeUndefined()
   })
 
   it('admits the roster-admitted beta-only tarball target after re-verifying the staged beta manifest (#59 red→green)', async () => {
@@ -1274,6 +1361,102 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     if (!decision.allowed) {
       expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is not published on the tarball channel`)
       expect(decision.reason).toContain('the controlled file: install target is not valid for it')
+    }
+  })
+
+  it('admits the roster-admitted beta-only npm target through the beta-only registry hand-off (#60 red\u2192green)', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'npmbeta-registry')
+    writeBetaNpmManifest(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: npmBetaHandoff(profileDir),
+      profileDir,
+    })
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+      approvedBuildDependencies: ['@company/signed-beta-builder'],
+    })
+  })
+
+  it('denies the npm beta target when the hand-off names another target, carries a staged tarball, or has no beta pair (#60 fail-closed)', async () => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'npmbeta-shapes')
+    writeBetaNpmManifest(profileDir)
+
+    const mismatched = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: npmBetaHandoff(profileDir, { packageName: 'other-plugin' }),
+      profileDir,
+    })
+    expect(mismatched.allowed).toBe(false)
+    if (!mismatched.allowed) expect(mismatched.reason).toContain('the launcher hand-off names other-plugin')
+
+    // A staged-tarball hand-off stays tied to its own file: target.
+    const tarballForm = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: npmBetaHandoff(profileDir, { integrity: betaIntegrity, path: betaStagedPath(profileDir) }),
+      profileDir,
+    })
+    expect(tarballForm.allowed).toBe(false)
+    if (!tarballForm.allowed) expect(tarballForm.reason).toContain('is only valid for its own file: install target')
+
+    // The parsed hand-off can never be a pair-less document, so the
+    // no-beta-pair case is the malformed bootstrap denial; a hand-constructed
+    // one without a pair is refused by the gate itself.
+    const pairless = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: { packageName: BETA_NAME, version: BETA_VERSION },
+      profileDir,
+    })
+    expect(pairless.allowed).toBe(false)
+    if (!pairless.allowed) {
+      expect(pairless.reason).toContain('carries neither a staged tarball nor a staged beta manifest')
+    }
+  })
+
+  /** One forged npm beta hand-off shape: the reason fragment and the sequence the hand-off claims. */
+  type NpmBetaForgery = (profileDir: string) => { readonly expected: string; readonly betaSequence?: number }
+
+  const npmBetaForgeryCases: ReadonlyArray<readonly [string, NpmBetaForgery]> = [
+    ['forged bytes over the company signature (bad-signature)', (profileDir: string) => {
+      const staged = writeBetaNpmManifest(profileDir)
+      const forged = JSON.parse(staged.text) as Record<string, unknown>
+      forged.expiresAt = '2099-01-01T00:00:00Z'
+      writeFileSync(staged.path, canonicalJsonText(forged))
+      return { expected: 'verification rejected the staged beta manifest (bad-signature)' }
+    }],
+    ['a manifest signed by a stranger key (key-mismatch)', (profileDir: string) => {
+      writeBetaNpmManifest(profileDir, { key: stranger.privateKey })
+      return { expected: 'verification rejected the staged beta manifest (key-mismatch)' }
+    }],
+    ['a rolled-back beta sequence below the stable manifest (downgrade)', (profileDir: string) => {
+      writeBetaNpmManifest(profileDir, { manifest: { sequence: 41 } })
+      return { expected: 'below the verified stable sequence 42 (a downgrade)', betaSequence: 41 }
+    }],
+    ['the staged beta manifest missing entirely', (_profileDir: string) => {
+      return { expected: 'the staged beta manifest is unusable' }
+    }],
+  ]
+
+  it.each(npmBetaForgeryCases)('denies the npm beta hand-off shape: %s', async (_label, corrupt) => {
+    const assetPath = writeCatalog(unsignedCatalog())
+    const profileDir = join(roots, 'profiles', 'npmbeta-forgery')
+    const { expected, betaSequence } = corrupt(profileDir)
+
+    const decision = await authorizeLockedPluginAdd(npmBetaAddArguments(), policy, {
+      fetch: { request: serveCatalog(assetPath) },
+      tarballHandoff: npmBetaHandoff(profileDir, betaSequence === undefined ? {} : { betaSequence }),
+      profileDir,
+    })
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is not in the signed company plugin catalog`)
+      expect(decision.reason).toContain(expected)
     }
   })
 
