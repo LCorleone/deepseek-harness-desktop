@@ -371,6 +371,14 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ### DSH 运行时 0.1.2-rc.1 升级·全链闭环（2026-09-09 08:20）
 worker `f8068af04e`→amend `e4f3aa26f7`（110 文件 +4715/−7427）：pin 纯指针 b150a551→a66e470204（官方 tag）；deps/resolutions 全量+注入改向 client-runtime→client-ui-renderer；补丁 10 重做+2 重定位（win32-process/api-session-controller，上游逐字节/等价验证）+3 原生吸收换 marker 守卫（atomic-write-retry spec 删因 win32 门控 Linux 测不动，marker 钉死无删测躲红）+新增 dsh-settings patch（=上游 v2.0.5 同名恢复逐字节同，救活 dshmarket 1.17.1——专项文档 dshmarket-1.17.1-compat-012.md）；src 适配（SessionProvider/presets 路径/PTC 改名/patchReload/locale 收窄/company preset 刷新含 fetch:true 合规同步仍受 managed-models 门控）。评审 review-dsh-upgrade2 **APPROVED**（子模块零改动铁证/补丁忠实抽验/锁定层无弱化/门禁数字亲跑复现：desktop 2052+7skip·market 441·catalog 172+e2e·closure 228·typecheck 全 0）；3 P3 全记录性已 amend 进 commit body（icon 2 字节重生成/preset fetch 同步/peerRange 警告观察）。**未 push 未构建**——回退锚=tag v2.0.3-b72。等用户构建口令。真机验证清单：升级包首启（声明不弹=base 版语义）/已装插件 boot_verify 零拒绝/市场装卸/终端/杀渲染自愈回归。
 
+### 2026-09-09 全天战报（b73 事故 → b75 上线 → beta 修复）
+**主线**：DSH 0.1.2-rc.1 升级（f8068af04e/e4f3aa26f7，1735 commits 积压）→ **打包态全灭事故**（四雷：A 渲染器 401 墙/B 恢复窗 loadFile 契约/C 检查点内容物/D 拒绝不剔除）→ 逐雷修复+评审（edcb691d9a 铸币 session.fetch、064ecea339 恢复窗 pathToFileURL+组合门、fbfd70b4b4+e46c8716dd 检查点降级、a4dd67c7 P0 复审修正）→ **#74 首次构建红**（Windows CI fixture reader 只认正斜杠，误报；修 e579a0c1be）→ **b75 上线并真机三过**（①进桌面=雷A 破案 ②首启加载窗 ③市场闪窗修复回归）。
+**战略定调**：desktop=自有产品自维护（上游 desktop 摘取线永久关闭，remote 降为咨询地图）；上游依赖只剩 DSH runtime；**每次 runtime 升级必须过「自有 client 面审计+打包态渲染器冒烟」硬门槛**。
+**beta 通道首用**：beta seq21 = sidebar 0.18.1（首个 npm 通道 beta 条目）+ free-search 0.4.184；同事两件（dai-context/agent-teams）下线（agent-teams 实证炸 host 全树）。真机撞出 **npm beta 安装缺口**（#59 的 beta handoff 只接进 tarball 通道）→ 修 87f859474f（三形态键集白名单）+ P2 测试 b4ffd8b5cd，待构建。
+**兼容实证**：free-search 0.4.184 在 0.1.2 上安装+可用（靠 patches/dsh-settings@0.1.2-rc.1.patch 的 legacy shim，同一补丁救 dshmarket+我们 src+free-search 三方）；sidebar 适配起点=0.18.0（0.15.2~0.17.1 是 0.1.1 旧线）。
+**新卡**：P11 Python 捆绑（网络实测：公司代理可达 pypi，pip 零配置）· P12 runtime 感知门（降级为可选）· **P14 干净 profile 换新**（自动层=版本变更即换新+手动层=恢复窗一键；机制=旧 profile 改名靠边+首次运行重建，真机实证）。
+**教训**：第七次「单测绿打包死」由 **review 拦下**（铸币 net.fetch manual 在 Electron 不可用）——评审环节再次证明价值；Windows CI 特有路径语义必须进测试矩阵。
+
 ### 当前 TODO 快照（2026-09-08 20:35）
 **就绪待发**：#72 构建（用户按住：批3 渲染器崩溃自动恢复 11213d21f8+P3 修 21231e8091、市场闪窗修复 70bd6d5ee0、devlog e8a6be7072；vitest desktop 2050+7skip/market 441/yarn check 绿）。构建后真机验证：杀渲染进程→窗口自动回来（批3 清单）+未装插件点击直接 confirm 窗（闪窗）。
 **进行中·观察面**：①fleet 群发 b71 测试中（DSH_LOG 观察：版本分布 b70→b71 迁移/boot_verify 零 rejected；b64/b66 尾部旧机点名）②两单同事 MR 浸泡（dai-context/dai-agent-teams，MR 线归另一 session）③Kimi 多模态真机表现。
