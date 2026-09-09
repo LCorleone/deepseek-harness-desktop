@@ -21,7 +21,10 @@ const VARIANTS = Object.freeze({
     source: 'desktop-policy.release.json',
     locked: true,
     managedModels: true,
-    pluginResetOnVersionChange: true,
+    // P14 发版纪律（2026-09-09 定稿）：此值为【按构建翻转】——仅载 DSH 底座升级
+    // （或需强制插件换血）的那一版构建翻 true（改本表 + 改 policy 文件，两处一致），
+    // 其余构建保持 false（产品版本号变化才换新）。改这里=有意识的发布动作。
+    pluginResetOnVersionChange: false,
     requireSso: true,
     usageReport: true,
   },
