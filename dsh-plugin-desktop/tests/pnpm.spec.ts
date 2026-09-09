@@ -391,6 +391,59 @@ describe('desktop pnpm Host service', () => {
     }
   })
 
+  it('supersedes the sealed recovery WAL so consecutive installs work in one boot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-consecutive-'))
+    const selectedBootstrap = bootstrap(root)
+    const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
+    const first = controlledSubprocess()
+    const second = controlledSubprocess()
+    try {
+      mkdirSync(selectedBootstrap.activeProfileDir, { recursive: true })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: {} }))
+      const harness = await createHarness([first, second], selectedBootstrap)
+
+      const operationOne = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'plugin-one',
+          packageVersion: '1.0.0',
+          receiptId: 'receipt:test-consecutive-0001',
+        },
+      })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'plugin-one': '1.0.0' } }))
+      finish(first)
+      await expect(operationOne.done).resolves.toEqual({ exitCode: 0, signal: null })
+      expect(JSON.parse(readFileSync(selectedBootstrap.installRecoveryStatePath, 'utf8'))).toMatchObject({
+        packageName: 'plugin-one',
+        phase: 'awaiting-restart',
+      })
+
+      // Same boot, second install: the sealed WAL is superseded, not a blocker.
+      const operationTwo = await harness.service.installPlugin({
+        invokingDir: '/workspace',
+        recovery: {
+          packageName: 'plugin-two',
+          packageVersion: '2.0.0',
+          receiptId: 'receipt:test-consecutive-0002',
+        },
+      })
+      writeFileSync(manifestPath, JSON.stringify({ dependencies: { 'plugin-one': '1.0.0', 'plugin-two': '2.0.0' } }))
+      finish(second)
+      await expect(operationTwo.done).resolves.toEqual({ exitCode: 0, signal: null })
+
+      expect(harness.spawn).toHaveBeenCalledTimes(2)
+      expect(JSON.parse(readFileSync(selectedBootstrap.installRecoveryStatePath, 'utf8'))).toMatchObject({
+        packageName: 'plugin-two',
+        packageVersion: '2.0.0',
+        receiptId: 'receipt:test-consecutive-0002',
+        phase: 'awaiting-restart',
+      })
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('restores partial profile writes when a recoverable plugin install exits nonzero', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-recovery-failure-'))
     const selectedBootstrap = bootstrap(root)

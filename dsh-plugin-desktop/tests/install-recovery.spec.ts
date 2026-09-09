@@ -403,6 +403,173 @@ describe('Desktop plugin install recovery WAL', () => {
   })
 })
 
+describe('Desktop plugin install recovery consecutive installs', () => {
+  it('supersedes one sealed awaiting-restart transaction so the same boot can install again', async () => {
+    const target = fixture()
+    const origin = store(target)
+    const first = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    const sealed = await origin.seal(first.transactionId)
+    expect(sealed.phase).toBe('awaiting-restart')
+
+    const second = await store(target).begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+
+    expect(second.phase).toBe('prepared')
+    expect(second.packageName).toBe('plugin-b')
+    expect(second.transactionId).not.toBe(first.transactionId)
+    const backups = join(dirname(target.statePath), 'backups')
+    // The superseded WAL metadata and its private preimages are both gone.
+    expect(existsSync(join(backups, first.transactionId))).toBe(false)
+    // The new transaction's preimage is exactly the post-install state of #1.
+    for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
+      expect(readFileSync(join(backups, second.transactionId, `${name}.before`), 'utf8'))
+        .toBe(POSTINSTALL[name])
+    }
+    const state = await store(target).read()
+    expect(state).toMatchObject({ transactionId: second.transactionId, phase: 'prepared' })
+  })
+
+  it('clears one terminal-but-unacknowledged transaction, then begins', async () => {
+    const verifiedTarget = fixture()
+    const verifiedOrigin = store(verifiedTarget)
+    const verifiedPrepared = await verifiedOrigin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(verifiedTarget)
+    await verifiedOrigin.seal(verifiedPrepared.transactionId)
+    const verifiedRestart = store(verifiedTarget, 'generation-0002')
+    await verifiedRestart.claim()
+    await verifiedRestart.markHealthy(verifiedPrepared.transactionId)
+    expect((await verifiedRestart.read())?.phase).toBe('verified')
+
+    const verifiedNext = await verifiedRestart.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+    expect(verifiedNext.phase).toBe('prepared')
+    const verifiedBackups = join(dirname(verifiedTarget.statePath), 'backups')
+    expect(existsSync(join(verifiedBackups, verifiedPrepared.transactionId))).toBe(false)
+    expect((await verifiedRestart.read())?.transactionId).toBe(verifiedNext.transactionId)
+
+    const rolledBackTarget = fixture()
+    const rolledBackOrigin = store(rolledBackTarget)
+    const rolledBackPrepared = await rolledBackOrigin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    await rolledBackOrigin.restore(rolledBackPrepared.transactionId, 'install-failed')
+    expect((await rolledBackOrigin.read())?.phase).toBe('rolled-back')
+
+    const rolledBackNext = await rolledBackOrigin.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+    expect(rolledBackNext.phase).toBe('prepared')
+    const rolledBackBackups = join(dirname(rolledBackTarget.statePath), 'backups')
+    expect(existsSync(join(rolledBackBackups, rolledBackPrepared.transactionId))).toBe(false)
+  })
+
+  it('still refuses to begin over an in-flight prepared transaction', async () => {
+    const target = fixture()
+    const first = await begin(target)
+    await expect(store(target).begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })).rejects.toThrow('another plugin install recovery transaction is pending')
+    expect((await store(target).read())?.transactionId).toBe(first.transactionId)
+  })
+
+  it('still refuses to begin over a manual-recovery-required transaction', async () => {
+    const target = fixture()
+    const prepared = await begin(target)
+    writeFileSync(join(target.profileDir, 'package.json'), POSTINSTALL['package.json'], { mode: 0o640 })
+    const restarted = store(target, 'generation-0002')
+    await restarted.claim()
+    const restored = await restarted.restore(prepared.transactionId, 'interrupted-install')
+    expect(restored.status).toBe('manual-recovery-required')
+
+    await expect(restarted.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })).rejects.toThrow('another plugin install recovery transaction is pending')
+    expect((await restarted.read())?.transactionId).toBe(prepared.transactionId)
+  })
+
+  it('still refuses to begin over another profile\u2019s sealed transaction', async () => {
+    const target = fixture()
+    const origin = store(target)
+    const prepared = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await origin.seal(prepared.transactionId)
+
+    const foreign = new DesktopInstallRecoveryStore({
+      statePath: target.statePath,
+      profileName: 'second profile',
+      profileDir: join(target.root, 'profiles', 'second profile'),
+      generationId: 'generation-0001',
+    })
+    await expect(foreign.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })).rejects.toThrow('another plugin install recovery transaction is pending')
+    expect((await origin.read())?.transactionId).toBe(prepared.transactionId)
+  })
+
+  it('rolls a failed follow-up install back to the state the sealed first install produced', async () => {
+    const target = fixture()
+    const first = await store(target).begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await store(target).seal(first.transactionId)
+
+    const second = await store(target).begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+    // Install #2 partially writes its own state before failing.
+    for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
+      writeFileSync(join(target.profileDir, name), `# broken by ${name} from plugin-b\n`, { mode: 0o640 })
+    }
+    const result = await store(target).restoreCurrentInstall(second.transactionId, 'install-failed')
+
+    expect(result.status).toBe('restored')
+    // The rollback lands on the post-install-#1 state, not the pre-#1 state.
+    expectProfile(target, POSTINSTALL)
+    expect((await store(target).read())?.phase).toBe('rolled-back')
+    // A third install can start in the same boot after that rollback.
+    const third = await store(target).begin({
+      packageName: 'plugin-c',
+      packageVersion: '3.0.0',
+      receiptId: 'receipt-0003',
+    })
+    expect(third.phase).toBe('prepared')
+  })
+})
+
 describe('Desktop plugin install recovery filesystem boundaries', () => {
   it.skipIf(process.platform === 'win32')('rejects symlinked profile files', async () => {
     const linked = fixture([])

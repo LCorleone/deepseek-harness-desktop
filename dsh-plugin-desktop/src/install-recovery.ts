@@ -395,8 +395,22 @@ export class DesktopInstallRecoveryStore {
     }
     assertPackageVersion(input.packageVersion)
     assertOpaqueId('receipt id', input.receiptId)
-    if (await this.read() !== undefined) {
-      throw new Error(`${BIN_NAME}: another plugin install recovery transaction is pending`)
+    const pending = await this.read()
+    if (pending !== undefined) {
+      // Phase dispatch: only this profile's sealed or terminal-but-
+      // unacknowledged transactions may make room for a new install. Anything
+      // still mid-flight ('prepared'/'verifying'), awaiting a recovery choice
+      // ('recovery-pending'/'retry-requested'/'manual-recovery-required'), or
+      // owned by another profile keeps the WAL exclusive so its recovery
+      // guarantees are never lost.
+      const supersede = this.matchesCurrentProfile(pending)
+        && (pending.phase === 'awaiting-restart'
+          || pending.phase === 'verified'
+          || pending.phase === 'rolled-back')
+      if (!supersede) {
+        throw new Error(`${BIN_NAME}: another plugin install recovery transaction is pending`)
+      }
+      await this.supersedeSealed(pending)
     }
     await this.assertProfileDirectory()
     const transactionId = randomUUID()
@@ -745,6 +759,25 @@ export class DesktopInstallRecoveryStore {
     }
     await unlink(this.statePath)
     await rm(this.backupDirectory(transactionId), { recursive: true, force: true })
+  }
+
+  /**
+   * Remove one superseded transaction's WAL state and private preimages so
+   * the same boot can begin the next plugin install.
+   *
+   * Superseding a sealed 'awaiting-restart' transaction is safe because that
+   * install already succeeded: the superseding transaction's preimages capture
+   * exactly the post-install state, so a failed follow-up rolls back to it
+   * (correct), and the next startup's claim verifies the final combined state.
+   * 'verified'/'rolled-back' are terminal transactions whose ack or notice
+   * flow simply has not cleared them yet — an explanation obligation never
+   * blocks an active install — so the same removal clearLocked performs is
+   * safe here. Unlike clearLocked this is an internal begin-path dispatch,
+   * not the terminal-phase assertion path.
+   */
+  private async supersedeSealed(state: DesktopInstallRecoveryTransaction): Promise<void> {
+    await unlink(this.statePath)
+    await rm(this.backupDirectory(state.transactionId), { recursive: true, force: true })
   }
 
   private verifyingState(state: DesktopInstallRecoveryTransaction): DesktopInstallRecoveryTransaction {
