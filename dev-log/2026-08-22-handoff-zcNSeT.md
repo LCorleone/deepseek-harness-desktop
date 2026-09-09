@@ -387,6 +387,14 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **新卡**：P11 Python 捆绑（网络实测：公司代理可达 pypi，pip 零配置）· P12 runtime 感知门（降级为可选）· **P14 干净 profile 换新**（自动层=版本变更即换新+手动层=恢复窗一键；机制=旧 profile 改名靠边+首次运行重建，真机实证）。
 **教训**：第七次「单测绿打包死」由 **review 拦下**（铸币 net.fetch manual 在 Electron 不可用）——评审环节再次证明价值；Windows CI 特有路径语义必须进测试矩阵。
 
+### 当前 TODO 快照（2026-09-09 17:34）
+**进行中**：b78 装机验证（P14 EBUSY 修复终判：bak 出现+插件清空+plugin_reset outcome=swapped）。
+**就绪待发**：fleet 群发 b78（P14 自动清→同事干净进 0.1.2）→ 全员升级确认 → promote sidebar 0.18.1 + dai-context 0.41.4 到 stable。
+**排期**：P11 捆绑 Python（M·2-3 天；公司代理可达 pypi，pip 零配置已实测）→ P12 runtime 感知门（可选，降级）。
+**用户外部**：sebtang 修 agent-teams（唯一不兼容件；dai-context 已验证无需改）+ 出官方 dai-context 版本；0.4.184 fleet 反馈。
+**挂账**：free-search rebase 上游 v0.4.19+（摆脱 dsh-settings shim）· 沙箱档2评估（首拒重试率观察）· sso-gate 浏览器路径主动测 · P14 备份清理按钮（可选）。
+**观察面**：b77/b78 存量机稳定性 · beta 3 名测试者 · 插件重装体验（同事视角）。
+
 ### 当前 TODO 快照（2026-09-08 20:35）
 **就绪待发**：#72 构建（用户按住：批3 渲染器崩溃自动恢复 11213d21f8+P3 修 21231e8091、市场闪窗修复 70bd6d5ee0、devlog e8a6be7072；vitest desktop 2050+7skip/market 441/yarn check 绿）。构建后真机验证：杀渲染进程→窗口自动回来（批3 清单）+未装插件点击直接 confirm 窗（闪窗）。
 **进行中·观察面**：①fleet 群发 b71 测试中（DSH_LOG 观察：版本分布 b70→b71 迁移/boot_verify 零 rejected；b64/b66 尾部旧机点名）②两单同事 MR 浸泡（dai-context/dai-agent-teams，MR 线归另一 session）③Kimi 多模态真机表现。
