@@ -17,6 +17,23 @@
  * until that cache expires, after which the catalog fails with the same
  * explicit untrusted error instead of showing anything newer or older.
  *
+ * Per-package runtime-selected view (P15 phase 2): the manifest may pin
+ * several versions of one package (the catalog compatibility window), and
+ * every browsing row and install candidate is chosen per machine — the
+ * newest non-revoked entry whose signed `runtime.dshRuntimeVersion` range
+ * accepts the DSH runtime version this deployment pins (the same
+ * `satisfies` comparator and the same constant the install gate judges
+ * with; a beta overlay has already collapsed an overlaid name to its
+ * single pin, so the selection always runs on a per-name entry list).
+ * Entries of other runtime lines stay hidden from the market list
+ * entirely, and a package whose every live entry targets another runtime
+ * line disappears from it — this machine cannot install any of its pins
+ * until the desktop client upgrades. The hidden versions stay signed and
+ * queryable through {@link CompanyCatalogProvider.findSignedPackage}, so
+ * the install gate can still tell a hidden-but-signed version from an
+ * absent one and refuse it with the dedicated upgrade-the-client code
+ * instead of a generic verification failure.
+ *
  * Anti-rollback is cross-process: after a successful verification the manifest
  * sequence is persisted through the injected {@link CompanyManifestSequenceStore}
  * (settings-backed in Desktop) *before* any catalog state is derived from the
@@ -62,7 +79,9 @@ import {
   type CompanyManifestVerificationCode,
   type VerifyCompanyManifestOptions,
 } from '../signing/index.js'
+import { compare, satisfies, valid } from 'semver'
 import { isCompanyManifestKeyId, normalizeCompanyManifestTrustRoots } from '../signing/keys.js'
+import { DSH_RUNTIME_VERSION } from '../install/service.js'
 import type { MarketCompanyManifestRecord, MarketSettingsMutatingScope } from './source-store.js'
 
 /** Adapter identity of the signed company catalog in the local registry. */
@@ -102,10 +121,13 @@ export class CompanyCatalogUntrustedError extends Error {
 }
 
 /**
- * One installable entry of the last verified company manifest. The signed
- * npm dist `integrity`, the in-package `bundlePatch` path, and the runtime
- * compatibility ranges are carried verbatim for the install-time signature
- * check (P2-3); this card only transports them and never evaluates them.
+ * One installable entry of the last verified company manifest — the
+ * runtime-selected per-package view (P15 phase 2): at most one entry per
+ * package name, the newest whose `runtime.dshRuntimeVersion` accepts the
+ * local DSH runtime. The signed npm dist `integrity`, the in-package
+ * `bundlePatch` path, and the runtime compatibility ranges are carried
+ * verbatim for the install-time signature check (P2-3); this card only
+ * transports them and never evaluates them.
  */
 export interface CompanyCatalogCandidate {
   /** Snapshot item ID (`npm:<packageName>@<version>`) correlating catalog rows with signed entries. */
@@ -217,6 +239,20 @@ export interface CompanyCatalogProviderOptions {
    * because of beta content. Standalone deployments stay overlay-free.
    */
   readonly betaOverlayProvider?: CompanyBetaCatalogOverlayProvider
+  /**
+   * DSH runtime version the per-package entry selection evaluates ranges
+   * against (P15 phase 2): the newest same-name entry whose signed
+   * `runtime.dshRuntimeVersion` accepts this version becomes the package's
+   * single market row. Defaults to the market install gate's pin
+   * (`DSH_RUNTIME_VERSION` in `../install/service.ts` — the value
+   * `scripts/dsh-runtime-version-parity.test.mjs` keeps equal to the desktop
+   * boot classification pin), so the browsing view and the installed gate
+   * classify every entry identically without a third hand-synced literal.
+   * Injectable so tests can simulate mixed-fleet machines on older runtime
+   * lines; the value never decides trust, only which pinned versions are
+   * visible and installable here.
+   */
+  readonly dshRuntimeVersion?: string
   /**
    * Host logger for the loud same-sequence digest-mismatch warning on the
    * self-heal path in `scanCatalog` (see the module security note); the
@@ -405,6 +441,58 @@ function assertRepresentableEntry(entry: CompanyManifestPackage): void {
   }
 }
 
+/**
+ * Whether one entry's signed `runtime.dshRuntimeVersion` range accepts the
+ * given DSH runtime version — the exact comparator the market install gate
+ * and the desktop boot classification use (`satisfies` with
+ * `includePrerelease`); a range the comparator refuses is simply
+ * incompatible, never a scan failure.
+ */
+function entryAcceptsDshRuntime(entry: CompanyManifestPackage, runtimeVersion: string): boolean {
+  try {
+    return satisfies(runtimeVersion, entry.runtime.dshRuntimeVersion, { includePrerelease: true })
+  } catch {
+    return false
+  }
+}
+
+/** `entry > current` under node-semver; an unparseable pair is "not newer" — the pick is a view decision, never an enforcement point. */
+function newerVersion(entry: CompanyManifestPackage, current: CompanyManifestPackage): boolean {
+  try {
+    return compare(entry.version, current.version) > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The per-package catalog view (P15 phase 2): one entry per package name —
+ * the newest non-revoked entry whose signed runtime range accepts the local
+ * DSH runtime version, kept in manifest order. Entries of other runtime
+ * lines are hidden rather than badged (the smaller of the card's two
+ * sanctioned shapes), and a name whose every live entry targets another
+ * runtime line disappears from the view entirely; the signed entries all
+ * stay behind `findSignedPackage` for the install-time queries. Revoked
+ * entries never enter the pool — they carry no browsing row and no install
+ * candidate today, and a revocation must not shadow the live pins of the
+ * same name.
+ */
+function selectCatalogViewEntries(
+  packages: readonly CompanyManifestPackage[],
+  dshRuntimeVersion: string,
+): readonly CompanyManifestPackage[] {
+  const newestByName = new Map<string, CompanyManifestPackage>()
+  for (const entry of packages) {
+    if (entry.revoked) continue
+    if (!entryAcceptsDshRuntime(entry, dshRuntimeVersion)) continue
+    const current = newestByName.get(entry.packageName)
+    if (current === undefined || newerVersion(entry, current)) {
+      newestByName.set(entry.packageName, entry)
+    }
+  }
+  return packages.filter(entry => newestByName.get(entry.packageName) === entry)
+}
+
 function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): CatalogItem {
   const itemId = companyCatalogItemId(entry)
   return {
@@ -434,18 +522,28 @@ function buildScan(
   source: LocalSourceRecord,
   verification: Omit<CompanyCatalogVerification, 'sequence' | 'expiresAt'> & { readonly finalUrl: string },
   manifest: Pick<CompanyManifest, 'sequence' | 'expiresAt'>,
+  dshRuntimeVersion: string,
 ): CompanyCatalogScan {
   const items: CatalogItem[] = []
   const candidates: CompanyCatalogCandidate[] = []
+  // Representability stays a whole-scan contract for every live entry,
+  // including the ones the runtime selection is about to hide: a publish
+  // fault must fail the scan loudly, never pass unnoticed behind a hidden
+  // row (revoked entries keep their historical exemption — no row today).
   for (const entry of packages) {
-    // Revoked entries keep their signed audit trail inside the manifest but
-    // never enter the catalog: no browse row, no install candidate. Exclusion
-    // (instead of an "uninstallable" flag) matches the v1 candidate contract,
-    // which has no way to mark a row uninstallable. The signed entries stay
-    // queryable through findSignedPackage so the install-time authority
-    // (P2-3) can distinguish a revoked entry from an absent one.
     if (entry.revoked) continue
     assertRepresentableEntry(entry)
+  }
+  // The runtime-selected per-package view (P15 phase 2): each package name
+  // contributes exactly its newest runtime-compatible pin — or nothing, when
+  // every live pin targets another DSH runtime line. Revoked entries keep
+  // their signed audit trail inside the manifest but never enter the catalog:
+  // no browse row, no install candidate. Exclusion (instead of an
+  // "uninstallable" flag) matches the v1 candidate contract, which has no
+  // way to mark a row uninstallable. The signed entries stay queryable
+  // through findSignedPackage so the install-time authority (P2-3) can
+  // distinguish a revoked — or runtime-hidden — entry from an absent one.
+  for (const entry of selectCatalogViewEntries(packages, dshRuntimeVersion)) {
     items.push(catalogItem(entry, source))
     candidates.push({
       itemId: companyCatalogItemId(entry),
@@ -586,6 +684,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   private readonly now: () => number
   private readonly verifyManifest: CompanyManifestVerifier
   private readonly betaOverlayProvider: CompanyBetaCatalogOverlayProvider | undefined
+  private readonly dshRuntimeVersion: string
   private readonly logger: Pick<Context['logger'], 'warn'> | undefined
   private scan: CompanyCatalogScan | undefined
 
@@ -607,6 +706,12 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     if (options.betaOverlayProvider !== undefined && typeof options.betaOverlayProvider !== 'function') {
       throw new TypeError('betaOverlayProvider must be a function')
     }
+    if (options.dshRuntimeVersion !== undefined
+      && (typeof options.dshRuntimeVersion !== 'string' || valid(options.dshRuntimeVersion) === null)) {
+      // A silent garbage pin would read as "every entry incompatible" and
+      // render an empty catalog, so refuse it loudly at construction.
+      throw new TypeError('dshRuntimeVersion must be a valid node-semver version')
+    }
     const trustRoots = normalizeCompanyManifestTrustRoots(options.trustRoots)
     if (trustRoots.length === 0) {
       throw new TypeError('company catalog provider requires at least one pinned trust root')
@@ -619,6 +724,7 @@ export class CompanyCatalogProvider implements CatalogAdapter {
     this.now = options.now ?? Date.now
     this.verifyManifest = options.manifestVerifier ?? verifyCompanyManifest
     this.betaOverlayProvider = options.betaOverlayProvider
+    this.dshRuntimeVersion = options.dshRuntimeVersion ?? DSH_RUNTIME_VERSION
     this.logger = options.logger
   }
 
@@ -754,22 +860,27 @@ export class CompanyCatalogProvider implements CatalogAdapter {
         finalUrl: loaded.finalUrl,
       },
       verification.manifest,
+      this.dshRuntimeVersion,
     )
     this.scan = scan
     return scan.snapshots
   }
 
   /**
-   * Installable entries of the last verified manifest: signed integrity,
-   * bundle patch, and runtime ranges included, revoked entries excluded.
+   * Installable entries of the last verified manifest — the runtime-selected
+   * per-package view (P15 phase 2): one entry per package name, the newest
+   * whose signed runtime range accepts the local DSH runtime. Signed
+   * integrity, bundle patch, and runtime ranges included; revoked entries
+   * and entries of other runtime lines excluded.
    */
   verifiedPackages(): readonly CompanyCatalogCandidate[] {
     return this.scan?.candidates ?? []
   }
 
   /**
-   * Install-time lookup of one exact signed entry. Revoked entries are absent
-   * by construction, so a hit is installable metadata and a miss is not.
+   * Install-time lookup of one exact signed entry of the runtime-selected
+   * view. Revoked entries are absent by construction, so a hit is
+   * installable metadata and a miss is not.
    */
   findVerifiedPackage(packageName: string, version: string): CompanyCatalogCandidate | undefined {
     return this.verifiedPackages().find(candidate =>
@@ -777,10 +888,12 @@ export class CompanyCatalogProvider implements CatalogAdapter {
   }
 
   /**
-   * Signed entry of the last verified manifest, revoked entries included.
-   * Narrow install-time query (P2-3): the signed-manifest install authority
-   * must tell a revoked entry from an absent one, while the browsing
-   * candidate stream above excludes revoked entries by design.
+   * Signed entry of the last verified manifest, revoked entries and
+   * runtime-hidden entries included. Narrow install-time query (P2-3): the
+   * signed-manifest install authority must tell a revoked entry from an
+   * absent one — and, since P15 phase 2, a version pinned for another
+   * runtime line from an unpinned one — while the browsing candidate stream
+   * above excludes both by design.
    */
   findSignedPackage(packageName: string, version: string): CompanyManifestPackage | undefined {
     return this.scan?.signedPackages.find(entry =>

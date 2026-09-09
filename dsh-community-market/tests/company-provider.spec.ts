@@ -13,6 +13,7 @@ import {
   CompanyCatalogUntrustedError,
   createCompanyCatalogProvider,
   SettingsCompanyManifestSequenceStore,
+  type CompanyBetaCatalogOverlay,
   type CompanyCatalogProviderOptions,
   type CompanyManifestSequenceStore,
   type CompanyManifestVerifier,
@@ -1071,6 +1072,157 @@ describe('company catalog provider manifest verifier injection (field-aware host
       manifestContentProvider: () => signedText(),
       trustRoots,
       manifestVerifier: 'not a function' as unknown as CompanyManifestVerifier,
+    })).toThrow(TypeError)
+  })
+})
+
+describe('company catalog provider runtime-selected view (P15 phase 2)', () => {
+  // The fleet shape the compatibility window ships for: one package pinned
+  // twice, each pin carrying its own runtime line. The old line range must
+  // exclude the 0.1.2 prerelease line explicitly — `includePrerelease`
+  // satisfies would otherwise let `^0.1.1` cover 0.1.2-rc.1.
+  const OLD_LINE = '>=0.1.1 <0.1.2-rc.1'
+  const NEW_LINE = '^0.1.2-rc.1'
+  const oldPin = packageEntry({
+    version: '0.15.2',
+    integrity: `sha512-${Buffer.alloc(64, 21).toString('base64')}`,
+    runtime: { dshRuntimeVersion: OLD_LINE, nodeRuntimeVersion: '>=22.0.0' },
+  })
+  const newPin = packageEntry({
+    version: '0.18.1',
+    integrity: `sha512-${Buffer.alloc(64, 22).toString('base64')}`,
+    runtime: { dshRuntimeVersion: NEW_LINE, nodeRuntimeVersion: '>=22.0.0' },
+  })
+  const dualPinManifest = () => signedText(unsignedManifest({ packages: [oldPin, newPin] }))
+
+  function runtimeViewScan(text: () => string, dshRuntimeVersion?: string) {
+    const provider = createCompanyCatalogProvider({
+      manifestContentProvider: contentProvider(text),
+      trustRoots,
+      sequenceStore: replayTolerantStore,
+      now: () => verifiedAt,
+      ...(dshRuntimeVersion === undefined ? {} : { dshRuntimeVersion }),
+    })
+    return { provider, context: contentContext() }
+  }
+
+  it('an older-runtime machine sees only the pin of its own line — never the newer other-line pin', async () => {
+    // 0.1.1 语义机器：the newest overall pin (0.18.1) targets the 0.1.2 line,
+    // so the view falls back to this machine's line and shows 0.15.2 only.
+    const { provider, context } = runtimeViewScan(dualPinManifest, '0.1.1')
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      'npm:dsh-plugin-safe@0.15.2',
+    ])
+    expect(snapshots[0]?.page.total).toBe(1)
+    expect(provider.verifiedPackages()).toEqual([
+      expect.objectContaining({
+        itemId: 'npm:dsh-plugin-safe@0.15.2',
+        version: '0.15.2',
+        runtime: { dshRuntimeVersion: OLD_LINE, nodeRuntimeVersion: '>=22.0.0' },
+      }),
+    ])
+    // The hidden other-line pin stays a signed fact the install gate may
+    // still query — hidden from the view, not from the authority.
+    expect(provider.findSignedPackage('dsh-plugin-safe', '0.18.1')).toMatchObject({ version: '0.18.1' })
+    expect(provider.findVerifiedPackage('dsh-plugin-safe', '0.18.1')).toBeUndefined()
+  })
+
+  it('a current-runtime machine sees only the newest compatible pin of the window', async () => {
+    // Default (0.1.2-rc.1) machine: both lines could serve it a row, the view
+    // keeps exactly one — the maximum version among compatible pins.
+    const { provider, context } = runtimeViewScan(dualPinManifest)
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      'npm:dsh-plugin-safe@0.18.1',
+    ])
+    expect(provider.findSignedPackage('dsh-plugin-safe', '0.15.2')).toMatchObject({ version: '0.15.2' })
+    expect(provider.findVerifiedPackage('dsh-plugin-safe', '0.15.2')).toBeUndefined()
+  })
+
+  it('a package whose every live pin targets another runtime line leaves the market list entirely', async () => {
+    const { provider, context } = runtimeViewScan(() => signedText(unsignedManifest({
+      packages: [
+        packageEntry({ runtime: { dshRuntimeVersion: '^0.1.3', nodeRuntimeVersion: '>=22.0.0' } }),
+      ],
+    })))
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]?.items).toEqual([])
+    expect(snapshots[0]?.page.total).toBe(0)
+    expect(provider.verifiedPackages()).toEqual([])
+    expect(provider.findSignedPackage('dsh-plugin-safe', '1.2.3')).toMatchObject({ version: '1.2.3' })
+  })
+
+  it('a revoked pin never shadows the live pins of the same name, compatible or not', async () => {
+    // The window retires the old line's pin while the new line's pin stays
+    // live: the current-runtime machine must still see the live pin, and the
+    // old-runtime machine sees nothing (its only compatible pin is revoked).
+    const retired = { ...oldPin, revoked: true }
+    const currentView = runtimeViewScan(() => signedText(unsignedManifest({ packages: [retired, newPin] })))
+    await expect(currentView.provider.scanCatalog!({}, currentView.context)).resolves.toMatchObject([
+      { items: [{ id: 'npm:dsh-plugin-safe@0.18.1' }] },
+    ])
+    const oldView = runtimeViewScan(() => signedText(unsignedManifest({ packages: [retired, newPin] })), '0.1.1')
+    const snapshots = await oldView.provider.scanCatalog!({}, oldView.context)
+    expect(snapshots.flatMap(snapshot => snapshot.items)).toEqual([])
+  })
+
+  it('a single-pin manifest keeps the exact pre-window view (regression)', async () => {
+    const { provider, context } = runtimeViewScan(() => signedText())
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    // Byte-for-byte the pre-P15 single-version view: the default fixture's
+    // range accepts the default runtime, so the selection is the identity.
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      'npm:dsh-plugin-safe@1.2.3',
+      'npm:@deepseek-ai/cool-plugin@2.0.0',
+    ])
+    expect(provider.verifiedPackages()).toHaveLength(2)
+  })
+
+  it('a beta overlay still replaces a multi-version package wholesale — the runtime selection runs on the overlay pin alone', async () => {
+    // Roster machine on the current runtime: the overlay re-pins the package
+    // to a beta of its own — an OLDER version than the stable window's newest
+    // compatible pin, on the same runtime line. The overlay's per-name
+    // replacement precedes the selection, so the view shows the beta pin
+    // alone: the selection picks "newest compatible" among the merged
+    // entries, never across stable-plus-beta.
+    const betaOverlay: CompanyBetaCatalogOverlay = {
+      packages: [packageEntry({
+        version: '0.16.0-beta.1',
+        integrity: `sha512-${Buffer.alloc(64, 23).toString('base64')}`,
+        runtime: { dshRuntimeVersion: NEW_LINE, nodeRuntimeVersion: '>=22.0.0' },
+      })] as unknown as CompanyBetaCatalogOverlay['packages'],
+      sequence: 43,
+    }
+    const provider = createCompanyCatalogProvider({
+      manifestContentProvider: contentProvider(dualPinManifest),
+      trustRoots,
+      sequenceStore: replayTolerantStore,
+      now: () => verifiedAt,
+      betaOverlayProvider: async () => betaOverlay,
+    })
+
+    const snapshots = await provider.scanCatalog!({}, contentContext())
+
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      'npm:dsh-plugin-safe@0.16.0-beta.1',
+    ])
+  })
+
+  it('rejects an unparseable injected runtime version at construction', () => {
+    expect(() => createCompanyCatalogProvider({
+      manifestContentProvider: contentProvider(dualPinManifest),
+      trustRoots,
+      dshRuntimeVersion: 'not a version',
     })).toThrow(TypeError)
   })
 })

@@ -98,6 +98,10 @@ node tools/company-catalog/cli.mjs revoke <名>@<版本>
   （不得缺省、不得重打包）——publish-local 的 4d 完整性闸按「托管 sha512 ＝
   artifact sha512 ＝ 签名 source.integrity」fail-closed 对拍，旧钉缺字节或
   换字节即整次发布拦红（同版本不可重发，见 E）。
+- **市场视图按客户端 runtime 展示（P15 Phase 2）**：市场列表每包只显示
+  与本机 DSH runtime 兼容的最高钉版，整包无兼容钉版即不出列表；对不
+  兼容钉版的安装会被安装闸以「需先升级客户端」（client-update-required）
+  明确拒绝。
 
 ```bash
 node tools/company-catalog/cli.mjs revoke <名>@<旧版本>   # 第一步：签名吊销记录

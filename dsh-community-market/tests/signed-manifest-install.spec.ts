@@ -171,6 +171,84 @@ describe('signed manifest install target authority', () => {
     expect(decision.reason).toContain('is not in the signed company manifest')
   })
 
+  it('refuses a pin of another runtime line with the client-update-required code (P15 phase 2)', async () => {
+    // The window keeps an old-runtime pin beside the current line's: the
+    // current machine must not install it — not as a verification failure,
+    // but as an explicit upgrade-the-client instruction. The catalog view
+    // hides the entry; this is the gate under the view.
+    const { provider } = await scannedCompanySource([
+      packageEntry({ runtime: { dshRuntimeVersion: '>=0.1.1 <0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' } }),
+    ])
+    const authority = createSignedManifestInstallTargetAuthority(provider)
+
+    const decision = authority.canInstall(candidate)
+    expect(decision).toEqual({
+      allowed: false,
+      code: 'client-update-required',
+      reason: expect.stringContaining('upgrade the desktop client'),
+    })
+    if (decision.reason === undefined) throw new Error('expected a refusal reason')
+    expect(decision.reason).toContain('>=0.1.1 <0.1.2-rc.1')
+    expect(decision.reason).toContain('dsh-plugin-safe@1.2.3')
+  })
+
+  it('allows the compatible pin of a two-version window on each runtime line', async () => {
+    // Row 1-3 of the P15 acceptance matrix, install side: the old-line pin
+    // installs on an old-line machine, the current-line pin on this one.
+    const oldPinIntegrity = `sha512-${Buffer.alloc(64, 21).toString('base64')}`
+    const newPinIntegrity = `sha512-${Buffer.alloc(64, 22).toString('base64')}`
+    const oldLinePin = packageEntry({
+      version: '0.15.2',
+      integrity: oldPinIntegrity,
+      runtime: { dshRuntimeVersion: '>=0.1.1 <0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
+    })
+    const newLinePin = packageEntry({
+      version: '0.18.1',
+      integrity: newPinIntegrity,
+    })
+    const { provider } = await scannedCompanySource([oldLinePin, newLinePin])
+
+    const currentLine = createSignedManifestInstallTargetAuthority(provider)
+    expect(currentLine.canInstall({ packageName, version: '0.18.1', integrity: newPinIntegrity })).toEqual({
+      allowed: true,
+      evidence: { manifestSequence: 42, keyId },
+    })
+    // The same window on a mixed-fleet 0.1.1 machine: the old pin passes and
+    // the other-line pin refuses with the dedicated code, never a generic
+    // verification failure.
+    const oldLine = createSignedManifestInstallTargetAuthority(provider, { dshRuntimeVersion: '0.1.1' })
+    expect(oldLine.canInstall({ packageName, version: '0.15.2', integrity: oldPinIntegrity })).toEqual({
+      allowed: true,
+      evidence: { manifestSequence: 42, keyId },
+    })
+    expect(oldLine.canInstall({ packageName, version: '0.18.1', integrity: newPinIntegrity })).toMatchObject({
+      allowed: false,
+      code: 'client-update-required',
+    })
+  })
+
+  it('keeps a revoked pin of a two-version window refused as revoked — the runtime window never widens it', async () => {
+    const retiredIntegrity = `sha512-${Buffer.alloc(64, 21).toString('base64')}`
+    const { provider } = await scannedCompanySource([
+      packageEntry({
+        version: '0.15.2',
+        integrity: retiredIntegrity,
+        runtime: { dshRuntimeVersion: '>=0.1.1 <0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
+        revoked: true,
+      }),
+      packageEntry({
+        version: '0.18.1',
+        integrity: `sha512-${Buffer.alloc(64, 22).toString('base64')}`,
+      }),
+    ])
+    const authority = createSignedManifestInstallTargetAuthority(provider, { dshRuntimeVersion: '0.1.1' })
+
+    const decision = authority.canInstall({ packageName, version: '0.15.2', integrity: retiredIntegrity })
+    expect(decision.allowed).toBe(false)
+    expect(decision.code).toBeUndefined()
+    expect(decision.reason).toContain('revoked in the signed company manifest')
+  })
+
   it('fails closed before the first verified scan', () => {
     const provider = createCompanyCatalogProvider({ manifestContentProvider: () => signedManifestText([]), trustRoots })
     const authority = createSignedManifestInstallTargetAuthority(provider)
@@ -626,6 +704,54 @@ describe('market install service behind the signed manifest', () => {
         message: expect.stringContaining('is not in the signed company manifest'),
       })
     expect(calls).toEqual([])
+  })
+
+  it('refuses a pin of another runtime line with the dedicated client-update-required code, never a generic failure', async () => {
+    // P15 phase 2, matrix row 2: the manifest pins the target for the old
+    // runtime line and this machine runs the current one. The refusal must
+    // carry the upgrade-the-client code and vocabulary — the market UI has
+    // no distinct surface for a flattened verification-failed here, and a
+    // generic operation-failed would point the machine at a server bug.
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const calls: string[][] = []
+    const { service } = await signedService([
+      packageEntry({ runtime: { dshRuntimeVersion: '>=0.1.1 <0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' } }),
+    ], { profileDir, settings, calls })
+
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({
+        code: 'client-update-required',
+        message: expect.stringContaining('upgrade the desktop client'),
+      })
+    expect(calls).toEqual([])
+    expect(settings.receipts()).toEqual([])
+  })
+
+  it('installs the runtime-compatible pin of a two-version window end to end', async () => {
+    // Matrix row 3: the same manifest also carries an old-line pin, and the
+    // current machine installs the current-line pin — evidence and receipt
+    // exactly as a single-pin install.
+    const profileDir = await createProfile()
+    const settings = memoryScope()
+    const calls: string[][] = []
+    const installRequests: { approvedBuildDependencies?: readonly string[] }[] = []
+    const { service } = await signedService([
+      packageEntry({
+        version: '0.15.2',
+        integrity: `sha512-${Buffer.alloc(64, 21).toString('base64')}`,
+        runtime: { dshRuntimeVersion: '>=0.1.1 <0.1.2-rc.1', nodeRuntimeVersion: '>=22.0.0' },
+      }),
+      packageEntry(),
+    ], { profileDir, settings, calls, installRequests })
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const result = await service.executeInstall(preview.intent, new AbortController().signal)
+
+    expect(calls.map(args => args[0])).toEqual(['add'])
+    expect(result.receipt.receiptVersion).toBe(2)
+    expect(result.receipt.version).toBe(version)
+    expect(settings.receipts()).toHaveLength(1)
   })
 
   it('rejects installs while the catalog is untrusted or the manifest expired', async () => {

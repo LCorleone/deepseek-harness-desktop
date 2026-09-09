@@ -4,11 +4,15 @@
  * This is the only authority that may permit a Market install in a locked
  * deployment. A target is allowed exactly when the provider's last verified
  * company manifest carries a matching `(packageName, version)` entry that is
- * not revoked and whose signed npm dist integrity equals the integrity the
- * service resolved from the allowed registry: the service feeds the
+ * not revoked, whose signed npm dist integrity equals the integrity the
+ * service resolved from the allowed registry, and — since the catalog
+ * compatibility window (P15 phase 2) — whose signed `runtime.dshRuntimeVersion`
+ * range accepts the local DSH runtime line: the service feeds the
  * registry-verified integrity into {@link canInstall}, so the signed-manifest
  * chain and the registry-metadata chain must converge on the same digest
- * before anything is installed.
+ * before anything is installed. A runtime-window refusal carries the
+ * dedicated `client-update-required` code, so the Client says "upgrade the
+ * desktop client" instead of re-verifying.
  *
  * Decisions are synchronous and read only the provider's in-memory verified
  * manifest ({@link SignedManifestPackageSource.findSignedPackage}); install
@@ -31,9 +35,15 @@
  * there is nothing to consult and every decision fails closed as well.
  */
 
+import { satisfies } from 'semver'
 import type { CompanyCatalogVerification } from '../catalog/company-provider.js'
 import type { CompanyManifestPackage } from '../signing/index.js'
-import type { InstallTargetAuthority, InstallTargetEvidence } from './service.js'
+import {
+  DSH_RUNTIME_VERSION,
+  type InstallTargetAuthority,
+  type InstallTargetDecision,
+  type InstallTargetEvidence,
+} from './service.js'
 
 /**
  * Narrow read-only view of the signed company manifest state the authority
@@ -56,6 +66,15 @@ export interface SignedManifestPackageSource {
 export interface SignedManifestInstallTargetAuthorityOptions {
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * DSH runtime version the entry compatibility window is judged against
+   * (P15 phase 2); defaults to the market install gate's pin
+   * (`DSH_RUNTIME_VERSION` in `./service.ts`, the value the catalog view
+   * selects with and `scripts/dsh-runtime-version-parity.test.mjs` keeps
+   * equal to the desktop boot pin). Injectable so tests can simulate
+   * mixed-fleet machines on older runtime lines.
+   */
+  readonly dshRuntimeVersion?: string
 }
 
 /** Signed-manifest install whitelist with the untrusted-state propagation hook. */
@@ -78,6 +97,15 @@ function boundedReason(cause: unknown): string {
   return text.length === 0 ? 'manifest verification failed' : text.slice(0, 240)
 }
 
+/** Whether one entry's signed `runtime.dshRuntimeVersion` range accepts the given DSH runtime version (`satisfies` with `includePrerelease` — the comparator the catalog view and the desktop boot classification use; a range the comparator refuses is simply incompatible, never an authority failure). */
+function entryAcceptsDshRuntime(entry: CompanyManifestPackage, runtimeVersion: string): boolean {
+  try {
+    return satisfies(runtimeVersion, entry.runtime.dshRuntimeVersion, { includePrerelease: true })
+  } catch {
+    return false
+  }
+}
+
 /**
  * Build the signed-manifest install whitelist over one verified-manifest
  * source. The returned authority is fail-closed by construction: absent,
@@ -97,6 +125,7 @@ export function createSignedManifestInstallTargetAuthority(
     throw new TypeError('signed manifest authority requires findSignedPackage and verification functions')
   }
   const now = options.now ?? Date.now
+  const dshRuntimeVersion = options.dshRuntimeVersion ?? DSH_RUNTIME_VERSION
   let untrusted:
     | {
       readonly reason: string
@@ -143,6 +172,22 @@ export function createSignedManifestInstallTargetAuthority(
           allowed: false,
           reason: `${candidate.packageName}@${candidate.version} is revoked in the signed company manifest`,
         }
+      }
+      // Compatibility window (P15 phase 2): a pin whose signed runtime line
+      // is not this machine's is not installable here. The catalog view
+      // already hides it; this gate is the defense under the view — a stale
+      // candidate, a direct preview call — and refuses with the dedicated
+      // refusal code so the service says "upgrade the desktop client"
+      // instead of a generic verification failure. Same comparator
+      // (`satisfies` with `includePrerelease`) and the same constant family
+      // as the catalog view selection and the desktop boot classification.
+      if (!entryAcceptsDshRuntime(entry, dshRuntimeVersion)) {
+        const decision: InstallTargetDecision = {
+          allowed: false,
+          code: 'client-update-required',
+          reason: `${candidate.packageName}@${candidate.version} requires a DSH runtime in ${entry.runtime.dshRuntimeVersion}, while this desktop client pins ${dshRuntimeVersion} — upgrade the desktop client to install it`,
+        }
+        return decision
       }
       if (entry.integrity !== candidate.integrity) {
         return {

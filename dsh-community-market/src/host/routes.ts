@@ -157,8 +157,12 @@ function sendInstallError(
       : cause.code === 'conflict' ? 409
         : cause.code === 'intent-expired' ? 410
           : cause.code === 'verification-failed' ? 422
-            : cause.code === 'operation-failed' ? 502
-              : 500
+            // A runtime-window refusal is the client's fact to act on
+            // (upgrade), not a server fault — same unprocessable shape as
+            // the other signed-target refusals.
+            : cause.code === 'client-update-required' ? 422
+              : cause.code === 'operation-failed' ? 502
+                : 500
   sendJson(res, status, { error: cause.message, code: cause.code })
 }
 

@@ -35,8 +35,11 @@ const BLOCKED_PRODUCT_PACKAGES = new Set(['dsh-plugin-desktop', 'dsh-community-m
 // One pin in two places: must equal DESKTOP_BOOT_DSH_RUNTIME_VERSION in
 // dsh-plugin-desktop/src/boot-verification.ts — asserted by
 // scripts/dsh-runtime-version-parity.test.mjs (yarn check:layout); bump both
-// in the same change.
-const DSH_RUNTIME_VERSION = '0.1.2-rc.1'
+// in the same change. Shared (imported, never re-declared) by the catalog
+// provider's per-package view selection and the signed-manifest install
+// gate, so the browsing view, the gate, and the boot classification all
+// judge runtime ranges against the same value.
+export const DSH_RUNTIME_VERSION = '0.1.2-rc.1'
 const CORDIS_RUNTIME_VERSION = '4.0.2'
 const NODE_RUNTIME_VERSION = '24.18.1'
 
@@ -128,6 +131,8 @@ export type MarketInstallErrorCode =
   | 'conflict'
   | 'intent-expired'
   | 'verification-failed'
+  /** The target is signed but pinned for a newer DSH runtime line (P15): the desktop client must upgrade first. */
+  | 'client-update-required'
   | 'operation-failed'
   | 'persistence-failed'
 
@@ -136,7 +141,7 @@ export type MarketInstallErrorCode =
  * telemetry `reason` may carry. */
 const REASON_SAFE_INSTALL_CODES: ReadonlySet<string> = new Set([
   'invalid-request', 'not-available', 'conflict', 'intent-expired',
-  'verification-failed', 'persistence-failed',
+  'verification-failed', 'client-update-required', 'persistence-failed',
 ])
 
 /** Error whose message is safe to return through the loopback API. */
@@ -271,10 +276,20 @@ export interface InstallTargetEvidence {
   readonly approvedBuildDependencies?: readonly string[]
 }
 
+/** Machine-readable category of a refusal, so the service can raise the right {@link MarketInstallErrorCode} instead of flattening every whitelist refusal into a verification failure. */
+export type InstallTargetRefusalCode = 'client-update-required'
+
 /** Whitelist decision for one verified npm install target. */
 export interface InstallTargetDecision {
   readonly allowed: boolean
   readonly reason?: string
+  /**
+   * Refusal category (P15 phase 2); present only on refusals.
+   * `client-update-required` marks an entry pinned for another DSH runtime
+   * line — the client must surface "upgrade the desktop client", never a
+   * generic verification failure.
+   */
+  readonly code?: InstallTargetRefusalCode
   /** Signed-manifest evidence carried into the install receipt; never affects the decision. */
   readonly evidence?: InstallTargetEvidence
 }
@@ -1827,6 +1842,18 @@ export class MarketInstallService {
       throw new MarketInstallError('verification-failed', 'The trusted install whitelist could not be evaluated.')
     }
     if (decision.allowed === true) return decision
+    // P15 phase 2: a runtime-window refusal keeps its dedicated code (and
+    // its upgrade-the-client vocabulary) instead of flattening into
+    // verification-failed — the Client must tell the machine to upgrade, not
+    // to retry or re-verify.
+    if (decision.code === 'client-update-required') {
+      throw new MarketInstallError(
+        'client-update-required',
+        decision.reason === undefined
+          ? 'The plugin version requires a newer DSH Desktop runtime. Upgrade the desktop client, then install it again.'
+          : decision.reason,
+      )
+    }
     throw new MarketInstallError(
       'verification-failed',
       decision.reason === undefined
