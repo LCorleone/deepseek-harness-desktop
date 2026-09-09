@@ -310,11 +310,31 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **设计**：每个条目已带 `runtime.dshRuntimeVersion`——客户端按【自身 runtime】选条目：老客户端(0.1.1) 选 sidebar 0.15.2、新客户端(0.1.2) 选 0.18.1；「有更新」仅在存在**与自身 runtime 兼容且版本更高**的条目时提示。→ 老客户端永不砖、不被迫升级；目录发布与客户端升级彻底解耦。
 
-**改动面（M，2-3 天）**：①市场条目模型：按包名合并 → 改为「包名 × 兼容自身 runtime」选一条（`company-provider.ts` companyPackageKey/merge/catalogItem）；②boot 更新分类：`.find(名)` → `.find(名 + runtime 兼容 + 版本>已装)`（`boot-verification.ts:1209`）；③安装闸：允许「存在且 runtime 兼容」的版本（现为唯一钉版）；④目录管线多版本校验/发布（小改）；⑤遥测/文档可见性。
+**关键洞察（2026-09-09 晚补）**：目录侧「保留旧钉版」对老客户端**即刻向后安全**——老客户端 boot 本就是 名@版本 精确查找，旧条目还在就照常加载，**不需要老客户端有任何新代码**。P15 客户端代码只是把「更新分类/市场视图/安装闸」的语义修对。=> 可分阶段：目录侧先行（立刻实战），客户端侧随后。
+
+**分阶段计划（2026-09-09 晚定稿）**：
+- **Phase 0 目录侧先行（S·半天，可立即做，先于 P11）**：管线接受同包多版本（allowlist 校验/digest 按 名@版本；removal-guard 语义核对=撤单版本 ≠ 撤包，显式 retire 才下窗）；发布 SOP：**promote=加条目并保留旧钉**、**retire=显式下窗**（拦截静默撤版）。验收=目录同时钉 0.15.2+0.18.1 干跑/真发绿 + 老客户端模拟 boot 精确命中旧条目。
+- **Phase 1 boot 分类（S-M·1天）**：`boot-verification.ts:1209` 更新分类从 `.find(名)`（取最小版本）改为「名 + runtime 兼容 + 版本>已装」取最大；已装版本仍精确验证；**新增第 9 码 `client-update-required`（P12 并入）**：已装版不在窗内且无兼容条目 → 按安装回执 treeDigest 继续加载 + P10 提示升客户端（revoked 照拒不宽恕）。runtime range 求值复用安装闸既有比较器（vendor 手写，与 cli-install-channel 统一）。
+- **Phase 2 市场+安装闸（M·1天）**：company-provider 条目模型按「包名 × 兼容自身 runtime」选一条（companyPackageKey/merge/catalogItem）；不兼容条目隐藏或带「需升级客户端」徽标（取实现小者）；安装闸允许「存在且 runtime 兼容」的版本；beta overlay 语义不变（按名整体替换 stable，单条目）。
+- **Phase 3 运维+遥测+文档（S·半天）**：boot_verify detail 加 `selectedPin`/`deferredUpdates[]`；SOP 文档（promote/retire 流程 + 保留策略：默认保留上一 runtime 线最新版直至显式 retire）；**fleet 实战=下次 sidebar promote（0.15.2 保留在 stable）就是 P15 首战**。
+
+**验收矩阵**：
+| 客户端 runtime | 已装 | 目录钉 | 预期 |
+|---|---|---|---|
+| 0.1.1 | 0.15.2 | 0.15.2+0.18.1 | 加载 0.15.2，无更新提示 |
+| 0.1.2 | 0.15.2 | 同上 | 加载 0.15.2 + 提示更新到 0.18.1（可装）|
+| 0.1.2 | 0.18.1 | 同上 | 正常 |
+| 0.1.2 | 0.18.1 | 仅 0.19(^0.1.3) | client-update-required：继续加载+提示升客户端 |
+| 任意 | 篡改树 | 窗内 | 拒（integrity/treeDigest 不变）|
+| 任意 | revoked 版 | — | 拒（安全击杀不宽恕）|
+
+**风险**：老客户端市场视图同包双条目（外观问题，安装闸挡错装，过渡期接受）；`^0.1.2-rc.1` 预发布 range 求值与安装闸语义必须一致（vendor 手写比较器复用）；manifest 体积微增（忽略）。
+
+**排期**：Phase 0 可先于 P11 立即做（fleet promote 就要用）；Phase 1-3 排 P11 后或并行（用户定）。
 
 **关系**：**P12（runtime 感知门）并入本卡**——P12 是「隐藏不兼容钉版」的缓解，兼容窗是「保留多钉版按客户端选」的治本；P15 落地后 P12 场景自然消失。
 
-**排期**：P11 之后。**验收**：目录同时钉 0.15.2(^0.1.1)+0.18.1(^0.1.2) → 老客户端照常加载 0.15.2 且无更新提示/新客户端见 0.18.1 并可装；跨 runtime 版本并存时 boot/市场/安装三处行为一致；遥测可辨各客户端选用版本。
+（旧排期与验收已并入上方分阶段计划与验收矩阵，2026-09-09 晚。）
 
 ## P12 · runtime 感知门（client-update-required）—— 立卡 2026-09-09
 
