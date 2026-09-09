@@ -397,9 +397,13 @@ describe('file: dependency pin reconciliation (the controlled tarball channel)',
       { installTargetAuthority: createSignedManifestInstallTargetAuthority(provider) },
     )
 
+    // The pin proves nothing, so the receipt cannot be proven either: the
+    // uninstall preview treats it as not installed and clears the stale
+    // receipt (P1-a) instead of conflicting — but never as an install.
     await expect(service.previewUninstall('receipt:tarball-diverging-0001', new AbortController().signal))
-      .rejects.toMatchObject({ code: 'conflict' })
+      .rejects.toMatchObject({ code: 'not-available' })
     await expect(service.listVerifiedReceipts(new AbortController().signal)).resolves.toEqual([])
+    expect(settings.get().installReceipts).toEqual([])
   })
 
   it('reconciles a file: pin whose importer resolution carries a pnpm peer suffix', async () => {
@@ -474,7 +478,8 @@ describe('file: dependency pin reconciliation (the controlled tarball channel)',
     )
 
     await expect(service.previewUninstall('receipt:tarball-peer-suffix-0002', new AbortController().signal))
-      .rejects.toMatchObject({ code: 'conflict' })
+      .rejects.toMatchObject({ code: 'not-available' })
     await expect(service.listVerifiedReceipts(new AbortController().signal)).resolves.toEqual([])
+    expect(settings.get().installReceipts).toEqual([])
   })
 })

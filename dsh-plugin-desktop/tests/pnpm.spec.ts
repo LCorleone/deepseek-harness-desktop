@@ -688,6 +688,31 @@ describe('desktop pnpm Host service', () => {
     }
   })
 
+  it('terminates the surviving tree once the bounded tree-settle grace expires (review P3-a)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-terminate-'))
+    const first = controlledSubprocess()
+    const second = controlledSubprocess()
+    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 })
+    try {
+      const firstOperation = harness.service.run(['install'])
+
+      // The tree never exits on its own: releasing the gate alone would
+      // leave the orphaned pnpm descendants running against the profile, so
+      // the grace branch must also terminate the tree.
+      first.resolveDone({ exitCode: 0, signal: null })
+      await firstOperation.done
+      expect(first.terminate).toHaveBeenCalledOnce()
+
+      // The reaped tree still lets the gate serve the next operation.
+      const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
+      finish(second)
+      await secondOperation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('still seals a recoverable install whose process tree outlives the settle grace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-seal-'))
     const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 }

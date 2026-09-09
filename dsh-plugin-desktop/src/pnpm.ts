@@ -877,9 +877,16 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
       try {
         const treeExited = await active.child.waitForExit(AbortSignal.timeout(this.treeSettleGraceMs))
         if (!treeExited) {
+          // The grace expired on a tree that never exited on its own: an
+          // orphaned pnpm descendant would otherwise outlive the operation
+          // forever (and keep mutating the profile under the next one), so
+          // the same tree-level termination the cancel path uses — SIGTERM,
+          // grace, then SIGKILL upstream — reaps it before the gate releases.
+          active.child.terminate()
           this.ctx.logger.warn(
             `dsh-plugin-desktop: pnpm process tree still alive after ${this.treeSettleGraceMs} ms; `
-            + `releasing the package-manager gate${active.recoveryTransactionId === undefined ? '' : ` (recovery transaction ${active.recoveryTransactionId})`}`,
+              + 'terminating it and releasing the package-manager gate'
+              + `${active.recoveryTransactionId === undefined ? '' : ` (recovery transaction ${active.recoveryTransactionId})`}`,
           )
         }
         if (active.recoveryTransactionId !== undefined) {

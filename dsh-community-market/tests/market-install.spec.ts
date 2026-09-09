@@ -2253,6 +2253,173 @@ describe('version replacement installs (P10 update path)', () => {
   })
 })
 
+describe('stale receipt recovery (review P1-a)', () => {
+  const staleReceipt = (receiptId: string): MarketInstallReceipt => ({
+    receiptId,
+    profileName: 'web',
+    packageName,
+    version,
+    integrity,
+    bundlePatch: './cordis.patch.yml',
+    sourceRecordId: 'source-1',
+    providerId: DSH_1024STORE_PROVIDER_ID,
+    itemId: 'example/dsh-plugin-safe',
+    displayName: 'Safe Plugin',
+    installedAt: '2026-08-18T00:00:00.000Z',
+  })
+
+  /** The profile a hand cleanup leaves: manifest without the plugin, so `!referenced && owned` is the live branch. */
+  async function emptiedProfile(): Promise<string> {
+    const profileDir = await createProfile()
+    await mkdir(join(profileDir, 'node_modules'), { recursive: true })
+    await writeFile(join(profileDir, 'pnpm-lock.yaml'), stringifyYaml({
+      lockfileVersion: '9.0',
+      importers: { '.': {} },
+      packages: {},
+      snapshots: {},
+    }))
+    return profileDir
+  }
+
+  it('clears the stale receipt and installs fresh when the profile snapshot is wholly unreadable', async () => {
+    const profileDir = await emptiedProfile()
+    // The hand-deleted-profile combination: no lockfile at all, so the
+    // snapshot cannot even load — by `loadInstalledProfileSnapshot` semantics
+    // nothing is installed and the residual receipt is stale.
+    await rm(join(profileDir, 'pnpm-lock.yaml'), { force: true })
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope([staleReceipt('receipt:stale-unreadable-0001')])
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+
+    // The reinstall goes down the fresh path: no `replaces`, no conflict.
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(preview.replaces).toBeUndefined()
+    expect(settings.receipts()).toEqual([])
+    const result = await service.executeInstall(preview.intent, new AbortController().signal)
+    expect(result.receipt).toMatchObject({ packageName, version, receiptId: expect.not.stringMatching(/unreadable/u) })
+    expect(settings.receipts()).toEqual([result.receipt])
+    expect(calls.map(call => call.args[0])).toEqual(['add'])
+    await expect(service.listVerifiedReceipts()).resolves.toEqual([result.receipt])
+    service.dispose()
+  })
+
+  it('clears the stale receipt and installs fresh when the snapshot is readable but the package is absent', async () => {
+    const profileDir = await emptiedProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope([staleReceipt('receipt:stale-absent-0001')])
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    expect(preview.replaces).toBeUndefined()
+    expect(settings.receipts()).toEqual([])
+    const result = await service.executeInstall(preview.intent, new AbortController().signal)
+    expect(settings.receipts()).toEqual([result.receipt])
+    expect(calls.map(call => call.args[0])).toEqual(['add'])
+    service.dispose()
+  })
+
+  it('still conflicts when the profile references the package and the installed version no longer matches the receipt', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope()
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    await service.executeInstall(first.intent, new AbortController().signal)
+    const originalReceiptId = settings.receipts()[0]!.receiptId
+
+    // Someone hand-installed a different version underneath the receipt: the
+    // profile references the plugin, so this is a real conflict the market
+    // must not paper over by clearing the receipt. The candidate is a newer
+    // version so the replacement branch (not the same-version refusal) runs.
+    const lockfileText = await readFile(join(profileDir, 'pnpm-lock.yaml'), 'utf8')
+    await writeFile(join(profileDir, 'pnpm-lock.yaml'), lockfileText.replaceAll(version, '9.9.9'))
+    await writeFile(
+      join(profileDir, 'node_modules', packageName, 'package.json'),
+      JSON.stringify({
+        name: packageName,
+        version: '9.9.9',
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }),
+    )
+    await writeFile(join(profileDir, 'package.json'), JSON.stringify({
+      name: 'fixture-profile',
+      dependencies: { [packageName]: '9.9.9' },
+      dsh: { profile: { bundles: [packageName] } },
+    }))
+    service.observeCatalog(snapshot({ latestVersion: '1.3.0' }))
+
+    await expect(service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('no longer matches its market receipt') })
+    expect(settings.receipts()).toMatchObject([{ receiptId: originalReceiptId }])
+    expect(calls.map(call => call.args[0])).toEqual(['add'])
+    service.dispose()
+  })
+
+  it('answers "not installed" on uninstall preview and clears the stale receipt instead of conflicting', async () => {
+    const profileDir = await emptiedProfile()
+    await rm(join(profileDir, 'pnpm-lock.yaml'), { force: true })
+    const settings = memoryScope([staleReceipt('receipt:stale-uninstall-0001')])
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn(async () => verification) },
+    )
+
+    await expect(service.previewUninstall('receipt:stale-uninstall-0001', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'not-available', message: expect.stringContaining('not installed') })
+    expect(settings.receipts()).toEqual([])
+    // A second preview reads like any other not-installed plugin.
+    await expect(service.previewUninstall('receipt:stale-uninstall-0001', new AbortController().signal))
+      .rejects.toMatchObject({ code: 'not-available', message: expect.stringContaining('not owned by a market install receipt') })
+    service.dispose()
+  })
+
+  it('reinstalls through the fresh path when the record branch retained a ledger the snapshot never restored (matrix P3-d)', async () => {
+    // The desktop record branch keeps receipts while a restorable snapshot
+    // exists; a healthy boot then never restores it, so the ledger survives
+    // around a profile that does not have the plugin. The market must not
+    // explode on that combination: the list reports nothing installed and
+    // the next install walks the P1-a fresh path.
+    const profileDir = await emptiedProfile()
+    const calls: Array<{ args: readonly string[]; dir: string }> = []
+    const settings = memoryScope([staleReceipt('receipt:retained-record-0001')])
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+    )
+    service.observeCatalog(snapshot())
+
+    await expect(service.listVerifiedReceipts()).resolves.toEqual([])
+    expect(settings.receipts()).toHaveLength(1)
+    const preview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const result = await service.executeInstall(preview.intent, new AbortController().signal)
+    expect(settings.receipts()).toEqual([result.receipt])
+    expect(calls.map(call => call.args[0])).toEqual(['add'])
+    service.dispose()
+  })
+})
+
 describe('install event sink (client event telemetry, 2026-09-07)', () => {
   const nextVersion = '1.3.0'
   const nextIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`

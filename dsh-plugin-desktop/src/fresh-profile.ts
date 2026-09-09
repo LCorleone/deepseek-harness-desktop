@@ -180,6 +180,14 @@ export const FRESH_PROFILE_PENDING_FILENAME = 'fresh-profile-pending.json'
 export const FRESH_PROFILE_PENDING_VERSION = 1
 const MAX_PENDING_STATE_BYTES = 4 * 1024
 
+/** Which layer asked for the rebuild a marker still owes (client-event telemetry). */
+export type FreshProfileSwapTrigger = 'version-change' | 'recovery-window'
+/** Which automatic rule fired for a deferred rebuild; the manual window has none. */
+export type FreshProfileSwapRule = 'forced' | 'version'
+
+const PENDING_TRIGGERS: readonly FreshProfileSwapTrigger[] = ['version-change', 'recovery-window']
+const PENDING_RULES: readonly FreshProfileSwapRule[] = ['forced', 'version']
+
 /**
  * A rebuild the previous boot could not perform because Windows kept the
  * Profile directory locked. The marker lives in userData (not the Profile),
@@ -194,6 +202,15 @@ export interface FreshProfilePendingState {
   readonly appBuildVersion: string
   /** Last OS error code (`EBUSY`, …), for log-side forensics. */
   readonly reason: string
+  /**
+   * Layer that deferred (review P3-c): the next boot's retry reports this to
+   * `plugin_reset` telemetry instead of a blind `version-change`. Markers
+   * written before the field existed read as `version-change` — the behavior
+   * every older marker already got.
+   */
+  readonly trigger?: FreshProfileSwapTrigger
+  /** The automatic rule that fired for an automatic deferral; absent for the recovery window's manual action. */
+  readonly rule?: FreshProfileSwapRule
 }
 
 /** Absolute path of the deferred-rebuild marker. */
@@ -232,11 +249,23 @@ export function readFreshProfilePending(statePath: string): FreshProfilePendingS
   if (typeof record.appBuildVersion !== 'string' || record.appBuildVersion.length === 0
     || record.appBuildVersion.includes('\0')) return undefined
   if (typeof record.reason !== 'string' || record.reason.length === 0) return undefined
+  // The telemetry fields (P3-c) are read tolerantly: absent in every marker
+  // written before they existed, and an unrecognized literal reads as absent
+  // rather than invalidating the marker — a bad telemetry value must never
+  // block the rebuild it describes.
+  const trigger = PENDING_TRIGGERS.includes(record.trigger as FreshProfileSwapTrigger)
+    ? record.trigger as FreshProfileSwapTrigger
+    : undefined
+  const rule = PENDING_RULES.includes(record.rule as FreshProfileSwapRule)
+    ? record.rule as FreshProfileSwapRule
+    : undefined
   return {
     version: FRESH_PROFILE_PENDING_VERSION,
     profileName: record.profileName,
     appBuildVersion: record.appBuildVersion,
     reason: record.reason,
+    ...(trigger === undefined ? {} : { trigger }),
+    ...(rule === undefined ? {} : { rule }),
   }
 }
 

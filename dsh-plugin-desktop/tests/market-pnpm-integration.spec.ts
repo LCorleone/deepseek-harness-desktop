@@ -136,6 +136,12 @@ async function createWebServer() {
       })
       return { status: response.status, body: await response.json() as Record<string, unknown> }
     },
+    async get(path: string) {
+      const response = await fetch(`${origin}${path}`, {
+        headers: { origin, 'sec-fetch-site': 'same-origin' },
+      })
+      return { status: response.status, body: await response.json() as Record<string, unknown> }
+    },
     close: async () => await new Promise<void>((resolve, reject) => {
       server.close(error => { if (error === undefined) resolve(); else reject(error) })
     }),
@@ -237,6 +243,124 @@ describe('desktop pnpm and community market integration', () => {
         dependencies: Record<string, string>
       }
       expect(manifest.dependencies).not.toHaveProperty(PACKAGE_NAME)
+    } finally {
+      await ctx.fiber.dispose()
+      await webServer.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the degraded installations list and the released package-manager gate working side by side (matrix P3-d)', async () => {
+    const marketModuleUrl = new URL('../../dsh-community-market/src/index.js', import.meta.url).href
+    const market = await import(marketModuleUrl) as CommunityMarketModule
+    const root = await mkdtemp(join(tmpdir(), 'dsh-market-desktop-degrade-gate-'))
+    const profileDir = join(root, 'profiles', 'web')
+    const settingsPath = join(root, 'settings.yaml')
+    const receiptFor = (suffix: string, name: string) => ({
+      receiptId: `receipt:degrade-gate-${suffix}`,
+      profileName: 'web',
+      packageName: name,
+      version: PACKAGE_VERSION,
+      integrity: INTEGRITY,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'source-integration-1',
+      providerId: 'provider-integration-1',
+      itemId: `example/${name}`,
+      displayName: `Gate Plugin ${suffix}`,
+      installedAt: '2026-08-18T00:00:00.000Z',
+    })
+    const ctx = new Context()
+    const webServer = await createWebServer()
+    // Child one: the uninstall's pnpm exits but its tree never does — the
+    // bounded settle grace (tiny here) must reap it and release the gate.
+    // Child two: proves the released gate actually serves the next operation.
+    // Both are factories so their `done` work starts when the service actually
+    // spawns them, after the on-disk fixtures exist.
+    const childFactories: Array<() => SubprocessHandle & { terminate: ReturnType<typeof vi.fn<() => void>> }> = [
+      () => ({
+        pid: 43_121,
+        stdin: undefined,
+        stdout: Readable.from([]),
+        stderr: Readable.from([]),
+        collected: {},
+        done: (async () => {
+          await removeInstalledProfilePlugin(profileDir)
+          return { exitCode: 0, signal: null }
+        })(),
+        terminate: vi.fn<() => void>(),
+        waitForExit: vi.fn(async () => false),
+      }),
+      () => ({
+        pid: 43_122,
+        stdin: undefined,
+        stdout: Readable.from([]),
+        stderr: Readable.from([]),
+        collected: {},
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate: vi.fn<() => void>(),
+        waitForExit: vi.fn(async () => true),
+      }),
+    ]
+    const spawned: Array<SubprocessHandle & { terminate: ReturnType<typeof vi.fn<() => void>> }> = []
+    const spawn = vi.fn<(spec: SubprocessSpawnSpec) => SubprocessHandle>(() => {
+      const factory = childFactories.shift()
+      if (factory === undefined) throw new Error('test subprocess queue is empty')
+      const child = factory()
+      spawned.push(child)
+      return child
+    })
+    try {
+      await writeInstalledProfile(profileDir)
+      await writeFile(settingsPath, stringifyYaml({
+        'dsh-community-market': {
+          sources: [],
+          installReceipts: [receiptFor('0001', PACKAGE_NAME), receiptFor('0002', 'dsh-plugin-never-installed')],
+        },
+      }))
+
+      ctx.provide('webServer', webServer.service as never)
+      ctx.provide('desktopProfiles', { current: { name: 'web', dir: profileDir } })
+      ctx.provide('desktopPnpmBootstrap', { ...bootstrap(root, profileDir), pnpmTreeSettleGraceMs: 20 })
+      ctx.provide('subprocess', { spawn } as unknown as SubprocessRuntime)
+      ctx.provide('desktopPlugins', { list: () => [], disabledPackageNames: () => [] })
+      await ctx.plugin(FileSettingsProvider, { path: settingsPath, watch: false })
+      await ctx.plugin({ name: desktopPnpmName, inject: desktopPnpmInject, apply: applyDesktopPnpm })
+      await ctx.plugin({ name: market.name, inject: market.inject, apply: market.apply })
+      const pnpmService = ctx.get('desktopPnpm')
+      if (pnpmService === undefined) throw new Error('desktop pnpm service did not mount')
+
+      // 1. The uninstall completes even though its process tree outlives the
+      //    settle grace (C): the tree is reaped, the gate releases, and the
+      //    receipt leaves the ledger.
+      const preview = await webServer.post(market.marketRoutes.operationPreview, {
+        action: 'uninstall',
+        receiptId: 'receipt:degrade-gate-0001',
+      })
+      expect(preview.status).toBe(200)
+      const executed = await webServer.post(market.marketRoutes.operationExecute, {
+        previewId: preview.body.previewId,
+      })
+      expect(executed).toMatchObject({ status: 200, body: { action: 'uninstall' } })
+      expect(spawned[0]!.terminate).toHaveBeenCalledOnce()
+
+      // 2. The released gate serves a follow-up package-manager operation
+      //    instead of wedging behind the survivor.
+      const followUp = (pnpmService as { runPlugin: (args: string[], dir: string) => { done: Promise<unknown> } })
+        .runPlugin(['remove', PACKAGE_NAME], profileDir)
+      await followUp.done
+      expect(spawn).toHaveBeenCalledTimes(2)
+
+      // 3. With the profile snapshot now unreadable (B), the installations
+      //    list degrades to [] around the residual receipt instead of
+      //    erroring — both fixes hold in one boot, neither undoes the other.
+      await rm(join(profileDir, 'pnpm-lock.yaml'), { force: true })
+      const installations = await webServer.get('/api/community-market/installations')
+      expect(installations).toMatchObject({ status: 200, body: { installations: [] } })
+      const persisted = parseYaml(await readFile(settingsPath, 'utf8')) as {
+        'dsh-community-market': { installReceipts: Array<{ receiptId: string }> }
+      }
+      expect(persisted['dsh-community-market'].installReceipts.map(receipt => receipt.receiptId))
+        .toEqual(['receipt:degrade-gate-0002'])
     } finally {
       await ctx.fiber.dispose()
       await webServer.close()

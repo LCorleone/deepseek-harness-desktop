@@ -378,9 +378,23 @@ function candidateKey(sourceRecordId: string, itemId: string): string {
   return `${sourceRecordId}\0${itemId}`
 }
 
-/** Inline a caught cause's message so a refusal text never hides the actual reason. */
+/**
+ * Upper bound for any inlined cause text: a surfaced refusal must never carry
+ * an unbounded error payload (a pathological cause message, a pnpm stderr
+ * tail) into the UI display and log pipeline.
+ */
+const MAX_CAUSE_DETAIL_LENGTH = 2_000
+
+/** Bound one free-form cause text, marking the cut when it happens. */
+function boundedCauseText(text: string): string {
+  return text.length <= MAX_CAUSE_DETAIL_LENGTH
+    ? text
+    : `${text.slice(0, MAX_CAUSE_DETAIL_LENGTH)}… [truncated, ${text.length - MAX_CAUSE_DETAIL_LENGTH} more characters]`
+}
+
+/** Inline a caught cause's message so a refusal text never hides the actual reason (bounded). */
 function causeDetail(cause: unknown): string {
-  return cause instanceof Error ? ` ${cause.message}` : ''
+  return cause instanceof Error ? ` ${boundedCauseText(cause.message)}` : ''
 }
 
 function opaqueToken(): string {
@@ -831,6 +845,18 @@ async function assertInstalledBundle(
   )
 }
 
+/** Overlay decision for one install target: what a candidate replaces, and what the ledger owes. */
+interface InstallOverlayDecision {
+  /** Receipt the candidate replaces; undefined keeps the fresh-install path. */
+  readonly replaces: MarketInstallReceipt | undefined
+  /**
+   * Receipt proven stale (review P1-a): the profile no longer references the
+   * package and the receipt no longer verifies against the disk state, so the
+   * caller must drop it from the ledger before installing fresh.
+   */
+  readonly staleReceipt?: MarketInstallReceipt
+}
+
 /**
  * The install-target overlay state (P10 update path). A fresh install — the
  * profile does not reference the package and owns no receipt for it —
@@ -841,23 +867,39 @@ async function assertInstalledBundle(
  * against that receipt (installed package, bundle patch, and lockfile
  * integrity — registry or controlled `file:` pin alike). Everything else
  * conflicts exactly like a fresh-install-only market: the same version
- * already installed, an install the market does not own, a receipt without
- * an install, or a receipt that no longer proves the disk state. The market
- * never takes over an install it cannot reconcile.
+ * already installed, an install the market does not own, or a receipt that
+ * no longer proves the disk state. The market never takes over an install
+ * it cannot reconcile.
+ *
+ * One residual case is NOT a conflict: a receipt the profile no longer
+ * references and that no longer verifies on disk (review P1-a — a profile
+ * emptied or rebuilt by hand around a leftover receipt). The UI already
+ * degrades that shape to "not installed" (the installed list drops receipts
+ * that cannot verify), so the install path must offer the same way out:
+ * verification failure marks the receipt stale — the caller clears it from
+ * the ledger, the same posture as the P14 swap's receipt clear — and the
+ * install proceeds on the fresh path. Only a receipt that still verifies
+ * conflicts. The distinction follows `loadInstalledProfileSnapshot`
+ * semantics: a wholly unreadable snapshot means nothing is installed (any
+ * receipt for it is stale), while a readable snapshot that lacks the package
+ * makes exactly that receipt stale.
  */
 async function assertInstallOverlay(
   profile: MarketDesktopProfile,
   packageName: string,
   candidateVersion: string,
   receipts: readonly MarketInstallReceipt[],
-): Promise<MarketInstallReceipt | undefined> {
+): Promise<InstallOverlayDecision> {
   const owned = receipts.find(receipt => receipt.profileName === profile.name && receipt.packageName === packageName)
   const referenced = profileReferencesPlugin(await readManifest(join(profile.dir, 'package.json')), packageName)
   if (!referenced) {
-    if (owned !== undefined) {
-      throw new MarketInstallError('conflict', 'This plugin already has a market install receipt in the active profile.')
+    if (owned === undefined) return { replaces: undefined }
+    try {
+      await assertInstalledBundle(profile, owned.packageName, owned.version, owned.bundlePatch, owned.integrity)
+    } catch {
+      return { replaces: undefined, staleReceipt: owned }
     }
-    return undefined
+    throw new MarketInstallError('conflict', 'This plugin already has a market install receipt in the active profile.')
   }
   if (owned === undefined) {
     throw new MarketInstallError('conflict', 'This plugin is already managed by the active profile.')
@@ -870,7 +912,7 @@ async function assertInstallOverlay(
   } catch (cause) {
     throw new MarketInstallError('conflict', `The installed plugin no longer matches its market receipt.${causeDetail(cause)}`)
   }
-  return owned
+  return { replaces: owned }
 }
 
 async function assertRemoved(profile: MarketDesktopProfile, packageName: string): Promise<void> {
@@ -1159,7 +1201,7 @@ export class MarketInstallService {
       throw new MarketInstallError('conflict', 'This plugin is disabled in the active desktop profile.')
     }
     const profile = this.profile()
-    const replaces = await assertInstallOverlay(profile, candidate.packageName, candidate.version, this.receipts())
+    const replaces = await this.decideInstallOverlay(profile, candidate.packageName, candidate.version)
     let verification: MarketNpmPackageVerification
     try { verification = await this.verifier.verify(candidate, operationSignal) }
     catch (cause) {
@@ -1239,11 +1281,10 @@ export class MarketInstallService {
         // remembers the receipt it must supersede (and restore on rollback);
         // undefined keeps the fresh-install path. The re-run keeps preview and
         // execute honest about drift between the two calls.
-        const replaceReceipt = await assertInstallOverlay(
+        const replaceReceipt = await this.decideInstallOverlay(
           profile,
           candidate.packageName,
           candidate.version,
-          this.receipts(),
         )
         let verification: MarketNpmPackageVerification
         try { verification = await this.verifier.verify(candidate, operationSignal) }
@@ -1261,11 +1302,10 @@ export class MarketInstallService {
         }
         const decision = this.assertInstallTargetAllowed(candidate, verification)
         allowedSequence = decision.evidence?.manifestSequence
-        const overlayAtExecute = await assertInstallOverlay(
+        const overlayAtExecute = await this.decideInstallOverlay(
           profile,
           candidate.packageName,
           candidate.version,
-          this.receipts(),
         )
         if (overlayAtExecute?.receiptId !== replaceReceipt?.receiptId) {
           throw new MarketInstallError('conflict', 'The installed plugin changed before installation.')
@@ -1414,8 +1454,26 @@ export class MarketInstallService {
       await assertInstalledBundle(profile, receipt.packageName, receipt.version, receipt.bundlePatch, receipt.integrity)
       operationSignal.throwIfAborted()
     }
-    catch (cause) {
-      throw new MarketInstallError('conflict', `The installed plugin no longer matches its market receipt.${causeDetail(cause)}`)
+    catch {
+      operationSignal.throwIfAborted()
+      // A receipt that cannot be proven against the disk (review P1-a — a
+      // profile emptied or rebuilt by hand) is stale, not a conflict: the
+      // installed list already reports the plugin as absent, so an uninstall
+      // preview must answer "not installed" and clear the receipt instead of
+      // dead-ending the user. Same `loadInstalledProfileSnapshot` semantics as
+      // the install path: a wholly unreadable snapshot means nothing is
+      // installed, and a readable snapshot without the package means exactly
+      // this receipt is stale.
+      await this.saveReceipts(this.receipts().filter(value => value.receiptId !== receipt.receiptId))
+      this.logger.warn(
+        `dsh-community-market: cleared a stale market install receipt for ${JSON.stringify(receipt.packageName)} `
+          + `in profile ${JSON.stringify(receipt.profileName)} on uninstall preview (the receipt no longer verifies `
+          + 'on disk); the plugin is not installed',
+      )
+      throw new MarketInstallError(
+        'not-available',
+        'This plugin is not installed in the active desktop profile; its stale market receipt was removed.',
+      )
     }
     const expiresAt = this.now() + this.intentTtlMs
     const token = this.issueIntent({ kind: 'uninstall', receipt, profile, expiresAt })
@@ -1504,6 +1562,32 @@ export class MarketInstallService {
       throw new MarketInstallError('conflict', 'The active desktop profile changed after preview.')
     }
     return current
+  }
+
+  /**
+   * Decide the install overlay and reconcile a receipt proven stale into the
+   * ledger (review P1-a): a receipt the profile no longer references and that
+   * no longer verifies against the disk is deleted — persisted, the same
+   * posture as the P14 swap's receipt clear — so the install continues on the
+   * fresh path instead of dead-ending a healthy machine whose profile was
+   * emptied by hand around a leftover receipt.
+   */
+  private async decideInstallOverlay(
+    profile: MarketDesktopProfile,
+    packageName: string,
+    candidateVersion: string,
+  ): Promise<MarketInstallReceipt | undefined> {
+    const decision = await assertInstallOverlay(profile, packageName, candidateVersion, this.receipts())
+    const stale = decision.staleReceipt
+    if (stale !== undefined) {
+      await this.saveReceipts(this.receipts().filter(receipt => receipt.receiptId !== stale.receiptId))
+      this.logger.warn(
+        `dsh-community-market: cleared a stale market install receipt for ${JSON.stringify(stale.packageName)} `
+          + `in profile ${JSON.stringify(stale.profileName)} (the profile no longer references the package and the `
+          + 'receipt no longer verifies on disk); reinstalling from scratch',
+      )
+    }
+    return decision.replaces
   }
 
   private receipts(): readonly MarketInstallReceipt[] {
@@ -1675,7 +1759,8 @@ export class MarketInstallService {
     catch (cause) {
       throw new MarketInstallError(
         'operation-failed',
-        'The desktop package manager could not start: ' + (cause instanceof Error ? cause.message : String(cause)),
+        'The desktop package manager could not start: '
+          + boundedCauseText(cause instanceof Error ? cause.message : String(cause)),
       )
     }
     // Keep the tail of the package manager's stderr so failures carry the

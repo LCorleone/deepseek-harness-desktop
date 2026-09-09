@@ -677,7 +677,10 @@ describe('market install service behind the signed manifest', () => {
     expect(calls).toEqual([])
     expect(settings.receipts()).toHaveLength(1)
 
-    // And a receipt for the active profile can only ever block, never allow.
+    // A receipt for the active profile is still never an allow: a stale one
+    // (the profile no longer references the package and the receipt no
+    // longer verifies on disk) is cleared on the way to the decision (P1-a),
+    // and the authority refusal — not the receipt — is what answers.
     const blocked = memoryScope([legacyReceipt])
     const blockedService = await signedService([packageEntry({ packageName: 'dsh-plugin-other' })], {
       profileDir,
@@ -685,8 +688,9 @@ describe('market install service behind the signed manifest', () => {
       calls,
     })
     await expect(blockedService.service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal))
-      .rejects.toMatchObject({ code: 'conflict' })
+      .rejects.toMatchObject({ code: 'verification-failed' })
     expect(calls).toEqual([])
+    expect(blocked.receipts()).toEqual([])
   })
 
   it('reconciles uninstall through a legacy v1 receipt', async () => {

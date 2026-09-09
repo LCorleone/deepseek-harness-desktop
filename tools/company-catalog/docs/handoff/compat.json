@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-09-05",
+  "updated": "2026-09-09",
   "dsh": {
     "version": "0.1.2-rc.1",
     "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
     "runtimeRange": "^0.1.2-rc.1"
   },
   "desktop": {
-    "version": "2.0.3"
+    "version": "2.0.4"
   },
   "catalog": {
-    "sequence": 13,
+    "sequence": 22,
     "manifestUrl": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/catalog-manifest.json"
   },
   "notes": "This file is the single source of truth for what 'compatible' means when submitting a plugin handoff. It changes only when the desktop owner bumps the pinned deepseek-harness submodule or ships a new desktop build — your agent should re-read it (never hardcode) before every test run and before filling compat in handoff.json."

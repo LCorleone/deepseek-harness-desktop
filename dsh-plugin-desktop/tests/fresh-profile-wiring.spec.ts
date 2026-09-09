@@ -121,6 +121,41 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(outcomeBody).toContain("outcome === 'failed'")
   })
 
+  it('clears a satisfied deferred marker and records the build when the manual swap lands (review P2)', () => {
+    const manualAt = source.indexOf('freshProfileStart = async (token: string) => {')
+    const outcomeAt = source.indexOf("const outcome = await runFreshProfileSwap('recovery-window')", manualAt)
+    const manualEnd = source.indexOf("startupStage = 'host-boot'", outcomeAt)
+    // The success tail (everything after the deferred and failed refusals):
+    // a manual swap that landed must satisfy a pending marker for THIS
+    // Profile and record the build identity, or the next startup repeats a
+    // whole swap the user already performed by hand.
+    const successTail = source.slice(source.indexOf("outcome === 'failed'", outcomeAt), manualEnd)
+    expect(successTail).toContain('readFreshProfilePending(freshProfilePendingPath)?.profileName === activeProfileName')
+    expect(successTail).toContain('clearFreshProfilePending(freshProfilePendingPath)')
+    expect(successTail.indexOf('clearFreshProfilePending(freshProfilePendingPath)'))
+      .toBeGreaterThan(successTail.indexOf('readFreshProfilePending(freshProfilePendingPath)'))
+    expect(successTail).toContain('await recordProfileGeneration()')
+  })
+
+  it('persists the deferring layer and rule in the marker and replays them on the retry (P3-c)', () => {
+    const deferredAt = source.indexOf('if (result.deferred === true) {')
+    const deferredBody = source.slice(deferredAt, source.indexOf("return 'deferred'", deferredAt))
+    // The marker records WHO deferred, so the retry telemetry reports the
+    // real layer and rule instead of a blind version-change.
+    expect(deferredBody).toContain('await writeFreshProfilePending(freshProfilePendingPath, {')
+    expect(deferredBody).toContain('trigger,')
+    expect(deferredBody).toContain('...(rule === undefined ? {} : { rule }),')
+
+    const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
+    const retryAt = source.indexOf('if (await runFreshProfileSwap(retryTrigger, retryRule) === \'swapped\') {', pendingActionAt)
+    const retryBody = source.slice(pendingActionAt, retryAt)
+    // Old markers default to the historical trigger and carry no rule.
+    expect(retryBody).toContain("const retryTrigger = pendingFreshProfileReset.trigger ?? 'version-change'")
+    expect(retryBody).toContain('const retryRule = pendingFreshProfileReset.rule')
+    expect(retryBody.indexOf('const retryTrigger')).toBeLessThan(retryBody.indexOf('const retryRule'))
+    expect(retryBody.indexOf('const retryRule')).toBeLessThan(retryBody.length)
+  })
+
   it('rebuilds through the shipped first-run mechanism plus the retrying dependency synchronization', () => {
     expect(source).toContain('if (activeProfileName === DESKTOP_PROFILE_NAME) ensureDesktopProfile(homeDir)')
     expect(source).toContain('else createDesktopWebProfile(homeDir, activeProfileName)')
@@ -159,8 +194,10 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(pendingActionAt).toBeLessThan(autoLayerAt)
     // The retry branch is the only place the deferred rename is attempted,
     // and it clears the marker and records the build identity only after the
-    // swap landed (the slice ends at the branch's own finally block).
-    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+    // swap landed (the slice ends at the branch's own finally block). The
+    // call threads the marker's own trigger/rule (P3-c), never a hardcoded
+    // layer, so the retry telemetry reports who actually deferred.
+    const retryAt = source.indexOf('if (await runFreshProfileSwap(retryTrigger, retryRule) === \'swapped\') {', pendingActionAt)
     expect(retryAt).toBeGreaterThan(pendingActionAt)
     expect(retryAt).toBeLessThan(autoLayerAt)
     const retryBody = source.slice(retryAt, source.indexOf('} finally {', retryAt))
@@ -174,7 +211,7 @@ describe('fresh Profile swap wiring (P14)', () => {
     const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
     const dropAt = source.indexOf("pendingFreshProfileAction === 'drop'", pendingActionAt)
     const keepAt = source.indexOf("pendingFreshProfileAction === 'keep'", pendingActionAt)
-    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+    const retryAt = source.indexOf('if (await runFreshProfileSwap(retryTrigger, retryRule) === \'swapped\') {', pendingActionAt)
 
     // The keep/drop gate is the policy LOCK alone: with the version switch off
     // the automatic layer still resets on a product-version change, so a
@@ -197,7 +234,7 @@ describe('fresh Profile swap wiring (P14)', () => {
   it('holds a visible loading surface for the deferred retry instead of waiting silently', () => {
     const pendingActionAt = source.indexOf('const pendingFreshProfileAction = pendingFreshProfileReset === undefined')
     const surfaceAt = source.indexOf('await retrySurface.openLoadingSurface()', pendingActionAt)
-    const retryAt = source.indexOf("if (await runFreshProfileSwap('version-change') === 'swapped') {", pendingActionAt)
+    const retryAt = source.indexOf('if (await runFreshProfileSwap(retryTrigger, retryRule) === \'swapped\') {', pendingActionAt)
 
     expect(surfaceAt).toBeGreaterThan(pendingActionAt)
     expect(surfaceAt).toBeLessThan(retryAt)

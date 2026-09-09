@@ -30,7 +30,7 @@ const FIXED_DIGEST = 'a'.repeat(64)
 const OTHER_DIGEST = 'b'.repeat(64)
 
 const PINNED_DSH_COMMIT = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
-const PINNED_DESKTOP = '2.0.3'
+const PINNED_DESKTOP = '2.0.4'
 const PINNED_RUNTIME_RANGE = '^0.1.2-rc.1'
 
 const fileEntry = (path, data) => ({ path, type: 'file', mode: 0o644, mtime: 1234567890, data: Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8') })
@@ -437,7 +437,12 @@ test('red: compat dshCommit mismatch fails step 5 and points at the pinned value
     try {
       const desktopResult = await verifyWorkspace(desktopWorkspace)
       assert.equal(desktopResult.failedStep.step, 'compat')
-      assert.match(desktopResult.failedStep.reason, /retest against DSH Desktop 2\.0\.3/u)
+      // Built from the pinned constant so a compat bump cannot leave a
+      // hardcoded version behind in this refusal text.
+      assert.match(
+        desktopResult.failedStep.reason,
+        new RegExp(`retest against DSH Desktop ${PINNED_DESKTOP.replace(/\./gu, '\\.')}`, 'u'),
+      )
     } finally {
       rmSync(desktopWorkspace.root, { recursive: true, force: true })
     }

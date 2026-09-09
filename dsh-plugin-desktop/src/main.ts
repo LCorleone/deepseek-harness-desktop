@@ -1063,6 +1063,10 @@ async function start(): Promise<void> {
             profileName: result.profileName,
             appBuildVersion,
             reason: result.reasonCode ?? 'EBUSY',
+            // The retry's telemetry must report the layer and rule that
+            // actually deferred (P3-c), not a blind version-change.
+            trigger,
+            ...(rule === undefined ? {} : { rule }),
           })
           electronLogger.error(
             `${BIN_NAME}: fresh profile rebuild deferred (${trigger}): profile ${result.profileName} stayed locked through `
@@ -1160,8 +1164,13 @@ async function start(): Promise<void> {
       )
     } else if (pendingFreshProfileReset !== undefined && pendingFreshProfileAction === 'retry') {
       pendingFreshProfileHandled = true
+      // The marker carries the layer and rule that deferred (P3-c): the retry
+      // reports those to `plugin_reset` telemetry. Older markers read without
+      // them, so the default is the historical `version-change` / no rule.
+      const retryTrigger = pendingFreshProfileReset.trigger ?? 'version-change'
+      const retryRule = pendingFreshProfileReset.rule
       electronLogger.error(
-        `${BIN_NAME}: retrying the deferred profile rebuild for ${activeProfileName} (last rename ${pendingFreshProfileReset.reason})`,
+        `${BIN_NAME}: retrying the deferred profile rebuild for ${activeProfileName} (last rename ${pendingFreshProfileReset.reason}; deferred by ${retryTrigger}${retryRule === undefined ? '' : `, rule ${retryRule}`})`,
       )
       // The retry can spend the whole rename backoff (~6.3 s) on a boot that
       // has no other window (an everyday cold start whose disclaimer was
@@ -1185,7 +1194,7 @@ async function start(): Promise<void> {
         }
       }
       try {
-        if (await runFreshProfileSwap('version-change') === 'swapped') {
+        if (await runFreshProfileSwap(retryTrigger, retryRule) === 'swapped') {
           clearFreshProfilePending(freshProfilePendingPath)
           await recordProfileGeneration()
         }
@@ -1724,6 +1733,15 @@ async function start(): Promise<void> {
       if (outcome === 'failed') {
         throw new Error(`${BIN_NAME}: the fresh Profile start failed; see the desktop log for details`)
       }
+      // A manual swap that landed satisfies a deferred-rebuild marker for
+      // this Profile (review P2): clear it and record this build, or the next
+      // startup repeats a whole swap the user just performed by hand. A
+      // marker naming another Profile stays — its pending rebuild is not
+      // this swap's to spend.
+      if (readFreshProfilePending(freshProfilePendingPath)?.profileName === activeProfileName) {
+        clearFreshProfilePending(freshProfilePendingPath)
+      }
+      await recordProfileGeneration()
     }
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)

@@ -850,6 +850,59 @@ describe('deferred rebuild marker', () => {
     clearFreshProfilePending(statePath)
   })
 
+  it('round-trips the deferring layer and rule, defaults old markers, and ignores bad values (P3-c)', async () => {
+    const userData = temporaryHome()
+    const statePath = freshProfilePendingStatePath(userData)
+
+    // A deferral the automatic forced rule fired on: the next boot's retry
+    // must be able to report exactly that layer and rule.
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.4+b1',
+      reason: 'EPERM',
+      trigger: 'version-change',
+      rule: 'forced',
+    })
+    expect(readFreshProfilePending(statePath)).toEqual({
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.4+b1',
+      reason: 'EPERM',
+      trigger: 'version-change',
+      rule: 'forced',
+    })
+
+    // The manual recovery-window deferral carries the layer and no rule.
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.4+b1',
+      reason: 'EBUSY',
+      trigger: 'recovery-window',
+    })
+    const manualMarker = readFreshProfilePending(statePath)
+    expect(manualMarker?.trigger).toBe('recovery-window')
+    expect(manualMarker?.rule).toBeUndefined()
+
+    // Markers written before the fields existed read without them (the
+    // reader must tolerate their absence without a schema bump), and an
+    // unrecognized literal reads as absent instead of invalidating the
+    // marker — bad telemetry must never block the rebuild it describes.
+    for (const [body, expectedTrigger] of [
+      ['{"version":1,"profileName":"desktop","appBuildVersion":"2.0.4+b1","reason":"EBUSY"}', undefined],
+      ['{"version":1,"profileName":"desktop","appBuildVersion":"2.0.4+b1","reason":"EBUSY","trigger":"nonsense","rule":"also-nonsense"}', undefined],
+    ] as const) {
+      writeFileSync(statePath, body)
+      const legacy = readFreshProfilePending(statePath)
+      expect(legacy?.profileName, body).toBe('desktop')
+      expect(legacy?.trigger, body).toBe(expectedTrigger)
+      expect(legacy?.rule, body).toBeUndefined()
+    }
+
+    clearFreshProfilePending(statePath)
+  })
+
   it('lets the next boot read the marker, land the retry, and clear it', async () => {
     const home = temporaryHome()
     const userData = temporaryHome()
