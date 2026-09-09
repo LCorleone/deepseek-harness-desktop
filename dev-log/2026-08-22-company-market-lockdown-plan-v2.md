@@ -297,6 +297,11 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **规模**：S（机制现成，~0.5-1 天+测试）。**排期**：#74 出门后。**验收**：装着坏插件炸树的机器→恢复窗一键→干净进桌面→市场四件全部重新可装；正常机器该按钮同样可用（幂等）；测试钉 profile 重写/cordis.patch 清理/回执清空/确认对话框。
 
+**状态（2026-09-09 晚，已实现）**：主体 commit 链 `27af02223a`（换新+恢复窗动作）→ `a06a83e0b7`/`6180184964`（两轮评审修复）→ `39a6ff6bc4`/`7fcd67b9a7`（Windows EBUSY 退避+deferred 标记及二轮修复）。三条细化规则定稿：
+1. **版本分级**（`e887edf979` 发版纪律 + `75b604bced`）：`pluginResetOnVersionChange` **开**=任何构建身份变化都换新（`2.0.3+b78`→`2.0.3+b79` 也清）；**关**（2.0.4 起默认）=仅**产品版本号**变化换新（`2.0.3`→`2.0.4` 清，构建号变化不清）。遥测 `plugin_reset` 增 `rule: forced|version`；记录文件 userData `last-profile-generation.json` 增 `appVersion`（老记录从 `appBuildVersion` 剥 `+bNNN` 推导，schema 仍 v1）。
+2. **EBUSY 退避与 deferred**：b78 首启换新失败，根因=**外部进程持有 profile 目录句柄**（实证：用户 Zed 打开 profile 内文件→编辑器 watcher 持目录句柄；逐个改子项全部成功、目录本身改不了）。修法：`renameSync` 对 EBUSY/EPERM/ENOTEMPTY/EACCES 退避重试 6 次（100/200/400/800/1600/3200ms）→仍失败写 `fresh-profile-pending.json`+遥测 `outcome=deferred`+**不写版本记录**→下次启动最早时刻重试；标记指向非当前 profile 时**保留**（仅策略未锁定时丢弃）；恢复窗遇 deferred 提示「重启后自动完成」。**内容级搬移兜底曾实现（`b2bfe99d7d`）后按用户决策撤销（`e7f515da08`）**——场景罕见，不值复杂度。
+3. **回执清理**：`record` 分支在「启动时无 profile manifest」时清残留回执（严格以 `profileExists=false` 为闸），杜绝「回执在而 profile 空」把市场「已安装插件」列表钉死。
+
 ## P15 · 目录兼容窗（多版本钉扎 + 按客户端 runtime 选版）—— 立卡 2026-09-09（吸收 P12）
 
 **动机（用户提出）**：目录每次发布都会覆盖旧钉版 → 老客户端+老插件（原本好好用着）在新目录发布后被判「钉新版装旧版」→ boot 拒载（砖窗）。希望 stable manifest 能「兼容旧版本插件」：同一包同时钉多个版本，各客户端按自身 runtime 取用。
@@ -322,6 +327,8 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **发版纪律（2026-09-09 16:23 用户定案）**：`pluginResetOnVersionChange` 按构建翻转——**仅在载有 DSH 底座升级（或需强制插件换血）的那一版开 true**（#77=0.1.2 过渡版开），其余版本改回 false（#78 起），避免每次发版都清同事插件。改一处：`dsh-plugin-desktop/src/policy/desktop-policy.release.json`。忘关的后果=每版白清一次插件（烦但无害）。
 
 **降级（2026-09-09 13:39）**：P14 自动层（版本变更即清）+「客户端与目录成对发、目录先行」的发版纪律覆盖了本卡主场景（混编 fleet 过渡砖机）。P12 从必做降为可选挂账，触发条件=出现目录先行做不到/需要无清插件平滑过渡的真实需求。**验收**：老 runtime 客户端+新目录：旧插件照常加载+deferred 遥测可见+通知文案正确+更新钮置灰；篡改树→回执摘要拒载；revoked→拒；新 runtime 客户端→正常更新流。
+
+**状态（2026-09-09 晚）：已并入 P15**（见 `66c52e6c2e`；兼容窗治本，本卡场景自然消失，不再单独立项）。
 
 ## P11 · 捆绑 Python 运行时 —— 立项 2026-09-08（用户拍板：跑 python 是同事常见需求）
 

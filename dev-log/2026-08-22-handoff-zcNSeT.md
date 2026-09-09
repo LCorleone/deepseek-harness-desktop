@@ -387,6 +387,29 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **新卡**：P11 Python 捆绑（网络实测：公司代理可达 pypi，pip 零配置）· P12 runtime 感知门（降级为可选）· **P14 干净 profile 换新**（自动层=版本变更即换新+手动层=恢复窗一键；机制=旧 profile 改名靠边+首次运行重建，真机实证）。
 **教训**：第七次「单测绿打包死」由 **review 拦下**（铸币 net.fetch manual 在 Electron 不可用）——评审环节再次证明价值；Windows CI 特有路径语义必须进测试矩阵。
 
+### 2026-09-09 晚场战报（EBUSY 破案 → 版本分级 → 改名 → 市场修复 → 2.0.4 发版）
+
+**主线一 · P14 EBUSY 破案与修法**：b78 首启换新失败，`plugin_reset outcome=failed` + `EBUSY: resource busy or locked, rename profiles\desktop -> desktop.bak-…`。根因实证=**外部进程持有 profile 目录句柄**（用户 Zed 打开 profile 内文件→编辑器 watcher 持目录句柄；逐个改子项全部成功、目录本身改不了）——Linux 改名不怕句柄，故单测全绿（第八次「Linux 绿 Windows 死」）。修法 `39a6ff6bc4`+二轮 `7fcd67b9a7`：rename 对 EBUSY/EPERM/ENOTEMPTY/EACCES 退避 6 次（100/200/400/800/1600/3200ms）→仍失败写 `fresh-profile-pending.json` 标记+遥测 `outcome=deferred`+不写版本记录→下次启动最早时刻重试；标记指向非当前 profile 时保留（仅策略未锁定时丢弃）；恢复窗遇 deferred 提示「重启后自动完成」。内容级搬移兜底 `b2bfe99d7d` 曾实现，**按用户决策撤销**（`e7f515da08`：场景罕见不值复杂度）。
+
+**主线二 · 版本分级**：`75b604bced` 把自动层拆成两条规则——`pluginResetOnVersionChange` 开=任何构建身份变化都换新（`2.0.3+b78`→`2.0.3+b79` 也清）；关（2.0.4 起默认）=仅**产品版本号**变化换新（`2.0.3`→`2.0.4` 清、构建号变化不清）。记录文件 userData `last-profile-generation.json` 增 `appVersion`（老记录从 `appBuildVersion` 剥 `+bNNN` 推导，schema 仍 v1）；遥测 `plugin_reset` 增 `rule: forced|version`。
+
+**主线三 · 客户端展示名**：`74f209b3d9` 快捷方式显示名改 `Deloitte DSH Desktop`（`build.nsis.shortcutName`），**`build.productName` 保持 `DSH Desktop` 不动**（它决定 userData/安装目录/exe 名）；`build/installer.nsh` 新增 `customInstall` 宏删除遗留 `DSH Desktop.lnk` 防双图标。
+
+**主线四 · 市场清单卡死修复**：同事手工删 `profiles\desktop` 触发——回执残留 + profile 缺 `pnpm-lock.yaml` → `listVerifiedReceipts` 抛 `operation-failed` →「已安装插件」列表永久报错。修法：快照读不到→降级返回空列表+warning（`dsh-community-market/src/install/service.ts`）；路由兜底 500 补诊断日志（`dsh-community-market/src/host/routes.ts` `installFailureDetail`）；`record` 分支在「启动时无 profile manifest」时清残留回执（严格以 `profileExists=false` 为闸）。
+
+**发版**：2.0.4（`package.json` 2.0.3→2.0.4，开关翻 false，`8892c0511c`）；beta seq22 = sidebar 0.18.1(beta) + dai-context 0.41.4 + free-search 0.4.184；**dai-context 0.41.4 真机实证兼容 0.1.2**（同事插件无需适配，仅 agent-teams 要改）。
+
+**教训台账（+3）**：①**外部目录句柄会阻断整目录改名，Windows 特有**——单个子项可改不代表目录可改，退避+deferred 是正确姿势，Linux 单测永远测不出；②**「读不到 profile 快照」曾被当致命错误**——一条残留回执就能把市场「已安装」列表钉死且重启不清，读不到≠要报错，降级才是正确姿势；③**改展示名绝不碰 productName**——productName 决定 userData/安装目录/exe 名，改了就是数据迁移级事故，只动 `shortcutName`+清理遗留 `.lnk`。
+
+### 当前 TODO 快照（2026-09-09 18:37）
+
+**进行中**：2.0.4 已发（版本分级开关翻 false）；b78 EBUSY 修复待下一次构建/首启复验（bak 出现+插件清空+`plugin_reset outcome=swapped`）。
+**就绪待发**：fleet 群发 → 全员升级确认 → promote sidebar 0.18.1 + dai-context 0.41.4 到 stable。
+**排期**：P11 捆绑 Python（M·2-3 天；公司代理可达 pypi，pip 零配置已实测）→ P15 目录兼容窗（吸收 P12）。
+**用户外部**：sebtang 修 agent-teams（唯一不兼容件；dai-context 已验证无需改）+ 出官方 dai-context 版本；0.4.184 fleet 反馈。
+**挂账**：free-search rebase 上游 v0.4.19+（摆脱 dsh-settings shim）· 沙箱档2评估（首拒重试率观察）· sso-gate 浏览器路径主动测 · P14 备份清理按钮（可选）。
+**观察面**：2.0.4 换新规则分级在真机的表现 · beta 3 名测试者 · 插件重装体验（同事视角）。
+
 ### 当前 TODO 快照（2026-09-09 17:34）
 **进行中**：b78 装机验证（P14 EBUSY 修复终判：bak 出现+插件清空+plugin_reset outcome=swapped）。
 **就绪待发**：fleet 群发 b78（P14 自动清→同事干净进 0.1.2）→ 全员升级确认 → promote sidebar 0.18.1 + dai-context 0.41.4 到 stable。
