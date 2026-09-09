@@ -356,6 +356,9 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ② **私有仓重purpose为备份**：deepseek-harness-desktop-private-obsolete 不删，改做私有备份镜像：master=现行（e47f1bcba1 强推对齐）+archive/pre-rewrite-2026-09-02=重写前快照存档+tags 15/15；**Actions 已关**（ci.yml on:push 会在私有仓烧钱）；以后备份=git push backup master。
 ③ **泄露邮件回复稿已备**（未发）：口径=key 已轮换作废（1007→1008）/已从仓库移除+构建时环境注入/历史重写后扫描零命中；**不提混淆/XOR 机制**（用户指示：防把柄）。待用户发送。
 
+### DSH 运行时 0.1.2-rc.1 升级·全链闭环（2026-09-09 08:20）
+worker `f8068af04e`→amend `e4f3aa26f7`（110 文件 +4715/−7427）：pin 纯指针 b150a551→a66e470204（官方 tag）；deps/resolutions 全量+注入改向 client-runtime→client-ui-renderer；补丁 10 重做+2 重定位（win32-process/api-session-controller，上游逐字节/等价验证）+3 原生吸收换 marker 守卫（atomic-write-retry spec 删因 win32 门控 Linux 测不动，marker 钉死无删测躲红）+新增 dsh-settings patch（=上游 v2.0.5 同名恢复逐字节同，救活 dshmarket 1.17.1——专项文档 dshmarket-1.17.1-compat-012.md）；src 适配（SessionProvider/presets 路径/PTC 改名/patchReload/locale 收窄/company preset 刷新含 fetch:true 合规同步仍受 managed-models 门控）。评审 review-dsh-upgrade2 **APPROVED**（子模块零改动铁证/补丁忠实抽验/锁定层无弱化/门禁数字亲跑复现：desktop 2052+7skip·market 441·catalog 172+e2e·closure 228·typecheck 全 0）；3 P3 全记录性已 amend 进 commit body（icon 2 字节重生成/preset fetch 同步/peerRange 警告观察）。**未 push 未构建**——回退锚=tag v2.0.3-b72。等用户构建口令。真机验证清单：升级包首启（声明不弹=base 版语义）/已装插件 boot_verify 零拒绝/市场装卸/终端/杀渲染自愈回归。
+
 ### 当前 TODO 快照（2026-09-08 20:35）
 **就绪待发**：#72 构建（用户按住：批3 渲染器崩溃自动恢复 11213d21f8+P3 修 21231e8091、市场闪窗修复 70bd6d5ee0、devlog e8a6be7072；vitest desktop 2050+7skip/market 441/yarn check 绿）。构建后真机验证：杀渲染进程→窗口自动回来（批3 清单）+未装插件点击直接 confirm 窗（闪窗）。
 **进行中·观察面**：①fleet 群发 b71 测试中（DSH_LOG 观察：版本分布 b70→b71 迁移/boot_verify 零 rejected；b64/b66 尾部旧机点名）②两单同事 MR 浸泡（dai-context/dai-agent-teams，MR 线归另一 session）③Kimi 多模态真机表现。
