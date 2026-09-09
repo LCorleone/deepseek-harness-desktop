@@ -443,12 +443,21 @@ function assertRepresentableEntry(entry: CompanyManifestPackage): void {
 
 /**
  * Whether one entry's signed `runtime.dshRuntimeVersion` range accepts the
- * given DSH runtime version — the exact comparator the market install gate
- * and the desktop boot classification use (`satisfies` with
- * `includePrerelease`); a range the comparator refuses is simply
- * incompatible, never a scan failure.
+ * given DSH runtime version (`satisfies` with `includePrerelease`); a range
+ * the comparator refuses is simply incompatible, never a scan failure.
+ *
+ * The single market implementation of the runtime-window comparator (P15
+ * phase 2 review dedupe): both the catalog view selection above and the
+ * signed-manifest install authority
+ * (`src/install/signed-manifest-authority.ts`) import this function, so the
+ * browsing view and the install gate can never drift apart. The desktop
+ * boot classification keeps its own copy
+ * (`dsh-plugin-desktop/src/boot-verification.ts` — the cross-package
+ * direction ban forbids sharing one function across workspaces); its
+ * agreement with this implementation is pinned sample-by-sample by
+ * `scripts/dsh-runtime-version-parity.test.mjs` beside the constant pair.
  */
-function entryAcceptsDshRuntime(entry: CompanyManifestPackage, runtimeVersion: string): boolean {
+export function entryAcceptsDshRuntime(entry: CompanyManifestPackage, runtimeVersion: string): boolean {
   try {
     return satisfies(runtimeVersion, entry.runtime.dshRuntimeVersion, { includePrerelease: true })
   } catch {

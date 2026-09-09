@@ -35,9 +35,8 @@
  * there is nothing to consult and every decision fails closed as well.
  */
 
-import { satisfies } from 'semver'
-import type { CompanyCatalogVerification } from '../catalog/company-provider.js'
 import type { CompanyManifestPackage } from '../signing/index.js'
+import { entryAcceptsDshRuntime, type CompanyCatalogVerification } from '../catalog/company-provider.js'
 import {
   DSH_RUNTIME_VERSION,
   type InstallTargetAuthority,
@@ -95,15 +94,6 @@ export interface SignedManifestInstallTargetAuthority extends InstallTargetAutho
 function boundedReason(cause: unknown): string {
   const text = (cause instanceof Error ? cause.message : String(cause)).replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim()
   return text.length === 0 ? 'manifest verification failed' : text.slice(0, 240)
-}
-
-/** Whether one entry's signed `runtime.dshRuntimeVersion` range accepts the given DSH runtime version (`satisfies` with `includePrerelease` — the comparator the catalog view and the desktop boot classification use; a range the comparator refuses is simply incompatible, never an authority failure). */
-function entryAcceptsDshRuntime(entry: CompanyManifestPackage, runtimeVersion: string): boolean {
-  try {
-    return satisfies(runtimeVersion, entry.runtime.dshRuntimeVersion, { includePrerelease: true })
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -178,9 +168,10 @@ export function createSignedManifestInstallTargetAuthority(
       // already hides it; this gate is the defense under the view — a stale
       // candidate, a direct preview call — and refuses with the dedicated
       // refusal code so the service says "upgrade the desktop client"
-      // instead of a generic verification failure. Same comparator
-      // (`satisfies` with `includePrerelease`) and the same constant family
-      // as the catalog view selection and the desktop boot classification.
+      // instead of a generic verification failure. The comparator is the
+      // shared `entryAcceptsDshRuntime` import from the catalog provider —
+      // the browsing view and this gate judge ranges with the one function —
+      // and the same constant family as the desktop boot classification.
       if (!entryAcceptsDshRuntime(entry, dshRuntimeVersion)) {
         const decision: InstallTargetDecision = {
           allowed: false,

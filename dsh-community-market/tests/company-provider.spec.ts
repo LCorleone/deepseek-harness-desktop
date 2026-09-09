@@ -1160,6 +1160,31 @@ describe('company catalog provider runtime-selected view (P15 phase 2)', () => {
     expect(provider.findSignedPackage('dsh-plugin-safe', '1.2.3')).toMatchObject({ version: '1.2.3' })
   })
 
+  it('representability precedes the runtime selection: a hidden, unrepresentable pin still fails the whole scan', async () => {
+    // The P15 phase 2 review pin (P3-1): the whole-scan representability
+    // contract runs on every live entry BEFORE the per-package runtime
+    // selection, so an unrepresentable pin that targets another runtime
+    // line — one the selection would hide without a trace — still rejects
+    // the scan loudly instead of the publish fault passing unnoticed behind
+    // a hidden row. Reordering the assert to run only on the selected view
+    // (after the selection) would let this scan succeed with just the
+    // compatible sibling: this test is the red pin against that reordering.
+    const longName = `dsh-${'a'.repeat(200)}`
+    const { provider, context } = runtimeViewScan(() => signedText(unsignedManifest({
+      packages: [
+        packageEntry(),
+        packageEntry({
+          packageName: longName,
+          runtime: { dshRuntimeVersion: '^0.1.3', nodeRuntimeVersion: '>=22.0.0' },
+        }),
+      ],
+    })))
+
+    await expect(provider.scanCatalog!({}, context)).rejects.toThrow(/cannot be represented/u)
+    expect(provider.verifiedPackages()).toEqual([])
+    expect(provider.verification()).toBeUndefined()
+  })
+
   it('a revoked pin never shadows the live pins of the same name, compatible or not', async () => {
     // The window retires the old line's pin while the new line's pin stays
     // live: the current-runtime machine must still see the live pin, and the
@@ -1216,6 +1241,59 @@ describe('company catalog provider runtime-selected view (P15 phase 2)', () => {
     expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
       'npm:dsh-plugin-safe@0.16.0-beta.1',
     ])
+  })
+
+  it('an overlay pin of an incompatible runtime line removes the package from the market list — the stable compatible pin does not survive the merge', async () => {
+    // The P15 phase 2 review pin (P2): a roster machine whose overlay re-pins
+    // a package onto a runtime line the machine itself is not on. The merge
+    // key is the package name, never runtime compatibility, so the overlay
+    // pin wholly replaces the stable compatible pin and the runtime
+    // selection then finds no compatible entry of that name left: the
+    // package disappears from the market list entirely. That is the card's
+    // sanctioned shape (the beta pin is what the roster fleet must converge
+    // on; the boot-side phase 1 window keeps the already-installed version
+    // loading), and a sibling package the overlay does not carry keeps its
+    // row untouched. A merge that fell back to the stable pin whenever the
+    // overlay pin is incompatible with this machine would resurrect the
+    // package in the view — this test is the red pin against exactly that.
+    const betaOverlay: CompanyBetaCatalogOverlay = {
+      packages: [packageEntry({
+        version: '1.3.0-beta.4',
+        integrity: `sha512-${Buffer.alloc(64, 24).toString('base64')}`,
+        runtime: { dshRuntimeVersion: OLD_LINE, nodeRuntimeVersion: '>=22.0.0' },
+      })] as unknown as CompanyBetaCatalogOverlay['packages'],
+      sequence: 43,
+    }
+    const provider = createCompanyCatalogProvider({
+      manifestContentProvider: contentProvider(() => signedText()),
+      trustRoots,
+      sequenceStore: replayTolerantStore,
+      now: () => verifiedAt,
+      betaOverlayProvider: async () => betaOverlay,
+    })
+
+    const snapshots = await provider.scanCatalog!({}, contentContext())
+
+    // dsh-plugin-safe: the only surviving pin is the overlay's old-line one,
+    // incompatible with this 0.1.2 machine — no row. The untouched sibling
+    // (@deepseek-ai/cool-plugin, still pinned compatibly in stable) is the
+    // proof the vanish is scoped to the re-pinned name.
+    expect(snapshots.flatMap(snapshot => snapshot.items.map(item => item.id))).toEqual([
+      'npm:@deepseek-ai/cool-plugin@2.0.0',
+    ])
+    expect(snapshots[0]?.page.total).toBe(1)
+    expect(provider.verifiedPackages().map(candidate => candidate.packageName))
+      .toEqual(['@deepseek-ai/cool-plugin'])
+    // The vanished package stays a signed fact for the install-time queries:
+    // the overlay pin is hidden from the view, not from the authority, and
+    // the replaced stable pin is gone from every query (the merge is
+    // wholesale, so no stable dsh-plugin-safe pin lingers to install).
+    expect(provider.findSignedPackage('dsh-plugin-safe', '1.3.0-beta.4')).toMatchObject({
+      version: '1.3.0-beta.4',
+      runtime: { dshRuntimeVersion: OLD_LINE },
+    })
+    expect(provider.findSignedPackage('dsh-plugin-safe', '1.2.3')).toBeUndefined()
+    expect(provider.findVerifiedPackage('dsh-plugin-safe', '1.2.3')).toBeUndefined()
   })
 
   it('rejects an unparseable injected runtime version at construction', () => {
