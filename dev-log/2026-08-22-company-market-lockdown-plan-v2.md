@@ -290,10 +290,12 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **设计骨架·双层（2026-09-09 13:37 用户追加自动层）**：
 - **自动层「版本变更即清插件」**：locked policy 开关 `pluginResetOnVersionChange`（公司 fleet 构建默认开）——appBuildVersion 变化（升级或降级，bN 对比，存 userData）时自动执行剥离再 boot。价值=①版本间插件冲突永久消除，一个安装包发全公司②顺手治检查点复活死循环（清后健康 boot 烘干净检查点）③降级也触发（回滚场景同样干净）。代价签收：同事每次升级客户端重装插件（4 件×2 击，可接受）。
 - **手动层「恢复窗一键卸载全部并启动」**：startup-recovery-window 增动作→主进程 handler 把 profile 拉回基础组合（同下）→治「装上就炸」型（自动层不覆盖：无版本变化的坏安装）。
-- 共享剥离机制：package.json 移除全部第三方插件依赖+cordis.patch.yml includes 清第三方+删 .dsh-market-tarballs+清市场回执/state 使市场回到干净可装态；自动层记 telemetry 事件（plugin_reset）。
+- **机制主干=profile 换新（2026-09-09 13:48 用户定案，优于卸载手术）**：旧 profile 整目录改名靠边（profiles/desktop.bak-<时间戳>，留取证/回滚）→ 走现成首次运行机制（materializer+pnpm install，fleet 验证成熟路径）全新重建→boot。零 pnpm remove 手术（今天实证其脆弱：缺 tarball 即 ENOENT）；用户数据无忧（会话/settings 在 ~/.dsh 根不随 profile 走）；2026-09-09 真机已实证（用户删 .dsh→应用重建→host 干净启动）。
+- 附带清理：市场回执/state（home settings.yaml 装权台账+序列棘轮）需同步清或验证市场对「回执在而 profile 空」的呈现（倾向清，回到全部可装态）；自动层记 telemetry（plugin_reset/profile_recreate）。
+- 不动：~/.dsh 根的 settings/sessions/SSO/声明 ack；公司市场本体。
 - 不清：公司市场本体/桌面基础组合/用户 settings+sessions/SSO/声明 ack。**信任方向=纯收缩**（不装任何东西，只卸），无需扩大任何信任面。边界：公司市场/桌面本体不属于「第三方插件」不清；确认对话框（双语）防误触；完成后市场全部条目回到可安装态。
 
-**规模**：S-M（~1 天+测试）。**排期**：#74 出门后。**验收**：装着坏插件炸树的机器→恢复窗一键→干净进桌面→市场四件全部重新可装；正常机器该按钮同样可用（幂等）；测试钉 profile 重写/cordis.patch 清理/回执清空/确认对话框。
+**规模**：S（机制现成，~0.5-1 天+测试）。**排期**：#74 出门后。**验收**：装着坏插件炸树的机器→恢复窗一键→干净进桌面→市场四件全部重新可装；正常机器该按钮同样可用（幂等）；测试钉 profile 重写/cordis.patch 清理/回执清空/确认对话框。
 
 ## P12 · runtime 感知门（client-update-required）—— 立卡 2026-09-09
 
