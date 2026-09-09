@@ -289,6 +289,11 @@ export class ElectronShellGeneration {
       // redirect surface: Electron net-fetch rejects a manual 303,
       // electron#43715). A missing seed URL means a hand-built tree without
       // a mounted client-connection row — nothing to seed.
+      // NOTE (review P3): Electron's `session.fetch` always uses the DEFAULT
+      // session's cookie jar (electron#44456), so this only holds while the
+      // shell window runs on the default session (window-options.ts sets no
+      // partition). A future partitioned shell must mint through that
+      // partition's session or the cookie lands in the wrong jar (silent 401).
       const seedUrl = spec.readSessionSeedUrl?.()
       if (seedUrl !== undefined) {
         try {
