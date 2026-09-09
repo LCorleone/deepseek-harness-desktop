@@ -410,6 +410,12 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **挂账**：free-search rebase 上游 v0.4.19+（摆脱 dsh-settings shim）· 沙箱档2评估（首拒重试率观察）· sso-gate 浏览器路径主动测 · P14 备份清理按钮（可选）。
 **观察面**：2.0.4 换新规则分级在真机的表现 · beta 3 名测试者 · 插件重装体验（同事视角）。
 
+### 今日收尾（2026-09-09 21:15）
+**系统 review 两路**（day-review-code / day-review-release）：产物=2×P1+1×P2+4×P3 全修（`bd5218e284`）——陈旧回执重装通路（手删 profile 后重装/卸载不再永久 conflict，回执验证失败=陈旧即持久化清除）、compat.json 2.0.4/seq22（sebtang 明早 MR 的 fail-closed 闸放行）、恢复窗手动换新补 marker/record 双写、pnpm 闸超时补 terminate、文案封顶、deferred 遥测透传 rule、测试矩阵补钉。复审 APPROVED（陈旧删除持久化✓不误删✓）；P2 不可达分支注释收编 `1d63a781a6`。
+**pnpm 闸修复**（`9746b63084`，fleet 阻断项）：同会话第二装必败的根因=互斥闸等整棵进程树退出而驻留孤儿卡死；修=有界宽限 15s 超时放闸+warn 日志；review APPROVED。**待 b81 构建验证（连装 3 插件）**。
+**隐藏源码仓库按钮**（`db313713b2`）：内网 GitLab 地址不给用户看；repository 字段保留供安装验证。
+**P15 分阶段定稿**（`8fabff1398`）：目录侧保留旧钉版对老客户端即刻向后安全（boot 本就精确查找）→ Phase 0 目录侧（半天，可先于 P11）→ Phase 1 boot 分类+client-update-required → Phase 2 市场/安装闸 → Phase 3 遥测/SOP；首战=下次 sidebar promote 双钉。
+
 ### 当前 TODO 快照（2026-09-09 17:34）
 **进行中**：b78 装机验证（P14 EBUSY 修复终判：bak 出现+插件清空+plugin_reset outcome=swapped）。
 **就绪待发**：fleet 群发 b78（P14 自动清→同事干净进 0.1.2）→ 全员升级确认 → promote sidebar 0.18.1 + dai-context 0.41.4 到 stable。
