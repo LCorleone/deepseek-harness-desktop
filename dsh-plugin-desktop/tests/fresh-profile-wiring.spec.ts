@@ -106,6 +106,11 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(helper).toContain("clientEvents?.pluginReset(pluginResetEvent(trigger, {")
     expect(helper).toContain("outcome: 'swapped'")
     expect(helper).toContain("outcome: 'failed'")
+    // The set-aside strategy that landed is logged and reported, so a real
+    // machine's log/telemetry says whether the content-move fallback ran.
+    expect(helper).toContain("method ${result.method ?? 'none'}")
+    expect(helper).toContain("method: result.method ?? 'none',")
+    expect(helper).toContain("method: 'none',")
     // A failed rebuild returns an outcome instead of throwing into the
     // startup path it exists to rescue; the recovery window stays the way out.
     expect(helper).toContain("return 'failed'")

@@ -496,6 +496,30 @@ describe('plugin reset projection', () => {
       }).receiptsCleared).toBe(0)
     }
   })
+
+  it('carries the set-aside method so the real machine can tell which path ran', () => {
+    expect(pluginResetEvent('version-change', {
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 0,
+      method: 'content-move',
+    })).toEqual({
+      trigger: 'version-change',
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 0,
+      method: 'content-move',
+    })
+    expect(pluginResetEvent('recovery-window', {
+      profileName: 'desktop',
+      outcome: 'deferred',
+      materialized: false,
+      receiptsCleared: 0,
+      method: 'none',
+    }).method).toBe('none')
+  })
 })
 
 describe('plugin install projection', () => {

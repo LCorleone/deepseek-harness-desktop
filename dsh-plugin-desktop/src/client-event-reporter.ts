@@ -219,6 +219,13 @@ export interface PluginResetSwapView {
   readonly materialized: boolean
   /** Market install receipts dropped by the ledger clear. */
   readonly receiptsCleared: number
+  /**
+   * How the previous Profile was set aside: `rename` (whole-directory) or
+   * `content-move` (the fallback that relocated the entries one by one
+   * because the directory itself was held). `none` covers a swap that had no
+   * previous Profile, a deferred retry, and a failed rebuild.
+   */
+  readonly method?: 'rename' | 'content-move' | 'none'
 }
 
 /** `plugin_reset`: one fresh-Profile rebuild (P14) — the automatic
@@ -231,6 +238,8 @@ export interface PluginResetEventDetail {
   readonly outcome: 'swapped' | 'failed' | 'deferred'
   readonly materialized: boolean
   readonly receiptsCleared: number
+  /** Set-aside strategy that landed; omitted when the swap did not land. */
+  readonly method?: 'rename' | 'content-move' | 'none'
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +653,7 @@ export function pluginResetEvent(
     receiptsCleared: Number.isSafeInteger(swap.receiptsCleared) && swap.receiptsCleared > 0
       ? swap.receiptsCleared
       : 0,
+    ...(swap.method === undefined ? {} : { method: swap.method }),
   }
 }
 

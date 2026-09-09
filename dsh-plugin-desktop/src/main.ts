@@ -1068,17 +1068,19 @@ async function start(): Promise<void> {
             outcome: 'deferred',
             materialized: false,
             receiptsCleared: 0,
+            method: 'none',
           }))
           return 'deferred'
         }
         electronLogger.error(
-          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
+          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; method ${result.method ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
         )
         clientEvents?.pluginReset(pluginResetEvent(trigger, {
           profileName: result.profileName,
           outcome: 'swapped',
           materialized: result.materialized,
           receiptsCleared: result.receiptsCleared,
+          method: result.method ?? 'none',
         }))
         return 'swapped'
       } catch (cause) {
@@ -1090,6 +1092,7 @@ async function start(): Promise<void> {
           outcome: 'failed',
           materialized: false,
           receiptsCleared: 0,
+          method: 'none',
         }))
         return 'failed'
       }
