@@ -7,7 +7,8 @@
     "revoked": false,
     "runtime": {
       "dshRuntimeVersion": "^0.1.2-rc.1"
-    }
+    },
+    "channel": "beta"
   },
   {
     "packageName": "dsh-free-search",
@@ -22,38 +23,6 @@
       "kind": "tarball",
       "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.184.tgz",
       "path": "tools/company-catalog/out/packages/dsh-free-search-0.4.184.tgz"
-    }
-  },
-  {
-    "packageName": "dsh-dai-context",
-    "version": "0.41.3",
-    "bundlePatch": "./cordis.patch.yml",
-    "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-context-0.41.3.tgz",
-    "revoked": false,
-    "runtime": {
-      "dshRuntimeVersion": "^0.1.2-rc.1"
-    },
-    "treeDigest": "dfad12c52e4780fc3802c33f72229b9cac3ba65fca3aba7b7ac7c6547e023a87",
-    "source": {
-      "kind": "tarball",
-      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-context-0.41.3.tgz",
-      "path": "tools/company-catalog/out/packages/dsh-dai-context-0.41.3.tgz"
-    }
-  },
-  {
-    "packageName": "dsh-dai-agent-teams",
-    "version": "0.1.14",
-    "bundlePatch": "./cordis.patch.yml",
-    "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-agent-teams-0.1.14.tgz",
-    "revoked": false,
-    "runtime": {
-      "dshRuntimeVersion": "^0.1.2-rc.1"
-    },
-    "treeDigest": "8e517a349b742fb924f4bdaa98f1e3adce26cb08037fb7261799457118193f45",
-    "source": {
-      "kind": "tarball",
-      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-agent-teams-0.1.14.tgz",
-      "path": "tools/company-catalog/out/packages/dsh-dai-agent-teams-0.1.14.tgz"
     }
   }
 ]
