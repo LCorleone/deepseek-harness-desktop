@@ -371,6 +371,11 @@ julu/dsh-desktop-plugins（gitlab.s.dai.deloitte.cn）→ **pluginpuller/dsh-des
 ### DSH 运行时 0.1.2-rc.1 升级·全链闭环（2026-09-09 08:20）
 worker `f8068af04e`→amend `e4f3aa26f7`（110 文件 +4715/−7427）：pin 纯指针 b150a551→a66e470204（官方 tag）；deps/resolutions 全量+注入改向 client-runtime→client-ui-renderer；补丁 10 重做+2 重定位（win32-process/api-session-controller，上游逐字节/等价验证）+3 原生吸收换 marker 守卫（atomic-write-retry spec 删因 win32 门控 Linux 测不动，marker 钉死无删测躲红）+新增 dsh-settings patch（=上游 v2.0.5 同名恢复逐字节同，救活 dshmarket 1.17.1——专项文档 dshmarket-1.17.1-compat-012.md）；src 适配（SessionProvider/presets 路径/PTC 改名/patchReload/locale 收窄/company preset 刷新含 fetch:true 合规同步仍受 managed-models 门控）。评审 review-dsh-upgrade2 **APPROVED**（子模块零改动铁证/补丁忠实抽验/锁定层无弱化/门禁数字亲跑复现：desktop 2052+7skip·market 441·catalog 172+e2e·closure 228·typecheck 全 0）；3 P3 全记录性已 amend 进 commit body（icon 2 字节重生成/preset fetch 同步/peerRange 警告观察）。**未 push 未构建**——回退锚=tag v2.0.3-b72。等用户构建口令。真机验证清单：升级包首启（声明不弹=base 版语义）/已装插件 boot_verify 零拒绝/市场装卸/终端/杀渲染自愈回归。
 
+### dai-context 0.1.2 兼容实证 + P14 真机事故（2026-09-09 17:00）
+**dai-context 兼容 0.1.2 ✅**：b77 装 0.41.4（公司重打包=同事 0.41.3 内容+版本号）→ 应用正常、Context tab 可用（遥测 plugin_install installed）。静态分析预判（sessionProjections.register 定义形态/settings.register 签名/useProjection/四槽位全在）与真机一致——**同事的 dai-context 无需适配 0.1.2**，只有 agent-teams 要改（registerContinuableSetup 已不存在）。待办：sebtang 出官方版（或沿用我们的 0.41.4 重打包），可考虑随 fleet 发版 promote 到 stable。
+**P14 真机事故（b77 首次触发）**：`plugin_reset {outcome:failed}`，日志 `EBUSY: resource busy or locked, rename profiles\desktop -> desktop.bak-...`——Windows 句柄占用（Linux 改名不怕句柄，故测试全绿；第八次「Linux 绿 Windows 死」）。修 39a6ff6bc4（重试退避 6 次+deferred 标记+下次启动最早时刻重试）→ review APPROVED+2×P2/2×P3 → 二轮修复中（标记跨 profile 保留/重试可视面/碰撞后缀）。
+**发布序号**：beta seq22 = sidebar 0.18.1 + dai-context 0.41.4 + free-search 0.4.184。
+
 ### npm-beta 缺口修复真机闭环（2026-09-09 16:11）
 b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成功且可用**（遥测 16:09:45 `plugin_install sidebar 0.18.1 channel=beta outcome=installed` @ b76；beta-overlay seq21 applied）。=npm 通道 beta 条目安装缺口（87f859474f 三形态 handoff + b4ffd8b5cd 测试钉）**真机闭环**；0.18.1 在 0.1.2 上功能验证通过 → 等 fleet 升完 promote 到 stable。fleet 发版链就绪：P14（复审 APPROVED，二轮修复中）→ #77 构建 → 群发 → 全员确认 → promote sidebar。
 
