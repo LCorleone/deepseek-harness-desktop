@@ -331,6 +331,7 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 **风险**：老客户端市场视图同包双条目（外观问题，安装闸挡错装，过渡期接受）；`^0.1.2-rc.1` 预发布 range 求值与安装闸语义必须一致（vendor 手写比较器复用）；manifest 体积微增（忽略）。
 
 **排期**：Phase 0 可先于 P11 立即做（fleet promote 就要用）；Phase 1-3 排 P11 后或并行（用户定）。
+**Phase 0 评审遗留（2026-09-10 凌晨，APPROVED+2×P2+2×P3，修批待做）**：①`desktop-market.ts:1043` `stableRevoked` 按**名**扫描——retire 使「按版本吊销」成常态后，同包 beta 浸泡条目会被误强制 revoked，需改版本键控（并入客户端侧修批）；②e2e 需加「双条目清单过真实桌面验证器」一步（现仅 Array.find 模拟）；③retire 崩溃收敛注释不准（cli.mjs:791）；④SOP 未写明「旧钉 tgz 字节须随每次 artifact 携带」（4d fail-closed）。
 
 **关系**：**P12（runtime 感知门）并入本卡**——P12 是「隐藏不兼容钉版」的缓解，兼容窗是「保留多钉版按客户端选」的治本；P15 落地后 P12 场景自然消失。
 
