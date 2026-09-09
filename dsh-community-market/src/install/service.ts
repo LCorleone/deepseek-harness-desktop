@@ -894,11 +894,17 @@ async function assertInstallOverlay(
   const referenced = profileReferencesPlugin(await readManifest(join(profile.dir, 'package.json')), packageName)
   if (!referenced) {
     if (owned === undefined) return { replaces: undefined }
+    // A receipt whose package the profile manifest no longer references is
+    // stale by definition: assertInstalledBundle re-checks the manifest
+    // dependency/bundle first, so it can only throw here — never verify —
+    // and the receipt is cleared in favor of a fresh-install path (the same
+    // posture as the P14 swap's receipt clearing).
     try {
       await assertInstalledBundle(profile, owned.packageName, owned.version, owned.bundlePatch, owned.integrity)
     } catch {
       return { replaces: undefined, staleReceipt: owned }
     }
+    /* v8 ignore next -- unreachable: !referenced fails assertInstalledBundle's manifest check first. */
     throw new MarketInstallError('conflict', 'This plugin already has a market install receipt in the active profile.')
   }
   if (owned === undefined) {
