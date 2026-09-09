@@ -11,8 +11,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
+import { desktopMarketTarballStagingPath } from '../src/company-tarball-handoff.ts'
+import { desktopBootLockIntegrity, readDesktopBootLockfile } from '../src/boot-verification.ts'
 import {
   DesktopProfileCheckpoint,
   type ProfileCheckpointOptions,
@@ -131,5 +134,130 @@ describe('Desktop profile health checkpoint', () => {
     expect(repeated.status).toBe('already-attempted')
     target.checkpoint.captureHealthy()
     expect(target.checkpoint.inspectRestore().restoreAttempted).toBe(false)
+  })
+})
+
+describe('Desktop profile checkpoint market tarballs (#73 defect C)', () => {
+  const TARBALL = Buffer.from('staged market tarball fixture bytes\n')
+  const TARBALL_SHA512 = `sha512-${createHash('sha512').update(TARBALL).digest('base64')}`
+
+  function writeStagedTarball(profile: string, packageName: string, version: string, bytes: Buffer = TARBALL): string {
+    const path = desktopMarketTarballStagingPath(profile, packageName, version)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, bytes)
+    return path
+  }
+
+  /** pnpm lockfile shape that pins the staged tarball through `file:` (P7 2c). */
+  function writeFilePinLockfile(profile: string, packageName: string, version: string, stagedPath: string): void {
+    const relativeStaged = relative(profile, stagedPath).split(sep).join('/')
+    writeFileSync(join(profile, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      `      '${packageName}':`,
+      `        specifier: 'file:${stagedPath}'`,
+      `        version: 'file:${relativeStaged}'`,
+      'packages:',
+      `  '${packageName}@file:${relativeStaged}':`,
+      '    resolution:',
+      `      integrity: '${TARBALL_SHA512}'`,
+      `    version: '${version}'`,
+      'snapshots:',
+      `  '${packageName}@file:${relativeStaged}': {}`,
+      '',
+    ].join('\n'))
+  }
+
+  it('revives the staged tarballs after the whole profile directory is deleted, keeping file: lock pins verifiable', () => {
+    const target = fixture()
+    const stagedPath = writeStagedTarball(target.profile, 'third-party-plugin', '1.4.0')
+    writeFilePinLockfile(target.profile, 'third-party-plugin', '1.4.0', stagedPath)
+    const manifest = target.checkpoint.captureHealthy().manifest
+    expect(manifest.tarballs).toEqual([
+      { name: 'third-party-plugin-1.4.0.tgz', sha256: createHash('sha256').update(TARBALL).digest('hex'), size: TARBALL.byteLength },
+    ])
+    // The receipt ledger lives in the DSH home settings document, never in
+    // the profile checkpoint: no receipt data is captured, so a restore can
+    // never rebuild install authority (the market shows "Installed another
+    // way" until the user reinstalls).
+    expect(JSON.stringify(manifest)).not.toContain('receipt')
+
+    // The incident: the user deletes the entire profile directory.
+    rmSync(target.profile, { recursive: true })
+    mkdirSync(target.profile)
+    const restored = target.checkpoint.restoreLatest('generation-73')
+    expect(restored.status).toBe('restored')
+    expect(readFileSync(stagedPath, 'utf8')).toBe(TARBALL.toString('utf8'))
+    expect(readFileSync(join(target.profile, 'pnpm-lock.yaml'), 'utf8')).toContain('file:')
+    // The restored tarball makes the controlled `file:` pin verifiable for
+    // boot verification again — the exact state the destroyed profile lost.
+    const lockfile = readDesktopBootLockfile(target.profile)!
+    expect(desktopBootLockIntegrity(lockfile, 'third-party-plugin', '1.4.0', { profileDir: target.profile }))
+      .toBe(TARBALL_SHA512)
+  })
+
+  it('restores staged tarballs add-only: a rollback never deletes one the snapshot lacks', () => {
+    const target = fixture()
+    target.checkpoint.captureHealthy()
+    // A tarball the healthy snapshot never saw (for example a newer install
+    // whose first boot failed) stays on disk through the rollback: deleting
+    // it could break a `file:` lock pin this very restore just wrote back.
+    const unSnapshotTarball = writeStagedTarball(target.profile, 'new-plugin', '2.0.0')
+    writeFileSync(join(target.profile, 'package.json'), '{"name":"broken"}\n')
+    const restored = target.checkpoint.restoreLatest('generation-1')
+    expect(restored.status).toBe('restored')
+    expect(existsSync(unSnapshotTarball)).toBe(true)
+
+    // The checkpoint rolls with every healthy boot: the next capture records
+    // the tarball, so a later destroyed-profile restore revives it too.
+    const manifest = target.checkpoint.captureHealthy().manifest
+    expect(manifest.tarballs?.map(record => record.name)).toEqual(['new-plugin-2.0.0.tgz'])
+    rmSync(target.profile, { recursive: true })
+    mkdirSync(target.profile)
+    expect(target.checkpoint.restoreLatest('generation-2').status).toBe('restored')
+    expect(readFileSync(unSnapshotTarball, 'utf8')).toBe(TARBALL.toString('utf8'))
+  })
+
+  it('fails the capture on unsafe or over-limit staging entries, keeping the previous snapshot', () => {
+    const symlinkTarget = fixture()
+    writeStagedTarball(symlinkTarget.profile, 'third-party-plugin', '1.4.0')
+    const outside = join(symlinkTarget.root, 'outside.tgz')
+    writeFileSync(outside, TARBALL)
+    symlinkSync(outside, join(symlinkTarget.profile, '.dsh-market-tarballs', 'linked-plugin-1.0.0.tgz'))
+    expect(() => symlinkTarget.checkpoint.captureHealthy()).toThrow('regular file')
+
+    const unrecognized = fixture()
+    writeStagedTarball(unrecognized.profile, 'third-party-plugin', '1.4.0')
+    writeFileSync(join(unrecognized.profile, '.dsh-market-tarballs', 'EVIL-NAME.tgz'), TARBALL)
+    expect(() => unrecognized.checkpoint.captureHealthy()).toThrow('unrecognized name')
+
+    const oversized = fixture({ maxTarballBytes: 4 })
+    writeStagedTarball(oversized.profile, 'third-party-plugin', '1.4.0')
+    expect(() => oversized.checkpoint.captureHealthy()).toThrow('too large')
+  })
+
+  it('records and clears the pending dependency-sync flag on the restore marker', () => {
+    const target = fixture()
+    target.checkpoint.captureHealthy()
+    expect(target.checkpoint.dependencySyncPending()).toBe(false)
+    target.checkpoint.restoreLatest('generation-1')
+    target.checkpoint.setDependencySyncPending(true)
+    expect(target.checkpoint.dependencySyncPending()).toBe(true)
+    // The marker keeps its restore-attempt semantics while the sync is owed.
+    expect(target.checkpoint.inspectRestore()).toMatchObject({
+      restoreAttempted: true,
+      failureGeneration: 'generation-1',
+    })
+    target.checkpoint.setDependencySyncPending(false)
+    expect(target.checkpoint.dependencySyncPending()).toBe(false)
+
+    // Without a restore attempt there is nothing that could owe a sync, and
+    // a marker-less checkpoint never reports one.
+    const fresh = fixture()
+    fresh.checkpoint.captureHealthy()
+    expect(() => fresh.checkpoint.setDependencySyncPending(true)).toThrow('no restore attempt is available to mark')
+    expect(fresh.checkpoint.dependencySyncPending()).toBe(false)
   })
 })

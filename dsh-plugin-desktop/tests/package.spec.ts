@@ -825,15 +825,22 @@ describe('published package surface', () => {
     // A restored snapshot may predate the onlyBuiltDependencies whitelist;
     // the approval must run after the checkpoint restore and before pnpm
     // materializes the dependencies, and a failed approval must not block
-    // the restore (no early return inside its catch).
+    // the restore (no early return inside its catch). Both steps live in the
+    // shared materializeRestoredProfile helper (#73): inside it the approval
+    // precedes the retrying install, and the restore path invokes it only
+    // after checkpoint.restoreLatest has rolled the declarative files back.
+    const helper = main.indexOf('const materializeRestoredProfile = async (')
+    const approval = main.indexOf('ensureProfilePnpmBuildApproval(profileDir)', helper)
+    const materialize = main.indexOf('await materializeProfileWithRetry(', helper)
     const restore = main.indexOf('const restoreProfileCheckpoint = async (')
     const restored = main.indexOf('const restored = checkpoint.restoreLatest(attemptId)')
-    const approval = main.indexOf('ensureProfilePnpmBuildApproval(profileDir)')
-    const materialize = main.indexOf('await materializeProfile({')
+    const sync = main.indexOf('await materializeRestoredProfile(profileDir)')
 
     expect(restore).toBeGreaterThan(-1)
     expect(restored).toBeGreaterThan(restore)
-    expect(approval).toBeGreaterThan(restored)
+    expect(sync).toBeGreaterThan(restored)
+    expect(helper).toBeGreaterThan(-1)
+    expect(approval).toBeGreaterThan(helper)
     expect(materialize).toBeGreaterThan(approval)
     expect(main).toContain('import { ensureProfilePnpmBuildApproval } from')
   })

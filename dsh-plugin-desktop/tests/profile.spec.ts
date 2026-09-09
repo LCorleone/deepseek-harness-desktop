@@ -2020,6 +2020,42 @@ describe('locked boot verification of third-party bundles (P2-4)', {
       .toContain(markerId(firstPlugin))
   })
 
+  it('drops loader include rows that name a rejected or unresolved bundle (#73 defect D)', () => {
+    const home = temporaryHome()
+    // Rejected on catalog grounds: declared and installed, but the signed
+    // manifest does not carry it.
+    const rogue = 'rogue-external-plugin'
+    installThirdPartyBundle(home, rogue, { version: '0.9.0' })
+    // Unresolved on disk: declared only.
+    const ghost = 'ghost-unresolved-plugin'
+    declareProfileBundles(home, [rogue, ghost])
+    writeProfileLock(home, [
+      { packageName: rogue, version: '0.9.0', integrity: bootIntegrity(31) },
+    ])
+    // A user profile patch tries to keep both inside the Loader include list
+    // — the edge the rejected→disabled merge alone did not cover.
+    writeFileSync(join(ensureDesktopProfile(home), 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: rogue-row',
+      `      name: ${rogue}`,
+      '    - id: ghost-row',
+      `      name: ${ghost}`,
+      '    - id: kept-row',
+      "      name: 'third-party-host-plugin'",
+      '',
+    ].join('\n'))
+
+    const prepared = prepareLocked(home, { manifestBytes: manifestText([]), receipts: [] })
+    const rows = composeEntries([prepared.patches])
+
+    expect(prepared.bootVerification?.rejected.map(entry => entry.packageName).sort())
+      .toEqual([ghost, rogue].sort())
+    expect(rows.map(row => row.id)).not.toContain('rogue-row')
+    expect(rows.map(row => row.id)).not.toContain('ghost-row')
+    // Only the refused names drop; unrelated include rows survive.
+    expect(rows).toContainEqual(expect.objectContaining({ id: 'kept-row' }))
+  })
+
   it('never rejects upstream, desktop, or market bundles (compatibility red line)', () => {
     const home = temporaryHome()
     const rogue = 'unsigned-third-party'

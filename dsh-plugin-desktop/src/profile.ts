@@ -764,6 +764,42 @@ function filterMarketProviderPatches(patches: PatchOptions[]): MarketPatchFilter
   return { patches: filtered, removedProviderReference }
 }
 
+/**
+ * Drop Loader rows that insert or repoint at a bundle this boot's verification
+ * refused (#73 defect D). The rejected→disabled merge already drops the
+ * bundle's own layer; this closes the remaining include surface — a profile
+ * patch, home patch, or another bundle's patch naming a package that is
+ * rejected (untrusted, unpinned, tampered) or cannot even be resolved on
+ * disk. The refused package stays refused everywhere it could be included;
+ * every other row passes through untouched.
+ */
+function filterRejectedBundleRows(rows: EntryOptions[], rejectedBundles: ReadonlySet<string>): EntryOptions[] {
+  const filtered: EntryOptions[] = []
+  for (const row of rows) {
+    if (typeof row.name === 'string' && rejectedBundles.has(row.name)) continue
+    if (row.group === true && Array.isArray(row.config)) {
+      filtered.push({ ...row, config: filterRejectedBundleRows(row.config, rejectedBundles) })
+    } else {
+      filtered.push(row)
+    }
+  }
+  return filtered
+}
+
+/** Strip rejected-bundle inserts and overrides from one patch layer. */
+function filterRejectedBundlePatches(patches: PatchOptions[], rejectedBundles: ReadonlySet<string>): PatchOptions[] {
+  const filtered: PatchOptions[] = []
+  for (const patch of patches) {
+    if (typeof patch.name === 'string' && rejectedBundles.has(patch.name)) continue
+    if (Array.isArray(patch.insert)) {
+      filtered.push({ ...patch, insert: filterRejectedBundleRows(patch.insert, rejectedBundles) })
+    } else {
+      filtered.push(patch)
+    }
+  }
+  return filtered
+}
+
 /** Accept only the audited single-row contract from the selected direct bundle layer. */
 export function validateDshMarketBundlePatches(patches: readonly PatchOptions[]): void {
   const rows = composeEntries([[...patches]])
@@ -971,6 +1007,13 @@ export function prepareDesktopProfile(
   const filteredBundles = filterMarketProviderPatches(bundlePatches)
   const filteredProfile = filterMarketProviderPatches(profile.patches)
   const filteredHome = filterMarketProviderPatches(homePatches)
+  // Rejected bundles (including unresolved ones) leave every include surface,
+  // not only their own layer: the composition below must not be able to pull
+  // a refused package back into the Loader graph through a patch row.
+  const rejectedBundleNames = new Set(bootVerification?.rejected.map(entry => entry.packageName) ?? [])
+  const safeBundlePatches = filterRejectedBundlePatches(filteredBundles.patches, rejectedBundleNames)
+  const safeProfilePatches = filterRejectedBundlePatches(filteredProfile.patches, rejectedBundleNames)
+  const safeHomePatches = filterRejectedBundlePatches(filteredHome.patches, rejectedBundleNames)
   const hasProviderConflict = filteredBundles.removedProviderReference
     || filteredProfile.removedProviderReference
     || filteredHome.removedProviderReference
@@ -1013,10 +1056,10 @@ export function prepareDesktopProfile(
     }
   }
   const patches: PatchOptions[] = [
-    ...filteredBundles.patches,
+    ...safeBundlePatches,
     ...providerPatches,
-    ...filteredProfile.patches,
-    ...filteredHome.patches,
+    ...safeProfilePatches,
+    ...safeHomePatches,
   ]
   const composedRows = composeEntries([patches])
   assertUniqueEntryIds(composedRows)

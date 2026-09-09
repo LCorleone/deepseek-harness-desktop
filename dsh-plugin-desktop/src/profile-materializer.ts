@@ -222,3 +222,31 @@ export async function materializeProfile(
 
 /** Compatibility alias for callers that describe this as re-materialization. */
 export const rematerializeProfile = materializeProfile
+
+/** Total spawn attempts {@linkcode materializeProfileWithRetry} makes before giving up. */
+export const PROFILE_MATERIALIZATION_ATTEMPTS = 2
+
+/**
+ * {@linkcode materializeProfile} with the restore-path retry semantics (the
+ * #73 half-chain fix): one failed dependency synchronization must not strand a
+ * restored profile between states, so a failed attempt is retried once — a
+ * fresh subprocess, exactly the fixed command — before the failure is
+ * reported to the caller, which then records the degrade instead of walking
+ * away. `onAttemptFailure` observes every failed attempt (1-based) for
+ * logging; it must never throw.
+ */
+export async function materializeProfileWithRetry(
+  options: ProfileMaterializerOptions,
+  onAttemptFailure?: (attempt: number, cause: unknown) => void,
+): Promise<ProfileMaterializationResult> {
+  let cause: unknown
+  for (let attempt = 1; attempt <= PROFILE_MATERIALIZATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await materializeProfile(options)
+    } catch (failure) {
+      cause = failure
+      onAttemptFailure?.(attempt, failure)
+    }
+  }
+  throw cause
+}

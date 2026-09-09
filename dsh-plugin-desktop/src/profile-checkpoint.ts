@@ -1,9 +1,10 @@
 /**
  * A small, profile-scoped last-known-good checkpoint for Desktop startup.
  *
- * This module deliberately only restores the declarative profile files. It
- * does not run pnpm and it never copies `node_modules` (or any other hot
- * runtime state).
+ * This module deliberately only restores the declarative profile files (plus
+ * the profile's staged market tarballs — see {@linkcode
+ * DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY}). It does not run pnpm and it
+ * never copies `node_modules` (or any other hot runtime state).
  */
 
 import { createHash, randomUUID } from 'node:crypto'
@@ -24,6 +25,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY } from './company-tarball-handoff.ts'
 
 const BIN_NAME = 'dsh-plugin-desktop'
 const VERSION = 1
@@ -36,6 +38,15 @@ const DIRECTORY_MODE = 0o700
 const CHECK_POSIX_MODE = process.platform !== 'win32'
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const ID_PATTERN = /^[A-Za-z0-9._:@/-]{1,256}$/u
+/**
+ * Staged market tarball and staged beta-manifest names the checkpoint admits
+ * (`scope+name-1.2.3.tgz` and `catalog-manifest.beta.json`): flat, lowercase,
+ * no path separators, so a record can never escape the staging directory.
+ */
+const TARBALL_NAME_PATTERN = /^[a-z0-9][a-z0-9._+-]{0,200}\.(?:tgz|json)$/u
+const MAX_CHECKPOINT_TARBALLS = 64
+const DEFAULT_MAX_TARBALL_BYTES = 128 * 1024 * 1024
+const DEFAULT_MAX_TARBALL_TOTAL_BYTES = 512 * 1024 * 1024
 
 /** Files that can be checkpointed. The market state is optional. */
 export const DESKTOP_PROFILE_CHECKPOINT_FILES = [
@@ -73,6 +84,10 @@ export interface ProfileCheckpointOptions {
   readonly provider?: string
   /** Override per-file limits in tests or an embedding product. */
   readonly maxFileBytes?: Partial<Record<DesktopProfileCheckpointFilename, number>>
+  /** Override the per-tarball staging size limit in tests or an embedding product. */
+  readonly maxTarballBytes?: number
+  /** Override the total staged-tarball size limit in tests or an embedding product. */
+  readonly maxTarballTotalBytes?: number
   /** Clock injection for deterministic tests. */
   readonly now?: () => number
 }
@@ -85,6 +100,14 @@ export interface ProfileCheckpointFileRecord {
   readonly mode?: number
 }
 
+/** One staged market tarball captured for restore (non-trusted, re-verifiable bytes). */
+export interface ProfileCheckpointTarballRecord {
+  /** Flat staging file name inside the profile's market tarball staging directory. */
+  readonly name: string
+  readonly sha256: string
+  readonly size: number
+}
+
 export interface ProfileCheckpointManifest {
   readonly version: 1
   readonly snapshotId: string
@@ -93,6 +116,16 @@ export interface ProfileCheckpointManifest {
   readonly profileName: string
   readonly provider: string
   readonly files: readonly ProfileCheckpointFileRecord[]
+  /**
+   * Staged market tarballs of the last healthy boot. Omitted when the staging
+   * directory was empty (older snapshots predate the field and read as empty).
+   * These bytes are never trusted: every consumer re-verifies them against the
+   * signed catalog, so restoring them repairs the `file:` lock pins without
+   * minting any install authority. Market install receipts are deliberately
+   * NOT checkpointed — they are the install-authority ledger in the DSH home
+   * settings document and must never be rebuilt from a restore.
+   */
+  readonly tarballs?: readonly ProfileCheckpointTarballRecord[]
 }
 
 export interface CaptureHealthyResult {
@@ -129,6 +162,12 @@ interface RestoreMarker {
   readonly version: 1
   readonly failureGeneration: string
   readonly attemptedAt: string
+  /**
+   * True while a restore completed declaratively but its package-manager
+   * dependency synchronization still owes a retry (the #73 half-chain fix):
+   * the next generation re-attempts the sync before the Host boots.
+   */
+  readonly dependencySyncPending?: boolean
 }
 
 interface FileImage {
@@ -245,6 +284,23 @@ function filePath(root: string, name: DesktopProfileCheckpointFilename): string 
   return path
 }
 
+/** Staged-tarball path inside one root's staging directory; the flat grammar-checked name cannot escape it. */
+function tarballPath(root: string, name: string): string {
+  if (typeof name !== 'string' || !TARBALL_NAME_PATTERN.test(name)) fail(`checkpoint tarball name is invalid: ${String(name)}`)
+  const path = join(root, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, name)
+  const expected = resolve(root, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY, name)
+  if (path !== expected || relative(root, path).startsWith('..')) fail('checkpoint tarball name escaped its root')
+  return path
+}
+
+function sameTarballRecords(
+  left: readonly ProfileCheckpointTarballRecord[],
+  right: readonly ProfileCheckpointTarballRecord[],
+): boolean {
+  return left.length === right.length && left.every((record, index) =>
+    record.name === right[index]!.name && record.sha256 === right[index]!.sha256 && record.size === right[index]!.size)
+}
+
 function assertProfileFileParent(profileDir: string, name: DesktopProfileCheckpointFilename): void {
   const parent = dirname(filePath(profileDir, name))
   try {
@@ -266,6 +322,8 @@ export class DesktopProfileCheckpoint {
   readonly snapshotDirectory: string
 
   private readonly limits: Record<DesktopProfileCheckpointFilename, number>
+  private readonly maxTarballBytes: number
+  private readonly maxTarballTotalBytes: number
   private readonly now: () => number
 
   constructor(options: ProfileCheckpointOptions) {
@@ -279,8 +337,14 @@ export class DesktopProfileCheckpoint {
     this.provider = assertIdentifier('provider', options.provider ?? 'unknown')
     this.now = options.now ?? Date.now
     this.limits = { ...FILE_LIMITS, ...(options.maxFileBytes ?? {}) }
+    this.maxTarballBytes = options.maxTarballBytes ?? DEFAULT_MAX_TARBALL_BYTES
+    this.maxTarballTotalBytes = options.maxTarballTotalBytes ?? DEFAULT_MAX_TARBALL_TOTAL_BYTES
     for (const name of DESKTOP_PROFILE_CHECKPOINT_FILES) {
       if (!Number.isSafeInteger(this.limits[name]) || this.limits[name] < 0) fail(`invalid size limit for ${name}`)
+    }
+    if (!Number.isSafeInteger(this.maxTarballBytes) || this.maxTarballBytes < 0
+      || !Number.isSafeInteger(this.maxTarballTotalBytes) || this.maxTarballTotalBytes < 0) {
+      fail('invalid tarball size limit')
     }
     const profileKey = hash(this.profileIdentity)
     const root = join(this.userDataDir, SNAPSHOT_ROOT)
@@ -293,10 +357,12 @@ export class DesktopProfileCheckpoint {
     this.recoverOrphanedLatest()
     ensureDirectory(dirname(this.snapshotDirectory))
     const current = this.readCurrentImages(true)
+    const currentTarballs = this.readCurrentTarballRecords()
     const existing = this.readSnapshot(false)
     if (existing !== undefined && existing.manifest.profileIdentity === this.profileIdentity
       && existing.manifest.profileName === this.profileName && existing.manifest.provider === this.provider
-      && existing.manifest.files.every((record, index) => fileEqual(record, current[index]!))) {
+      && existing.manifest.files.every((record, index) => fileEqual(record, current[index]!))
+      && sameTarballRecords(existing.manifest.tarballs ?? [], currentTarballs)) {
       // A successful generation starts a fresh recovery window. Retaining a
       // previous failed-generation marker would make inspectRestore report a
       // stale attempt and could incorrectly suppress the next failure.
@@ -323,6 +389,15 @@ export class DesktopProfileCheckpoint {
           writeDurable(destination, bytes)
         }
       }
+      // The staged market tarballs are copied as bytes only: they carry no
+      // trust (every consumer re-verifies them against the signed catalog),
+      // so the checkpoint can safely revive them after a destroyed profile.
+      for (const record of currentTarballs) {
+        const destination = tarballPath(staging, record.name)
+        ensureDirectory(dirname(destination))
+        const bytes = readFileSync(tarballPath(this.profileDir, record.name))
+        writeDurable(destination, bytes)
+      }
       const manifest: ProfileCheckpointManifest = {
         version: VERSION,
         snapshotId,
@@ -331,6 +406,7 @@ export class DesktopProfileCheckpoint {
         profileName: this.profileName,
         provider: this.provider,
         files: records,
+        ...(currentTarballs.length === 0 ? {} : { tarballs: currentTarballs }),
       }
       writeDurable(join(staging, MANIFEST_FILENAME), Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'))
       if (existsSync(this.snapshotDirectory)) {
@@ -416,7 +492,64 @@ export class DesktopProfileCheckpoint {
         }
       }
     }
+    // Staged market tarballs restore add-only. They are non-trusted bytes —
+    // every consumer re-verifies them against the signed catalog — so a
+    // deleted one is simply re-materialized and one the snapshot lacks is
+    // left alone: deleting it could break the very `file:` lock pin this
+    // restore just wrote back, and a tarball absent from the last healthy
+    // capture can never revive an uninstalled plugin through this path.
+    for (const record of snapshot.manifest.tarballs ?? []) {
+      const target = tarballPath(this.profileDir, record.name)
+      let currentMatches = false
+      try {
+        const item = lstatSync(target)
+        if (item.isFile() && !item.isSymbolicLink() && item.size === record.size) {
+          currentMatches = hash(readFileSync(target)) === record.sha256
+        }
+      } catch (cause) {
+        if (!isENOENT(cause)) throw cause
+      }
+      if (currentMatches) continue
+      const backup = tarballPath(snapshot.directory, record.name)
+      const bytes = readFileSync(backup)
+      // Point-of-use re-verification, exactly like the declarative files.
+      if (hash(bytes) !== record.sha256 || bytes.byteLength !== record.size) {
+        fail(`checkpoint changed during restore: ${record.name}`)
+      }
+      writeDurable(target, bytes)
+    }
     return { status: 'restored', changedFiles, snapshotDirectory: this.snapshotDirectory, failureGeneration: generation }
+  }
+
+  /** Whether the latest restore marker still owes a dependency re-synchronization. */
+  dependencySyncPending(): boolean {
+    this.recoverOrphanedLatest()
+    const snapshot = this.readSnapshot(false)
+    if (snapshot === undefined) return false
+    return this.readMarker(snapshot.directory)?.dependencySyncPending === true
+  }
+
+  /**
+   * Record (or clear) the pending dependency re-synchronization on the latest
+   * restore marker. Setting the flag requires an existing marker — only a
+   * restore attempt can owe a sync; clearing without one is a no-op.
+   */
+  setDependencySyncPending(pending: boolean): void {
+    this.recoverOrphanedLatest()
+    const snapshot = this.readSnapshot(false)
+    if (snapshot === undefined) fail('no healthy profile checkpoint exists')
+    const marker = this.readMarker(snapshot.directory)
+    if (marker === undefined) {
+      if (pending) fail('no restore attempt is available to mark')
+      return
+    }
+    if (marker.dependencySyncPending === pending) return
+    writeDurable(join(snapshot.directory, MARKER_FILENAME), Buffer.from(`${JSON.stringify({
+      version: VERSION,
+      failureGeneration: marker.failureGeneration,
+      attemptedAt: marker.attemptedAt,
+      ...(pending ? { dependencySyncPending: true } : {}),
+    } satisfies RestoreMarker)}\n`, 'utf8'))
   }
 
   private readCurrentImages(requirePackage: boolean): FileImage[] {
@@ -436,6 +569,49 @@ export class DesktopProfileCheckpoint {
       if (size > this.limits[name]) fail(`profile checkpoint file is too large: ${name}`)
       const bytes = readFileSync(path)
       return { present: true, sha256: hash(bytes), size: bytes.byteLength, mode: item.mode & 0o777 }
+    })
+  }
+
+  /**
+   * Image the profile's staged market tarballs: a missing staging directory is
+   * an empty set; anything unexpected inside it (foreign entry types,
+   * unrecognized names, over-limit sizes or counts) fails the capture so the
+   * previous snapshot survives instead of silently dropping restorability.
+   */
+  private readCurrentTarballRecords(): ProfileCheckpointTarballRecord[] {
+    const directory = join(this.profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY)
+    let item
+    try {
+      item = lstatSync(directory)
+    } catch (cause) {
+      if (isENOENT(cause)) return []
+      throw cause
+    }
+    if (!item.isDirectory() || item.isSymbolicLink()) {
+      fail('profile market tarball staging directory must be a real directory')
+    }
+    const entries = readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+    if (entries.length > MAX_CHECKPOINT_TARBALLS) {
+      fail('profile market tarball staging directory holds too many files')
+    }
+    let total = 0
+    return entries.map(entry => {
+      if (!entry.isFile()) {
+        fail(`profile market tarball staging entry must be a regular file: ${entry.name}`)
+      }
+      if (!TARBALL_NAME_PATTERN.test(entry.name)) {
+        fail(`profile market tarball staging entry has an unrecognized name: ${entry.name}`)
+      }
+      const bytes = readFileSync(join(directory, entry.name))
+      if (bytes.byteLength > this.maxTarballBytes) {
+        fail(`profile market tarball is too large: ${entry.name}`)
+      }
+      total += bytes.byteLength
+      if (total > this.maxTarballTotalBytes) {
+        fail('profile market tarballs exceed the checkpoint size budget')
+      }
+      return { name: entry.name, sha256: hash(bytes), size: bytes.byteLength }
     })
   }
 
@@ -471,7 +647,8 @@ export class DesktopProfileCheckpoint {
       if (value === null || typeof value !== 'object' || Array.isArray(value)) fail('restore marker is invalid')
       const marker = value as Record<string, unknown>
       if (marker.version !== VERSION || typeof marker.failureGeneration !== 'string'
-        || !ID_PATTERN.test(marker.failureGeneration) || typeof marker.attemptedAt !== 'string') fail('restore marker is invalid')
+        || !ID_PATTERN.test(marker.failureGeneration) || typeof marker.attemptedAt !== 'string'
+        || (marker.dependencySyncPending !== undefined && typeof marker.dependencySyncPending !== 'boolean')) fail('restore marker is invalid')
       return marker as unknown as RestoreMarker
     } catch (cause) {
       if (isENOENT(cause)) return undefined
@@ -512,6 +689,29 @@ export class DesktopProfileCheckpoint {
           if (bytes.byteLength !== item.size || hash(bytes) !== item.sha256) fail(`checkpoint backup is incomplete: ${expected}`)
         } else if (existsSync(backup)) {
           fail(`checkpoint contains an unexpected backup: ${expected}`)
+        }
+      }
+      const tarballs = object.tarballs
+      if (tarballs !== undefined) {
+        if (!Array.isArray(tarballs) || tarballs.length > MAX_CHECKPOINT_TARBALLS) fail('checkpoint manifest is invalid')
+        const names = new Set<string>()
+        let total = 0
+        for (const record of tarballs) {
+          if (record === null || typeof record !== 'object' || Array.isArray(record)) fail('checkpoint manifest is invalid')
+          const item = record as Record<string, unknown>
+          if (typeof item.name !== 'string' || !TARBALL_NAME_PATTERN.test(item.name) || names.has(item.name)
+            || typeof item.sha256 !== 'string' || !HASH_PATTERN.test(item.sha256)
+            || !Number.isSafeInteger(item.size) || (item.size as number) < 0
+            || (item.size as number) > this.maxTarballBytes) fail('checkpoint manifest is invalid')
+          names.add(item.name)
+          total += item.size as number
+          if (total > this.maxTarballTotalBytes) fail('checkpoint manifest is invalid')
+          const backup = tarballPath(this.snapshotDirectory, item.name)
+          const backupItem = lstatSync(backup)
+          if (!backupItem.isFile() || backupItem.isSymbolicLink()
+            || (CHECK_POSIX_MODE && (backupItem.mode & 0o777) !== FILE_MODE)) fail(`checkpoint tarball backup is unsafe: ${item.name}`)
+          const bytes = readFileSync(backup)
+          if (bytes.byteLength !== item.size || hash(bytes) !== item.sha256) fail(`checkpoint tarball backup is incomplete: ${item.name}`)
         }
       }
       if (requireComplete && !files.some((record: Record<string, unknown>) => record.present === true)) {

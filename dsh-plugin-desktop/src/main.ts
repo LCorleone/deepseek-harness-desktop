@@ -145,7 +145,7 @@ import {
   type SkippedOptionalEntry,
 } from './profile.ts'
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
-import { materializeProfile, ProfileMaterializationError } from './profile-materializer.ts'
+import { materializeProfileWithRetry, ProfileMaterializationError, PROFILE_MATERIALIZATION_ATTEMPTS } from './profile-materializer.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import { DesktopAgentBrowserSession } from './agent-browser-session.ts'
@@ -930,6 +930,40 @@ async function start(): Promise<void> {
         `${BIN_NAME}: healthy profile checkpoints are unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     }
+    // Shared restore-path dependency synchronization (the #73 half-chain
+    // fix): re-approve the build whitelist, then run the fixed pnpm install
+    // with one retry. Returns false only after both attempts failed — the
+    // callers then degrade (pending flag) instead of stranding the restore.
+    const materializeRestoredProfile = async (profileDir: string): Promise<boolean> => {
+      // The restored snapshot may predate the build-approval whitelist, so
+      // re-approve before materializing or pnpm 11 fails the dependency
+      // synchronization on ERR_PNPM_IGNORED_BUILDS. Best-effort: a failed
+      // approval must not block the restore itself.
+      try {
+        ensureProfilePnpmBuildApproval(profileDir)
+      } catch (approvalCause) {
+        electronLogger.error(
+          `${BIN_NAME}: profile build approval before restore materialization failed: ${approvalCause instanceof Error ? approvalCause.message : String(approvalCause)}`,
+        )
+      }
+      return await materializeProfileWithRetry(
+        {
+          nodeExecutable,
+          pnpmBinPath,
+          nodeBinDir: pnpmRuntime.nodeBinDir,
+          nodeShimPath: pnpmRuntime.nodeShimPath,
+          homeDir,
+          profileDir,
+          electronVersion,
+        },
+        (attempt, materializationCause) => {
+          const detail = materializationCause instanceof ProfileMaterializationError
+            ? materializationCause.result?.stderr || materializationCause.message
+            : materializationCause instanceof Error ? materializationCause.message : String(materializationCause)
+          electronLogger.error(`${BIN_NAME}: restored profile dependency synchronization failed (attempt ${String(attempt)} of ${String(PROFILE_MATERIALIZATION_ATTEMPTS)}): ${maskSecrets(detail)}`)
+        },
+      ).then(() => true, () => false)
+    }
     startupRecoveryConfigurationPaths = {
       settingsDocument: join(homeDir, 'settings.yaml'),
       profilePatch: join(activeProfileDir, PROFILE_PATCH_FILENAME),
@@ -1192,6 +1226,25 @@ async function start(): Promise<void> {
         )
       }
     }
+    // Durable retry of a degraded restore (#73): a restore whose dependency
+    // synchronization failed left the pending flag on the restore marker, so
+    // every later generation re-attempts the sync here — before the Host and
+    // renderer boot on top of the restored declarative profile. A corrupt
+    // checkpoint must never block the boot: probe failures only log.
+    if (profileCheckpoint !== undefined) {
+      try {
+        if (profileCheckpoint.dependencySyncPending()) {
+          electronLogger.error(`${BIN_NAME}: retrying the pending restored profile dependency synchronization`)
+          if (await materializeRestoredProfile(prepared.profile.dir)) {
+            profileCheckpoint.setDependencySyncPending(false)
+          }
+        }
+      } catch (cause) {
+        electronLogger.error(
+          `${BIN_NAME}: pending restored profile dependency synchronization was unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+      }
+    }
     if (prepared.marketFailure !== undefined) {
       electronLogger.error(
         `${BIN_NAME}: requested Market provider ${prepared.market.requested} was disabled for this generation: ${prepared.marketFailure}`,
@@ -1263,33 +1316,21 @@ async function start(): Promise<void> {
       const dependencyFilesChanged = restored.changedFiles.some(name =>
         name === 'package.json' || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml')
       if (dependencyFilesChanged || forceMaterialization) {
-        // The restored snapshot may predate the build-approval whitelist, so
-        // re-approve before materializing or pnpm 11 fails the dependency
-        // synchronization on ERR_PNPM_IGNORED_BUILDS. Best-effort: a failed
-        // approval must not block the restore itself.
-        try {
-          ensureProfilePnpmBuildApproval(profileDir)
-        } catch (approvalCause) {
-          electronLogger.error(
-            `${BIN_NAME}: profile build approval before restore materialization failed: ${approvalCause instanceof Error ? approvalCause.message : String(approvalCause)}`,
-          )
-        }
-        try {
-          await materializeProfile({
-            nodeExecutable,
-            pnpmBinPath,
-            nodeBinDir: pnpmRuntime.nodeBinDir,
-            nodeShimPath: pnpmRuntime.nodeShimPath,
-            homeDir,
-            profileDir,
-            electronVersion,
-          })
-        } catch (materializationCause) {
-          const detail = materializationCause instanceof ProfileMaterializationError
-            ? materializationCause.result?.stderr || materializationCause.message
-            : materializationCause instanceof Error ? materializationCause.message : String(materializationCause)
-          electronLogger.error(`${BIN_NAME}: restored profile dependency synchronization failed: ${maskSecrets(detail)}`)
-          return false
+        const synchronized = await materializeRestoredProfile(profileDir)
+        if (!synchronized) {
+          // Degrade, never strand (#73): the declarative restore stands and
+          // this boot continues on the restored state, while the pending flag
+          // on the checkpoint's restore marker makes the next generation
+          // re-attempt the dependency synchronization before the Host boots.
+          // Returning false here would falsely deny a restore that already
+          // mutated the profile and leave no retry anywhere.
+          try {
+            checkpoint.setDependencySyncPending(true)
+          } catch (pendingCause) {
+            electronLogger.error(
+              `${BIN_NAME}: failed to mark the restored profile dependency synchronization as pending: ${pendingCause instanceof Error ? pendingCause.message : String(pendingCause)}`,
+            )
+          }
         }
       }
       if (showNotice) {

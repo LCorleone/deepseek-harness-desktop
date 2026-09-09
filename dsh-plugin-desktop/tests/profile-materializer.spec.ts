@@ -5,6 +5,7 @@ import { delimiter } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   materializeProfile,
+  materializeProfileWithRetry,
   type ProfileMaterializerOptions,
   type ProfileMaterializerSpawn,
 } from '../src/profile-materializer.ts'
@@ -104,5 +105,57 @@ describe('profile materializer', () => {
     expect(child.kill).toHaveBeenCalled()
     child.emit('close', null, 'SIGTERM')
     await expect(resultPromise).rejects.toThrow('aborted')
+  })
+})
+
+describe('profile materializer restore retry (#73 defect C)', () => {
+  function failingThenSucceedingSpawn(attempts: number): {
+    readonly spawn: ProfileMaterializerSpawn
+    readonly invocations: () => number
+  } {
+    let invocations = 0
+    const spawn = vi.fn(() => {
+      invocations += 1
+      const child = fakeChild()
+      const failed = invocations <= attempts
+      queueMicrotask(() => {
+        child.stderr.end(failed ? 'ERR_PNPM_REGISTRIES_MISMATCH\n' : '')
+        child.stdout.end(failed ? '' : 'installed\n')
+        child.emit('close', failed ? 1 : 0, null)
+      })
+      return child as unknown as ChildProcess
+    }) as unknown as ProfileMaterializerSpawn
+    return { spawn, invocations: () => invocations }
+  }
+
+  it('retries one failed synchronization attempt and resolves on the second', async () => {
+    const harness = failingThenSucceedingSpawn(1)
+    const observed: number[] = []
+    const result = await materializeProfileWithRetry(options(harness.spawn), attempt => {
+      observed.push(attempt)
+    })
+    expect(result.exitCode).toBe(0)
+    expect(harness.invocations()).toBe(2)
+    expect(observed).toEqual([1])
+  })
+
+  it('reports the last failure after both attempts fail', async () => {
+    const harness = failingThenSucceedingSpawn(2)
+    const observed: unknown[] = []
+    await expect(materializeProfileWithRetry(options(harness.spawn), (_attempt, cause) => {
+      observed.push(cause)
+    })).rejects.toMatchObject({
+      name: 'ProfileMaterializationError',
+      result: { exitCode: 1, stderr: 'ERR_PNPM_REGISTRIES_MISMATCH\n' },
+    })
+    expect(harness.invocations()).toBe(2)
+    expect(observed).toHaveLength(2)
+  })
+
+  it('spawns exactly once when the first attempt succeeds', async () => {
+    const harness = failingThenSucceedingSpawn(0)
+    const result = await materializeProfileWithRetry(options(harness.spawn))
+    expect(result.exitCode).toBe(0)
+    expect(harness.invocations()).toBe(1)
   })
 })
