@@ -75,6 +75,21 @@ describe('fresh Profile swap wiring (P14)', () => {
     expect(recordBody).toContain('profileName: activeProfileName,')
   })
 
+  it('gates the record-branch ledger clear on the absence of a restorable checkpoint snapshot (review P2)', () => {
+    const recordAt = source.indexOf("} else if (freshProfileDecision === 'record') {", autoLayerAt)
+    const recordBody = source.slice(recordAt, source.indexOf('startupRecoveryConfigurationPaths', recordAt))
+    // The clear runs before the boot\'s failure path may restore a healthy
+    // checkpoint; a restorable snapshot resurrects the very bundles the
+    // receipts prove, so the probe result must ride into the clear.
+    expect(recordBody).toContain('profileCheckpoint.inspectRestore().snapshotExists')
+    expect(recordBody).toContain('restoreSnapshotExists,')
+    // The probe itself must not be able to fail the boot: an unreadable
+    // checkpoint is logged and treated as no snapshot (the restore reads the
+    // same store and would fail the same validation).
+    expect(recordBody).toContain('} catch (cause) {')
+    expect(recordBody).toContain('healthy profile snapshot probe failed before receipt clearing')
+  })
+
   it('invalidates the rebuilt Profile health checkpoint so a failed boot cannot undo the swap', () => {
     const helper = source.slice(swapHelperAt, autoLayerAt)
 

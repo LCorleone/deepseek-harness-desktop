@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
+import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import { prerelease, satisfies, valid } from 'semver'
 import { parse as parseYaml } from 'yaml'
@@ -348,6 +349,15 @@ export interface MarketInstallServiceOptions {
   readonly installTargetAuthority?: InstallTargetAuthority
   /** Host-injected install telemetry sink; defaults to a no-op. */
   readonly installEventSink?: MarketInstallEventSink
+  /**
+   * Host logger for operator-visible degradation notices. The default is
+   * `console.warn`, which the packaged Desktop GUI never shows (its stdout
+   * and stderr are not wired to any log exporter) — hosts that run inside a
+   * GUI must inject their cordis logger so degrades reach the persistent
+   * logs. Same injection rule as {@link installEventSink}: the cordis
+   * `Context['logger']` type only, never a Desktop import.
+   */
+  readonly logger?: Pick<Context['logger'], 'warn'>
 }
 
 function stableExactVersion(value: unknown): value is string {
@@ -950,6 +960,7 @@ export class MarketInstallService {
   private readonly allowedRegistryOrigin: string
   private readonly installTargetAuthority: InstallTargetAuthority
   private readonly installEvents: MarketInstallEventSink
+  private readonly logger: Pick<Context['logger'], 'warn'>
   private readonly generation = new AbortController()
   private recoveryReconciliation: Promise<void> | undefined
   private operationActive = false
@@ -973,6 +984,9 @@ export class MarketInstallService {
     )
     this.installTargetAuthority = options.installTargetAuthority ?? allowAllInstallTargetAuthority
     this.installEvents = options.installEventSink ?? noopMarketInstallEventSink
+    // `console` structurally satisfies the picked logger shape; holding the
+    // object (not the unbound method) keeps `console.warn` correctly bound.
+    this.logger = options.logger ?? console
     if (typeof this.installTargetAuthority.canInstall !== 'function') {
       throw new TypeError('invalid market install target authority')
     }
@@ -1063,8 +1077,10 @@ export class MarketInstallService {
       // lockfile, cannot prove any installed bundle. Degrade to "nothing
       // installed" instead of failing the whole list — a residual receipt
       // must never pin the market's installed view to an error, which no
-      // restart can clear.
-      console.warn(
+      // restart can clear. The host logger (injected by Desktop) carries the
+      // degrade into the persistent logs; the console fallback keeps
+      // standalone deployments observable on a terminal.
+      this.logger.warn(
         `dsh-community-market: could not read the active desktop profile ${JSON.stringify(profile.name)} `
         + `for installed-plugin verification (${cause instanceof Error ? cause.message : String(cause)}); `
         + 'reporting no installed plugins',

@@ -412,6 +412,40 @@ describe('market install receipt clearing', () => {
     expect(logError).not.toHaveBeenCalled()
   })
 
+  it('keeps a manifest-less Profile\'s receipts when a restore snapshot exists for this boot (review P2)', async () => {
+    const home = temporaryHome()
+    const settingsPath = seededSettings(home)
+    const before = readFileSync(settingsPath, 'utf8')
+    const logError = vi.fn()
+
+    // The clear runs before the boot\'s failure path may restore a healthy
+    // checkpoint, which resurrects the Profile\'s package.json, lockfile, and
+    // node_modules. Receipts dropped ahead of that restore would leave the
+    // restored plugins installed but unproven — the market treats them as
+    // external and a reinstall reports a conflict — so a restorable snapshot
+    // keeps the ledger even though the manifest is missing at boot.
+    expect(await clearFreshProfileRecordReceipts({
+      profileExists: false,
+      restoreSnapshotExists: true,
+      settingsDocumentPath: settingsPath,
+      profileName: 'desktop',
+      logError,
+    })).toBe(0)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(before)
+    expect(logError).not.toHaveBeenCalled()
+
+    // Without a snapshot the same manifest-less boot still clears: nothing
+    // can resurrect the bundles those receipts claim to prove.
+    expect(await clearFreshProfileRecordReceipts({
+      profileExists: false,
+      restoreSnapshotExists: false,
+      settingsDocumentPath: settingsPath,
+      profileName: 'desktop',
+      logError,
+    })).toBe(2)
+    expect(readFileSync(settingsPath, 'utf8')).not.toContain('receipt-1')
+  })
+
   it('reports a ledger that cannot be rewritten and never blocks the boot', async () => {
     const home = temporaryHome()
     const settingsPath = join(home, 'settings.yaml')

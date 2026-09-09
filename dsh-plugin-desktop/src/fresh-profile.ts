@@ -412,15 +412,29 @@ export async function clearMarketInstallReceipts(settingsPath: string, profileNa
  * for a Profile that still has its manifest and plugins, and clearing there
  * would hide real installs. Failures are logged and swallowed: a ledger that
  * could not be rewritten must never block the boot (the swap's own posture).
+ *
+ * The second gate is ordering, not fact: this clear runs before the Profile
+ * preparation that may later restore a healthy checkpoint (package.json,
+ * lockfile, and node_modules resurrected by materialization). A boot with a
+ * restorable snapshot must keep the receipts — the restored plugins come back
+ * installed, and without their receipts the market would treat them as
+ * external and refuse a reinstall with a conflict.
  */
 export async function clearFreshProfileRecordReceipts(options: {
   /** Whether the active Profile manifest already existed at boot. */
   readonly profileExists: boolean
+  /**
+   * Whether the Profile's health checkpoint holds a restorable snapshot this
+   * boot. When true the receipts survive even a missing manifest, because a
+   * later restore can still resurrect exactly the bundles they prove.
+   */
+  readonly restoreSnapshotExists?: boolean
   readonly settingsDocumentPath: string
   readonly profileName: string
   readonly logError?: (message: string) => void
 }): Promise<number> {
   if (options.profileExists) return 0
+  if (options.restoreSnapshotExists === true) return 0
   try {
     const cleared = await clearMarketInstallReceipts(options.settingsDocumentPath, options.profileName)
     if (cleared > 0) {

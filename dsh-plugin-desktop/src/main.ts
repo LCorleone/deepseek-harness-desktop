@@ -1235,8 +1235,32 @@ async function start(): Promise<void> {
       // and would pin the market's installed list to an error. Gated on the
       // manifest fact, not the decision string — the version rule also
       // records for a Profile that still has plugins.
+      //
+      // Second gate (review P2): this clear runs long before the boot's
+      // failure path may restore a healthy checkpoint (which resurrects
+      // package.json, the lockfile, and node_modules). A restorable snapshot
+      // must therefore keep the receipts — the restored plugins come back
+      // installed, and a cleared ledger would make the market treat them as
+      // external and refuse a reinstall with a conflict. A checkpoint whose
+      // probe fails is as good as no snapshot for this boot: the restore
+      // reads the same store and would fail the same validation, so no
+      // resurrected plugin can exist. Likewise an undefined checkpoint (its
+      // construction failed above) means the store could not be opened at
+      // all — the receipts are dead weight that would pin the market's
+      // installed view to an error, so the clear stands.
+      let restoreSnapshotExists = false
+      if (profileCheckpoint !== undefined) {
+        try {
+          restoreSnapshotExists = profileCheckpoint.inspectRestore().snapshotExists
+        } catch (cause) {
+          electronLogger.error(
+            `${BIN_NAME}: healthy profile snapshot probe failed before receipt clearing: ${cause instanceof Error ? cause.message : String(cause)}`,
+          )
+        }
+      }
       await clearFreshProfileRecordReceipts({
         profileExists,
+        restoreSnapshotExists,
         settingsDocumentPath: join(homeDir, 'settings.yaml'),
         profileName: activeProfileName,
         logError: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },

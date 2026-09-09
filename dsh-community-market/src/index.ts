@@ -457,6 +457,9 @@ export function apply(ctx: Context): void {
             return plugins.disabledPackageNames()
           },
           ...(installEventSink === undefined ? {} : { installEventSink }),
+          // The host logger makes the installed-list degrade visible in the
+          // packaged GUI's persistent logs (console.warn never reaches them).
+          logger: ctx.logger,
         },
       )
       installService = service

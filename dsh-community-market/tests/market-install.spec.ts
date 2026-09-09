@@ -1325,6 +1325,49 @@ describe('market install service', () => {
       displayName: 'Safe Plugin',
       installedAt: '2026-08-18T00:00:00.000Z',
     }
+    // The injected host logger is the degrade channel the Desktop GUI can
+    // actually see; console.warn never reaches its packaged log exporter.
+    const warn = vi.fn()
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const service = new MarketInstallService(
+        memoryScope([receipt]).scope,
+        () => ({ name: 'web', dir: profileDir }),
+        runner(profileDir, []),
+        { verify: vi.fn(async () => verification) },
+        { logger: { warn } },
+      )
+
+      await expect(service.listVerifiedReceipts()).resolves.toEqual([])
+      expect(warn).toHaveBeenCalledOnce()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"web"'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not read the active desktop profile'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('reporting no installed plugins'))
+      // The injection replaces the fallback, not supplements it.
+      expect(consoleWarn).not.toHaveBeenCalled()
+      service.dispose()
+    } finally {
+      consoleWarn.mockRestore()
+    }
+  })
+
+  it('falls back to console.warn for the installed-list degrade when no host logger is injected', async () => {
+    const profileDir = await createProfile()
+    await writeInstalledPlugin(profileDir)
+    await rm(join(profileDir, 'pnpm-lock.yaml'), { force: true })
+    const receipt: MarketInstallReceipt = {
+      receiptId: 'receipt:stale-profile-unwired-0001',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'source-1',
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      itemId: 'example/dsh-plugin-safe',
+      displayName: 'Safe Plugin',
+      installedAt: '2026-08-18T00:00:00.000Z',
+    }
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const service = new MarketInstallService(
@@ -1335,7 +1378,6 @@ describe('market install service', () => {
       )
 
       await expect(service.listVerifiedReceipts()).resolves.toEqual([])
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dsh-community-market:'))
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('"web"'))
       service.dispose()
     } finally {
