@@ -924,6 +924,7 @@ async function start(): Promise<void> {
         profileDir: activeProfileDir,
         profileName: activeProfileName,
         provider: 'desktop-profile',
+        logWarning: message => { electronLogger.error(`${BIN_NAME}: ${maskSecrets(message)}`) },
       })
     } catch (cause) {
       electronLogger.error(
@@ -1219,6 +1220,7 @@ async function start(): Promise<void> {
           profileDir: prepared.profile.dir,
           profileName: activeProfileName,
           provider: 'desktop-profile',
+          logWarning: message => { electronLogger.error(`${BIN_NAME}: ${maskSecrets(message)}`) },
         })
       } catch (cause) {
         electronLogger.error(

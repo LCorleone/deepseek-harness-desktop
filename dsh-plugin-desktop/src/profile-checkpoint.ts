@@ -8,6 +8,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { DESKTOP_MARKET_TARBALL_MAX_BYTES } from './company-tarball-handoff.ts'
 import {
   closeSync,
   chmodSync,
@@ -44,9 +45,13 @@ const ID_PATTERN = /^[A-Za-z0-9._:@/-]{1,256}$/u
  * no path separators, so a record can never escape the staging directory.
  */
 const TARBALL_NAME_PATTERN = /^[a-z0-9][a-z0-9._+-]{0,200}\.(?:tgz|json)$/u
-const MAX_CHECKPOINT_TARBALLS = 64
-const DEFAULT_MAX_TARBALL_BYTES = 128 * 1024 * 1024
-const DEFAULT_MAX_TARBALL_TOTAL_BYTES = 512 * 1024 * 1024
+const MAX_CHECKPOINT_TARBALLS = 512
+// Caps mirror the install gate (DESKTOP_MARKET_TARBALL_MAX_BYTES): anything
+// the market could legally stage must fit, or every healthy capture would
+// degrade (see readCurrentTarballRecords — violations skip tarball
+// checkpointing with a logged warning instead of freezing the checkpoint).
+const DEFAULT_MAX_TARBALL_BYTES = DESKTOP_MARKET_TARBALL_MAX_BYTES
+const DEFAULT_MAX_TARBALL_TOTAL_BYTES = 2 * DESKTOP_MARKET_TARBALL_MAX_BYTES
 
 /** Files that can be checkpointed. The market state is optional. */
 export const DESKTOP_PROFILE_CHECKPOINT_FILES = [
@@ -84,6 +89,8 @@ export interface ProfileCheckpointOptions {
   readonly provider?: string
   /** Override per-file limits in tests or an embedding product. */
   readonly maxFileBytes?: Partial<Record<DesktopProfileCheckpointFilename, number>>
+  /** Warning sink for degraded (skipped) tarball checkpointing; defaults silent. */
+  readonly logWarning?: (message: string) => void
   /** Override the per-tarball staging size limit in tests or an embedding product. */
   readonly maxTarballBytes?: number
   /** Override the total staged-tarball size limit in tests or an embedding product. */
@@ -324,6 +331,7 @@ export class DesktopProfileCheckpoint {
   private readonly limits: Record<DesktopProfileCheckpointFilename, number>
   private readonly maxTarballBytes: number
   private readonly maxTarballTotalBytes: number
+  private readonly logWarning: (message: string) => void
   private readonly now: () => number
 
   constructor(options: ProfileCheckpointOptions) {
@@ -339,6 +347,7 @@ export class DesktopProfileCheckpoint {
     this.limits = { ...FILE_LIMITS, ...(options.maxFileBytes ?? {}) }
     this.maxTarballBytes = options.maxTarballBytes ?? DEFAULT_MAX_TARBALL_BYTES
     this.maxTarballTotalBytes = options.maxTarballTotalBytes ?? DEFAULT_MAX_TARBALL_TOTAL_BYTES
+    this.logWarning = options.logWarning ?? (() => {})
     for (const name of DESKTOP_PROFILE_CHECKPOINT_FILES) {
       if (!Number.isSafeInteger(this.limits[name]) || this.limits[name] < 0) fail(`invalid size limit for ${name}`)
     }
@@ -578,7 +587,19 @@ export class DesktopProfileCheckpoint {
    * unrecognized names, over-limit sizes or counts) fails the capture so the
    * previous snapshot survives instead of silently dropping restorability.
    */
+  /**
+   * Tarball staging snapshots degrade instead of failing (review P1 on the
+   * #73 fix): any structural or budget violation skips tarball checkpointing
+   * for this capture with a logged warning — a violated budget must never
+   * stop the FILES snapshot from refreshing, or last-known-good silently
+   * freezes and the rescue mechanism dies with it. The staged bytes carry
+   * no trust, so skipping them only narrows what a restore can revive.
+   */
   private readCurrentTarballRecords(): ProfileCheckpointTarballRecord[] {
+    const degrade = (reason: string): ProfileCheckpointTarballRecord[] => {
+      this.logWarning(`profile checkpoint degraded — market tarballs skipped this capture: ${reason}`)
+      return []
+    }
     const directory = join(this.profileDir, DESKTOP_MARKET_TARBALL_STAGING_DIRECTORY)
     let item
     try {
@@ -588,31 +609,34 @@ export class DesktopProfileCheckpoint {
       throw cause
     }
     if (!item.isDirectory() || item.isSymbolicLink()) {
-      fail('profile market tarball staging directory must be a real directory')
+      return degrade('staging directory is not a real directory')
     }
     const entries = readdirSync(directory, { withFileTypes: true })
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
     if (entries.length > MAX_CHECKPOINT_TARBALLS) {
-      fail('profile market tarball staging directory holds too many files')
+      return degrade(`staging directory holds too many files (${String(entries.length)})`)
     }
+    const records: ProfileCheckpointTarballRecord[] = []
     let total = 0
-    return entries.map(entry => {
+    for (const entry of entries) {
       if (!entry.isFile()) {
-        fail(`profile market tarball staging entry must be a regular file: ${entry.name}`)
+        return degrade(`staging entry is not a regular file: ${entry.name}`)
       }
       if (!TARBALL_NAME_PATTERN.test(entry.name)) {
-        fail(`profile market tarball staging entry has an unrecognized name: ${entry.name}`)
+        return degrade(`staging entry has an unrecognized name: ${entry.name}`)
       }
-      const bytes = readFileSync(join(directory, entry.name))
-      if (bytes.byteLength > this.maxTarballBytes) {
-        fail(`profile market tarball is too large: ${entry.name}`)
+      const path = join(directory, entry.name)
+      const size = lstatSync(path).size
+      if (size > this.maxTarballBytes) {
+        return degrade(`staged tarball is too large: ${entry.name}`)
       }
-      total += bytes.byteLength
+      total += size
       if (total > this.maxTarballTotalBytes) {
-        fail('profile market tarballs exceed the checkpoint size budget')
+        return degrade('staged tarballs exceed the checkpoint size budget')
       }
-      return { name: entry.name, sha256: hash(bytes), size: bytes.byteLength }
-    })
+      records.push({ name: entry.name, sha256: hash(readFileSync(path)), size })
+    }
+    return records
   }
 
   /** Recover the previous generation if a process died between directory renames. */

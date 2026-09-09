@@ -220,22 +220,36 @@ describe('Desktop profile checkpoint market tarballs (#73 defect C)', () => {
     expect(readFileSync(unSnapshotTarball, 'utf8')).toBe(TARBALL.toString('utf8'))
   })
 
-  it('fails the capture on unsafe or over-limit staging entries, keeping the previous snapshot', () => {
-    const symlinkTarget = fixture()
+  it('degrades the capture on unsafe or over-limit staging entries — files snapshot still refreshes (review P1)', () => {
+    // Tarball violations must never freeze the checkpoint: the rescue
+    // mechanism depends on every healthy boot refreshing the snapshot.
+    const symlinkWarnings: string[] = []
+    const symlinkTarget = fixture({ logWarning: message => { symlinkWarnings.push(message) } })
     writeStagedTarball(symlinkTarget.profile, 'third-party-plugin', '1.4.0')
     const outside = join(symlinkTarget.root, 'outside.tgz')
     writeFileSync(outside, TARBALL)
     symlinkSync(outside, join(symlinkTarget.profile, '.dsh-market-tarballs', 'linked-plugin-1.0.0.tgz'))
-    expect(() => symlinkTarget.checkpoint.captureHealthy()).toThrow('regular file')
+    const symlinkResult = symlinkTarget.checkpoint.captureHealthy()
+    expect(symlinkResult.deduplicated).toBe(false)
+    expect(symlinkResult.manifest.tarballs).toBeUndefined()
+    expect(symlinkWarnings.join('\n')).toContain('regular file')
 
-    const unrecognized = fixture()
+    const unrecognizedWarnings: string[] = []
+    const unrecognized = fixture({ logWarning: message => { unrecognizedWarnings.push(message) } })
     writeStagedTarball(unrecognized.profile, 'third-party-plugin', '1.4.0')
     writeFileSync(join(unrecognized.profile, '.dsh-market-tarballs', 'EVIL-NAME.tgz'), TARBALL)
-    expect(() => unrecognized.checkpoint.captureHealthy()).toThrow('unrecognized name')
+    const unrecognizedResult = unrecognized.checkpoint.captureHealthy()
+    expect(unrecognizedResult.manifest.tarballs).toBeUndefined()
+    expect(unrecognizedWarnings.join('\n')).toContain('unrecognized name')
 
-    const oversized = fixture({ maxTarballBytes: 4 })
+    const oversizedWarnings: string[] = []
+    const oversized = fixture({ maxTarballBytes: 4, logWarning: message => { oversizedWarnings.push(message) } })
     writeStagedTarball(oversized.profile, 'third-party-plugin', '1.4.0')
-    expect(() => oversized.checkpoint.captureHealthy()).toThrow('too large')
+    const oversizedResult = oversized.checkpoint.captureHealthy()
+    expect(oversizedResult.manifest.tarballs).toBeUndefined()
+    expect(oversizedWarnings.join('\n')).toContain('too large')
+    // The files snapshot still landed: a second capture dedupes against it.
+    expect(oversized.checkpoint.captureHealthy().deduplicated).toBe(true)
   })
 
   it('records and clears the pending dependency-sync flag on the restore marker', () => {
