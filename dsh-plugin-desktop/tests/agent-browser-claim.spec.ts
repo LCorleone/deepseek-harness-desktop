@@ -34,6 +34,7 @@ function devPolicy(): DesktopPolicy {
   return {
     locked: false,
     managedModels: false,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',

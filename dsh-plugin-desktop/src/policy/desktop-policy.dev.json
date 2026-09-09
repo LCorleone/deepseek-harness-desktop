@@ -10,6 +10,7 @@
   "companyManifestUrl": "company-market/catalog-manifest.json",
   "locked": false,
   "managedModels": false,
+  "pluginResetOnVersionChange": false,
   "requireSso": false,
   "trustRoots": [],
   "usageReport": false

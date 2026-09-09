@@ -946,6 +946,7 @@ describe('pnpm policy environment hand-off', () => {
   const lockedContentModePolicy: DesktopPolicy = {
     locked: true,
     managedModels: true,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     companyCatalogOrigin: null,
     companyManifestUrl: 'company-market/catalog-manifest.json',

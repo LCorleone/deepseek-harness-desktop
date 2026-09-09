@@ -1,7 +1,7 @@
 /**
  * Client event telemetry (2026-09-07): the low-frequency collector that
- * reports sso_login / catalog_refresh / plugin_install / boot_verify into
- * `dsh_client_events`.
+ * reports sso_login / catalog_refresh / plugin_install / boot_verify /
+ * disclaimer / plugin_reset into `dsh_client_events`.
  *
  * The posture mirrors `model-usage-reporter.spec.ts`: a fake mysql2 boundary
  * (never a real connection), fake clock-free fire-and-forget writes, counter
@@ -26,6 +26,7 @@ import {
   createClientEventCollector,
   disclaimerEvent,
   pluginInstallEvent,
+  pluginResetEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
   stableManifestEntryCount,
@@ -66,6 +67,7 @@ function eventPolicy(usageReport: boolean): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
     managedModels: usageReport,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     trustRoots: [],
     usageReport,
@@ -134,7 +136,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -454,6 +456,45 @@ describe('disclaimer projection', () => {
     expect(detail.clientVersion).toBe('0.4.184')
     expect(detail.textHash).toBe('f'.repeat(64))
     expect(detail.decision === 'agree' || detail.decision === 'disagree').toBe(true)
+  })
+})
+
+describe('plugin reset projection', () => {
+  it('pins the detail shape and passes the swap facts through', () => {
+    const detail = pluginResetEvent('version-change', {
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 4,
+    })
+
+    expect(Object.keys(detail).sort()).toEqual([
+      'materialized', 'outcome', 'profileName', 'receiptsCleared', 'trigger',
+    ])
+    expect(detail).toEqual({
+      trigger: 'version-change',
+      profileName: 'desktop',
+      outcome: 'swapped',
+      materialized: true,
+      receiptsCleared: 4,
+    })
+    expect(pluginResetEvent('recovery-window', {
+      profileName: 'work',
+      outcome: 'failed',
+      materialized: false,
+      receiptsCleared: 0,
+    }).trigger).toBe('recovery-window')
+  })
+
+  it('never emits a negative or fractional receipt count', () => {
+    for (const receiptsCleared of [-1, 1.5, Number.NaN]) {
+      expect(pluginResetEvent('recovery-window', {
+        profileName: 'desktop',
+        outcome: 'swapped',
+        materialized: false,
+        receiptsCleared,
+      }).receiptsCleared).toBe(0)
+    }
   })
 })
 

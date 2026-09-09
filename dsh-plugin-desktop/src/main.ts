@@ -101,6 +101,7 @@ import {
   createClientEventCollector,
   disclaimerEvent,
   pluginInstallEvent,
+  pluginResetEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
 } from './client-event-reporter.ts'
@@ -139,7 +140,9 @@ import { routeDesktopStartupFailure } from './startup-failure-routing.ts'
 import { DesktopStartupGeneration } from './startup-generation.ts'
 import { DesktopStartupStateCommit } from './startup-state-commit.ts'
 import {
+  DESKTOP_PROFILE_NAME,
   desktopInstallAnchor,
+  ensureDesktopProfile,
   healDesktopProfileModuleFallback,
   prepareDesktopProfile,
   type SkippedOptionalEntry,
@@ -147,6 +150,13 @@ import {
 import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profile-checkpoint.ts'
 import { materializeProfileWithRetry, ProfileMaterializationError, PROFILE_MATERIALIZATION_ATTEMPTS } from './profile-materializer.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
+import {
+  freshProfileResetDecision,
+  freshProfileSwap,
+  profileGenerationStatePath,
+  readProfileGenerationState,
+  writeProfileGenerationState,
+} from './fresh-profile.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
 import { DesktopAgentBrowserSession } from './agent-browser-session.ts'
 import { DesktopAgentBrowserWindowHost, clearAgentBrowserPersistedPartition } from './agent-browser-window.ts'
@@ -412,6 +422,7 @@ async function start(): Promise<void> {
   let profileCheckpoint: DesktopProfileCheckpoint | undefined
   let restoreHealthyProfile: (() => Promise<boolean>) | undefined
   let restoreLastKnownGoodProfile: ((token: string) => Promise<void>) | undefined
+  let freshProfileStart: ((token: string) => Promise<void>) | undefined
   let startupRecoveryProfileActions: DesktopStartupRecoveryProfileActions | undefined
   let sessionProjectionCacheRecovery:
     | Extract<SessionProjectionCacheRecoveryResult, { status: 'quarantined' }>
@@ -594,6 +605,7 @@ async function start(): Promise<void> {
         ...(recoveryTerminalAvailable ? { openTerminal: () => { runtime.openTerminal() } } : {}),
         ...(startupRecoveryProfileActions === undefined ? {} : { profileActions: startupRecoveryProfileActions }),
         ...(restoreLastKnownGoodProfile === undefined ? {} : { rollbackLastKnownGood: restoreLastKnownGoodProfile }),
+        ...(freshProfileStart === undefined ? {} : { freshProfileStart }),
       })
       return await startupRecoveryWindow.run()
     } catch (cause) {
@@ -931,6 +943,18 @@ async function start(): Promise<void> {
         `${BIN_NAME}: healthy profile checkpoints are unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     }
+    // Shared materializer inputs for both dependency-synchronization
+    // callers below (restore path and fresh-start path): the packaged
+    // Node/pnpm runtime plus the target Profile directory.
+    const profileMaterializerOptions = (profileDir: string) => ({
+      nodeExecutable,
+      pnpmBinPath,
+      nodeBinDir: pnpmRuntime.nodeBinDir,
+      nodeShimPath: pnpmRuntime.nodeShimPath,
+      homeDir,
+      profileDir,
+      electronVersion,
+    })
     // Shared restore-path dependency synchronization (the #73 half-chain
     // fix): re-approve the build whitelist, then run the fixed pnpm install
     // with one retry. Returns false only after both attempts failed — the
@@ -948,15 +972,7 @@ async function start(): Promise<void> {
         )
       }
       return await materializeProfileWithRetry(
-        {
-          nodeExecutable,
-          pnpmBinPath,
-          nodeBinDir: pnpmRuntime.nodeBinDir,
-          nodeShimPath: pnpmRuntime.nodeShimPath,
-          homeDir,
-          profileDir,
-          electronVersion,
-        },
+        profileMaterializerOptions(profileDir),
         (attempt, materializationCause) => {
           const detail = materializationCause instanceof ProfileMaterializationError
             ? materializationCause.result?.stderr || materializationCause.message
@@ -964,6 +980,106 @@ async function start(): Promise<void> {
           electronLogger.error(`${BIN_NAME}: restored profile dependency synchronization failed (attempt ${String(attempt)} of ${String(PROFILE_MATERIALIZATION_ATTEMPTS)}): ${maskSecrets(detail)}`)
         },
       ).then(() => true, () => false)
+    }
+    // Fresh-Profile dependency synchronization (P14): the same fixed
+    // `pnpm install --frozen-lockfile` with one retry the restore path uses,
+    // logged under the fresh-start caller. Best-effort by contract — the
+    // rebuilt Profile's base bundles resolve through the launcher module
+    // fallback, so a failed install degrades instead of blocking the boot.
+    const materializeFreshProfile = async (profileDir: string): Promise<boolean> => {
+      try {
+        ensureProfilePnpmBuildApproval(profileDir)
+      } catch (approvalCause) {
+        electronLogger.error(
+          `${BIN_NAME}: fresh profile build approval before materialization failed: ${approvalCause instanceof Error ? approvalCause.message : String(approvalCause)}`,
+        )
+      }
+      return await materializeProfileWithRetry(
+        profileMaterializerOptions(profileDir),
+        (attempt, materializationCause) => {
+          const detail = materializationCause instanceof ProfileMaterializationError
+            ? materializationCause.result?.stderr || materializationCause.message
+            : materializationCause instanceof Error ? materializationCause.message : String(materializationCause)
+          electronLogger.error(`${BIN_NAME}: fresh profile dependency synchronization failed (attempt ${String(attempt)} of ${String(PROFILE_MATERIALIZATION_ATTEMPTS)}): ${maskSecrets(detail)}`)
+        },
+      ).then(() => true, () => false)
+    }
+    // The one rebuild primitive both P14 layers call: the automatic
+    // version-change reset below and the recovery window's manual action.
+    // A failed rebuild logs and reports telemetry, then lets the boot
+    // continue on the existing Profile (the recovery window stays the way
+    // out) — it must never crash the startup path it exists to rescue.
+    const runFreshProfileSwap = async (trigger: 'version-change' | 'recovery-window'): Promise<boolean> => {
+      const settingsDocumentPath = join(homeDir, 'settings.yaml')
+      try {
+        const result = await freshProfileSwap({
+          home: homeDir,
+          profileName: activeProfileName,
+          settingsDocumentPath,
+          createProfile: () => {
+            if (activeProfileName === DESKTOP_PROFILE_NAME) ensureDesktopProfile(homeDir)
+            else createDesktopWebProfile(homeDir, activeProfileName)
+          },
+          materialize: () => materializeFreshProfile(resolveProfileDir(activeProfileName, homeDir)),
+          logError: message => { electronLogger.error(`${BIN_NAME}: ${maskSecrets(message)}`) },
+        })
+        electronLogger.error(
+          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
+        )
+        clientEvents?.pluginReset(pluginResetEvent(trigger, {
+          profileName: result.profileName,
+          outcome: 'swapped',
+          materialized: result.materialized,
+          receiptsCleared: result.receiptsCleared,
+        }))
+        return true
+      } catch (cause) {
+        electronLogger.error(
+          `${BIN_NAME}: fresh profile rebuild failed (${trigger}): ${maskSecrets(cause instanceof Error ? cause.message : String(cause))}`,
+        )
+        clientEvents?.pluginReset(pluginResetEvent(trigger, {
+          profileName: activeProfileName,
+          outcome: 'failed',
+          materialized: false,
+          receiptsCleared: 0,
+        }))
+        return false
+      }
+    }
+    // Automatic layer (P14): a locked build whose policy sets
+    // `pluginResetOnVersionChange` rebuilds the active Profile whenever the
+    // build identity changes — upgrade or downgrade alike — so one
+    // installer serves a fleet whose plugin sets can never straddle two
+    // builds, and a rollback lands on a clean tree too. The record lives in
+    // userData; an unchanged identity is a pure read (no write, no swap) and
+    // an unlocked or opted-out build never even writes the record. A failed
+    // rebuild leaves the record untouched, so the next boot retries it.
+    const profileGenerationPath = profileGenerationStatePath(app.getPath('userData'))
+    const storedProfileGeneration = readProfileGenerationState(profileGenerationPath)
+    const recordProfileGeneration = (): void => {
+      writeProfileGenerationState(profileGenerationPath, {
+        version: 1,
+        appBuildVersion,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    const freshProfileDecision = freshProfileResetDecision({
+      locked: policy.locked,
+      resetOnVersionChange: policy.pluginResetOnVersionChange,
+      ...(storedProfileGeneration === undefined
+        ? {}
+        : { previousAppBuildVersion: storedProfileGeneration.appBuildVersion }),
+      appBuildVersion,
+    })
+    if (freshProfileDecision === 'reset') {
+      electronLogger.error(
+        `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}); rebuilding profile ${activeProfileName}`,
+      )
+      if (await runFreshProfileSwap('version-change')) {
+        recordProfileGeneration()
+      }
+    } else if (freshProfileDecision === 'record') {
+      recordProfileGeneration()
     }
     startupRecoveryConfigurationPaths = {
       settingsDocument: join(homeDir, 'settings.yaml'),
@@ -1391,6 +1507,25 @@ async function start(): Promise<void> {
       )
       if (!restored) throw new Error(`${BIN_NAME}: healthy Profile snapshot was not restored`)
       selectDesktopProfile(selectionStatePath, homeDir, targetProfile)
+    }
+    // Manual layer (P14): the recovery window's fresh-Profile start runs the
+    // same rebuild primitive as the automatic version-change reset. It is
+    // the way out for the case the automatic layer cannot cover — a bad
+    // install with no build-identity change — and it stays available on a
+    // healthy machine too (idempotent: the rebuilt Profile is simply fresh).
+    freshProfileStart = async (token: string) => {
+      if (token !== recoveryProfileToken || profileRecoveryActionUsed) {
+        throw new Error(`${BIN_NAME}: the Profile recovery action is no longer valid`)
+      }
+      profileRecoveryActionUsed = true
+      const selection = readDesktopProfileState(selectionStatePath)
+      if (selection.active !== activeProfileName) throw new Error(`${BIN_NAME}: active Profile changed before recovery`)
+      if (!await generation.quiesceForRecovery()) {
+        throw new Error(`${BIN_NAME}: Host could not be stopped safely for a fresh Profile start`)
+      }
+      if (!await runFreshProfileSwap('recovery-window')) {
+        throw new Error(`${BIN_NAME}: the fresh Profile start failed; see the desktop log for details`)
+      }
     }
     startupStage = 'host-boot'
     lifecycleRecorder.transitionStartupStage(startupStage)

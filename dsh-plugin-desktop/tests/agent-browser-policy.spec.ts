@@ -570,6 +570,7 @@ function fakePluginContext(executor: Partial<DesktopAgentBrowser> = {}) {
     desktopPolicy: {
       locked: false,
       managedModels: false,
+      pluginResetOnVersionChange: false,
       requireSso: false,
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',

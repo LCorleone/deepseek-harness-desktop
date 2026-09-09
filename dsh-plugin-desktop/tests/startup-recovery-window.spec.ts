@@ -126,6 +126,39 @@ describe('Desktop startup recovery document', () => {
     expect(html).not.toContain('/Users/')
   })
 
+  it('offers the fresh-Profile start only when main provides the action', () => {
+    const available = renderDesktopStartupRecoveryHtml(viewModel({
+      freshProfileStartAvailable: true,
+      profileActionToken: 'opaque-token-0001',
+    }))
+
+    expect(available).toContain('全新配置启动')
+    expect(available).toContain('移除其中已安装的全部第三方插件')
+    expect(available).toContain('dsh-recovery://preview-fresh-profile?id=opaque-token-0001')
+
+    const withoutToken = renderDesktopStartupRecoveryHtml(viewModel({
+      freshProfileStartAvailable: true,
+    }))
+    expect(withoutToken).not.toContain('dsh-recovery://preview-fresh-profile')
+    expect(renderDesktopStartupRecoveryHtml(viewModel()))
+      .not.toContain('全新配置启动')
+  })
+
+  it('renders the fresh-Profile confirmation with the bilingual consequence copy', () => {
+    const confirmation = { kind: 'fresh-profile' as const, token: 'opaque-token-0001' }
+    const zh = renderDesktopStartupRecoveryHtml(viewModel({ confirmation }))
+
+    expect(zh).toContain('确认全新配置启动？')
+    expect(zh).toContain('第三方插件会被全部移除')
+    expect(zh).toContain('对话记录、设置和登录状态不受影响')
+    expect(zh).toContain('dsh-recovery://confirm-fresh-profile?id=opaque-token-0001')
+    expect(zh).toContain('dsh-recovery://home')
+
+    const en = renderDesktopStartupRecoveryHtml(viewModel({ confirmation, locale: 'en' }))
+    expect(en).toContain('Start with a fresh Profile?')
+    expect(en).toContain('Conversations, settings, and sign-in are unaffected')
+  })
+
   it('offers both rollback and one retry for a recovery-pending install', () => {
     const snapshot: DesktopStartupRecoverySnapshot = {
       profileName: 'desktop',
@@ -262,6 +295,80 @@ describe('Desktop startup recovery diagnostics export', () => {
   })
 })
 
+describe('Desktop startup recovery fresh-Profile action', () => {
+  function windowWith(freshProfileStart: (token: string) => Promise<void> | void): DesktopStartupRecoveryWindow {
+    return new DesktopStartupRecoveryWindow({
+      locale: 'zh',
+      failureStage: 'profile-composition',
+      failureDetail: 'a bad plugin broke the Host',
+      exportDiagnostics: async () => 'diagnostics.zip',
+      freshProfileStart,
+    })
+  }
+
+  function handleAction(window: DesktopStartupRecoveryWindow): (action: { readonly action: string; readonly id?: string }) => Promise<void> {
+    return (window as unknown as {
+      handleAction: (action: { readonly action: string; readonly id?: string }) => Promise<void>
+    }).handleAction.bind(window)
+  }
+
+  it('asks for confirmation before touching the Profile', async () => {
+    const freshProfileStart = vi.fn(async () => {})
+    const window = windowWith(freshProfileStart)
+
+    await handleAction(window)({ action: 'preview-fresh-profile', id: 'opaque-token-0001' })
+
+    expect(freshProfileStart).not.toHaveBeenCalled()
+    expect((window as unknown as { confirmation?: { kind: string } }).confirmation)
+      .toEqual({ kind: 'fresh-profile', token: 'opaque-token-0001' })
+  })
+
+  it('runs the swap on confirm and asks for a restart', async () => {
+    const freshProfileStart = vi.fn(async () => {})
+    const window = windowWith(freshProfileStart)
+    const runAction = handleAction(window)
+
+    await runAction({ action: 'preview-fresh-profile', id: 'opaque-token-0001' })
+    await runAction({ action: 'confirm-fresh-profile', id: 'opaque-token-0001' })
+
+    expect(freshProfileStart).toHaveBeenCalledWith('opaque-token-0001')
+    expect((window as unknown as { confirmation?: unknown }).confirmation).toBeUndefined()
+    expect((window as unknown as { restartReady: boolean }).restartReady).toBe(true)
+    expect((window as unknown as { notice?: { tone: string; body: string } }).notice)
+      .toEqual({
+        tone: 'success',
+        title: '全新配置启动',
+        body: '配置已从出厂状态重建。请重新启动 DSH Desktop。',
+      })
+  })
+
+  it('reports a failed swap in the window instead of pretending success', async () => {
+    const window = windowWith(async () => { throw new Error('profile directory is locked') })
+
+    await handleAction(window)({ action: 'confirm-fresh-profile', id: 'opaque-token-0001' })
+
+    const notice = (window as unknown as { notice?: { tone: string; body: string } }).notice
+    expect(notice?.tone).toBe('error')
+    expect(notice?.body).toBe('profile directory is locked')
+    expect((window as unknown as { restartReady: boolean }).restartReady).toBe(false)
+  })
+
+  it('refuses the action when main did not provide it', async () => {
+    const window = new DesktopStartupRecoveryWindow({
+      locale: 'en',
+      failureStage: 'profile-composition',
+      failureDetail: 'no profile actions',
+      exportDiagnostics: async () => 'diagnostics.zip',
+    })
+
+    await handleAction(window)({ action: 'confirm-fresh-profile', id: 'opaque-token-0001' })
+
+    const notice = (window as unknown as { notice?: { tone: string; body: string } }).notice
+    expect(notice?.tone).toBe('error')
+    expect(notice?.body).toContain('fresh Profile start is unavailable')
+  })
+})
+
 describe('Desktop startup recovery window bounds', () => {
   function screenApi(
     current: { readonly width: number; readonly height: number } | Error,
@@ -355,6 +462,8 @@ describe('Desktop startup recovery action parser', () => {
       'confirm-rollback',
       'preview-retry',
       'confirm-retry',
+      'preview-fresh-profile',
+      'confirm-fresh-profile',
     ]) {
       expect(parseDesktopStartupRecoveryAction(
         `dsh-recovery://${action}?id=opaque-id_0001`,
@@ -374,6 +483,8 @@ describe('Desktop startup recovery action parser', () => {
     'dsh-recovery://home?extra=value',
     'dsh-recovery://preview-disable',
     'dsh-recovery://preview-disable?id=short',
+    'dsh-recovery://confirm-fresh-profile',
+    'dsh-recovery://preview-fresh-profile?id=short',
     'dsh-recovery://preview-disable?id=opaque-id_0001&id=opaque-id_0002',
     'dsh-recovery://preview-disable?id=opaque-id_0001&extra=value',
     `dsh-recovery://preview-disable?id=${'x'.repeat(161)}`,

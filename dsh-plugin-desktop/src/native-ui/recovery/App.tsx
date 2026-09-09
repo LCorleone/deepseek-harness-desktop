@@ -56,8 +56,10 @@ interface RecoverySnapshot {
 }
 
 interface RecoveryConfirmation {
-  readonly kind: 'disable' | 'rollback' | 'retry'
-  readonly preview: {
+  readonly kind: 'disable' | 'rollback' | 'retry' | 'fresh-profile'
+  /** Capability token of a fresh-Profile confirmation; absent otherwise. */
+  readonly token?: string
+  readonly preview?: {
     readonly previewId: string
     readonly packageName: string
     readonly packageVersion?: string
@@ -93,6 +95,7 @@ interface RecoveryState {
   readonly terminalAvailable?: boolean
   readonly profileCreatorAvailable?: boolean
   readonly rollbackLastKnownGoodAvailable?: boolean
+  readonly freshProfileStartAvailable?: boolean
 }
 
 interface Copy {
@@ -127,6 +130,10 @@ interface Copy {
   readonly openProfilePatch: string
   readonly openProfileManifest: string
   readonly openProfileDirectory: string
+  readonly freshProfile: string
+  readonly freshProfileBody: string
+  readonly confirmFreshProfile: string
+  readonly confirmFreshProfileBody: string
   readonly profiles: string
   readonly profilesBody: string
   readonly switchProfile: string
@@ -188,6 +195,10 @@ const COPY: Record<Locale, Copy> = {
     openProfilePatch: 'Edit patch',
     openProfileManifest: 'Edit manifest',
     openProfileDirectory: 'Open folder',
+    freshProfile: 'Start with a fresh Profile',
+    freshProfileBody: 'Rebuilds the active Profile from the shipped base and removes every third-party plugin installed in it. Conversations, settings, and sign-in are kept.',
+    confirmFreshProfile: 'Start with a fresh Profile?',
+    confirmFreshProfileBody: 'Every third-party plugin installed in this Profile will be removed and the Profile is rebuilt from scratch. Conversations, settings, and sign-in are unaffected; the previous Profile is kept aside as a backup.',
     profiles: 'Profiles',
     profilesBody: 'Switch to another healthy Profile or create a new one without starting the plugin Host.',
     switchProfile: 'Switch',
@@ -247,6 +258,10 @@ const COPY: Record<Locale, Copy> = {
     openProfilePatch: '编辑补丁',
     openProfileManifest: '编辑清单',
     openProfileDirectory: '打开目录',
+    freshProfile: '全新配置启动',
+    freshProfileBody: '从出厂基础配置重建当前配置，并移除其中已安装的全部第三方插件；对话记录、设置和登录状态不受影响。',
+    confirmFreshProfile: '确认全新配置启动？',
+    confirmFreshProfileBody: '当前配置中已安装的第三方插件会被全部移除，配置将从出厂状态重建。对话记录、设置和登录状态不受影响；旧配置会保留为备份。',
     profiles: '配置',
     profilesBody: '无需启动插件 Host，即可切换到其他健康配置或创建新配置。',
     switchProfile: '切换',
@@ -291,7 +306,7 @@ function Action({ action, children, className, icon, id, name, variant = 'outlin
   readonly children: ReactNode
   readonly className?: string
   readonly icon?: ReactNode
-  readonly id?: string
+  readonly id?: string | undefined
   readonly name?: string
   readonly variant?: 'default' | 'outline' | 'secondary' | 'destructive'
 }): JSX.Element {
@@ -311,16 +326,25 @@ function Notice({ notice }: { readonly notice: RecoveryNotice }): JSX.Element {
 }
 
 function Confirmation({ confirmation, copy }: { readonly confirmation: RecoveryConfirmation; readonly copy: Copy }): JSX.Element {
+  if (confirmation.kind === 'fresh-profile') {
+    return <Card>
+      <CardHeader><CardTitle>{copy.confirmFreshProfile}</CardTitle><CardDescription>{copy.freshProfile}</CardDescription></CardHeader>
+      <CardContent><p className="text-sm text-muted-foreground">{copy.confirmFreshProfileBody}</p></CardContent>
+      <CardFooter className="justify-end gap-2"><Action action="home">{copy.cancel}</Action><Action action="confirm-fresh-profile" id={confirmation.token} variant="destructive">{copy.freshProfile}</Action></CardFooter>
+    </Card>
+  }
   const rollback = confirmation.kind === 'rollback'
   const disable = confirmation.kind === 'disable'
+  const preview = confirmation.preview
+  if (preview === undefined) return <Card />
   const title = disable ? copy.confirmDisable : rollback ? copy.confirmRollback : copy.confirmRetry
   const body = disable ? copy.confirmDisableBody : rollback ? copy.confirmRollbackBody : copy.confirmRetryBody
   const action = disable ? 'confirm-disable' : rollback ? 'confirm-rollback' : 'confirm-retry'
   const label = disable ? copy.disable : rollback ? copy.rollback : copy.retry
   return <Card>
-    <CardHeader><CardTitle>{title}</CardTitle><CardDescription>{confirmation.preview.packageName}{confirmation.preview.packageVersion === undefined ? '' : `@${confirmation.preview.packageVersion}`}</CardDescription></CardHeader>
+    <CardHeader><CardTitle>{title}</CardTitle><CardDescription>{preview.packageName}{preview.packageVersion === undefined ? '' : `@${preview.packageVersion}`}</CardDescription></CardHeader>
     <CardContent><p className="text-sm text-muted-foreground">{body}</p></CardContent>
-    <CardFooter className="justify-end gap-2"><Action action="home">{copy.cancel}</Action><Action action={action} id={confirmation.preview.previewId} variant={disable ? 'destructive' : 'default'}>{label}</Action></CardFooter>
+    <CardFooter className="justify-end gap-2"><Action action="home">{copy.cancel}</Action><Action action={action} id={preview.previewId} variant={disable ? 'destructive' : 'default'}>{label}</Action></CardFooter>
   </Card>
 }
 
@@ -370,11 +394,12 @@ function RecoveryContent({ state, copy }: { readonly state: RecoveryState; reado
 
     <Card>
       <CardHeader><CardTitle>{copy.diagnostics}</CardTitle><CardDescription>{state.diagnostics.status === 'saving' ? copy.savingDiagnostics : state.diagnostics.status === 'saved' ? copy.diagnosticsSaved : copy.diagnosticsFailed}</CardDescription></CardHeader>
-      <CardContent className="space-y-2">{state.diagnostics.filename === undefined ? null : <code className="block break-all rounded-lg bg-muted p-3 text-xs">{state.diagnostics.filename}</code>}<p className="text-xs text-muted-foreground">{copy.privacy}</p></CardContent>
+      <CardContent className="space-y-2">{state.diagnostics.filename === undefined ? null : <code className="block break-all rounded-lg bg-muted p-3 text-xs">{state.diagnostics.filename}</code>}<p className="text-xs text-muted-foreground">{copy.privacy}</p>{state.freshProfileStartAvailable ? <p className="text-xs text-muted-foreground">{copy.freshProfileBody}</p> : null}</CardContent>
       <CardFooter className="flex-wrap justify-end gap-2">
         <Action action={state.diagnostics.status === 'saved' ? 'show-diagnostics' : 'export-diagnostics'} icon={<Archive />}>{state.diagnostics.status === 'saved' ? copy.showDiagnostics : copy.saveDiagnostics}</Action>
         {state.terminalAvailable ? <Action action="open-terminal" icon={<Terminal />}>{copy.openTerminal}</Action> : null}
         {state.rollbackLastKnownGoodAvailable && state.profileActionToken !== undefined ? <Action action="rollback-last-known-good" icon={<RotateCcw />} id={state.profileActionToken} variant="default">{copy.restoreLastSuccessful}</Action> : null}
+        {state.freshProfileStartAvailable && state.profileActionToken !== undefined ? <Action action="preview-fresh-profile" icon={<PackageX />} id={state.profileActionToken}>{copy.freshProfile}</Action> : null}
       </CardFooter>
     </Card>
   </>

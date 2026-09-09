@@ -470,6 +470,7 @@ describe('market tarball install channel beta overlay (P9)', () => {
   const fullPolicy: DesktopPolicy = parseDesktopPolicy({
     locked: true,
     managedModels: false,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     companyCatalogOrigin: origin,
     companyManifestUrl: manifestUrl,

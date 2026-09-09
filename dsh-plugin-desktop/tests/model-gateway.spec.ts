@@ -45,6 +45,7 @@ function policy(locked: boolean, managedModels: boolean): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked,
     managedModels,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     trustRoots: [],
     usageReport: false,

@@ -90,6 +90,7 @@ const PACKAGE_VERSION = '2.1.0'
 const policy = parseDesktopPolicy({
   locked: true,
   managedModels: false,
+  pluginResetOnVersionChange: false,
   requireSso: false,
   companyCatalogOrigin: CATALOG_ORIGIN,
   companyManifestUrl: MANIFEST_URL,

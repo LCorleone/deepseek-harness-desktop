@@ -17,6 +17,7 @@ import type { DesktopPolicy } from '../src/desktop-policy.ts'
 const contentModePolicy: DesktopPolicy = {
   locked: true,
   managedModels: true,
+  pluginResetOnVersionChange: false,
   requireSso: false,
   companyCatalogOrigin: null,
   companyManifestUrl: 'company-market/catalog-manifest.json',
@@ -33,6 +34,7 @@ const contentModePolicy: DesktopPolicy = {
 const originModePolicy: DesktopPolicy = {
   locked: false,
   managedModels: false,
+  pluginResetOnVersionChange: false,
   requireSso: false,
   companyCatalogOrigin: 'https://market.company.example',
   companyManifestUrl: 'https://market.company.example/catalog-manifest.json',

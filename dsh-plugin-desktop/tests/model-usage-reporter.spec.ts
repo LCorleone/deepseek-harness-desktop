@@ -78,6 +78,7 @@ function usagePolicy(usageReport: boolean): DesktopPolicy {
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
     managedModels: usageReport,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     trustRoots: [],
     usageReport,

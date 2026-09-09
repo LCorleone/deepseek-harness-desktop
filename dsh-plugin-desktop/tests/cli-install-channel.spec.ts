@@ -39,6 +39,7 @@ function lockedCatalogPolicy(overrides: Record<string, unknown> = {}): DesktopPo
     companyManifestUrl: 'company-market/catalog-manifest.json',
     locked: true,
     managedModels: false,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     trustRoots: [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }],
     usageReport: false,

@@ -377,6 +377,7 @@ describe('desktop Host dsh runtime', () => {
     const contentModePolicy: DesktopPolicy = {
       locked: true,
       managedModels: true,
+      pluginResetOnVersionChange: false,
       requireSso: false,
       companyCatalogOrigin: null,
       companyManifestUrl: 'company-market/catalog-manifest.json',

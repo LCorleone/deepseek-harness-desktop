@@ -121,6 +121,15 @@ export interface DesktopPolicy {
   readonly usageReport: boolean
   /** Embedded agent-browser capability policy (P8; dark on locked builds). */
   readonly agentBrowser: DesktopPolicyAgentBrowser
+  /**
+   * Whether this build rebuilds the active Profile from scratch whenever the
+   * build identity (`2.0.3+bN`) changes — upgrade or downgrade alike (P14
+   * automatic layer). Only meaningful while `locked` is true: an unlocked
+   * build keeps fully native behavior regardless of this flag, and the
+   * switch is absent from the CLI environment hand-off (the CLI child has no
+   * consumer and reconstructs it inert).
+   */
+  readonly pluginResetOnVersionChange: boolean
 }
 
 function invalidPolicy(message: string): Error {
@@ -217,10 +226,11 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   const object = value as Record<string, unknown>
   const keys = Object.keys(object).sort()
-  if (keys.length !== 10 || keys[0] !== 'agentBrowser' || keys[1] !== 'allowHomePatch'
+  if (keys.length !== 11 || keys[0] !== 'agentBrowser' || keys[1] !== 'allowHomePatch'
     || keys[2] !== 'allowManualPluginAdd' || keys[3] !== 'companyCatalogOrigin'
     || keys[4] !== 'companyManifestUrl' || keys[5] !== 'locked' || keys[6] !== 'managedModels'
-    || keys[7] !== 'requireSso' || keys[8] !== 'trustRoots' || keys[9] !== 'usageReport') {
+    || keys[7] !== 'pluginResetOnVersionChange' || keys[8] !== 'requireSso'
+    || keys[9] !== 'trustRoots' || keys[10] !== 'usageReport') {
     throw invalidPolicy('unexpected fields')
   }
   if (typeof object.locked !== 'boolean') throw invalidPolicy('locked must be a boolean')
@@ -232,6 +242,9 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
   }
   if (typeof object.usageReport !== 'boolean') {
     throw invalidPolicy('usageReport must be a boolean')
+  }
+  if (typeof object.pluginResetOnVersionChange !== 'boolean') {
+    throw invalidPolicy('pluginResetOnVersionChange must be a boolean')
   }
   if (object.allowHomePatch !== false) throw invalidPolicy('allowHomePatch must be false')
   if (object.allowManualPluginAdd !== false) throw invalidPolicy('allowManualPluginAdd must be false')
@@ -248,6 +261,7 @@ export function parseDesktopPolicy(value: unknown): DesktopPolicy {
     trustRoots: parseTrustRoots(object.trustRoots),
     usageReport: object.usageReport,
     agentBrowser: parseAgentBrowser(object.agentBrowser),
+    pluginResetOnVersionChange: object.pluginResetOnVersionChange,
   })
 }
 
@@ -329,7 +343,9 @@ export const desktopPolicyConstants = Object.freeze({
  * `keyId:fingerprint` trust-root pairs (both components are constrained to
  * alphabets without commas, colons inside keyIds, or any quoting characters,
  * so the values stay safe inside generated POSIX and batch shims), and
- * `1`/`0` for the agent-browser `enabled` flag (P8). The decoding side
+ * `1`/`0` for the agent-browser `enabled` flag (P8). Two main-process-only
+ * flags — `usageReport` and `pluginResetOnVersionChange` — deliberately have
+ * no entry and reconstruct inert on the CLI side. The decoding side
  * re-parses through the strict policy parser, so any tampered or malformed
  * hand-off fails closed.
  *
@@ -474,5 +490,9 @@ export function desktopPolicyFromEnvironment(
     // parser accepts the seven-entry document while every CLI-side policy
     // consumer keeps byte-identical behavior.
     usageReport: false,
+    // `pluginResetOnVersionChange` likewise has no hand-off entry: the
+    // Profile rebuild runs in the Electron main process before any CLI child
+    // exists, so the CLI side reconstructs it inert.
+    pluginResetOnVersionChange: false,
   })
 }

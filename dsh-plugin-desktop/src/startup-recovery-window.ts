@@ -54,6 +54,7 @@ interface RecoveryNotice {
 type RecoveryConfirmation =
   | { readonly kind: 'disable'; readonly preview: DesktopStartupRecoveryDisablePreview }
   | { readonly kind: 'rollback' | 'retry'; readonly preview: DesktopStartupRecoveryInstallPreview }
+  | { readonly kind: 'fresh-profile'; readonly token: string }
 
 interface RecoveryDiagnosticsState {
   readonly status: 'saving' | 'saved' | 'failed'
@@ -74,6 +75,8 @@ export interface DesktopStartupRecoveryWindowOptions {
   readonly profileActions?: DesktopStartupRecoveryProfileActions
   /** Restore the last healthy Profile and its declarative checkpoint. */
   readonly rollbackLastKnownGood?: (token: string) => void | Promise<void>
+  /** Rebuild the active Profile from scratch, dropping every third-party plugin. */
+  readonly freshProfileStart?: (token: string) => void | Promise<void>
 }
 
 export interface DesktopStartupRecoveryProfile {
@@ -180,6 +183,7 @@ export interface DesktopStartupRecoveryViewModel {
   readonly terminalAvailable?: boolean
   readonly profileCreatorAvailable?: boolean
   readonly rollbackLastKnownGoodAvailable?: boolean
+  readonly freshProfileStartAvailable?: boolean
 }
 
 interface RecoveryCopy {
@@ -230,6 +234,11 @@ interface RecoveryCopy {
   readonly openProfilePatch: string
   readonly openProfileManifest: string
   readonly openProfileDirectory: string
+  readonly freshProfile: string
+  readonly freshProfileBody: string
+  readonly confirmFreshProfile: string
+  readonly confirmFreshProfileBody: string
+  readonly freshProfileSuccess: string
 }
 
 const COPY: Record<DesktopLocale, RecoveryCopy> = {
@@ -291,6 +300,11 @@ const COPY: Record<DesktopLocale, RecoveryCopy> = {
     openProfilePatch: 'Edit configuration patch',
     openProfileManifest: 'Edit plugin manifest',
     openProfileDirectory: 'Open configuration folder',
+    freshProfile: 'Start with a fresh Profile',
+    freshProfileBody: 'Rebuilds the active Profile from the shipped base and removes every third-party plugin installed in it. Conversations, settings, and sign-in are kept.',
+    confirmFreshProfile: 'Start with a fresh Profile?',
+    confirmFreshProfileBody: 'Every third-party plugin installed in this Profile will be removed and the Profile is rebuilt from scratch. Conversations, settings, and sign-in are unaffected; the previous Profile is kept aside as a backup.',
+    freshProfileSuccess: 'The Profile was rebuilt from scratch. Restart DSH Desktop to continue.',
   },
   zh: {
     title: 'Deloitte DSH Desktop 恢复',
@@ -350,6 +364,11 @@ const COPY: Record<DesktopLocale, RecoveryCopy> = {
     openProfilePatch: '编辑配置补丁',
     openProfileManifest: '编辑插件加载清单',
     openProfileDirectory: '打开配置目录',
+    freshProfile: '全新配置启动',
+    freshProfileBody: '从出厂基础配置重建当前配置，并移除其中已安装的全部第三方插件；对话记录、设置和登录状态不受影响。',
+    confirmFreshProfile: '确认全新配置启动？',
+    confirmFreshProfileBody: '当前配置中已安装的第三方插件会被全部移除，配置将从出厂状态重建。对话记录、设置和登录状态不受影响；旧配置会保留为备份。',
+    freshProfileSuccess: '配置已从出厂状态重建。请重新启动 DSH Desktop。',
   },
 }
 
@@ -387,6 +406,9 @@ function noticeHtml(notice: RecoveryNotice | undefined): string {
 function confirmationHtml(model: DesktopStartupRecoveryViewModel, copy: RecoveryCopy): string {
   const confirmation = model.confirmation
   if (confirmation === undefined) return ''
+  if (confirmation.kind === 'fresh-profile') {
+    return `<section class="card confirmation"><h2>${escapeHtml(copy.confirmFreshProfile)}</h2><p>${escapeHtml(copy.confirmFreshProfileBody)}</p><div class="actions">${button(copy.cancel, 'home')}${button(copy.freshProfile, 'confirm-fresh-profile', confirmation.token, true)}</div></section>`
+  }
   if (confirmation.kind === 'disable') {
     return `<section class="card confirmation"><h2>${escapeHtml(copy.confirmDisable)}</h2><p><code>${escapeHtml(confirmation.preview.packageName)}</code></p><p>${escapeHtml(copy.confirmDisableBody)}</p><div class="actions">${button(copy.cancel, 'home')}${button(copy.disable, 'confirm-disable', confirmation.preview.previewId, true)}</div></section>`
   }
@@ -435,12 +457,15 @@ export function renderDesktopStartupRecoveryHtml(model: DesktopStartupRecoveryVi
   const rollbackAction = model.rollbackLastKnownGoodAvailable && model.profileActionToken !== undefined
     ? button('Restore last successful Profile', 'rollback-last-known-good', model.profileActionToken, true)
     : ''
+  const freshProfileAction = model.freshProfileStartAvailable && model.profileActionToken !== undefined
+    ? `<p class="muted">${escapeHtml(copy.freshProfileBody)}</p><div class="actions">${button(copy.freshProfile, 'preview-fresh-profile', model.profileActionToken)}</div>`
+    : ''
   const restart = model.restartReady || pending === undefined
     ? button(copy.restart, 'restart', undefined, model.restartReady)
     : ''
   const body = confirmation.length > 0
     ? confirmation
-    : `${pendingHtml}${bundlesHtml}${profileHtml}${configurationHtml}<section class="card"><h2>${escapeHtml(copy.diagnostics)}</h2><p>${escapeHtml(diagnosticsText)}</p>${model.diagnostics.filename === undefined ? '' : `<p><code>${escapeHtml(model.diagnostics.filename)}</code></p>`}<p class="muted">${escapeHtml(copy.privacy)}</p><div class="actions">${diagnosticAction}${terminalAction}${rollbackAction}</div></section>`
+    : `${pendingHtml}${bundlesHtml}${profileHtml}${configurationHtml}<section class="card"><h2>${escapeHtml(copy.diagnostics)}</h2><p>${escapeHtml(diagnosticsText)}</p>${model.diagnostics.filename === undefined ? '' : `<p><code>${escapeHtml(model.diagnostics.filename)}</code></p>`}<p class="muted">${escapeHtml(copy.privacy)}</p><div class="actions">${diagnosticAction}${terminalAction}${rollbackAction}</div>${freshProfileAction}</section>`
   return `<!doctype html>
 <html lang="${model.locale === 'zh' ? 'zh-CN' : 'en'}">
 <head>
@@ -495,6 +520,8 @@ export function parseDesktopStartupRecoveryAction(
     'open-profile-creator',
     'switch-profile',
     'rollback-last-known-good',
+    'preview-fresh-profile',
+    'confirm-fresh-profile',
     'restart',
     'quit',
   ])
@@ -684,6 +711,24 @@ export class DesktopStartupRecoveryWindow {
             : { tone: 'success', title: 'Profile restored', body: 'The last successful Profile and configuration were restored. Restart DSH Desktop to continue.' }
           this.restartReady = true
         })
+      } else if (action.action === 'preview-fresh-profile' && action.id !== undefined) {
+        if (this.options.freshProfileStart === undefined) throw new Error('A fresh Profile start is unavailable for this startup stage.')
+        this.confirmation = { kind: 'fresh-profile', token: action.id }
+      } else if (action.action === 'confirm-fresh-profile' && action.id !== undefined) {
+        if (this.options.freshProfileStart === undefined) throw new Error('A fresh Profile start is unavailable for this startup stage.')
+        const actionToken = action.id
+        await this.runBusy(async () => {
+          await this.options.freshProfileStart?.(actionToken)
+          this.confirmation = undefined
+          this.notice = {
+            tone: 'success',
+            title: COPY[this.options.locale].freshProfile,
+            body: COPY[this.options.locale].freshProfileSuccess,
+          }
+          this.restartReady = true
+          await this.refreshSnapshot()
+          this.refreshProfiles()
+        })
       } else if (action.action === 'open-settings-document') {
         await this.openConfigurationPath('settingsDocument')
       } else if (action.action === 'open-profile-patch') {
@@ -797,6 +842,7 @@ export class DesktopStartupRecoveryWindow {
       ...(this.options.openTerminal === undefined ? {} : { terminalAvailable: true }),
       ...(this.options.profileActions === undefined ? {} : { profileCreatorAvailable: true }),
       ...(this.options.rollbackLastKnownGood === undefined ? {} : { rollbackLastKnownGoodAvailable: true }),
+      ...(this.options.freshProfileStart === undefined ? {} : { freshProfileStartAvailable: true }),
     }
     const state = Buffer.from(JSON.stringify(model), 'utf8').toString('base64url')
     // loadURL + pathToFileURL (not loadFile+query): the packaged Windows

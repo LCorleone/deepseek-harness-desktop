@@ -13,6 +13,7 @@ const VARIANTS = Object.freeze({
     source: 'desktop-policy.dev.json',
     locked: false,
     managedModels: false,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     usageReport: false,
   },
@@ -20,6 +21,7 @@ const VARIANTS = Object.freeze({
     source: 'desktop-policy.release.json',
     locked: true,
     managedModels: true,
+    pluginResetOnVersionChange: true,
     requireSso: true,
     usageReport: true,
   },
@@ -58,10 +60,15 @@ if (document.usageReport !== variant.usageReport) {
     `dsh-plugin-desktop: ${requested} desktop policy must have usageReport=${String(variant.usageReport)}`,
   )
 }
+if (document.pluginResetOnVersionChange !== variant.pluginResetOnVersionChange) {
+  throw new Error(
+    `dsh-plugin-desktop: ${requested} desktop policy must have pluginResetOnVersionChange=${String(variant.pluginResetOnVersionChange)}`,
+  )
+}
 
 const targetDirectory = join(packageRoot, 'lib', 'policy')
 mkdirSync(targetDirectory, { recursive: true })
 copyFileSync(sourcePath, join(targetDirectory, 'desktop-policy.json'))
 console.log(
-  `dsh-plugin-desktop: embedded the ${requested} desktop policy (locked=${String(variant.locked)}, managedModels=${String(variant.managedModels)}, requireSso=${String(variant.requireSso)}, usageReport=${String(variant.usageReport)}) at lib/policy/desktop-policy.json`,
+  `dsh-plugin-desktop: embedded the ${requested} desktop policy (locked=${String(variant.locked)}, managedModels=${String(variant.managedModels)}, requireSso=${String(variant.requireSso)}, usageReport=${String(variant.usageReport)}, pluginResetOnVersionChange=${String(variant.pluginResetOnVersionChange)}) at lib/policy/desktop-policy.json`,
 )

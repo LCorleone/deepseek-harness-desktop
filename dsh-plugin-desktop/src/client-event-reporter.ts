@@ -60,6 +60,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   pluginInstall: 'plugin_install',
   bootVerify: 'boot_verify',
   disclaimer: 'disclaimer',
+  pluginReset: 'plugin_reset',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -203,6 +204,27 @@ export interface DisclaimerEventDetail {
   readonly clientVersion: string
   /** sha256 of the acknowledged statement text (disclaimer-text.ts). */
   readonly textHash: string
+}
+
+/** Swap facts of one rebuild; the desktop call site adds the outcome. */
+export interface PluginResetSwapView {
+  readonly profileName: string
+  readonly outcome: 'swapped' | 'failed'
+  readonly materialized: boolean
+  /** Market install receipts dropped by the ledger clear. */
+  readonly receiptsCleared: number
+}
+
+/** `plugin_reset`: one fresh-Profile rebuild (P14) — the automatic
+ * version-change reset or the recovery window's manual action. The row says
+ * which trigger fired and whether the rebuild landed; `client_version`
+ * already carries the build identity the reset happened on. */
+export interface PluginResetEventDetail {
+  readonly trigger: 'version-change' | 'recovery-window'
+  readonly profileName: string
+  readonly outcome: 'swapped' | 'failed'
+  readonly materialized: boolean
+  readonly receiptsCleared: number
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +619,28 @@ export function disclaimerEvent(
   return { decision, clientVersion: current.clientVersion, textHash: current.textHash }
 }
 
+/**
+ * Project one fresh-Profile rebuild into a `plugin_reset` detail. The trigger
+ * distinguishes the automatic version-change layer from the recovery
+ * window's manual action; `outcome: 'failed'` rows exist because a failed
+ * rebuild degrades to the existing Profile (the boot continues) and is
+ * otherwise invisible in the telemetry table.
+ */
+export function pluginResetEvent(
+  trigger: 'version-change' | 'recovery-window',
+  swap: PluginResetSwapView,
+): PluginResetEventDetail {
+  return {
+    trigger,
+    profileName: swap.profileName,
+    outcome: swap.outcome,
+    materialized: swap.materialized,
+    receiptsCleared: Number.isSafeInteger(swap.receiptsCleared) && swap.receiptsCleared > 0
+      ? swap.receiptsCleared
+      : 0,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collector (typed facade over the reporter) and desktop wiring
 // ---------------------------------------------------------------------------
@@ -652,6 +696,10 @@ export class ClientEventCollector {
 
   disclaimer(detail: DisclaimerEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.disclaimer, detail)
+  }
+
+  pluginReset(detail: PluginResetEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.pluginReset, detail)
   }
 
   #emit<T extends object>(eventType: string, detail: T): void {

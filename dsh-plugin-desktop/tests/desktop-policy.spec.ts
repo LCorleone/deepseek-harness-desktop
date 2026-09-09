@@ -43,6 +43,7 @@ function companyPolicy(): Record<string, unknown> {
     companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
     locked: true,
     managedModels: false,
+    pluginResetOnVersionChange: false,
     requireSso: false,
     trustRoots: [
       { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
@@ -59,6 +60,7 @@ describe('desktop policy schema parsing', () => {
     expect(policy).toEqual({
       locked: true,
       managedModels: false,
+      pluginResetOnVersionChange: false,
       requireSso: false,
       companyCatalogOrigin: 'https://market.company.example',
       companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
@@ -144,6 +146,7 @@ describe('desktop policy schema parsing', () => {
       companyManifestUrl: 'company-market/catalog-manifest.json',
       locked: false,
       managedModels: false,
+      pluginResetOnVersionChange: false,
       requireSso: false,
       trustRoots: [],
       usageReport: false,
@@ -169,6 +172,12 @@ describe('desktop policy schema parsing', () => {
     expect(policy.usageReport).toBe(true)
   })
 
+  it('accepts a version-change plugin reset policy', () => {
+    const policy = parseDesktopPolicy({ ...companyPolicy(), pluginResetOnVersionChange: true })
+
+    expect(policy.pluginResetOnVersionChange).toBe(true)
+  })
+
   it.each([
     'agentBrowser',
     'allowHomePatch',
@@ -177,6 +186,7 @@ describe('desktop policy schema parsing', () => {
     'companyManifestUrl',
     'locked',
     'managedModels',
+    'pluginResetOnVersionChange',
     'requireSso',
     'trustRoots',
     'usageReport',
@@ -209,6 +219,8 @@ describe('desktop policy schema parsing', () => {
     ['require sso as number', { requireSso: 1 }, 'requireSso must be a boolean'],
     ['usage report as text', { usageReport: 'true' }, 'usageReport must be a boolean'],
     ['usage report as number', { usageReport: 1 }, 'usageReport must be a boolean'],
+    ['plugin reset as text', { pluginResetOnVersionChange: 'true' }, 'pluginResetOnVersionChange must be a boolean'],
+    ['plugin reset as number', { pluginResetOnVersionChange: 1 }, 'pluginResetOnVersionChange must be a boolean'],
     ['enabled home patching', { allowHomePatch: true }, 'allowHomePatch must be false'],
     ['enabled manual plugin add', { allowManualPluginAdd: true }, 'allowManualPluginAdd must be false'],
     ['http catalog origin', { companyCatalogOrigin: 'http://market.company.example' }, 'companyCatalogOrigin'],
@@ -352,6 +364,9 @@ describe('shipped desktop policy assets', () => {
     expect(policy.managedModels).toBe(false)
     expect(policy.requireSso).toBe(false)
     expect(policy.usageReport).toBe(false)
+    // The automatic Profile rebuild is a company-fleet posture: the dev
+    // variant never resets on a build-identity change.
+    expect(policy.pluginResetOnVersionChange).toBe(false)
     expect(policy.companyCatalogOrigin).toBe(null)
     expect(policy.companyManifestUrl).toBe('company-market/catalog-manifest.json')
     expect(policy.allowHomePatch).toBe(false)
@@ -376,6 +391,10 @@ describe('shipped desktop policy assets', () => {
     // reporter against the company telemetry database; the dev variant
     // stays fully unwired.
     expect(policy.usageReport).toBe(true)
+    // P14 automatic layer: the company build rebuilds the active Profile
+    // whenever the build identity changes, so one installer serves a fleet
+    // whose plugin sets never straddle two builds.
+    expect(policy.pluginResetOnVersionChange).toBe(true)
     // Origin mode: the signed catalog manifest is fetched at runtime from the
     // pinned GitLab origin instead of the embedded content-mode asset.
     expect(policy.companyCatalogOrigin).toBe('https://gitlab.s.dai.deloitte.cn')
@@ -424,6 +443,7 @@ describe('desktop policy environment hand-off', () => {
       ...companyPolicy(),
       locked: false,
       managedModels: true,
+      pluginResetOnVersionChange: false,
       requireSso: true,
       trustRoots: [
         { keyId: 'company-2026-a', fingerprint: 'a'.repeat(64) },
@@ -449,6 +469,21 @@ describe('desktop policy environment hand-off', () => {
     )
 
     expect(decoded).toEqual({ ...policy, usageReport: false })
+    expect(Object.keys(DESKTOP_POLICY_ENVIRONMENT)).toHaveLength(7)
+  })
+
+  it('pins the version-change plugin reset to false in the hand-off', () => {
+    // The Profile rebuild runs in the Electron main process before any CLI
+    // child exists, and the CLI has no consumer for the switch; the
+    // seven-entry hand-off stays unchanged and the flag reconstructs inert.
+    const policy = parseDesktopPolicy({ ...companyPolicy(), pluginResetOnVersionChange: true })
+
+    const decoded = desktopPolicyFromEnvironment(
+      desktopPolicyEnvironmentEntries(policy),
+      devModuleUrl,
+    )
+
+    expect(decoded).toEqual({ ...policy, pluginResetOnVersionChange: false })
     expect(Object.keys(DESKTOP_POLICY_ENVIRONMENT)).toHaveLength(7)
   })
 
