@@ -1,0 +1,38 @@
+{
+  "channel": "beta",
+  "sequence": 22,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "491d7a295747b4f00667c87c65a451ad2ddfb6cad3faecc06f989fad4314b735",
+  "testers": [
+    "julu@deloittecn.com.cn",
+    "sebtang@deloittecn.com.cn",
+    "lizywu@deloittecn.com.cn"
+  ],
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.18.1",
+      "treeDigest": "698b28cedc13148993f25ce4fe72286b6dd5a745eaf061aa4111851c848d8475",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-context",
+      "version": "0.41.4",
+      "treeDigest": "de0f7a0b17c7a99128959d921ba355475c8858edf5c8ad15a97567a62a2fbe20",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-free-search",
+      "version": "0.4.184",
+      "treeDigest": "40ebd1d973371706fd434aebb22b1da4c7ce9b1b80b1c3ecf056be4b6be1d343",
+      "sourceKind": "tarball",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-09-09T08:54:56.88Z",
+  "gitSha": "1350e33da2e4daad2807276fb9f320afa5720286",
+  "runId": "34331533172",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34331533172"
+}
