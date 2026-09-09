@@ -1022,15 +1022,18 @@ export function findDesktopCompanyManifestPackage(
  * unverified, or a beta sequence below stable), which reduces this lookup
  * to the stable-only one byte for byte.
  *
- * Revocation is sticky, keyed by package name (P2-1 cross-review fix):
- * when the stable manifest pins ANY entry of the same packageName as
- * revoked:true, the beta entry's other signed fields may win, but the
- * returned entry stays revoked — the same package-name key the market-side
- * merge (`mergeCompanyBetaPackages`) applies, so a stable revocation of
- * corp-plugin@1.0.0 must also kill a beta corp-plugin@2.0.0 (the earlier
- * name@version key let any later beta version resurrect a revoked
- * package). Boot verification and the install authorities refuse on
- * `revoked`, so the flag is the load-bearing field here.
+ * Revocation is sticky, keyed by exact name@version (P15 phase 0 review
+ * fix): the beta entry's other signed fields may win over the stable
+ * manifest's entry for the same `name@version`, but when the STABLE pin of
+ * that same name@version says revoked:true the returned entry stays
+ * revoked — a stale pre-revocation beta publication can never resurrect
+ * the exact pin the stable manifest retired. A revocation of the
+ * package's OTHER versions never propagates: retire is version-scoped
+ * (the multi-version window retires 0.15.2 while 0.18.1 stays live), so
+ * the earlier package-name key wrongly refused a testers' beta soak of
+ * 0.19.0 over an old version's retire record. Boot verification and the
+ * install authorities refuse on `revoked`, so the flag is the
+ * load-bearing field here.
  */
 export function findDesktopCompanyManifestPackageWithBeta(
   manifest: DesktopCompanyManifest,
@@ -1040,10 +1043,8 @@ export function findDesktopCompanyManifestPackageWithBeta(
 ): DesktopCompanyManifestPackage | undefined {
   const beta = betaPackages?.find(entry => entry.packageName === packageName && entry.version === version)
   if (beta === undefined) return findDesktopCompanyManifestPackage(manifest, packageName, version)
-  const stableRevoked = manifest.packages.some(
-    entry => entry.packageName === packageName && entry.revoked === true,
-  )
-  return stableRevoked && beta.revoked !== true ? { ...beta, revoked: true } : beta
+  const stableTwin = findDesktopCompanyManifestPackage(manifest, packageName, version)
+  return stableTwin?.revoked === true && beta.revoked !== true ? { ...beta, revoked: true } : beta
 }
 
 /** The signed install channel of one entry; an absent `source` is the npm channel. */

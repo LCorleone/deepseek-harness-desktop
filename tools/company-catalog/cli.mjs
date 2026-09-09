@@ -786,8 +786,15 @@ async function commandRetire(positionals, flags) {
     prepared.push({ channel, outPath, prepared: resigned })
     nextSequence += 1
   }
-  // Commit phase — the allowlist first (a crash converges by re-running
-  // retire, which replays the full path), then the files, then the ratchet.
+  // Commit phase — the allowlist first, then the files, then the ratchet.
+  // Crash convergence: a crash after saveAllowlist (before the file
+  // commits) leaves the allowlist already without the entry, so re-running
+  // retire reports no match — convergence comes from the next build, which
+  // assembles from that allowlist without the entry and passes the removal
+  // guards on the deployed revoked:true record (the signed retire record).
+  // Until then the deployed manifest keeps pinning the version revoked —
+  // the retire semantics anyway, so the crash window is fail-closed and
+  // harmless.
   saveAllowlist(allowlistPath, updated)
   console.log(`allowlist: ${spec} retired (window entry removed; the deployed revoked:true record is the signed retire record)`)
   for (const { outPath, prepared: resigned } of prepared) {

@@ -23,9 +23,9 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createEphemeralKeyPair, fingerprintOfRawPublicKey, rawPublicKeyBytes } from '../lib/keys.mjs'
 
@@ -134,6 +134,104 @@ function runPublisher({ work, artifactDir, deployedPath, extra = [], channel = '
     ...extra,
   ], { encoding: 'utf8', timeout: 120_000 })
   return { status: probe.status, output: `${probe.stdout ?? ''}\n${probe.stderr ?? ''}` }
+}
+
+// --- P15 phase 0 review ②: the dual-pin manifest must clear the REAL desktop
+// verifier (verifyDesktopCompanyManifest, the beta-aware exact-entry lookup,
+// and verifyDesktopBootBundles' runtime-aware classification), not a
+// hand-rolled Array.find over the published JSON. The desktop verifier lives
+// in TypeScript under dsh-plugin-desktop/src and cannot be imported from this
+// node:test process — its `./x.js`-specifier graph needs the desktop's vitest
+// resolution, and the compiled lib/ chunks are gitignored build artifacts
+// that may lag the source — so the drill writes a minimal generated spec into
+// the desktop workspace, runs exactly that file through the desktop's own
+// vitest (real source, real functions), and deletes it again. A missing
+// desktop install skips the step loudly instead of pretending it ran.
+const DESKTOP_ROOT = resolve(TOOL_DIR, '..', '..', '..', 'dsh-plugin-desktop')
+const GENERATED_SPEC_NAME = 'p15-catalog-e2e.generated.spec.ts'
+
+const GENERATED_DESKTOP_VERIFIER_SPEC = `/**
+ * GENERATED at runtime by publish-removal-guard.test.mjs (P15 phase 0 review
+ * 2) — never committed: the catalog drill writes, runs (one vitest run), and
+ * deletes this file, so the dual-pin manifest is classified by the REAL
+ * desktop functions instead of a catalog-side re-implementation.
+ */
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import { findDesktopCompanyManifestPackageWithBeta, verifyDesktopCompanyManifest } from '../src/desktop-market.js'
+import { verifyDesktopBootBundles } from '../src/boot-verification.js'
+
+const manifestText = readFileSync(process.env.P15_E2E_MANIFEST ?? '', 'utf8')
+const trustRoots = [{ keyId: process.env.P15_E2E_KEY_ID ?? '', fingerprint: process.env.P15_E2E_FINGERPRINT ?? '' }]
+const companyCatalogOrigin = process.env.P15_E2E_ORIGIN ?? ''
+
+describe('P15 catalog e2e: the dual-pin manifest through the real desktop verifier', () => {
+  const verification = verifyDesktopCompanyManifest(manifestText, { trustRoots, companyCatalogOrigin })
+  if (!verification.ok) {
+    throw new Error('the real desktop verifier rejected the tool-signed dual-pin manifest: ' + verification.code + ' — ' + verification.reason)
+  }
+  const oldPin = findDesktopCompanyManifestPackageWithBeta(verification.manifest, undefined, 'sidebar', '0.15.2')
+  const newPin = findDesktopCompanyManifestPackageWithBeta(verification.manifest, undefined, 'sidebar', '0.18.1')
+  // One clean machine per runtime semantics: the installed tree answers
+  // with the signed digest (the desktop suite owns the real measuring
+  // machinery); only the classification is under test here.
+  const bootOf = (dshRuntimeVersion) => verifyDesktopBootBundles(manifestText, [{
+    packageName: 'sidebar',
+    version: '0.15.2',
+    lockIntegrity: oldPin?.integrity,
+    packageDir: '/plugins/sidebar',
+  }], {
+    trustRoots,
+    companyCatalogOrigin,
+    dshRuntimeVersion,
+    measureTreeRootDigest: () => oldPin?.treeDigest ?? '',
+  })
+
+  it('a 0.1.1-semantics machine hits 0.15.2 exactly and has no update', () => {
+    expect(oldPin?.runtime.dshRuntimeVersion).toBe('^0.1.1')
+    expect(oldPin?.revoked).toBe(false)
+    const boot = bootOf('0.1.1')
+    expect(boot.manifestTrusted).toBe(true)
+    expect(boot.rejected).toEqual([])
+    expect(boot.allowed[0]?.packageName).toBe('sidebar')
+    expect(boot.allowed[0]?.updateVersion).toBeUndefined()
+  })
+
+  it('a 0.1.2-semantics machine gets 0.18.1 as its update target', () => {
+    expect(newPin?.runtime.dshRuntimeVersion).toBe('^0.1.2-rc.1')
+    const boot = bootOf('0.1.2')
+    expect(boot.rejected).toEqual([])
+    expect(boot.allowed[0]?.updateVersion).toBe('0.18.1')
+    expect(boot.allowed[0]?.installedVersion).toBe('0.15.2')
+  })
+})
+`
+
+/** Drive the real desktop verifier over one published manifest (see above). */
+function runDesktopVerifier(manifestPath) {
+  const vitestEntry = join(DESKTOP_ROOT, 'node_modules', 'vitest', 'vitest.mjs')
+  if (!existsSync(vitestEntry)) {
+    return { skipped: true, output: `desktop verifier unavailable: ${vitestEntry} is missing (run corepack yarn install) — the real-verifier cross-check did not run` }
+  }
+  const specPath = join(DESKTOP_ROOT, 'tests', GENERATED_SPEC_NAME)
+  writeFileSync(specPath, GENERATED_DESKTOP_VERIFIER_SPEC, 'utf8')
+  try {
+    const probe = spawnSync(process.execPath, [vitestEntry, 'run', `tests/${GENERATED_SPEC_NAME}`], {
+      cwd: DESKTOP_ROOT,
+      encoding: 'utf8',
+      timeout: 300_000,
+      env: {
+        ...process.env,
+        P15_E2E_MANIFEST: manifestPath,
+        P15_E2E_KEY_ID: KEY_ID,
+        P15_E2E_FINGERPRINT: FINGERPRINT,
+        P15_E2E_ORIGIN: ORIGIN,
+      },
+    })
+    return { skipped: false, status: probe.status, output: `${probe.stdout ?? ''}\n${probe.stderr ?? ''}` }
+  } finally {
+    rmSync(specPath, { force: true })
+  }
 }
 
 // --- shared-ratchet skip: a stable artifact may legitimately jump past
@@ -303,17 +401,22 @@ test('multi-version pins: two versions of one package ride the whole pipeline gr
     const newPin = entry({ packageName: 'sidebar', version: '0.18.1', runtime: '^0.1.2-rc.1' })
     publish(work, [oldPin, newPin], deployedDir)
 
-    // The manifest carries BOTH versions, each with its own runtime range —
-// and an old client's boot lookup (exact name@version) hits the old pin.
+    // The manifest carries BOTH versions, each with its own runtime range.
     const manifest = JSON.parse(readFileSync(join(deployedDir, 'catalog-manifest.json'), 'utf8'))
     const keys = manifest.packages.map((manifestEntry) => `${manifestEntry.packageName}@${manifestEntry.version}`)
     assert.deepEqual(keys, ['sidebar@0.15.2', 'sidebar@0.18.1'], 'assembly sorts by (name, version); both pins present')
-    const bootLookup = manifest.packages.find((manifestEntry) => manifestEntry.packageName === 'sidebar' && manifestEntry.version === '0.15.2')
-    assert.notEqual(bootLookup, undefined, 'an old client booting by exact name@version finds its pin')
-    assert.equal(bootLookup.runtime.dshRuntimeVersion, '^0.1.1', 'the old pin keeps its own runtime window')
-    assert.equal(bootLookup.revoked, false)
-    const bootLookupNew = manifest.packages.find((manifestEntry) => manifestEntry.packageName === 'sidebar' && manifestEntry.version === '0.18.1')
-    assert.equal(bootLookupNew.runtime.dshRuntimeVersion, '^0.1.2-rc.1', 'the new pin carries the new runtime window')
+
+    // The same dual-pin manifest must clear the REAL desktop verifier (P15
+    // phase 0 review 2): a 0.1.1-semantics machine's boot hits 0.15.2
+    // exactly with no update, and a 0.1.2-semantics machine's update target
+    // is 0.18.1 — decided by the desktop's own verifier, exact-entry
+    // lookup, and runtime-aware boot classification, not an Array.find here.
+    const verifier = runDesktopVerifier(join(deployedDir, 'catalog-manifest.json'))
+    if (verifier.skipped) {
+      console.log(`desktop verifier: SKIPPED — ${verifier.output}`)
+    } else {
+      assert.equal(verifier.status, 0, `the real desktop verifier refused the dual-pin manifest:\n${verifier.output}`)
+    }
 
     // The re-publication of the same two pins passes the publish gauntlet.
     stageTarballs([oldPin, newPin], artifactDir)

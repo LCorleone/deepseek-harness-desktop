@@ -1316,11 +1316,13 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     })
   })
 
-  it('package-keyed revocation stickiness: a stable revocation of an older version denies the beta target (P2-1 red)', async () => {
-    // Stable revoked company-beta-plugin@0.4.183; the beta overlay carries a
-    // later unrevoked 0.4.184. The gate must key revocation by package name
-    // — exactly the market-side merge rule — so the beta target lands in
-    // the revoked branch instead of resurrecting the package.
+  it('version-keyed revocation: a stable retire of the older 0.4.183 never denies the beta 0.4.184 target (P15 phase 0)', async () => {
+    // The multi-version retire shape at the terminal gate: stable pins the
+    // retired company-beta-plugin@0.4.183 revoked:true while the beta
+    // overlay soaks 0.4.184. Revocation keys by exact name@version — the
+    // 0.4.183 retire record never reaches a different version's entry —
+    // so the beta target loads on its own signed revoked:false (the
+    // same-version deny stays pinned by the revoked-entry cases below).
     const assetPath = writeCatalog(unsignedCatalog({
       packages: [catalogEntry({
         packageName: BETA_NAME,
@@ -1339,10 +1341,11 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
       profileDir,
     })
 
-    expect(decision.allowed).toBe(false)
-    if (!decision.allowed) {
-      expect(decision.reason).toContain(`${BETA_NAME}@${BETA_VERSION} is revoked in the signed company plugin catalog`)
-    }
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+      approvedBuildDependencies: ['@company/signed-beta-builder'],
+    })
   })
 
   it('still denies the beta-only target without the beta pair — the stable-only catalog is the whole decision (non-roster spawn shape)', async () => {

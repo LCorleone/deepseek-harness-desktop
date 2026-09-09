@@ -423,11 +423,13 @@ export async function authorizeLockedPluginAdd(
   }
   // The lookup is stable ∪ beta exactly when the beta hand-off verified —
   // otherwise `undefined` reduces this to the stable-only search byte for
-  // byte. The merge rule (and its revocation stickiness) is the market
-  // catalog's own: a beta entry wins for its name@version, a package any
-  // stable entry pins revoked stays revoked (keyed by package name, so a
-  // stable revocation of an older version also kills the beta one), and a
-  // stable-only target is unaffected.
+  // byte. The merge rule (and its revocation stickiness) keys by exact
+  // name@version: a beta entry wins for its name@version, a stable pin of
+  // that SAME name@version revoked:true stays revoked (a stale beta
+  // publication can never resurrect the retired pin), while a revocation
+  // of the package's other versions — the multi-version retire norm —
+  // never reaches a different version's entry, and a stable-only target is
+  // unaffected.
   const entry = findDesktopCompanyManifestPackageWithBeta(
     verification.manifest,
     betaPackages,

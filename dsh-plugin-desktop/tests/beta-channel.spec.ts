@@ -417,23 +417,66 @@ describe('findDesktopCompanyManifestPackageWithBeta (P9)', () => {
     expect(found?.integrity).toBe(`sha512-${Buffer.alloc(64, 11).toString('base64')}`)
   })
 
-  it('keys revocation by package name: a stable revocation of 1.0.0 also kills the beta 2.0.0 (P2-1 red)', () => {
-    // The two-semantics trap this closes: the stable manifest revoked
-    // corp-plugin@1.0.0 while the beta overlay carries a LATER unrevoked
-    // corp-plugin@2.0.0. Keyed by name@version the beta entry would pass
-    // with revoked:false; keyed by package name — the market-side merge's
-    // rule — the beta entry returns with revoked:true and every consumer's
-    // revoked branch refuses it naturally.
+  it('keys revocation by exact name@version: the retire of 0.15.2 never kills the beta 0.18.1/0.19.0 entries (P15 phase 0 red)', () => {
+    // The multi-version retire shape: stable pins company-plugin@0.15.2
+    // revoked:true (the retire record) alongside a live company-plugin@
+    // 0.18.1, while the beta overlay soaks 0.18.1's twin and a newer
+    // 0.19.0. Keyed by package name — the pre-P15 key — the 0.15.2 retire
+    // would force revoked:true onto every beta entry of the name and
+    // refuse the testers' loads; keyed by exact name@version only the
+    // stable pin of the SAME version is sticky, so both entries ride their
+    // own signed revoked flag.
     const stable = verifyDesktopCompanyManifest(
-      signedText(unsignedManifest({ packages: [entry({ version: '1.0.0', revoked: true })] })),
+      signedText(unsignedManifest({
+        packages: [
+          entry({ version: '0.15.2', revoked: true }),
+          entry({ version: '0.18.1', revoked: false }),
+        ],
+      })),
+      { trustRoots, companyCatalogOrigin: origin, now },
+    )
+    expect(stable.ok).toBe(true)
+    if (!stable.ok) return
+    const beta = verifyDesktopCompanyManifest(
+      signedText(unsignedManifest({
+        sequence: 46,
+        packages: [
+          entry({ version: '0.18.1', revoked: false, integrity: `sha512-${Buffer.alloc(64, 13).toString('base64')}` }),
+          entry({ version: '0.19.0', revoked: false, integrity: `sha512-${Buffer.alloc(64, 23).toString('base64')}` }),
+        ],
+      })),
+      { trustRoots, companyCatalogOrigin: origin, now, channel: 'beta' },
+    )
+    expect(beta.ok).toBe(true)
+    if (!beta.ok) return
+
+    const soak = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '0.19.0')
+    expect(soak?.revoked).toBe(false)
+    expect(soak?.integrity).toBe(`sha512-${Buffer.alloc(64, 23).toString('base64')}`)
+    const liveTwin = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '0.18.1')
+    expect(liveTwin?.revoked).toBe(false)
+    expect(liveTwin?.integrity).toBe(`sha512-${Buffer.alloc(64, 13).toString('base64')}`)
+  })
+
+  it('the stable revoked pin of the SAME name@version stays sticky: a stale beta 0.15.2 saying revoked:false loads revoked', () => {
+    // The retire record keeps its teeth: the revoked 0.15.2 pin itself can
+    // never be resurrected by a stale pre-revocation beta publication of
+    // the same version — the beta fields may win, but not the flag.
+    const stable = verifyDesktopCompanyManifest(
+      signedText(unsignedManifest({
+        packages: [
+          entry({ version: '0.15.2', revoked: true }),
+          entry({ version: '0.18.1', revoked: false }),
+        ],
+      })),
       { trustRoots, companyCatalogOrigin: origin, now },
     )
     expect(stable.ok).toBe(true)
     if (!stable.ok) return
     const betaEntry = entry({
-      version: '2.0.0',
+      version: '0.15.2',
       revoked: false,
-      integrity: `sha512-${Buffer.alloc(64, 13).toString('base64')}`,
+      integrity: `sha512-${Buffer.alloc(64, 29).toString('base64')}`,
     })
     const beta = verifyDesktopCompanyManifest(
       signedText(unsignedManifest({ sequence: 46, packages: [betaEntry] })),
@@ -442,9 +485,8 @@ describe('findDesktopCompanyManifestPackageWithBeta (P9)', () => {
     expect(beta.ok).toBe(true)
     if (!beta.ok) return
 
-    const found = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '2.0.0')
+    const found = findDesktopCompanyManifestPackageWithBeta(stable.manifest, beta.manifest.packages, 'company-plugin', '0.15.2')
     expect(found?.revoked).toBe(true)
-    expect(found?.version).toBe('2.0.0')
     expect(found?.integrity).toBe(betaEntry.integrity)
   })
 
@@ -927,11 +969,13 @@ describe('boot verification beta fallback (P9 scenario 2/3)', () => {
     expect(result.rejected[0]?.reason).toContain('revoked')
   })
 
-  it('package-keyed stickiness at boot: a stable revocation of 1.0.0 refuses a roster machine\'s beta 2.0.0 (P2-1 red)', () => {
-    // Stable revoked company-plugin@1.0.0; the beta overlay carries a later
-    // unrevoked company-plugin@2.0.0 which the tester has installed. The
-    // lookup for 2.0.0 must land in the revoked class — reason 'revoked',
-    // never a resurrected allow.
+  it('version-keyed revocation at boot: the 1.0.0 retire loads the tester\'s beta 2.0.0 on its own revoked flag (P15 phase 0)', () => {
+    // Stable retired company-plugin@1.0.0 (revoked:true — the retire
+    // record) while the beta overlay soaks a later unrevoked 2.0.0 the
+    // tester has installed. Revocation keys by exact name@version, so the
+    // entry lookup answers with the beta entry's own revoked:false and the
+    // bundle loads manifest-only — the pre-P15 package-name key force-
+    // revoked the soak entry and refused the load.
     const stable = signedText(unsignedManifest({
       packages: [entry({ version: '1.0.0', revoked: true })],
     }))
@@ -948,9 +992,10 @@ describe('boot verification beta fallback (P9 scenario 2/3)', () => {
       betaPackages: [betaTwo] as unknown as readonly DesktopCompanyManifestPackage[],
       betaSequence: 44,
     })
-    expect(result.allowed).toEqual([])
-    expect(result.rejected[0]?.code).toBe('revoked')
-    expect(result.rejected[0]?.reason).toContain('revoked')
+    expect(result.rejected).toEqual([])
+    expect(result.allowed[0]?.packageName).toBe('company-plugin')
+    expect(result.allowed[0]?.evidence).toBe('manifest-only')
+    expect(result.allowed[0]?.updateVersion).toBeUndefined()
   })
 
   it('a beta overlay below the stable sequence is stale and ignored (stable-only rejection)', () => {

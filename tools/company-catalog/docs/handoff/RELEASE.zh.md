@@ -93,6 +93,11 @@ node tools/company-catalog/cli.mjs revoke <名>@<版本>
 - **保留策略**：上一条 runtime 线的最新版默认保留直至显式 retire（静默删
   旧版条目会被 publish-local 的版本下窗守卫拦红；确属有意立即撤版用
   `--allow-version-retire` 过闸）。
+- **旧钉字节随每次 artifact 携带**：多版本窗口内，仍在清单里的旧钉条目，
+  其 `packages/<名>-<旧版本>.tgz` 原始字节必须随**每次**发布产物一并携带
+  （不得缺省、不得重打包）——publish-local 的 4d 完整性闸按「托管 sha512 ＝
+  artifact sha512 ＝ 签名 source.integrity」fail-closed 对拍，旧钉缺字节或
+  换字节即整次发布拦红（同版本不可重发，见 E）。
 
 ```bash
 node tools/company-catalog/cli.mjs revoke <名>@<旧版本>   # 第一步：签名吊销记录
