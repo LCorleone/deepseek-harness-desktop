@@ -31,10 +31,18 @@
  * otherwise restore the pre-swap composition into the rebuilt tree when the
  * next boot fails before its first healthy capture.
  *
+ * On Windows the set-aside rename can be refused for seconds while any
+ * process holds a handle inside the Profile (`EBUSY` and friends). The rename
+ * therefore backs off over a fixed schedule; if it is still locked, the swap
+ * does not fail: it returns a deferred result, the desktop writes a marker in
+ * userData, keeps booting the existing Profile, and the next startup retries
+ * the rename before it opens anything. The build-identity record stays
+ * unwritten on that path, so the version change remains pending.
+ *
  * @module dsh-plugin-desktop/fresh-profile
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
@@ -51,6 +59,41 @@ const MAX_GENERATION_STATE_BYTES = 4 * 1024
 const MAX_PROFILE_BACKUPS = 2
 /** Collision bound for two swaps inside the same millisecond. */
 const MAX_BACKUP_COLLISIONS = 100
+/**
+ * Windows refuses a directory rename while any handle is open inside the
+ * tree (`EBUSY`) or the ACL denies it (`EPERM`/`EACCES`); an antivirus or
+ * indexer scan releases it within seconds. `ENOTEMPTY` is the same race
+ * against a destination that appeared between the `existsSync` probe and the
+ * rename. All four are transient by nature, so they back off instead of
+ * failing the whole rebuild.
+ */
+const RETRYABLE_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES'])
+/** Six backoff steps (~6.3 s total) before a locked rename is declared deferred. */
+const RENAME_RETRY_DELAYS_MS: readonly number[] = [100, 200, 400, 800, 1600, 3200]
+
+/** Error code of the last rename refused by the OS after every retry. */
+export type ProfileRenameLockedCode = 'EBUSY' | 'EPERM' | 'ENOTEMPTY' | 'EACCES'
+
+/**
+ * A set-aside rename the OS kept refusing (`EBUSY` and friends) through the
+ * whole backoff schedule. The swap turns this into a deferred result instead
+ * of a failure: the existing Profile keeps booting, the caller records a
+ * marker, and the next startup retries the rename at its earliest point.
+ */
+export class ProfileRenameLockedError extends Error {
+  readonly code: ProfileRenameLockedCode
+  /** Attempts made, including the first one. */
+  readonly attempts: number
+  readonly profileDir: string
+
+  constructor(profileDir: string, code: ProfileRenameLockedCode, attempts: number) {
+    super(`${BIN_NAME}: could not set aside profile directory ${profileDir}: rename refused ${String(attempts)} times (last ${code})`)
+    this.name = 'ProfileRenameLockedError'
+    this.code = code
+    this.attempts = attempts
+    this.profileDir = profileDir
+  }
+}
 /** Community-market settings namespace owning the install receipt ledger. */
 const MARKET_SETTINGS_NAMESPACE = 'dsh-community-market'
 const MARKET_RECEIPTS_KEY = 'installReceipts'
@@ -103,6 +146,81 @@ export async function writeProfileGenerationState(statePath: string, state: Prof
   // Atomic replacement: a crash-truncated record would read as "no record",
   // which now means "rebuild the existing Profile" — a spurious swap.
   await writeFileAtomic(statePath, `${JSON.stringify(state)}\n`, { mode: 0o600 })
+}
+
+/** Persisted marker of a rebuild deferred by a locked set-aside rename. */
+export const FRESH_PROFILE_PENDING_FILENAME = 'fresh-profile-pending.json'
+const FRESH_PROFILE_PENDING_VERSION = 1
+const MAX_PENDING_STATE_BYTES = 4 * 1024
+
+/**
+ * A rebuild the previous boot could not perform because Windows kept the
+ * Profile directory locked. The marker lives in userData (not the Profile),
+ * so the next startup can read it before it touches any Profile and retry the
+ * rename at the earliest possible moment.
+ */
+export interface FreshProfilePendingState {
+  readonly version: typeof FRESH_PROFILE_PENDING_VERSION
+  /** Profile that must still be rebuilt; validated before any path use. */
+  readonly profileName: string
+  /** Build identity the deferred rebuild was for. */
+  readonly appBuildVersion: string
+  /** Last OS error code (`EBUSY`, …), for log-side forensics. */
+  readonly reason: string
+}
+
+/** Absolute path of the deferred-rebuild marker. */
+export function freshProfilePendingStatePath(userDataDir: string): string {
+  return join(userDataDir, FRESH_PROFILE_PENDING_FILENAME)
+}
+
+/**
+ * Read the deferred-rebuild marker; any missing, oversized, malformed, or
+ * path-escaping document reads as "no marker" so a corrupt file can never
+ * block a boot.
+ */
+export function readFreshProfilePending(statePath: string): FreshProfilePendingState | undefined {
+  let body: Buffer
+  try {
+    body = readFileSync(statePath)
+  } catch {
+    return undefined
+  }
+  if (body.byteLength > MAX_PENDING_STATE_BYTES) return undefined
+  let document: unknown
+  try {
+    document = JSON.parse(body.toString('utf8')) as unknown
+  } catch {
+    return undefined
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) return undefined
+  const record = document as Record<string, unknown>
+  if (record.version !== FRESH_PROFILE_PENDING_VERSION) return undefined
+  if (typeof record.profileName !== 'string' || record.profileName.length === 0) return undefined
+  try {
+    assertDesktopProfileName(record.profileName)
+  } catch {
+    return undefined
+  }
+  if (typeof record.appBuildVersion !== 'string' || record.appBuildVersion.length === 0
+    || record.appBuildVersion.includes('\0')) return undefined
+  if (typeof record.reason !== 'string' || record.reason.length === 0) return undefined
+  return {
+    version: FRESH_PROFILE_PENDING_VERSION,
+    profileName: record.profileName,
+    appBuildVersion: record.appBuildVersion,
+    reason: record.reason,
+  }
+}
+
+/** Persist the deferred-rebuild marker (atomic; a torn write reads as absent). */
+export async function writeFreshProfilePending(statePath: string, state: FreshProfilePendingState): Promise<void> {
+  await writeFileAtomic(statePath, `${JSON.stringify(state)}\n`, { mode: 0o600 })
+}
+
+/** Drop the deferred-rebuild marker after the retry landed. */
+export function clearFreshProfilePending(statePath: string): void {
+  rmSync(statePath, { force: true })
 }
 
 /** What one boot's build identity implies for the active Profile. */
@@ -227,6 +345,21 @@ export interface FreshProfileSwapOptions {
   readonly clearCheckpoint?: (() => void | Promise<void>) | undefined
   /** Receives a one-line warning when the market ledger cannot be cleared. */
   readonly logError?: ((message: string) => void) | undefined
+  /**
+   * Backoff schedule for a rename the OS refuses with a transient lock code
+   * (`EBUSY`/`EPERM`/`ENOTEMPTY`/`EACCES`). Tests inject a zeroed schedule or
+   * a fake {@linkcode sleep} so the retry path is exercised without a real
+   * lock or real waiting.
+   */
+  readonly renameRetryDelaysMs?: readonly number[] | undefined
+  /** Sleep seam for {@linkcode renameRetryDelaysMs}; defaults to a real timer. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined
+  /**
+   * Rename seam for the set-aside step; defaults to `fs.renameSync`. Tests
+   * inject a function that refuses with `EBUSY` so the Windows lock path is
+   * exercised without holding a real handle.
+   */
+  readonly rename?: ((from: string, to: string) => void) | undefined
 }
 
 /** What one swap did, for logging and telemetry. */
@@ -246,10 +379,40 @@ export interface FreshProfileSwapResult {
    * tests (and in any caller that needs the removal finished).
    */
   readonly pruneBackups: Promise<readonly string[]>
+  /**
+   * Present and true when the set-aside rename stayed locked through every
+   * backoff step. Nothing was rebuilt and the existing Profile is untouched;
+   * the caller writes a marker and retries on the next startup.
+   */
+  readonly deferred?: true
+  /** Last refused rename code; present only on a deferred result. */
+  readonly reasonCode?: ProfileRenameLockedCode
+  /** Rename attempts made; present only on a deferred result. */
+  readonly attempts?: number
 }
 
-/** Rename the existing Profile directory aside, returning the backup path. */
-function setAsideProfileDirectory(profileDir: string, epochMs: number): string | undefined {
+/** Real timer used when the caller does not inject a sleep seam. */
+const defaultSleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms) })
+
+/**
+ * Rename the existing Profile directory aside, returning the backup path.
+ *
+ * A transient OS lock (Windows keeps a directory un-renamable while any
+ * handle inside it is open) is retried on a fixed backoff before giving up:
+ * each refused attempt logs the attempt number and error code, and the last
+ * refusal after the schedule raises {@linkcode ProfileRenameLockedError} so
+ * the swap can defer instead of failing. Every other error is immediate.
+ */
+async function setAsideProfileDirectory(
+  profileDir: string,
+  epochMs: number,
+  options: {
+    readonly logError?: ((message: string) => void) | undefined
+    readonly retryDelaysMs?: readonly number[] | undefined
+    readonly sleep?: ((ms: number) => Promise<void>) | undefined
+    readonly rename?: ((from: string, to: string) => void) | undefined
+  } = {},
+): Promise<string | undefined> {
   let item
   try {
     item = lstatSync(profileDir)
@@ -260,13 +423,31 @@ function setAsideProfileDirectory(profileDir: string, epochMs: number): string |
   if (item.isSymbolicLink() || !item.isDirectory()) {
     throw new Error(`${BIN_NAME}: profile directory ${profileDir} is not a real directory`)
   }
+  const delays = options.retryDelaysMs ?? RENAME_RETRY_DELAYS_MS
+  const sleep = options.sleep ?? defaultSleep
+  const rename = options.rename ?? renameSync
   for (let collision = 0; collision <= MAX_BACKUP_COLLISIONS; collision += 1) {
     const backup = collision === 0
       ? profileBackupPath(profileDir, epochMs)
       : `${profileBackupPath(profileDir, epochMs)}-${String(collision)}`
     if (existsSync(backup)) continue
-    renameSync(profileDir, backup)
-    return backup
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        rename(profileDir, backup)
+        return backup
+      } catch (cause) {
+        const code = (cause as NodeJS.ErrnoException).code
+        if (code === undefined || !RETRYABLE_RENAME_CODES.has(code)) throw cause
+        const delayMs = delays[attempt]
+        if (delayMs === undefined) {
+          throw new ProfileRenameLockedError(profileDir, code as ProfileRenameLockedCode, attempt + 1)
+        }
+        options.logError?.(
+          `profile directory ${profileDir} -> ${backup} is locked (rename attempt ${String(attempt + 1)} of ${String(delays.length + 1)}: ${code}); retrying in ${String(delayMs)}ms`,
+        )
+        await sleep(delayMs)
+      }
+    }
   }
   throw new Error(`${BIN_NAME}: could not set aside profile directory ${profileDir}: too many backups share this stamp`)
 }
@@ -328,7 +509,33 @@ export async function pruneProfileBackups(
 export async function freshProfileSwap(options: FreshProfileSwapOptions): Promise<FreshProfileSwapResult> {
   assertDesktopProfileName(options.profileName)
   const profileDir = resolveProfileDir(options.profileName, options.home)
-  const backupDir = setAsideProfileDirectory(profileDir, (options.now ?? Date.now)())
+  let backupDir: string | undefined
+  try {
+    backupDir = await setAsideProfileDirectory(profileDir, (options.now ?? Date.now)(), {
+      ...(options.logError === undefined ? {} : { logError: options.logError }),
+      ...(options.renameRetryDelaysMs === undefined ? {} : { retryDelaysMs: options.renameRetryDelaysMs }),
+      ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+      ...(options.rename === undefined ? {} : { rename: options.rename }),
+    })
+  } catch (cause) {
+    if (cause instanceof ProfileRenameLockedError) {
+      // Windows held a handle inside the Profile for longer than the whole
+      // backoff schedule. Nothing was renamed or rebuilt: the existing
+      // Profile stays bootable, and the caller records a marker so the next
+      // startup retries this exact rename before it opens anything.
+      return {
+        profileName: options.profileName,
+        profileDir,
+        materialized: false,
+        receiptsCleared: 0,
+        pruneBackups: Promise.resolve([]),
+        deferred: true,
+        reasonCode: cause.code,
+        attempts: cause.attempts,
+      }
+    }
+    throw cause
+  }
   options.createProfile()
   if (options.clearCheckpoint !== undefined) {
     try {

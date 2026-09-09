@@ -152,10 +152,14 @@ import { clearDesktopProfileCheckpoint, DesktopProfileCheckpoint } from './profi
 import { materializeProfileWithRetry, ProfileMaterializationError, PROFILE_MATERIALIZATION_ATTEMPTS } from './profile-materializer.ts'
 import { ensureProfilePnpmBuildApproval } from './profile-pnpm-policy.ts'
 import {
+  clearFreshProfilePending,
+  freshProfilePendingStatePath,
   freshProfileResetDecision,
   freshProfileSwap,
   profileGenerationStatePath,
+  readFreshProfilePending,
   readProfileGenerationState,
+  writeFreshProfilePending,
   writeProfileGenerationState,
 } from './fresh-profile.ts'
 import type { DesktopPnpmBootstrap } from './pnpm.ts'
@@ -792,6 +796,20 @@ async function start(): Promise<void> {
       )
     }
     const homeDir = resolveDshHome()
+    // Deferred fresh-Profile rebuild (P14, Windows EBUSY): a previous boot
+    // could not set the Profile directory aside because the OS kept a handle
+    // open inside it. The marker lives in userData, so it is read here —
+    // before the pnpm runtime install, before any Profile or selection file
+    // is opened — and handled before the automatic version-change layer,
+    // which also stops it from firing a second rename.
+    const freshProfilePendingPath = freshProfilePendingStatePath(app.getPath('userData'))
+    const pendingFreshProfileReset = readFreshProfilePending(freshProfilePendingPath)
+    if (pendingFreshProfileReset !== undefined) {
+      electronLogger.error(
+        `${BIN_NAME}: deferred profile rebuild marker present (profile ${pendingFreshProfileReset.profileName}, `
+          + `build ${pendingFreshProfileReset.appBuildVersion}, last rename ${pendingFreshProfileReset.reason})`,
+      )
+    }
     const projectionCacheRecovery = recoverOversizedSessionProjectionCache(homeDir)
     if (projectionCacheRecovery.status === 'quarantined') {
       sessionProjectionCacheRecovery = projectionCacheRecovery
@@ -1027,6 +1045,30 @@ async function start(): Promise<void> {
           },
           logError: message => { electronLogger.error(`${BIN_NAME}: ${maskSecrets(message)}`) },
         })
+        if (result.deferred === true) {
+          // Windows kept a handle inside the Profile for the whole backoff
+          // schedule. The existing Profile is untouched and keeps booting;
+          // the marker makes the NEXT startup retry this rename before it
+          // opens anything, and the generation record is deliberately left
+          // unwritten so the version change is still pending.
+          await writeFreshProfilePending(freshProfilePendingPath, {
+            version: 1,
+            profileName: result.profileName,
+            appBuildVersion,
+            reason: result.reasonCode ?? 'EBUSY',
+          })
+          electronLogger.error(
+            `${BIN_NAME}: fresh profile rebuild deferred (${trigger}): profile ${result.profileName} stayed locked through `
+              + `${String(result.attempts ?? 0)} rename attempts (${result.reasonCode ?? 'EBUSY'}); retrying on the next startup`,
+          )
+          clientEvents?.pluginReset(pluginResetEvent(trigger, {
+            profileName: result.profileName,
+            outcome: 'deferred',
+            materialized: false,
+            receiptsCleared: 0,
+          }))
+          return false
+        }
         electronLogger.error(
           `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
         )
@@ -1067,6 +1109,35 @@ async function start(): Promise<void> {
         updatedAt: new Date().toISOString(),
       })
     }
+    // Deferred-retry layer (P14, Windows EBUSY): the previous boot wrote a
+    // marker when the set-aside rename stayed locked through every retry.
+    // Handled BEFORE the automatic layer so one boot never renames the same
+    // directory twice. A marker for a Profile that is no longer active, or
+    // one written under a policy that no longer enables the reset, is
+    // dropped — the marked Profile's version-change reset re-fires the next
+    // time it is active, because the deferred path never recorded its build
+    // identity. A retry that lands clears the marker and records the build;
+    // one that defers again leaves the marker and lets the boot continue.
+    const freshProfileResetEnabled = policy.locked === true && policy.pluginResetOnVersionChange === true
+    let pendingFreshProfileHandled = false
+    if (pendingFreshProfileReset !== undefined) {
+      if (freshProfileResetEnabled && pendingFreshProfileReset.profileName === activeProfileName) {
+        pendingFreshProfileHandled = true
+        electronLogger.error(
+          `${BIN_NAME}: retrying the deferred profile rebuild for ${activeProfileName} (last rename ${pendingFreshProfileReset.reason})`,
+        )
+        if (await runFreshProfileSwap('version-change')) {
+          clearFreshProfilePending(freshProfilePendingPath)
+          await recordProfileGeneration()
+        }
+      } else {
+        electronLogger.error(
+          `${BIN_NAME}: dropping the deferred profile rebuild marker for ${pendingFreshProfileReset.profileName} `
+            + `(active profile ${activeProfileName}, reset enabled=${String(freshProfileResetEnabled)})`,
+        )
+        clearFreshProfilePending(freshProfilePendingPath)
+      }
+    }
     const freshProfileDecision = freshProfileResetDecision({
       locked: policy.locked,
       resetOnVersionChange: policy.pluginResetOnVersionChange,
@@ -1081,7 +1152,7 @@ async function start(): Promise<void> {
       // this home.)
       profileExists: existsSync(join(activeProfileDir, 'package.json')),
     })
-    if (freshProfileDecision === 'reset') {
+    if (freshProfileDecision === 'reset' && !pendingFreshProfileHandled) {
       electronLogger.error(
         `${BIN_NAME}: build identity changed (${storedProfileGeneration?.appBuildVersion ?? 'unknown'} -> ${appBuildVersion}); rebuilding profile ${activeProfileName}`,
       )

@@ -37,7 +37,7 @@ Gateway）/ `Kimi`——面板 SQL 按新值过滤（b68 及以前的存量行�
 | `plugin_install` | 安装/升级/卸载/回滚/失败 | `packageName` · `version` · `outcome` installed/updated-in-place/**uninstalled**/rolled-back/failed · `channel`（**uninstalled 无此字段**——被删版本的交付渠道不可知，不猜） · `reasonCode`（失败码） · `reason`（仅固定词汇安全码才有） |
 | `boot_verify` | **仅当启动有插件被拒**（成功不打扰） | `rejected:[{packageName, code}]`（8 码：not-pinned-newer-pinned/revoked/digest-mismatch/signature-invalid/compat-unsupported/manifest-missing/manifest-invalid/other）· `loaded` |
 | `disclaimer` | 内测声明弹窗决策：**仅弹窗真出现才报**（装后无 ack / 升级版本变 / 声明改版哈希变，三者各弹一次；日常启动不弹不报） | `decision` agree/disagree · `clientVersion`（本次同意的版本） · `textHash`（声明文案 JSON 的 sha256，改版即变） |
-| `plugin_reset` | P14 全新 Profile 重建（自动层=构建号变化即换新；手动层=恢复窗一键） | `trigger` version-change/recovery-window · `profileName` · `outcome` swapped/failed · `materialized`（pnpm 同步是否成功） · `receiptsCleared`（清掉的市场装权台账条数） |
+| `plugin_reset` | P14 全新 Profile 重建（自动层=构建号变化即换新；手动层=恢复窗一键） | `trigger` version-change/recovery-window · `profileName` · `outcome` swapped/failed/**deferred**（Windows 句柄占用致改名重试耗尽：旧 Profile 继续启动，写标记待下次启动最早时刻重试，版本记录不写） · `materialized`（pnpm 同步是否成功） · `receiptsCleared`（清掉的市场装权台账条数） |
 
 ## 3. 常用查询（老板面板直抄）
 

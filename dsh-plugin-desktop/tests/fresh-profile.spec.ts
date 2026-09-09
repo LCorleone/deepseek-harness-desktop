@@ -16,6 +16,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -26,14 +27,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDesktopProfile } from '../src/profile.ts'
 import { readProfileManifest } from '@deepseek-ai/dsh-app-boot'
 import {
+  FRESH_PROFILE_PENDING_FILENAME,
+  clearFreshProfilePending,
   clearMarketInstallReceipts,
+  freshProfilePendingStatePath,
   freshProfileResetDecision,
   freshProfileSwap,
   profileBackupPath,
   profileBackupStamp,
   profileGenerationStatePath,
   pruneProfileBackups,
+  readFreshProfilePending,
   readProfileGenerationState,
+  writeFreshProfilePending,
   writeProfileGenerationState,
 } from '../src/fresh-profile.ts'
 
@@ -471,5 +477,170 @@ describe('fresh profile swap', () => {
 
     await expect(freshProfileSwap(swapOptions(home, { profileName: '../escape' })))
       .rejects.toThrow('invalid desktop profile name')
+  })
+})
+
+/** The Windows refusal the whole retry schedule exists for. */
+function busyError(): NodeJS.ErrnoException {
+  const error = new Error('EBUSY: resource busy or locked') as NodeJS.ErrnoException
+  error.code = 'EBUSY'
+  return error
+}
+
+describe('locked set-aside rename (Windows EBUSY)', () => {
+  it('retries with backoff and completes once the handle is released', async () => {
+    const home = temporaryHome()
+    const profileDir = seededProfile(home)
+    seededSettings(home)
+    const logError = vi.fn()
+    const slept: number[] = []
+    let refusals = 2
+    const rename = vi.fn((from: string, to: string) => {
+      if (refusals > 0) {
+        refusals -= 1
+        throw busyError()
+      }
+      renameSync(from, to)
+    })
+
+    const result = await freshProfileSwap(swapOptions(home, {
+      logError,
+      rename,
+      sleep: async (ms: number) => { slept.push(ms) },
+    }))
+
+    expect(result.deferred).toBeUndefined()
+    expect(result.backupDir).toBe(`${profileDir}.bak-20260909T073319264Z`)
+    expect(result.materialized).toBe(true)
+    // 100/200: the first two backoff steps, and the third attempt landed.
+    expect(slept).toEqual([100, 200])
+    expect(logError).toHaveBeenCalledTimes(2)
+    expect(logError.mock.calls[0]![0]).toContain('rename attempt 1 of 7: EBUSY')
+    expect(logError.mock.calls[1]![0]).toContain('rename attempt 2 of 7: EBUSY')
+  })
+
+  it('defers instead of failing when every rename retry stays locked, leaving the old Profile bootable', async () => {
+    const home = temporaryHome()
+    const profileDir = seededProfile(home)
+    const logError = vi.fn()
+    const slept: number[] = []
+    const createProfile = vi.fn()
+
+    const result = await freshProfileSwap(swapOptions(home, {
+      logError,
+      createProfile,
+      rename: () => { throw busyError() },
+      sleep: async (ms: number) => { slept.push(ms) },
+    }))
+
+    expect(result).toMatchObject({
+      profileName: 'desktop',
+      profileDir,
+      deferred: true,
+      reasonCode: 'EBUSY',
+      attempts: 7,
+      materialized: false,
+      receiptsCleared: 0,
+    })
+    expect(result.backupDir).toBeUndefined()
+    expect(slept).toEqual([100, 200, 400, 800, 1600, 3200])
+    expect(logError).toHaveBeenCalledTimes(6)
+    expect(createProfile).not.toHaveBeenCalled()
+    // Nothing was renamed or rebuilt: the same Profile is still on disk, whole.
+    expect(bundlesOf(profileDir)).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', THIRD_PARTY])
+    expect(readdirSync(join(home, 'profiles')).some(name => name.includes('.bak-'))).toBe(false)
+  })
+
+  it('fails immediately on a rename error that is not a transient lock', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    const sleep = vi.fn()
+    const rename = vi.fn(() => {
+      const error = new Error('EXDEV: cross-device link') as NodeJS.ErrnoException
+      error.code = 'EXDEV'
+      throw error
+    })
+
+    await expect(freshProfileSwap(swapOptions(home, { rename, sleep }))).rejects.toThrow('EXDEV')
+    expect(sleep).not.toHaveBeenCalled()
+  })
+})
+
+describe('deferred rebuild marker', () => {
+  it('round-trips, ignores malformed or path-escaping documents, and clears', async () => {
+    const userData = temporaryHome()
+    const statePath = freshProfilePendingStatePath(userData)
+
+    expect(statePath).toBe(join(userData, FRESH_PROFILE_PENDING_FILENAME))
+    expect(readFreshProfilePending(statePath)).toBeUndefined()
+
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.3+b77',
+      reason: 'EBUSY',
+    })
+    expect(readFreshProfilePending(statePath)).toEqual({
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.3+b77',
+      reason: 'EBUSY',
+    })
+
+    for (const body of [
+      '{broken',
+      '[]',
+      '{"version":2,"profileName":"desktop","appBuildVersion":"x","reason":"EBUSY"}',
+      '{"version":1,"profileName":"../escape","appBuildVersion":"x","reason":"EBUSY"}',
+      '{"version":1,"profileName":"desktop","appBuildVersion":"","reason":"EBUSY"}',
+      '{"version":1,"profileName":"desktop","appBuildVersion":"x"}',
+    ]) {
+      writeFileSync(statePath, body)
+      expect(readFreshProfilePending(statePath), body).toBeUndefined()
+    }
+
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: 'desktop',
+      appBuildVersion: '2.0.3+b77',
+      reason: 'EBUSY',
+    })
+    clearFreshProfilePending(statePath)
+    expect(readFreshProfilePending(statePath)).toBeUndefined()
+    // Clearing an absent marker is a no-op, not a throw.
+    clearFreshProfilePending(statePath)
+  })
+
+  it('lets the next boot read the marker, land the retry, and clear it', async () => {
+    const home = temporaryHome()
+    const userData = temporaryHome()
+    seededProfile(home)
+    seededSettings(home)
+    const statePath = freshProfilePendingStatePath(userData)
+
+    // First boot: the rename stays locked, so the swap defers and the boot
+    // records a marker instead of failing.
+    const deferred = await freshProfileSwap(swapOptions(home, {
+      rename: () => { throw busyError() },
+      sleep: async () => {},
+    }))
+    expect(deferred.deferred).toBe(true)
+    await writeFreshProfilePending(statePath, {
+      version: 1,
+      profileName: deferred.profileName,
+      appBuildVersion: '2.0.3+b77',
+      reason: deferred.reasonCode ?? 'EBUSY',
+    })
+
+    // Next boot: the marker is read first and the lock is gone, so the retry
+    // lands and the marker is cleared.
+    const pending = readFreshProfilePending(statePath)
+    expect(pending?.profileName).toBe('desktop')
+    const retried = await freshProfileSwap(swapOptions(home))
+    expect(retried.deferred).toBeUndefined()
+    expect(retried.materialized).toBe(true)
+    clearFreshProfilePending(statePath)
+    expect(readFreshProfilePending(statePath)).toBeUndefined()
+    expect(bundlesOf(join(home, 'profiles', 'desktop'))).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
   })
 })

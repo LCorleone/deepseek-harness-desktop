@@ -209,7 +209,13 @@ export interface DisclaimerEventDetail {
 /** Swap facts of one rebuild; the desktop call site adds the outcome. */
 export interface PluginResetSwapView {
   readonly profileName: string
-  readonly outcome: 'swapped' | 'failed'
+  /**
+   * `swapped` landed, `failed` broke before/after the set-aside, and
+   * `deferred` means Windows kept the Profile directory locked through every
+   * rename retry — the existing Profile keeps booting and the next startup
+   * retries the swap.
+   */
+  readonly outcome: 'swapped' | 'failed' | 'deferred'
   readonly materialized: boolean
   /** Market install receipts dropped by the ledger clear. */
   readonly receiptsCleared: number
@@ -222,7 +228,7 @@ export interface PluginResetSwapView {
 export interface PluginResetEventDetail {
   readonly trigger: 'version-change' | 'recovery-window'
   readonly profileName: string
-  readonly outcome: 'swapped' | 'failed'
+  readonly outcome: 'swapped' | 'failed' | 'deferred'
   readonly materialized: boolean
   readonly receiptsCleared: number
 }
