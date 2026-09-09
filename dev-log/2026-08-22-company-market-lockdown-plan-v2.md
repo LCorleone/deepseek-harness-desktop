@@ -283,6 +283,16 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **GitLab 真推送演练（2026-09-03）**：P7 仅剩外部依赖①落地。`pack-tarball --from-allowlist` 复打包（对拍口径说明：allowlist 的 pack-artifact 形态按设计不携带 inline integrity——`lib/allowlist.mjs` 强制 path 与 integrity 互斥，integrity 构建时从打包文件计算——故对拍基准=两次独立复打包字节级一致 + 独立 hashlib oracle 复算同值；体积较旧演练 24924 B→25851 B 系 `ef0f55c60c` 评审修复改源（+46/-12）所致，非漂移）。产物 25851 B / 7 files，`sha512-19pLLIG3LWcxgdNw3itdu/S7YMlyRsmHsD8UM9W0Sjb8dIKqQzpLE8NB2b+kUylTvFI11svdLDKi1jKav3bhaw==`，treeDigest 本 Linux 实测 `0c800aba…`（照旧不入库）。推送：浅 clone julu/dsh-desktop-config → 仅新增 `packages/dsh-free-search-0.4.181.tgz` 一个文件（commit `6665896`，`packages: stage hardened dsh-free-search 0.4.181 (drill, manifest untouched)`，`128df14..6665896` master）→ push 成功。验证：raw URL `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-free-search-0.4.181.tgz` 下载 HTTP 200 / 25851 B，与本地件 sha256 同（`510a8c4b…`）逐字节一致，sha512 与 pack 记录一致；**manifest 前后对拍逐字节一致**（sequence 10 / dsh-better-sidebar 0.15.2 npm 通道，sha256 `1d743452…` 未动）——fleet 未升级、绝不触碰已部署 manifest 的门禁语义全程守住。留存决策：tarball 留 `packages/`（无 manifest 引用=对客户端零影响；未来真发布时 measure-and-publish→fleet 门禁确认→publish-local 直接复用该文件，publish-local 的既有文件字节校验会因复打包确定性直接通过）。凭据卫生：临时 clone 用毕即删（token-bearing remote URL 一并消失）。
 
+## P12 · runtime 感知门（client-update-required）—— 立卡 2026-09-09
+
+**动机（用户抓出的真雷）**：目录钉新版=强制全量更新（boot 验证按 包名+版本 精确找条目，找不到→拒载 not-pinned-newer-pinned）。混编 fleet 过渡期：老客户端（旧 runtime）+ 目录钉了要新 runtime 的插件版 → 老插件每次 boot 被砖 + 更新装不上（peer 冲突 WAL 回滚）直到客户端升级。
+
+**设计**（详见 2026-09-09 会话）：boot 验证第 9 码 'client-update-required'——钉的新版 runtime 区间不满足本机 → 已装旧版**继续加载**（deferred-update），执法改用安装回执 treeDigest（信任语义：装机时验签+回执，窄于活清单，写进模块文档）；新版 revoked=true=安全击杀照拒不宽恕；beta/stable 双钉：stable 钉=已装版走正常路径。五触点：①boot 分类+回执执法 ②P10 通知改「升级客户端后可用」③市场横幅/详情置灰「需先升级客户端」（range 语法 vendor company-catalog 手写实现，保持零依赖）④cli-install-channel 最后防线拒装 ⑤boot_verify detail 加 deferredUpdates[] 遥测。
+
+**时序诚实**：P12 救下一次过渡；本次 0.1.2 过渡 b72 存量没有此代码，仍靠纪律=fleet 全升 #73+ 后才发新目录 seq。
+
+**规模**：S-M（2-3 天）。**排期**：P11 之后。**验收**：老 runtime 客户端+新目录：旧插件照常加载+deferred 遥测可见+通知文案正确+更新钮置灰；篡改树→回执摘要拒载；revoked→拒；新 runtime 客户端→正常更新流。
+
 ## P11 · 捆绑 Python 运行时 —— 立项 2026-09-08（用户拍板：跑 python 是同事常见需求）
 
 **动机**：fleet 同事多为电脑小白（零环境），Node 已捆绑（P3-1）但 python 未带——同事让 agent 跑 python 脚本/pandas 数据分析时会得到「未安装」。属能力边界非故障，立项补齐。
