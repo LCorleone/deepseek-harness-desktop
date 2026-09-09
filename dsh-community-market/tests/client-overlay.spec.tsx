@@ -443,7 +443,7 @@ describe('community market overlay', () => {
     await waitFor(() => { expect(view.instance.getSnapshot().open).toBe(false) })
   })
 
-  it('opens plugin details and forwards the repository link safely', async () => {
+  it('opens plugin details without exposing the source repository link', async () => {
     const request = vi.fn<typeof fetch>(async (input) => (
       String(input).includes('/state') ? response(stateWithSource) : response(catalogWithItem)
     ))
@@ -454,10 +454,12 @@ describe('community market overlay', () => {
     fireEvent.click(screen.getByText('Better Sidebar').closest('button')!)
 
     // The auto-begun install preview for a package-less item settles first;
-    // the detail dialog returns once that attempt lands.
+    // the detail dialog returns once that attempt lands. The repository
+    // button is intentionally absent: internal GitLab origins are not for
+    // end users, and the signed repository identity stays install-only.
     const details = await screen.findByRole('dialog', { name: 'Better Sidebar' })
-    fireEvent.click(within(details).getByRole('button', { name: 'repository' }))
-    expect(open).toHaveBeenCalledWith('https://github.com/example/better-sidebar', '_blank', 'noopener,noreferrer')
+    expect(within(details).queryByRole('button', { name: 'repository' })).toBeNull()
+    expect(open).not.toHaveBeenCalled()
 
     fireEvent.click(within(details).getByRole('button', { name: 'close' }))
     expect(screen.queryByRole('dialog', { name: 'Better Sidebar' })).toBeNull()

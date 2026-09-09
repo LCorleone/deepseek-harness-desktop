@@ -2168,13 +2168,6 @@ function ItemActionModal({
       onClick={onConfirm}
     >{pending ? (updating ? t('updating') : t('installing')) : (updating ? t('confirmUpdate') : t('confirmInstall'))}</Button>
   </> : <>
-    {value.item.repository !== undefined && (
-      <Button
-        variant="outline"
-        icon={<IconRightUpOutline16 size={12} />}
-        onClick={() => window.open(value.item.repository!.url, '_blank', 'noopener,noreferrer')}
-      >{t('repository')}</Button>
-    )}
     {installation === undefined
       && !inventoryLoading
       && inventoryError === undefined
