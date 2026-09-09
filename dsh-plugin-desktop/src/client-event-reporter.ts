@@ -167,11 +167,19 @@ export interface BootVerifyRejectedEntry {
   readonly code: string
 }
 
-/** `boot_verify` detail: one row per boot, only when something was refused. */
+/** One deferred `client-update-required` bundle of a `boot_verify` event (P15): the package name plus the runtime range its waiting update requires — the reader's cue that a desktop client upgrade, not a market visit, unlocks it. */
+export interface BootVerifyDeferredUpdateEntry {
+  readonly packageName: string
+  readonly requiredRuntime: string
+}
+
+/** `boot_verify` detail: one row per boot, only when something was refused or deferred onto a receipt (P15). */
 export interface BootVerifyEventDetail {
   readonly rejected: readonly BootVerifyRejectedEntry[]
   /** Bundles cleared to load on the same boot. */
   readonly loaded: number
+  /** Present only when at least one bundle deferred onto its install receipt (P15). */
+  readonly deferredUpdates?: readonly BootVerifyDeferredUpdateEntry[]
 }
 
 /** `plugin_install`: what happened to one market install attempt. */
@@ -483,6 +491,8 @@ export function betaCatalogRefreshEvent(outcome: BetaCatalogOutcomeView): Catalo
 export interface BootVerificationView {
   readonly allowed: readonly unknown[]
   readonly rejected: readonly { readonly packageName: string; readonly code: string }[]
+  /** Deferred `client-update-required` bundles (P15); optional like the decision's own field. */
+  readonly deferredUpdates?: readonly { readonly packageName: string; readonly requiredRuntime: string }[]
 }
 
 /**
@@ -512,16 +522,26 @@ function boundedSsoReason(value: string): string | undefined {
 
 /**
  * Project one boot decision into a `boot_verify` detail — one row per boot,
- * emitted ONLY when at least one bundle was refused (success stays silent to
- * keep the low-frequency table low-frequency).
+ * emitted ONLY when at least one bundle was refused or deferred onto its
+ * install receipt (success stays silent to keep the low-frequency table
+ * low-frequency; a deferred bundle still counts inside `loaded`, because it
+ * did load — the `deferredUpdates` slice carries the deferral facts).
  */
 export function bootVerifyEvent(
   verification: BootVerificationView | undefined,
 ): BootVerifyEventDetail | undefined {
-  if (verification === undefined || verification.rejected.length === 0) return undefined
+  if (verification === undefined) return undefined
+  const deferred = verification.deferredUpdates ?? []
+  if (verification.rejected.length === 0 && deferred.length === 0) return undefined
   return {
     rejected: verification.rejected.map(bundle => ({ packageName: bundle.packageName, code: bundle.code })),
     loaded: verification.allowed.length,
+    ...(deferred.length === 0 ? {} : {
+      deferredUpdates: deferred.map(update => ({
+        packageName: update.packageName,
+        requiredRuntime: update.requiredRuntime,
+      })),
+    }),
   }
 }
 

@@ -4,26 +4,36 @@
  * only `not-pinned-newer-pinned` with both versions reaches the prompt — a
  * revoked or tamper refusal (and the unclassified fallback) must never be
  * presented as "a newer version is waiting" — and the copy names one plugin
- * with its target version, or summarizes the count.
+ * with its target version, or summarizes the count. P15 adds the
+ * allowed-bundle update slice (`updateVersion`: the installed version still
+ * verifies, a newer runtime-compatible pin waits) and the separate
+ * `client-update-required` deferral notification.
  */
 
 import { describe, expect, it } from 'vitest'
-import type { DesktopBootVerification } from '../src/boot-verification.ts'
+import type { DesktopBootDeferredUpdate, DesktopBootVerification } from '../src/boot-verification.ts'
 import {
+  desktopBootClientUpdateNotification,
   desktopBootPluginUpdateNotification,
+  pendingDesktopBootClientUpdates,
   pendingDesktopBootPluginUpdates,
 } from '../src/boot-update-prompt.ts'
 
 const packageName = 'dsh-plugin-safe'
 
-function verification(rejected: readonly DesktopBootVerification['rejected'][number][]): DesktopBootVerification {
+function verification(
+  rejected: readonly DesktopBootVerification['rejected'][number][],
+  allowed: readonly DesktopBootVerification['allowed'][number][] = [],
+  deferredUpdates?: readonly DesktopBootDeferredUpdate[],
+): DesktopBootVerification {
   return {
     manifestTrusted: true,
     manifestSequence: 42,
     keyId: 'company-catalog-2026.01',
     manifestFailure: undefined,
-    allowed: [],
+    allowed,
     rejected,
+    ...(deferredUpdates === undefined ? {} : { deferredUpdates }),
   }
 }
 
@@ -98,9 +108,111 @@ describe('pendingDesktopBootPluginUpdates (P10)', () => {
     expect(pending).toEqual([])
   })
 
+  it('lifts allowed bundles carrying an update target (P15 compatibility window)', () => {
+    // The installed version still verifies while a newer runtime-compatible
+    // pin waits in the catalog — the same market action as class a, sourced
+    // from the allowed slice instead of a rejection.
+    const pending = pendingDesktopBootPluginUpdates(verification([], [
+      {
+        packageName,
+        evidence: 'manifest-only',
+        manifestSequence: 42,
+        keyId: 'company-catalog-2026.01',
+        updateVersion: '1.3.0',
+        installedVersion: '1.2.3',
+      },
+    ]))
+    expect(pending).toEqual([{ packageName, installedVersion: '1.2.3', pinnedVersion: '1.3.0' }])
+  })
+
+  it('stays silent for an allowed update target that is not newer (same defensive direction check)', () => {
+    const pending = pendingDesktopBootPluginUpdates(verification([], [
+      {
+        packageName,
+        evidence: 'manifest-only',
+        manifestSequence: 42,
+        keyId: 'company-catalog-2026.01',
+        updateVersion: '1.2.3',
+        installedVersion: '1.2.3',
+      },
+      // A malformed decision without the installed version never prompts.
+      {
+        packageName: 'broken-decision',
+        evidence: 'manifest-only',
+        manifestSequence: 42,
+        keyId: 'company-catalog-2026.01',
+        updateVersion: '2.0.0',
+      },
+    ]))
+    expect(pending).toEqual([])
+  })
+
   it('returns nothing for unlocked boots (no verification) or clean boots', () => {
     expect(pendingDesktopBootPluginUpdates(undefined)).toEqual([])
     expect(pendingDesktopBootPluginUpdates(verification([]))).toEqual([])
+  })
+})
+
+describe('pendingDesktopBootClientUpdates (P15, absorbing P12)', () => {
+  const deferred = [{
+    packageName,
+    installedVersion: '0.18.1',
+    availableVersion: '0.19.0',
+    requiredRuntime: '^0.1.3',
+  }]
+
+  it('lifts exactly the deferredUpdates slice of the decision', () => {
+    expect(pendingDesktopBootClientUpdates(verification([], [], deferred))).toEqual(deferred)
+    expect(pendingDesktopBootClientUpdates(verification([
+      // A class-a rejection and a deferral are different states: the
+      // rejection joins the plugin-update prompt, the deferral stays here.
+      classA(),
+    ], [], deferred))).toEqual(deferred)
+    expect(pendingDesktopBootClientUpdates(verification([]))).toEqual([])
+    expect(pendingDesktopBootClientUpdates(undefined)).toEqual([])
+  })
+
+  it('never turns a deferral into a market update offer', () => {
+    expect(pendingDesktopBootPluginUpdates(verification([], [], deferred))).toEqual([])
+  })
+})
+
+describe('desktopBootClientUpdateNotification (P15)', () => {
+  it('names the waiting version and the runtime it needs in both locales', () => {
+    const deferred = [{
+      packageName,
+      installedVersion: '0.18.1',
+      availableVersion: '0.19.0',
+      requiredRuntime: '^0.1.3',
+    }]
+    expect(desktopBootClientUpdateNotification(deferred, 'en')).toEqual({
+      title: 'Plugin updates need a newer client',
+      body: `A newer ${packageName} (0.19.0) is available after upgrading DSH Desktop (requires dsh runtime ^0.1.3).`,
+    })
+    expect(desktopBootClientUpdateNotification(deferred, 'zh')).toEqual({
+      title: '插件新版本需升级客户端',
+      body: `「${packageName}」的新版本 0.19.0 需要 dsh runtime ^0.1.3，升级 DSH Desktop 后可用。`,
+    })
+  })
+
+  it('summarizes several deferred updates by count', () => {
+    const deferred = [
+      { packageName, installedVersion: '0.18.1', availableVersion: '0.19.0', requiredRuntime: '^0.1.3' },
+      { packageName: 'other-plugin', installedVersion: '0.9.0', availableVersion: '1.0.0', requiredRuntime: '^0.1.3' },
+    ]
+    expect(desktopBootClientUpdateNotification(deferred, 'en')).toEqual({
+      title: 'Plugin updates need a newer client',
+      body: '2 plugins have newer versions available after upgrading DSH Desktop.',
+    })
+    expect(desktopBootClientUpdateNotification(deferred, 'zh')).toEqual({
+      title: '插件新版本需升级客户端',
+      body: '有 2 个插件的新版本需升级 DSH Desktop 后可用。',
+    })
+  })
+
+  it('stays silent without deferred updates', () => {
+    expect(desktopBootClientUpdateNotification([], 'en')).toBeUndefined()
+    expect(desktopBootClientUpdateNotification([], 'zh')).toBeUndefined()
   })
 })
 

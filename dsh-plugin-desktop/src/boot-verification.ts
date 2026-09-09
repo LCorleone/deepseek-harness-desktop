@@ -66,6 +66,50 @@
  *      records one. This degradation is a recorded policy decision, not an
  *      oversight — see the dev-log manifest-authority card.
  *
+ * 5. Runtime-aware update classification and the deferred window (P15
+ *    phase 1, absorbing P12). The manifest may pin several versions of one
+ *    package, each entry carrying its own `runtime.dshRuntimeVersion` range
+ *    (the catalog compatibility window). For every installed bundle the
+ *    candidate set is every entry of the same package name (a beta overlay
+ *    wholly replaces the stable entries of a name it carries — the same
+ *    per-name merge rule as the market catalog); an entry is a local
+ *    candidate when its range accepts the DSH runtime version this desktop
+ *    build pins ({@link DESKTOP_BOOT_DSH_RUNTIME_VERSION} — the same value
+ *    the market install gate compares against, judged with the identical
+ *    `satisfies` semantics). The installed version itself is still verified
+ *    exactly as before — runtime ranges never gate what loads, only what is
+ *    advertised:
+ *
+ *    - **Update available.** When the newest local candidate is newer than
+ *      the installed version, that candidate is the update target: an
+ *      allowed bundle carries `updateVersion` (the P10 prompt surface) and a
+ *      missing installed entry classifies `not-pinned-newer-pinned` against
+ *      it. The old single-pin `.find(name)` classification always picked the
+ *      first (lowest) same-name entry, so a mixed fleet was told to update
+ *      to versions its runtime cannot even install; the code and the prompt
+ *      semantics are unchanged, only the target is now chosen by
+ *      runtime-compatibility and maximum version.
+ *    - **Deferred window (`client-update-required`).** When the installed
+ *      version's entry has left the manifest and no same-name entry accepts
+ *      the local runtime (only other runtime lines remain), the machine
+ *      cannot update until the desktop client upgrades. Refusing the
+ *      installed bundle here would brick every mixed-fleet machine for
+ *      wanting nothing — so the bundle is NOT refused: it loads enforced by
+ *      the market install receipt's `treeDigest` (the receipt-anchored
+ *      comparison of step 4 — measured tree must equal `receipt.rootDigest`,
+ *      the exact same code path, never a second verifier). The trust
+ *      semantics are deliberately narrower than a live manifest entry: the
+ *      bytes were verified (signature, integrity, tree digest) by the
+ *      manifest that allowed the original install, and the receipt records
+ *      that decision; without a usable receipt the deferral fails closed
+ *      with the `client-update-required` rejection. The decision lists the
+ *      bundle in `deferredUpdates` (package name, waiting version, required
+ *      runtime) so telemetry and the P10 prompt can say "upgrade the client
+ *      to update this plugin". Two refusals still bite: a `revoked:true`
+ *      entry of the package is a security kill the deferral never forgives,
+ *      and a tampered installed tree fails the receipt comparison exactly
+ *      like step 4.
+ *
  * Scope guarantee (the compatibility red line): the caller only submits
  * third-party bundle names — the upstream Web template bundles,
  * `dsh-plugin-desktop`, and both Market provider packages are never
@@ -88,6 +132,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
+import { compare, satisfies } from 'semver'
 import {
   type CompanyManifestTrustRoot,
   type CompanyManifestVerificationCode,
@@ -118,6 +163,19 @@ import type { DesktopPolicy } from './desktop-policy.ts'
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u
 /** Read bound for one profile lockfile, mirroring the market install path. */
 const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024
+
+/**
+ * The DSH runtime version this desktop build pins (P15 phase 1) — the same
+ * value the market install gate compares plugin ranges against
+ * (`DSH_RUNTIME_VERSION` in `dsh-community-market/src/install/service.ts`).
+ * The two move together at every runtime upgrade by release discipline (see
+ * dev-log/2026-09-08-dshmarket-1.17.1-compat-012.md), and the install gate
+ * re-checks every install against its own copy, so a drift here can only
+ * mis-classify update prompts — never what loads. Injectable through
+ * {@link DesktopBootVerificationOptions.dshRuntimeVersion} so tests can
+ * simulate mixed-fleet machines on older runtimes.
+ */
+export const DESKTOP_BOOT_DSH_RUNTIME_VERSION = '0.1.2-rc.1'
 
 /** Upper bound of measured files per installed tree; mirrors the market tree-digest contract. */
 export const BOOT_TREE_MAX_FILES = 20_000
@@ -223,6 +281,14 @@ export interface DesktopBootVerificationOptions {
   readonly betaPackages?: readonly DesktopCompanyManifestPackage[]
   /** Sequence of the beta manifest the beta entries came from. */
   readonly betaSequence?: number
+  /**
+   * DSH runtime version the update classification evaluates ranges against
+   * (P15); defaults to {@link DESKTOP_BOOT_DSH_RUNTIME_VERSION}, the value
+   * pinned at build time and shared with the market install gate. The value
+   * never gates what loads — only update targets and the deferred
+   * `client-update-required` window.
+   */
+  readonly dshRuntimeVersion?: string
 }
 
 /** How much evidence allowed a bundle to load. */
@@ -246,16 +312,32 @@ export interface DesktopBootAllowedBundle {
   readonly manifestSequence: number
   /** keyId of the trust root that verified the manifest for this boot. */
   readonly keyId: string
+  /**
+   * Update target (P15): the newest manifest entry of this package whose
+   * `runtime.dshRuntimeVersion` accepts this build and whose version is
+   * newer than the installed one. Present only on allowed bundles — the
+   * same fact on a refused bundle is the `not-pinned-newer-pinned`
+   * classification — and never set for deferred (`client-update-required`)
+   * loads, whose waiting update needs a client upgrade instead (see
+   * {@link DesktopBootVerification.deferredUpdates}).
+   */
+  readonly updateVersion?: string
+  /** Installed version; always present when {@link updateVersion} is (the prompt's from→to pair). */
+  readonly installedVersion?: string
 }
 
 /**
  * Structured classification of one boot rejection (P10). The update prompt
  * consumes exactly `'not-pinned-newer-pinned'` (class a: the signed company
  * manifest pins a version other than the installed one, so a newer
- * publication is waiting); every other code stays log-only. The code is
- * pure metadata beside the unchanged reason strings — no rejection decision
- * reads it back, and branches without an explicit classification fall back
- * to `'other'` so a rejected entry always carries a code.
+ * publication is waiting); every other code stays log-only. `'client-update-required'` (P15, absorbing P12) is the deferred-window code:
+ * the installed version left the manifest's runtime compatibility window
+ * and only other runtime lines remain — the bundle defers onto its install
+ * receipt instead of refusing, and the code rides a rejection only when
+ * that deferral fails closed (no usable receipt). The code is pure metadata
+ * beside the unchanged reason strings — no rejection decision reads it
+ * back, and branches without an explicit classification fall back to
+ * `'other'` so a rejected entry always carries a code.
  */
 export type DesktopBootRejectionCode =
   | 'not-pinned-newer-pinned'
@@ -265,6 +347,7 @@ export type DesktopBootRejectionCode =
   | 'tree-mismatch'
   | 'unresolved'
   | 'no-lock-integrity'
+  | 'client-update-required'
   | 'other'
 
 /** One bundle refused for this boot, with the first failing check as the reason. */
@@ -277,6 +360,24 @@ export interface DesktopBootRejectedBundle {
   readonly installedVersion?: string
   /** Version the signed company manifest pins; class-a entries always carry it. */
   readonly pinnedVersion?: string
+}
+
+/**
+ * One deferred update of a `client-update-required` bundle (P15, absorbing
+ * P12): the installed version loaded on its install receipt because the
+ * manifest only pins versions for other DSH runtime lines. The waiting
+ * update becomes installable after the desktop client upgrades — that
+ * fact, not the bundle itself, is what the P10 prompt and the boot_verify
+ * telemetry surface.
+ */
+export interface DesktopBootDeferredUpdate {
+  readonly packageName: string
+  /** Version still installed and loaded on receipt evidence. */
+  readonly installedVersion: string
+  /** Newest manifest version of the package (the waiting update). */
+  readonly availableVersion: string
+  /** `runtime.dshRuntimeVersion` range of {@link availableVersion}'s entry. */
+  readonly requiredRuntime: string
 }
 
 /** Why the signed manifest itself was not trusted for this boot. */
@@ -301,6 +402,13 @@ export interface DesktopBootVerification {
   readonly allowed: readonly DesktopBootAllowedBundle[]
   /** Bundles refused for this boot, in submission order. */
   readonly rejected: readonly DesktopBootRejectedBundle[]
+  /**
+   * Deferred `client-update-required` bundles of this boot (P15): loaded on
+   * receipt evidence while their update waits on a desktop client upgrade.
+   * Present only when at least one bundle deferred — a healthy boot carries
+   * no key (the same optional-field discipline as the per-entry versions).
+   */
+  readonly deferredUpdates?: readonly DesktopBootDeferredUpdate[]
 }
 
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -1097,6 +1205,70 @@ export function collectDesktopBootBundles(
 }
 
 /**
+ * All signed entries the boot classification may consider for one package
+ * name (P15): when a verified beta overlay carries the name, its entries
+ * wholly replace the stable ones — the same per-name merge rule the market
+ * catalog applies — with revocation sticky by name, so a stale beta
+ * publication can never resurrect a package any stable entry revoked.
+ */
+function bootClassificationCandidates(
+  manifest: DesktopCompanyManifest,
+  betaPackages: readonly DesktopCompanyManifestPackage[] | undefined,
+  packageName: string,
+): readonly DesktopCompanyManifestPackage[] {
+  const beta = betaPackages?.filter(entry => entry.packageName === packageName) ?? []
+  if (beta.length === 0) {
+    return manifest.packages.filter(entry => entry.packageName === packageName)
+  }
+  const stableRevoked = manifest.packages.some(
+    entry => entry.packageName === packageName && entry.revoked === true,
+  )
+  return stableRevoked
+    ? beta.map(entry => entry.revoked ? entry : { ...entry, revoked: true })
+    : beta
+}
+
+/**
+ * Whether one entry's signed `runtime.dshRuntimeVersion` range accepts the
+ * given DSH runtime version — the exact comparator the market install gate
+ * uses (`satisfies` with `includePrerelease`); a range the comparator
+ * refuses is simply incompatible, never a boot failure.
+ */
+function entryAcceptsDshRuntime(entry: DesktopCompanyManifestPackage, runtimeVersion: string): boolean {
+  try {
+    return satisfies(runtimeVersion, entry.runtime.dshRuntimeVersion, { includePrerelease: true })
+  } catch {
+    return false
+  }
+}
+
+/** `candidate > installed` under node-semver; an unparseable pair is "not newer" — the comparison is advisory, never an enforcement point. */
+function semverNewer(candidate: string, installed: string): boolean {
+  try {
+    return compare(candidate, installed) > 0
+  } catch {
+    return false
+  }
+}
+
+/** The entry with the highest version under node-semver (first wins ties); entry versions are schema-validated semver. */
+function newestEntry(entries: readonly DesktopCompanyManifestPackage[]): DesktopCompanyManifestPackage | undefined {
+  let newest: DesktopCompanyManifestPackage | undefined
+  for (const entry of entries) {
+    if (newest === undefined) {
+      newest = entry
+      continue
+    }
+    try {
+      if (compare(entry.version, newest.version) > 0) newest = entry
+    } catch {
+      // A non-parsing version cannot outrank the current pick.
+    }
+  }
+  return newest
+}
+
+/**
  * Decide which third-party bundles may load for this boot. See the module
  * documentation for the per-bundle chain and the failure semantics; the
  * function never throws for business failures — an untrusted manifest
@@ -1182,8 +1354,14 @@ export function verifyDesktopBootBundles(
     : undefined
   const measure: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string =
     options.measureTreeRootDigest ?? computeDesktopBootTreeRootDigest
+  // The DSH runtime version the update classification evaluates against
+  // (P15): the build's pinned value unless a test simulates another
+  // mixed-fleet machine. It never gates what loads — only update targets
+  // and the deferred client-update window.
+  const dshRuntimeVersion = options.dshRuntimeVersion ?? DESKTOP_BOOT_DSH_RUNTIME_VERSION
   const allowed: DesktopBootAllowedBundle[] = []
   const rejected: DesktopBootRejectedBundle[] = []
+  const deferredUpdates: DesktopBootDeferredUpdate[] = []
   for (const bundle of uniqueBundles) {
     // Every rejected entry carries a classification: branches that pass no
     // code fall back to 'other', so a future rejection branch can never
@@ -1205,19 +1383,103 @@ export function verifyDesktopBootBundles(
       continue
     }
     const entry = findDesktopCompanyManifestPackageWithBeta(manifest, betaPackages, bundle.packageName, bundle.version)
+    // Runtime-aware update classification (P15): the candidates are every
+    // same-name entry (beta wholly replacing stable for a carried name),
+    // narrowed to the ones this build's runtime may install, and the update
+    // target is the newest of those. The installed version's own checks
+    // below are untouched — a runtime range never decides what loads.
+    const candidates = bootClassificationCandidates(manifest, betaPackages, bundle.packageName)
+    const runtimeCandidates = candidates.filter(candidate => entryAcceptsDshRuntime(candidate, dshRuntimeVersion))
+    const updateTarget = newestEntry(runtimeCandidates)
+    const updateVersion = updateTarget !== undefined && semverNewer(updateTarget.version, bundle.version)
+      ? updateTarget.version
+      : undefined
     if (entry === undefined) {
-      const pinned = betaPackages?.find(candidate => candidate.packageName === bundle.packageName)
-        ?? manifest.packages.find(candidate => candidate.packageName === bundle.packageName)
-      // Class a (update available): the manifest pins this package at another
-      // version — for a market-managed install always a newer publication,
-      // because install authority only ever allows the pinned version. The
-      // beta lookup runs first, so a tester's stale beta install classifies
-      // against the beta pin when the overlay carries one.
-      reject(pinned === undefined
-        ? `${bundle.packageName}@${bundle.version} is not in the signed company manifest`
-        : `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`,
-      pinned === undefined ? 'not-in-manifest' : 'not-pinned-newer-pinned',
-      pinned === undefined ? undefined : { installedVersion: bundle.version, pinnedVersion: pinned.version })
+      if (candidates.length === 0) {
+        reject(`${bundle.packageName}@${bundle.version} is not in the signed company manifest`, 'not-in-manifest')
+        continue
+      }
+      const revokedCandidate = candidates.find(candidate => candidate.revoked)
+      const pinned = updateTarget
+      if (pinned !== undefined) {
+        // Class a (update available): the manifest pins this package at
+        // another version this machine's runtime can install — for a
+        // market-managed install always a newer publication, because
+        // install authority only ever allows the pinned version. P15 keeps
+        // the class and its prompt semantics; the target is now the newest
+        // runtime-compatible pin instead of the first same-name entry.
+        reject(
+          `the signed company manifest pins ${bundle.packageName}@${pinned.version}, but ${bundle.version} is installed`,
+          'not-pinned-newer-pinned',
+          { installedVersion: bundle.version, pinnedVersion: pinned.version },
+        )
+        continue
+      }
+      // Deferred window (P15, absorbing P12): the installed version left
+      // the manifest and every remaining same-name pin needs a different
+      // DSH runtime line, so this machine cannot update until the desktop
+      // client upgrades. Refusing here would brick mixed-fleet machines for
+      // wanting nothing, so the bundle defers onto its install receipt —
+      // the same receipt-anchored comparison of step 4, never a second
+      // verifier. Two refusals still bite first: a revoked pin is a
+      // security kill the deferral never forgives, and a missing lockfile
+      // pin keeps the generic no-lock-integrity refusal.
+      if (revokedCandidate !== undefined) {
+        reject(
+          `${bundle.packageName}@${revokedCandidate.version} is revoked in the signed company manifest, and the runtime deferral never forgives a revocation (installed ${bundle.packageName}@${bundle.version})`,
+          'revoked',
+        )
+        continue
+      }
+      if (bundle.lockIntegrity === undefined) {
+        reject(bundle.lockProblem
+          ?? `${bundle.packageName}@${bundle.version} has no exact pinned record in the profile lockfile`, 'no-lock-integrity', { installedVersion: bundle.version })
+        continue
+      }
+      // The waiting update: the newest remaining pin (all on other runtime
+      // lines). Candidates are non-empty here — the empty case exited as
+      // not-in-manifest above — so the pick is always defined.
+      const waiting = newestEntry(candidates)
+      if (waiting === undefined) {
+        reject(`${bundle.packageName}@${bundle.version} is not in the signed company manifest`, 'not-in-manifest')
+        continue
+      }
+      const receipt = usableReceipt(receipts, bundle.packageName, bundle.version)
+      if (receipt === undefined) {
+        // No recorded measurement anchors the tree, so the narrower-than-
+        // manifest trust of the deferral fails closed: the plugin stays
+        // refused until the client upgrade (or a reinstall that records a
+        // receipt) resolves it.
+        reject(
+          `the signed company manifest no longer pins ${bundle.packageName}@${bundle.version} for this desktop runtime (newest pin ${bundle.packageName}@${waiting.version} requires dsh runtime ${waiting.runtime.dshRuntimeVersion}, this build pins ${dshRuntimeVersion}), and no install receipt exists to load the installed version — upgrade the desktop client`,
+          'client-update-required',
+          { installedVersion: bundle.version, pinnedVersion: waiting.version },
+        )
+        continue
+      }
+      let deferredMeasured: string
+      try {
+        deferredMeasured = measure(bundle.packageDir, 'receipt')
+      } catch (cause) {
+        reject(`the installed tree of ${bundle.packageName} could not be measured: ${messageOf(cause)}`)
+        continue
+      }
+      if (deferredMeasured !== receipt.rootDigest) {
+        reject(`the installed files of ${bundle.packageName}@${bundle.version} differ from the tree recorded in its install receipt`, 'tree-mismatch')
+        continue
+      }
+      allowed.push({
+        packageName: bundle.packageName,
+        evidence: 'receipt',
+        manifestSequence: manifest.sequence,
+        keyId,
+      })
+      deferredUpdates.push({
+        packageName: bundle.packageName,
+        installedVersion: bundle.version,
+        availableVersion: waiting.version,
+        requiredRuntime: waiting.runtime.dshRuntimeVersion,
+      })
       continue
     }
     if (entry.revoked) {
@@ -1257,6 +1519,7 @@ export function verifyDesktopBootBundles(
         evidence: 'signed-tree',
         manifestSequence: manifest.sequence,
         keyId,
+        ...(updateVersion === undefined ? {} : { updateVersion, installedVersion: bundle.version }),
       })
       continue
     }
@@ -1269,6 +1532,7 @@ export function verifyDesktopBootBundles(
         evidence: 'manifest-only',
         manifestSequence: manifest.sequence,
         keyId,
+        ...(updateVersion === undefined ? {} : { updateVersion, installedVersion: bundle.version }),
       })
       continue
     }
@@ -1288,6 +1552,7 @@ export function verifyDesktopBootBundles(
       evidence: 'receipt',
       manifestSequence: manifest.sequence,
       keyId,
+      ...(updateVersion === undefined ? {} : { updateVersion, installedVersion: bundle.version }),
     })
   }
   return {
@@ -1297,5 +1562,6 @@ export function verifyDesktopBootBundles(
     manifestFailure: undefined,
     allowed,
     rejected,
+    ...(deferredUpdates.length === 0 ? {} : { deferredUpdates }),
   }
 }

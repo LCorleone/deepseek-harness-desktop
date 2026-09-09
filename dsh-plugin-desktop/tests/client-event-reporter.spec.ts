@@ -435,6 +435,38 @@ describe('boot verify projection', () => {
       loaded: 3,
     })
   })
+
+  it('emits for a deferred-only boot with the deferredUpdates slice and the usual loaded count (P15)', () => {
+    // A `client-update-required` bundle loaded on receipt evidence: it
+    // counts inside `loaded` like any allowed bundle, and the deferral
+    // facts ride their own field so a fleet query can tell "refused" from
+    // "waiting on a client upgrade".
+    expect(bootVerifyEvent({
+      allowed: [{}, {}],
+      rejected: [],
+      deferredUpdates: [{ packageName: 'corp-plugin', requiredRuntime: '^0.1.3' }],
+    })).toEqual({
+      rejected: [],
+      loaded: 2,
+      deferredUpdates: [{ packageName: 'corp-plugin', requiredRuntime: '^0.1.3' }],
+    })
+  })
+
+  it('carries both refusals and deferrals of one boot and keeps healthy boots silent', () => {
+    expect(bootVerifyEvent({
+      allowed: [{}],
+      rejected: [{ packageName: 'bad-plugin', code: 'tree-mismatch' }],
+      deferredUpdates: [{ packageName: 'corp-plugin', requiredRuntime: '^0.1.3' }],
+    })).toEqual({
+      rejected: [{ packageName: 'bad-plugin', code: 'tree-mismatch' }],
+      loaded: 1,
+      deferredUpdates: [{ packageName: 'corp-plugin', requiredRuntime: '^0.1.3' }],
+    })
+    // An empty deferred slice never adds the key (healthy boots stay silent
+    // exactly as before — the field is optional on the wire).
+    expect(bootVerifyEvent({ allowed: [{}], rejected: [{ packageName: 'x', code: 'other' }], deferredUpdates: [] }))
+      .toEqual({ rejected: [{ packageName: 'x', code: 'other' }], loaded: 1 })
+  })
 })
 
 describe('disclaimer projection', () => {

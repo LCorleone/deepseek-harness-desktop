@@ -122,7 +122,9 @@ import {
 } from './boot-verification.ts'
 import type { DesktopBootVerification } from './boot-verification.ts'
 import {
+  desktopBootClientUpdateNotification,
   desktopBootPluginUpdateNotification,
+  pendingDesktopBootClientUpdates,
   pendingDesktopBootPluginUpdates,
 } from './boot-update-prompt.ts'
 import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
@@ -398,6 +400,31 @@ function notifyPendingBootPluginUpdates(
     runtime.updates.notify(notification)
   } catch (cause) {
     logger.error(`${BIN_NAME}: failed to show pending plugin update notification: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+}
+
+/**
+ * Surface the deferred `client-update-required` bundles (P15, absorbing
+ * P12): these loaded on install-receipt evidence because every remaining
+ * catalog pin needs a newer DSH runtime than this build pins. The
+ * notification says "upgrade the desktop client" — the Plugin Market
+ * cannot resolve them — and runs beside the P10 prompt from the same
+ * post-renderer-boot notification block.
+ */
+function notifyDeferredBootClientUpdates(
+  runtime: ElectronDesktopRuntime,
+  logger: DesktopLogger,
+  bootVerification: DesktopBootVerification | undefined,
+): void {
+  const notification = desktopBootClientUpdateNotification(
+    pendingDesktopBootClientUpdates(bootVerification),
+    runtime.locale,
+  )
+  if (notification === undefined) return
+  try {
+    runtime.updates.notify(notification)
+  } catch (cause) {
+    logger.error(`${BIN_NAME}: failed to show deferred client update notification: ${cause instanceof Error ? cause.message : String(cause)}`)
   }
 }
 
@@ -1505,6 +1532,15 @@ async function start(): Promise<void> {
         `${BIN_NAME}: boot verification rejected ${rejected.packageName}${version} (code=${rejected.code})`,
       )
     }
+    // Deferred-window visibility (P15): a `client-update-required` bundle
+    // loaded on receipt evidence while its update waits on a desktop client
+    // upgrade — one bounded line per deferred bundle, same masking posture
+    // as the refusal lines (package, versions, runtime; no paths).
+    for (const deferred of prepared.bootVerification?.deferredUpdates ?? []) {
+      electronLogger.error(
+        `${BIN_NAME}: boot verification deferred ${deferred.packageName}@${deferred.installedVersion} (waiting ${deferred.availableVersion}, requires dsh runtime ${deferred.requiredRuntime}; upgrade the desktop client)`,
+      )
+    }
     // Client event telemetry (2026-09-07): the stable catalog's refresh
     // outcome — every locked boot resolves it, stable-only machines included
     // (that is this hook: the beta channel's event rode the boot overlay
@@ -2179,6 +2215,7 @@ async function start(): Promise<void> {
     notifySkippedOptionalEntries(runtime, electronLogger, prepared.skippedOptionalEntries)
     notifyWindowsVolumeConcerns(runtime, electronLogger, windowsVolumeConcerns)
     notifyPendingBootPluginUpdates(runtime, electronLogger, prepared.bootVerification)
+    notifyDeferredBootClientUpdates(runtime, electronLogger, prepared.bootVerification)
     if (profileStartup.rolledBackFrom !== undefined) {
       notifyProfileRecovery(
         runtime,

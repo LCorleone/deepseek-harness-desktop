@@ -13,6 +13,7 @@ import {
   verifyCompanyManifest,
 } from 'dsh-community-market'
 import type { DesktopCompanyManifestPackage } from '../src/desktop-market.ts'
+import { pendingDesktopBootClientUpdates, pendingDesktopBootPluginUpdates } from '../src/boot-update-prompt.ts'
 import { desktopMarketTarballStagingPath } from '../src/pnpm.js'
 import {
   BOOT_TREE_MAX_PATH_LENGTH,
@@ -20,6 +21,7 @@ import {
   collectDesktopBootBundles,
   companyManifestAssetPath,
   computeDesktopBootTreeRootDigest,
+  DESKTOP_BOOT_DSH_RUNTIME_VERSION,
   desktopBootBundleNames,
   desktopBootControlledTarballPinProblem,
   desktopBootLockIntegrity,
@@ -165,6 +167,7 @@ const verify = (
     measureTreeRootDigest?: (packageDir: string, purpose: DesktopBootTreeMeasurePurpose) => string
     betaPackages?: readonly DesktopCompanyManifestPackage[]
     betaSequence?: number
+    dshRuntimeVersion?: string
   } = {},
 ) => verifyDesktopBootBundles(manifestBytes, bundles, { trustRoots, ...options })
 
@@ -508,6 +511,7 @@ describe('desktop boot bundle verification', () => {
       'tree-mismatch',
       'unresolved',
       'no-lock-integrity',
+      'client-update-required',
       'other',
     ] as const satisfies readonly DesktopBootRejectionCode[]
     expect(vocabulary).toContain('other')
@@ -541,6 +545,292 @@ describe('desktop boot bundle verification', () => {
     // Both fallback producers are present: the manifest-level rejection and
     // the unclassified measurement failure.
     expect(seen.has('other')).toBe(true)
+  })
+})
+
+describe('runtime-aware update classification (P15 phase 1)', () => {
+  // The catalog compatibility window: same package pinned at several
+  // versions, each entry carrying its own dshRuntimeVersion range. The
+  // acceptance matrix from the P15 card, one machine runtime per row.
+  const oldRuntime = '0.1.1'
+  const newRuntime = '0.1.2'
+  const oldLine = '^0.1.1'
+  const newLine = '^0.1.2'
+  const nextLine = '^0.1.3'
+  const sidebar = 'dsh-better-sidebar'
+
+  const windowEntry = (version: string, range: string, overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+    packageEntry({ packageName: sidebar, version, runtime: { dshRuntimeVersion: range }, ...overrides })
+
+  const windowBundle = (version: string, overrides: Partial<DesktopBootBundle> = {}): DesktopBootBundle =>
+    bundleInput({ packageName: sidebar, version, ...overrides })
+
+  it('row 1: an old-runtime machine loads its exact pin from the window with no update offer', () => {
+    const result = verify(
+      signedManifestText([windowEntry('0.15.2', oldLine), windowEntry('0.18.1', newLine)]),
+      [windowBundle('0.15.2')],
+      { dshRuntimeVersion: oldRuntime },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    // Loaded with the plain allow shape — no update target for a machine
+    // whose runtime the newer line does not accept.
+    expect(result.allowed).toEqual([{ packageName: sidebar, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([])
+    expect(pendingDesktopBootClientUpdates(result)).toEqual([])
+  })
+
+  it('row 2: a new-runtime machine loads the same install and is offered the newest compatible pin', () => {
+    const result = verify(
+      signedManifestText([
+        windowEntry('0.15.2', oldLine),
+        // A mid-window pin for the same line: the target must be the newest
+        // compatible entry, not the first same-name one.
+        windowEntry('0.16.0', newLine),
+        windowEntry('0.18.1', newLine),
+      ]),
+      [windowBundle('0.15.2')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    expect(result.allowed).toEqual([{
+      packageName: sidebar,
+      evidence: 'manifest-only',
+      manifestSequence,
+      keyId,
+      updateVersion: '0.18.1',
+      installedVersion: '0.15.2',
+    }])
+    // The P10 prompt consumes the allowed-bundle update slice exactly like
+    // a class-a rejection: the user action is the same (open the market).
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([
+      { packageName: sidebar, installedVersion: '0.15.2', pinnedVersion: '0.18.1' },
+    ])
+    expect(pendingDesktopBootClientUpdates(result)).toEqual([])
+  })
+
+  it('row 3: the newest pin already installed stays quiet', () => {
+    const result = verify(
+      signedManifestText([windowEntry('0.15.2', oldLine), windowEntry('0.18.1', newLine)]),
+      [windowBundle('0.18.1')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName: sidebar, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([])
+  })
+
+  it('row 4: a retired install with only other-runtime pins left defers onto its receipt (client-update-required)', () => {
+    const bundle = windowBundle('0.18.1')
+    const measure = vi.fn(computeDesktopBootTreeRootDigest)
+    const result = verify(
+      signedManifestText([windowEntry('0.19.0', nextLine)]),
+      [bundle],
+      { dshRuntimeVersion: newRuntime, receipts: [receiptFor(bundle)], measureTreeRootDigest: measure },
+    )
+    // Not refused: the bundle loads on receipt evidence — the exact
+    // receipt-anchored comparison of step 4, proven here by the purpose the
+    // measurement was requested with.
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName: sidebar, evidence: 'receipt', manifestSequence, keyId }])
+    expect(measure).toHaveBeenCalledWith(bundle.packageDir, 'receipt')
+    // The deferral facts ride their own slice: package, waiting version,
+    // required runtime.
+    expect(result.deferredUpdates).toEqual([{
+      packageName: sidebar,
+      installedVersion: '0.18.1',
+      availableVersion: '0.19.0',
+      requiredRuntime: nextLine,
+    }])
+    // The deferral is never an update offer for this machine — its own
+    // notification carries the client-upgrade copy instead.
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([])
+    expect(pendingDesktopBootClientUpdates(result)).toEqual([{
+      packageName: sidebar,
+      installedVersion: '0.18.1',
+      availableVersion: '0.19.0',
+      requiredRuntime: nextLine,
+    }])
+  })
+
+  it('row 4 (the P12 rescue, core): an old machine never bricks when the catalog moves to a newer runtime line', () => {
+    // The pre-P15 behavior for this exact fleet state: class-a rejection,
+    // plugin bricked until the client upgrade AND a manual reinstall. The
+    // runtime filter is what separates the deferred branch from class a —
+    // removing it turns this decision back into the brick (red).
+    const bundle = windowBundle('0.15.2')
+    const result = verify(
+      signedManifestText([windowEntry('0.18.1', newLine)]),
+      [bundle],
+      { dshRuntimeVersion: oldRuntime, receipts: [receiptFor(bundle)] },
+    )
+    expect(result.rejected).toEqual([])
+    expect(result.allowed).toEqual([{ packageName: sidebar, evidence: 'receipt', manifestSequence, keyId }])
+    expect(result.deferredUpdates).toEqual([{
+      packageName: sidebar,
+      installedVersion: '0.15.2',
+      availableVersion: '0.18.1',
+      requiredRuntime: newLine,
+    }])
+  })
+
+  it('a deferred-eligible install without a usable receipt fails closed as client-update-required', () => {
+    const result = verify(
+      signedManifestText([windowEntry('0.19.0', nextLine)]),
+      [windowBundle('0.18.1')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    expect(result.rejected).toEqual([{
+      packageName: sidebar,
+      reason: expect.stringContaining('no install receipt exists to load the installed version — upgrade the desktop client') as unknown as string,
+      code: 'client-update-required',
+      installedVersion: '0.18.1',
+      pinnedVersion: '0.19.0',
+    }])
+    expect(result.rejected[0]?.reason).toContain('requires dsh runtime ^0.1.3')
+    // The client-update-required rejection is log-only, never an update offer.
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([])
+    expect(pendingDesktopBootClientUpdates(result)).toEqual([])
+  })
+
+  it('a tampered tree is refused by the deferred receipt comparison (P12: 回执摘要拒载)', () => {
+    const bundle = windowBundle('0.18.1')
+    const forged = receiptFor(bundle, { rootDigest: 'ab'.repeat(32) })
+    const result = verify(
+      signedManifestText([windowEntry('0.19.0', nextLine)]),
+      [bundle],
+      { dshRuntimeVersion: newRuntime, receipts: [forged] },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    expect(result.rejected).toEqual([{
+      packageName: sidebar,
+      reason: `the installed files of ${sidebar}@0.18.1 differ from the tree recorded in its install receipt`,
+      code: 'tree-mismatch',
+    }])
+  })
+
+  it('a revoked same-name pin kills the deferral — security is never forgiven (matrix: revoked 照拒)', () => {
+    const bundle = windowBundle('0.18.1')
+    const result = verify(
+      signedManifestText([windowEntry('0.19.0', nextLine, { revoked: true })]),
+      [bundle],
+      { dshRuntimeVersion: newRuntime, receipts: [receiptFor(bundle)] },
+    )
+    expect(result.allowed).toEqual([])
+    expect(result.deferredUpdates).toBeUndefined()
+    expect(result.rejected[0]?.code).toBe('revoked')
+    expect(result.rejected[0]?.reason).toContain('revoked in the signed company manifest')
+  })
+
+  it('class-a targets the newest runtime-compatible pin once the installed version is retired (目标选对)', () => {
+    // Installed 0.15.2 is gone from the manifest; 0.20.0 is the newest
+    // same-name pin but needs ^0.1.3, so a 0.1.2 machine must be pointed at
+    // 0.18.1 — not at 0.20.0, and not at the first (lowest) entry either.
+    const result = verify(
+      signedManifestText([windowEntry('0.18.1', newLine), windowEntry('0.20.0', nextLine)]),
+      [windowBundle('0.15.2')],
+      { dshRuntimeVersion: newRuntime },
+    )
+    expect(result.rejected).toEqual([{
+      packageName: sidebar,
+      reason: `the signed company manifest pins ${sidebar}@0.18.1, but 0.15.2 is installed`,
+      code: 'not-pinned-newer-pinned',
+      installedVersion: '0.15.2',
+      pinnedVersion: '0.18.1',
+    }])
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([
+      { packageName: sidebar, installedVersion: '0.15.2', pinnedVersion: '0.18.1' },
+    ])
+  })
+
+  it('the classification runtime defaults to the build-pinned DSH runtime version', () => {
+    // No injected machine: the default must be DESKTOP_BOOT_DSH_RUNTIME_VERSION
+    // ('0.1.2-rc.1' at the time of writing) — the same value the market
+    // install gate compares against. The equality pin keeps a runtime bump
+    // from silently shifting these fixtures; update it with the bump.
+    expect(DESKTOP_BOOT_DSH_RUNTIME_VERSION).toBe('0.1.2-rc.1')
+    // ^0.1.2-rc.1 accepts it only with the install gate's includePrerelease
+    // semantics; ^0.1.1 accepts it plainly.
+    const result = verify(
+      signedManifestText([windowEntry('0.15.2', oldLine), windowEntry('0.18.1', '^0.1.2-rc.1')]),
+      [windowBundle('0.15.2')],
+    )
+    expect(result.allowed[0]?.updateVersion).toBe('0.18.1')
+    expect(result.deferredUpdates).toBeUndefined()
+    // And a pin requiring a runtime newer than the build's stays deferred
+    // territory even at the default runtime: the newest pin is ^0.1.3, the
+    // older line still pins the installed version, so this simply loads.
+    const retired = verify(
+      signedManifestText([windowEntry('0.15.2', oldLine), windowEntry('0.19.0', nextLine)]),
+      [windowBundle('0.15.2')],
+    )
+    expect(retired.rejected).toEqual([])
+    expect(retired.allowed[0]?.updateVersion).toBeUndefined()
+    expect(retired.deferredUpdates).toBeUndefined()
+  })
+
+  it('row 7 (regression): single-pin production manifests decide exactly as before', () => {
+    // Today's catalog form: one entry per package, ranges the build's
+    // runtime satisfies ('*' and the production '^0.1.1-rc.2' spelling).
+    const wildcard = verify(signedManifestText([packageEntry()]), [bundleInput()], { dshRuntimeVersion: oldRuntime })
+    expect(wildcard.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+    expect(wildcard.deferredUpdates).toBeUndefined()
+
+    const productionRange = verify(
+      signedManifestText([packageEntry({ runtime: { dshRuntimeVersion: '^0.1.1-rc.2' } })]),
+      [bundleInput()],
+    )
+    expect(productionRange.rejected).toEqual([])
+    expect(productionRange.allowed[0]?.updateVersion).toBeUndefined()
+
+    // The hard cutover keeps its class-a classification and prompt target.
+    const rePinned = verify(
+      signedManifestText([packageEntry({ version: '2.0.0', runtime: { dshRuntimeVersion: '^0.1.1-rc.2' } })]),
+      [bundleInput()],
+    )
+    expect(rePinned.allowed).toEqual([])
+    expect(rePinned.rejected[0]).toMatchObject({
+      code: 'not-pinned-newer-pinned',
+      installedVersion: version,
+      pinnedVersion: '2.0.0',
+    })
+    expect(pendingDesktopBootPluginUpdates(rePinned)).toEqual([
+      { packageName, installedVersion: version, pinnedVersion: '2.0.0' },
+    ])
+  })
+
+  it('collects classification candidates beta-first by package name (the overlay replaces the name)', () => {
+    // The overlay carries the name with a compatible newer pin: the update
+    // target is the beta pin, even though stable pins the same name too.
+    const betaTarget = verify(
+      signedManifestText([windowEntry('0.15.2', oldLine)]),
+      [windowBundle('0.15.2')],
+      {
+        dshRuntimeVersion: oldRuntime,
+        betaPackages: [windowEntry('0.18.1', oldLine) as unknown as DesktopCompanyManifestPackage],
+        betaSequence: manifestSequence,
+      },
+    )
+    expect(betaTarget.rejected).toEqual([])
+    expect(betaTarget.allowed[0]?.updateVersion).toBe('0.18.1')
+
+    // The overlay wholly replaces the stable entries of a carried name, so
+    // a stable-only newer pin never becomes the target for a tester.
+    const stableShadowed = verify(
+      signedManifestText([windowEntry('0.16.0', oldLine)]),
+      [windowBundle('0.15.2')],
+      {
+        dshRuntimeVersion: oldRuntime,
+        betaPackages: [windowEntry('0.15.2', oldLine) as unknown as DesktopCompanyManifestPackage],
+        betaSequence: manifestSequence,
+      },
+    )
+    expect(stableShadowed.rejected).toEqual([])
+    expect(stableShadowed.allowed[0]?.updateVersion).toBeUndefined()
   })
 })
 
