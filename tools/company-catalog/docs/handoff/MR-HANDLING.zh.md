@@ -82,11 +82,23 @@ beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state
 转正        RELEASE §B（群预告 → CI stable → publish-local --channel stable）
 ```
 
+**多版本钉扎三行语义（P15，转正时照此判断）**：
+
+- **promote＝加条目保留旧钉**：转正只加新钉版，旧钉版留在 stable 清单，老客
+  户端照常命中旧条目，发布即断老客户端的时代结束。
+- **retire＝显式下窗（＋群通知）**：旧钉版要下窗必须显式——先
+  `revoke <名>@<版本>` 并推送，再 `retire <名>@<版本>`（命令见 RELEASE §D2）；
+  静默删旧版条目会被 publish-local 版本下窗守卫拦红。
+- **保留策略**：上一条 runtime 线的最新版默认保留直至显式 retire；不确定就
+  留着，manifest 体积微增可忽略。
+
 ## 5. 纪律红线（每次过一遍）
 
 ```
 · token 不落盘不进 commit；用完即弃
 · 同版本不可变：内容变=升版本（verify/accept/publish 三处闸门一致）
+· 多版本钉扎：promote 加条目保留旧钉；旧钉下窗走显式 revoke→retire
+  （先群通知）；静默删旧版条目会被 publish-local 拦红（RELEASE §D2）
 · state/last-sequence.json 每次发布后手动推进+commit
 · 浸泡期 stable 禁令：P1 守卫会拦，被拦=先转正浸泡包或加 --allow-package-removal
   （后者=真下架，需 July 明确点头）

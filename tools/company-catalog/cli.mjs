@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 import {
   applyTreeDigests,
   applyRevocation,
+  applyRetirement,
   entryKey,
   loadAllowlist,
   loadTreeDigestFile,
@@ -110,6 +111,17 @@ Commands:
                                (P9): the matched entry is forced revoked:true
                                there too — the beta superset carries soak entries
                                the stable manifest never pinned.
+  retire <name>@<version>      Retire one version window entry (P15): remove the
+                               revoked name@version from the allowlist and
+                               re-sign both manifests without it, so the pin
+                               leaves the catalog window. The entry must already
+                               be revoked and that revocation published — the
+                               signed revoked:true record IS the retire record
+                               the publisher's removal guard trusts (a window
+                               entry never leaves silently; publish-local
+                               refuses an unrevoked version drop). Removing an
+                               old pin bricks clients still pinned to it, so
+                               retiring follows a group announcement.
   verify [path]                Verify a manifest file end to end
                                (default: out/catalog-manifest.json).
   verify-handoff <dir>         Owner-side mechanical verification of a staged
@@ -133,10 +145,12 @@ Commands:
                                verify-handoff here first), then re-fingerprints
                                the submitted tgz against the verdict receipt
                                (verdict.json must agree with verdict.md),
-                               revalidates the entry, replaces the package's
-                               previous active version (one active version per
-                               plugin; revoked entries stay), and commits
-                               allowlist.json alone as
+                               revalidates the entry, adds the entry as a
+                               multi-version pin (P15: the package's previous
+                               active versions stay — promote adds a pin and
+                               keeps the old ones; removing an old pin is the
+                               explicit retire flow, never an accept side
+                               effect), and commits allowlist.json alone as
                                'catalog: accept <name>@<version> (staging handoff)'.
                                Only PASS verdicts; fail-closed without git or
                                with an allowlist carrying uncommitted changes;
@@ -702,6 +716,94 @@ async function reissueBetaWithRevocation(flags, { revokedKeys, stablePackages })
   console.log(`beta:     re-signed ${betaOutPath} at sequence ${String(result.manifest.sequence)} — ${revokedKeys.join(', ')} revoked:true (${String(result.manifest.packages.length)} packages, ${String(result.manifest.testers?.length ?? 0)} testers)`)
 }
 
+/**
+ * `retire <name>@<version>` (P15 Phase 0): remove one REVOKED window entry
+ * from the allowlist and re-sign both manifests without it, so the catalog
+ * window shrinks without yanking the package (the other versions stay).
+ * Revocation first is mandatory and must already be deployed — the signed
+ * revoked:true record is the retire record the publisher's removal guard
+ * trusts, so the window never loses an unrevoked pin silently: publish-local
+ * refuses that as a version drop. Prepare-then-commit like promote: both
+ * re-signed artifacts verify in memory before the allowlist, the files, or
+ * the ratchet move; a channel whose file does not exist (or no longer
+ * carries the entry) is skipped without consuming a sequence.
+ */
+async function commandRetire(positionals, flags) {
+  if (positionals.length !== 1) throw new Error('retire takes exactly one argument: <name>@<version>')
+  const { packageName, version } = parseEntrySpec(positionals[0])
+  const spec = `${packageName}@${version}`
+  const market = await loadMarketLibrary()
+  const { privateKey, keyId, expectedFingerprint } = loadSigningKeyFromEnv()
+  const fingerprint = expectedFingerprint
+    ?? fingerprintOfRawPublicKey(rawPublicKeyBytes(createPublicKey(privateKey)))
+  const companyCatalogOrigin = resolveCatalogOrigin(flags)
+  const { allowlistPath, stateDir } = defaultPaths(flags)
+  const { stableOutPath, betaOutPath } = pairedManifestPaths(flags)
+  const entries = loadAllowlist(allowlistPath, {
+    ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+  })
+  // Refuses a versionless spec, a no-match, and — the load-bearing rule — an
+  // unrevoked match: retire is the second half of revoke → publish → retire,
+  // never a way around the signed retire record.
+  const { entries: updated, removed } = applyRetirement(entries, spec)
+  const expiresAt = expiryFromDays(integerFlag(flags, 'expires-days') ?? 90)
+  // Prepare phase — nothing below may touch the allowlist, the manifest
+  // files, or the sequence state before every re-sign verified.
+  const prepared = []
+  let nextSequence = (await resolveNextSequence(flags, stateDir)).sequence
+  for (const [channel, outPath] of [['stable', stableOutPath], ['beta', betaOutPath]]) {
+    if (!existsSync(outPath)) {
+      console.log(`${channel.padEnd(7)}: no manifest at ${outPath} — nothing to re-sign`)
+      continue
+    }
+    const verification = await readVerifiedManifestFile(market, outPath, {
+      keyId,
+      fingerprint,
+      channel,
+      ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+    })
+    const packages = verification.manifest.packages.filter((entry) => entryKey(entry) !== removed[0])
+    if (packages.length === verification.manifest.packages.length) {
+      console.log(`${channel.padEnd(7)}: ${spec} is not in ${outPath} — nothing to re-sign (no sequence consumed)`)
+      continue
+    }
+    const resigned = await prepareVerifiedManifest({
+      market,
+      unsigned: assembleRepublishPackages({
+        packages,
+        sequence: nextSequence,
+        expiresAt,
+        channel,
+        ...(channel === 'beta' ? { testers: verification.manifest.testers ?? [] } : {}),
+      }),
+      privateKey,
+      keyId,
+      expectedFingerprint,
+      lastSeenSequence: nextSequence - 1,
+      ...(companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin }),
+      channel,
+    })
+    prepared.push({ channel, outPath, prepared: resigned })
+    nextSequence += 1
+  }
+  // Commit phase — the allowlist first (a crash converges by re-running
+  // retire, which replays the full path), then the files, then the ratchet.
+  saveAllowlist(allowlistPath, updated)
+  console.log(`allowlist: ${spec} retired (window entry removed; the deployed revoked:true record is the signed retire record)`)
+  for (const { outPath, prepared: resigned } of prepared) {
+    commitVerifiedManifest({ prepared: resigned, outPath, stateDir })
+  }
+  if (prepared.length > 0) {
+    for (const { channel, outPath, prepared: resigned } of prepared) {
+      console.log(`  ${channel}:  sequence ${String(resigned.manifest.sequence)} → ${outPath} (${String(resigned.manifest.packages.length)} packages${channel === 'beta' ? `, ${String(resigned.manifest.testers?.length ?? 0)} testers` : ''})`)
+    }
+    console.log(`  state:   ${resolve(stateDir, 'last-sequence.json')} (shared ratchet)`)
+    console.log('  push:    publish-local pushes both files (stable, then beta — see the README runbook); the version drop passes the removal guard because the deployed entry is revoked')
+  } else {
+    console.log('no manifest carried the entry — the allowlist change alone is committed; the next build assembles without it')
+  }
+}
+
 async function commandVerify(positionals, flags) {
   const market = await loadMarketLibrary()
   const { outPath, stateDir } = defaultPaths(flags)
@@ -1092,7 +1194,7 @@ async function commandAcceptHandoff(positionals, flags) {
   })
   console.log('')
   if (result.dryRun) {
-    console.log(`accept-handoff: dry-run — ${entryKey(result.entry)} would replace ${result.replaced.length > 0 ? result.replaced.join(', ') : 'no active entry'}; ${allowlistPath} untouched, nothing committed`)
+    console.log(`accept-handoff: dry-run — ${entryKey(result.entry)} would join ${result.keptActive.length > 0 ? result.keptActive.join(', ') : 'a brand-new package entry'}${result.keptRevoked.length > 0 ? ` (revoked ${result.keptRevoked.join(', ')} stay)` : ''}; ${allowlistPath} untouched, nothing committed`)
     return
   }
   if (result.alreadyAccepted) {
@@ -1158,6 +1260,7 @@ async function main() {
     else if (command === 'pack-tarball') await commandPackTarball(flags)
     else if (command === 'measure-and-publish') await commandMeasureAndPublish(flags)
     else if (command === 'revoke') await commandRevoke(positionals, flags)
+    else if (command === 'retire') await commandRetire(positionals, flags)
     else if (command === 'promote') await commandPromote(positionals, flags)
     else if (command === 'beta-roster') await commandBetaRoster(flags)
     else if (command === 'verify') await commandVerify(positionals, flags)

@@ -81,6 +81,26 @@ node tools/company-catalog/cli.mjs revoke <名>@<版本>
 # 客户端下次市场刷新即不可装；已装机器重启时 boot 拦截加载
 ```
 
+## D2. 显式 retire（撤单版本下窗，P15）
+
+**多版本钉扎三行语义（P15 Phase 0）**：
+
+- **promote＝加条目保留旧钉**：新版本转正后旧钉版仍在 stable 清单里，老客户端按
+  名@版本 精确 boot 照常命中，永不因发布而断。
+- **retire＝显式下窗（＋群通知）**：旧钉版离开清单必须走显式流程——先
+  `revoke <名>@<版本>` 并发布（签名吊销记录即下窗凭证），再
+  `retire <名>@<版本>`；下窗会拒载仍在用旧版的机器，执行前群里预告。
+- **保留策略**：上一条 runtime 线的最新版默认保留直至显式 retire（静默删
+  旧版条目会被 publish-local 的版本下窗守卫拦红；确属有意立即撤版用
+  `--allow-version-retire` 过闸）。
+
+```bash
+node tools/company-catalog/cli.mjs revoke <名>@<旧版本>   # 第一步：签名吊销记录
+# 按 B 流程推送该清单（守卫看到已吊销版本离开=合法）
+node tools/company-catalog/cli.mjs retire <名>@<旧版本>   # 第二步：移出窗口
+# 再推送重签清单；manifest 不再含该版本，包的其他版本不受影响
+```
+
 ## E. 同版本不可重发 → 必须 bump 版本（换版重打包）
 
 **硬事实（dai-context 0.41.4 实证，2026-09-09）**：公司目录的托管 tarball 内容
@@ -122,6 +142,7 @@ gh workflow run "Company catalog publish" -f channel=beta
 |---|---|---|
 | fleet-upgrade gate | 条目首次带 source/treeDigest 上 stable | `--confirm-fleet-upgraded`（前提：全 fleet 已是 field-aware 构建——#47 起都是） |
 | package-removal guard | stable 将丢一个未吊销的包（浸泡窗口陷阱） | 先转正该包，或真下架先 revoke；有意移除 `--allow-package-removal` |
+| version-retire guard | stable 将丢同包一个未吊销版本（静默撤版） | 默认保留旧钉（promote 即如此）；显式下窗走 revoke→发布→retire（见 D2）；有意立即撤 `--allow-version-retire` |
 | sequence ratchet … stale | 产物序号 ≤ 已部署 | 重新跑 CI（state 旧了） |
 | first beta publish | beta 首推无基线 | 自动回落 stable 基线，无需动作 |
 

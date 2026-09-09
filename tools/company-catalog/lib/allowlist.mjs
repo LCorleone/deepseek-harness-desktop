@@ -625,6 +625,42 @@ export function parseRevocationSpec(spec) {
 }
 
 /**
+ * Retire one version window entry (P15 Phase 0): remove the name@version
+ * from the allowlist so the next manifest no longer pins it, letting the
+ * manifest shrink without yanking the package. Revocation FIRST is
+ * mandatory — the signed `revoked:true` record the deployed manifest
+ * carries IS the retire record the publisher's removal guard trusts, so a
+ * window entry may only leave through the revoke → publish → retire path,
+ * never a silent allowlist deletion (which would boot-refuse every old
+ * client still pinned to the version with no signed explanation).
+ * Returns `{ entries, removed }`; refuses on a versionless spec, no match,
+ * or an unrevoked match.
+ */
+export function applyRetirement(entries, spec) {
+  const { packageName, version } = parseRevocationSpec(spec)
+  if (version === undefined) {
+    throw new Error(
+      `retire targets one window entry: <package>@<version> (got '${spec}') — retiring a whole package is ` +
+      'revoke per version, or the publish-side --allow-package-removal acknowledgement',
+    )
+  }
+  const match = entries.find((entry) => entry.packageName === packageName && entry.version === version)
+  if (match === undefined) {
+    throw new Error(`no allowlist entry matches ${spec} — nothing to retire`)
+  }
+  if (!match.revoked) {
+    throw new Error(
+      `${spec} is not revoked — revoke it first (revoke <package>@<version>) and publish that manifest: ` +
+      'the signed revoked:true record is the retire record; retire then removes the window entry',
+    )
+  }
+  return {
+    entries: entries.filter((entry) => entry !== match),
+    removed: [entryKey(match)],
+  }
+}
+
+/**
  * Mark every matching entry revoked and return the updated copy. Revocation
  * is a state change, not a deletion: entries stay in the allowlist and in
  * every reissued manifest for the signed audit trail.

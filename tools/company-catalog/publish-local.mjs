@@ -46,11 +46,15 @@
  *      (the market UI's catalog would go dark even with boot alive), so it
  *      is NOT field-aware; no `source`-carrying manifest may be published
  *      before the whole fleet runs builds at or beyond that switch. Stable
- *      pushes additionally run the package-removal guard: a packageName
+ *      pushes additionally run the two removal guards: a packageName
  *      the deployed stable manifest pins unrevoked may not silently
  *      disappear from the artifact's manifest (the beta soak window's trap
  *      — promote first, revoke first, or pass --allow-package-removal for
- *      a deliberate removal).
+ *      a deliberate removal), and a package that STAYS may not silently
+ *      lose one of its pinned unrevoked name@versions either (P15's
+ *      multi-version compat window — clients boot by exact name@version;
+ *      revoke → publish → retire is the explicit retire flow, or pass
+ *      --allow-version-retire for a deliberate immediate drop).
  *   5. clone the GitLab config repo, overwrite catalog-manifest.json with the
  *      artifact bytes verbatim (canonical single line; the GitLab web editor
  *      would reformat them — the manifest only ever moves through git push),
@@ -175,6 +179,18 @@ Options:
                         Prefer promote for a soaking upgrade and revoke for
                         a real removal — this flag is for deliberate
                         removals only
+  --allow-version-retire
+                        acknowledge the version-retire guard (P15): allow this
+                        stable artifact to drop one unrevoked name@version of
+                        a package it still lists. Without the flag such a
+                        publish is refused (a silent version drop: clients
+                        boot by exact name@version, so the pin leaving the
+                        manifest boot-refuses every machine still on it).
+                        Prefer keeping the old pin (promote adds a pin and
+                        keeps the old ones) or the explicit retire flow —
+                        revoke <name>@<version>, publish, then
+                        retire <name>@<version> — this flag is for a
+                        deliberate immediate drop only
   --dry-run             verify + ratchet-check + print the push plan; stop
                         before the clone
   --insecure-tls        pilot parity: disable TLS verification for the raw
@@ -771,22 +787,38 @@ async function main() {
     console.log(`fleet gate: --confirm-fleet-upgraded acknowledged for ${gatedEntries.join('; ')} — every client must already run a field-aware build (README publication gate)`)
   }
 
-  // --- 4c. stable package-removal guard (the soak-window trap): a stable
-  // artifact whose manifest omits a packageName the deployed stable
-  // manifest still pins UNREVOKED would remove that package from every
-  // machine's catalog the moment it deploys — silently, with no revocation
-  // record and no repair path short of republishing. The canonical trap is
-  // the beta soak window: while a package's only allowlist entry carries
-  // the beta flag (e.g. free-search 0.4.184 during its soak), every stable
-  // publish assembles a stable manifest WITHOUT the package, so an
-  // unattended `publish-local --channel stable` makes it vanish fleet-wide.
-  // Fail closed on every such drop unless the deployed entries of the name
-  // are all revoked (revocation IS the supported removal path — a revoked
-  // entry disappearing from a later manifest is legal) or the operator
-  // explicitly acknowledges the removal with --allow-package-removal. The
-  // guard compares packageName sets (a version bump keeps the package and
-  // never triggers it) and runs in --dry-run too, so a drill surfaces the
-  // trap before a real push is ever attempted.
+  // --- 4c. stable removal guards (the soak-window trap + the silent
+  // version drop): two granularities of the same rule — what the deployed
+  // stable manifest pins unrevoked may not silently disappear from the
+  // artifact's manifest, because clients boot by exact name@version: a
+  // dropped pin boot-refuses every machine still on it, with no revocation
+  // record and no repair path short of republishing.
+  //
+  // Package granularity (the original guard): a packageName the deployed
+  // stable manifest still pins unrevoked may not vanish whole. The canon-
+  // ical trap is the beta soak window: while a package's only allowlist
+  // entry carries the beta flag (e.g. free-search 0.4.184 during its
+  // soak), every stable publish assembles a stable manifest WITHOUT the
+  // package, so an unattended `publish-local --channel stable` makes it
+  // vanish fleet-wide. Fail closed on every such drop unless the deployed
+  // entries of the name are all revoked (revocation IS the supported
+  // removal path — a revoked entry disappearing from a later manifest is
+  // legal) or the operator explicitly acknowledges with
+  // --allow-package-removal.
+  //
+  // Version granularity (P15 Phase 0): a package that STAYS may not
+  // silently lose one of its pinned versions either — the multi-version
+  // compat window means promote adds an entry and keeps the old pins, so a
+  // stable artifact that keeps the name but drops a name@version the
+  // deployed manifest pins unrevoked is a silent window shrink (a hand
+  // edit deleting the "old" allowlist entry is exactly this shape). Fail
+  // closed unless the deployed entry is revoked (the revoke → publish →
+  // retire flow: the signed revoked:true record IS the retire record, and
+  // `retire` then removes the window entry) or the operator explicitly
+  // acknowledges with --allow-version-retire. Both guards compare deployed
+  // vs artifact state only, run in --dry-run too, and never fire on the
+  // beta channel (roster/soak dynamics may legitimately shrink the beta
+  // file).
   if (channel === 'stable') {
     const deployedNames = [...new Set(deployedPackages
       .map((deployedEntry) => deployedEntry?.packageName)
@@ -808,6 +840,34 @@ async function main() {
     }
     if (removals.length > 0) {
       console.log(`removal guard: --allow-package-removal acknowledged for ${removals.join(', ')} — the package(s) leave the stable manifest by explicit operator decision`)
+    }
+    // Version granularity, for the names that stay: a dropped unrevoked
+    // name@version is a silent window shrink even though the package itself
+    // survives (an accept/promote that keeps old pins never produces this
+    // shape; a hand-deleted allowlist entry does).
+    const artifactKeys = new Set(packages
+      .filter((signed) => signed?.packageName !== undefined && typeof signed?.version === 'string')
+      .map((signed) => `${signed.packageName}@${signed.version}`))
+    const versionDrops = deployedPackages
+      .filter((deployedEntry) => deployedEntry?.revoked !== true
+        && typeof deployedEntry?.packageName === 'string'
+        && typeof deployedEntry?.version === 'string'
+        && packages.some((signed) => signed?.packageName === deployedEntry.packageName)
+        && !artifactKeys.has(`${deployedEntry.packageName}@${deployedEntry.version}`))
+      .map((deployedEntry) => `${deployedEntry.packageName}@${deployedEntry.version}`)
+    if (versionDrops.length > 0 && flags['allow-version-retire'] !== true) {
+      fail(
+        `version-retire guard: this stable artifact drops ${versionDrops.join(', ')} — pinned unrevoked in the deployed manifest at ${masterRawUrl} while the package itself stays — ` +
+        'so pushing it would silently shrink the multi-version compat window (clients boot by exact name@version; the dropped pin boot-refuses every machine still on it). ' +
+        'promote and accept keep the old pins by design (P15), so this drop is a hand edit or a mistake; ' +
+        'to retire a version explicitly: cli.mjs revoke <name>@<version>, publish that manifest (the signed revoked:true record is the retire record), then cli.mjs retire <name>@<version> — a revoked version leaving the manifest passes with no flag; ' +
+        'if the drop is deliberate and immediate, re-run with --allow-version-retire to acknowledge it. ' +
+        'Fail closed: nothing was pushed.',
+      )
+      return
+    }
+    if (versionDrops.length > 0) {
+      console.log(`removal guard: --allow-version-retire acknowledged for ${versionDrops.join(', ')} — the version(s) leave the stable manifest by explicit operator decision`)
     }
   }
 

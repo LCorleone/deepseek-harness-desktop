@@ -127,6 +127,10 @@ function gitAllowlistRepo(entries) {
   return { root, path: allowlistPath }
 }
 
+// A previous active pin in the shape real handoff-derived entries have:
+// the tarball channel with inline reviewed integrity (a name never
+// straddles two install channels, so a kept old pin and a new tarball
+// submission must both be tarball-channel).
 const OLD_ACTIVE_ENTRY = {
   packageName: 'fixture-hello',
   version: '0.9.0',
@@ -134,6 +138,11 @@ const OLD_ACTIVE_ENTRY = {
   repository: 'https://github.com/example/fixture-hello',
   revoked: false,
   runtime: { dshRuntimeVersion: PINNED_RUNTIME_RANGE },
+  source: {
+    kind: 'tarball',
+    url: `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/packages/fixture-hello-0.9.0.tgz`,
+    integrity: 'sha512-' + Buffer.alloc(64, 7).toString('base64'),
+  },
 }
 
 const accept = (options) => acceptHandoffVerdict({ companyCatalogOrigin: CATALOG_ORIGIN, ...options })
@@ -150,7 +159,7 @@ const refusalOf = async (run) => {
 // Green: the happy path
 // ---------------------------------------------------------------------------
 
-test('green: a PASS verdict replaces the old version, commits allowlist.json alone, and reports next steps', async () => {
+test('green: a PASS verdict joins the old active pin (P15 multi-version), commits allowlist.json alone, and reports next steps', async () => {
   const allowlist = gitAllowlistRepo([OLD_ACTIVE_ENTRY])
   const submission = await verifiedSubmission({ allowlist })
   const logLines = []
@@ -167,21 +176,25 @@ test('green: a PASS verdict replaces the old version, commits allowlist.json alo
     assert.equal(result.ok, true)
     assert.equal(result.alreadyAccepted, undefined)
     assert.equal(result.dryRun, false)
-    assert.deepEqual(result.replaced, ['fixture-hello@0.9.0'])
+    assert.deepEqual(result.keptActive, ['fixture-hello@0.9.0'])
     assert.deepEqual(result.keptRevoked, [])
     assert.equal(result.message, 'catalog: accept fixture-hello@1.0.0 (staging handoff)')
-    // The allowlist now carries exactly one fixture-hello entry: 1.0.0, with
-    // the measured digest, the tarball channel, and the repo-relative staged path.
+    // The allowlist now carries BOTH fixture-hello versions: the accepted
+    // 1.0.0 pin (with the measured digest, the tarball channel, and the
+    // repo-relative staged path) AND the previous active 0.9.0 pin kept
+    // verbatim — promote adds an entry and keeps the old ones (P15).
     const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
-    assert.equal(entries.length, 1)
-    assert.equal(entries[0].packageName, 'fixture-hello')
-    assert.equal(entries[0].version, '1.0.0')
-    assert.equal(entries[0].treeDigest, FIXED_DIGEST)
-    assert.equal(entries[0].repository, 'https://github.com/example/fixture-hello')
-    assert.equal(entries[0].source.kind, 'tarball')
-    assert.equal(entries[0].source.url, `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/packages/fixture-hello-1.0.0.tgz`)
-    assert.match(entries[0].source.path, /^tools\/company-catalog\/out\/accept-handoff-test-[^/]+\/packages-[^/]+\/fixture-hello-1\.0\.0\.tgz$/u)
-    assert.equal(entries[0].runtime.dshRuntimeVersion, PINNED_RUNTIME_RANGE)
+    assert.equal(entries.length, 2)
+    const accepted = entries.find((entry) => entry.version === '1.0.0')
+    const kept = entries.find((entry) => entry.version === '0.9.0')
+    assert.equal(`${accepted.packageName}@${accepted.version}`, 'fixture-hello@1.0.0')
+    assert.equal(accepted.treeDigest, FIXED_DIGEST)
+    assert.equal(accepted.repository, 'https://github.com/example/fixture-hello')
+    assert.equal(accepted.source.kind, 'tarball')
+    assert.equal(accepted.source.url, `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/packages/fixture-hello-1.0.0.tgz`)
+    assert.match(accepted.source.path, /^tools\/company-catalog\/out\/accept-handoff-test-[^/]+\/packages-[^/]+\/fixture-hello-1\.0\.0\.tgz$/u)
+    assert.equal(accepted.runtime.dshRuntimeVersion, PINNED_RUNTIME_RANGE)
+    assert.deepEqual(kept, OLD_ACTIVE_ENTRY)
     // The commit: exact message, exactly the one file, clean tree afterwards.
     assert.match(result.commitSha, /^[0-9a-f]{7,40}$/u)
     assert.equal(gitIn(allowlist.root, ['log', '-1', '--format=%s']), result.message)
@@ -189,7 +202,7 @@ test('green: a PASS verdict replaces the old version, commits allowlist.json alo
     assert.equal(gitIn(allowlist.root, ['status', '--porcelain']), '')
     assert.equal(gitIn(allowlist.root, ['rev-parse', 'HEAD']), gitIn(allowlist.root, ['rev-parse', result.commitSha]))
     // The terminal log tells the two-step story (beta first).
-    assert.match(logLines.join('\n'), /replaces fixture-hello@0\.9\.0/u)
+    assert.match(logLines.join('\n'), /joins fixture-hello@0\.9\.0/u)
   } finally {
     rmSync(submission.root, { recursive: true, force: true })
     rmSync(allowlist.root, { recursive: true, force: true })
@@ -252,13 +265,13 @@ test('green: --repository fills the missing pin (verified snippet carried none)'
   }
 })
 
-test('green: a revoked older version stays verbatim for the audit trail while the active entry is replaced', async () => {
+test('green: a revoked older version stays verbatim for the audit trail while the new pin joins', async () => {
   const allowlist = gitAllowlistRepo([{ ...OLD_ACTIVE_ENTRY, revoked: true }])
   const submission = await verifiedSubmission({ allowlist })
   try {
     const result = accept({ submissionDir: submission.submissionDir, allowlistPath: allowlist.path, receiptsDir: submission.receiptsDir, gitEnv: GIT_IDENTITY })
     assert.equal(result.ok, true)
-    assert.deepEqual(result.replaced, [])
+    assert.deepEqual(result.keptActive, [])
     assert.deepEqual(result.keptRevoked, ['fixture-hello@0.9.0'])
     const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
     assert.equal(entries.length, 2)
@@ -286,7 +299,7 @@ test('green: a brand-new package appends without replacing anything', async () =
   try {
     const result = accept({ submissionDir: submission.submissionDir, allowlistPath: allowlist.path, receiptsDir: submission.receiptsDir, gitEnv: GIT_IDENTITY })
     assert.equal(result.ok, true)
-    assert.deepEqual(result.replaced, [])
+    assert.deepEqual(result.keptActive, [])
     const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
     assert.equal(entries.length, 2)
     assert.equal(entries[1].packageName, 'fixture-hello')
@@ -693,9 +706,10 @@ test('red: re-accepting the reviewed entry spelled in another key order is a can
   }
 })
 
-test('green: a real write keeps the reviewed key order (untouched entries verbatim, the applied entry inherits the replaced order)', async () => {
+test('green: a real write keeps the reviewed key order (untouched entries verbatim, the applied entry inherits the package\'s first active order)', async () => {
   // Two reviewed entries with a non-normalizer key order (`revoked` after
-  // `runtime`): the write must carry the version change alone.
+  // `runtime`): the write must carry the added pin alone — the old active
+  // 0.9.0 pin stays verbatim (P15 multi-version).
   const otherEntry = {
     packageName: 'dsh-other-plugin',
     version: '2.3.4',
@@ -718,15 +732,18 @@ test('green: a real write keeps the reviewed key order (untouched entries verbat
     const result = accept({ submissionDir: submission.submissionDir, allowlistPath: allowlist.path, receiptsDir: submission.receiptsDir, gitEnv: GIT_IDENTITY })
     assert.equal(result.ok, true)
     const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
-    assert.equal(entries.length, 2)
-    // The untouched entry keeps its reviewed spelling byte-for-byte.
+    assert.equal(entries.length, 3)
+    // The untouched entries keep their reviewed spelling byte-for-byte —
+    // the other plugin AND the kept 0.9.0 pin.
     const other = entries.find((entry) => entry.packageName === 'dsh-other-plugin')
     assert.deepEqual(Object.keys(other), Object.keys(otherEntry))
-    // The applied entry inherits the replaced entry's field order (revoked
-    // after runtime), with its new fields (treeDigest, source) appended.
-    const applied = entries.find((entry) => entry.packageName === 'fixture-hello')
+    const keptOld = entries.find((entry) => entry.version === '0.9.0')
+    assert.deepEqual(keptOld, oldActive)
+    // The applied entry inherits the package's first active entry's field
+    // order (revoked after runtime), with its new fields (treeDigest,
+    // source) appended.
+    const applied = entries.find((entry) => entry.version === '1.0.0')
     assert.deepEqual(Object.keys(applied), [...Object.keys(oldActive), 'treeDigest', 'source'])
-    assert.equal(applied.version, '1.0.0')
     assert.equal(applied.treeDigest, FIXED_DIGEST)
     assert.equal(applied.source.kind, 'tarball')
     // And the commit is exactly the one file.
@@ -766,8 +783,10 @@ test('red: --dry-run prints the entry and the diff but touches no file and commi
     assert.match(printed, /"packageName": "fixture-hello"/u)
     assert.match(printed, /"treeDigest": "a{64}"/u)
     assert.match(printed, /^@@ -\d+,\d+ \+\d+,\d+ @@$/mu)
-    assert.match(printed, /-    "version": "0\.9\.0"/u)
+    // The diff is the added pin alone: the old 0.9.0 entry stays (P15), so
+    // the hunk shows the inserted 1.0.0 entry with no removed version line.
     assert.match(printed, /\+    "version": "1\.0\.0"/u)
+    assert.doesNotMatch(printed, /-    "version": "0\.9\.0"/u)
     assert.match(printed, /dry-run: .* untouched, nothing committed/u)
   } finally {
     rmSync(submission.root, { recursive: true, force: true })

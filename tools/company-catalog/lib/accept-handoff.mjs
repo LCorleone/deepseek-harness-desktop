@@ -30,23 +30,25 @@
  *                  receipt's own identity/digest; a missing repository pin
  *                  must come from --repository (fail-closed when neither
  *                  the package nor the flag provides one)
- *   4 merge        one ACTIVE version per plugin (the catalog's existing
- *                  shape — every entry in today's allowlist is the single
- *                  active version of its plugin): the entry REPLACES the
- *                  package's active entries; revoked entries stay verbatim
- *                  (revocation is a state, not a deletion — the signed
- *                  audit trail), and a same name@version collision is the
- *                  immutability red line: refused on digest disagreement
- *                  and on any attempt to un-revoke. Idempotency is a
- *                  canonical (key-order-insensitive) deep comparison, so a
+ *   4 merge        multi-version pins (P15 Phase 0): the entry JOINS the
+ *                  package's existing ACTIVE entries — promote adds a pin
+ *                  and keeps the old ones, because every client boots by
+ *                  exact name@version and an old pin leaving the manifest
+ *                  boot-refuses the machines still pinned to it. REVOKED
+ *                  entries stay verbatim (revocation is a state, not a
+ *                  deletion — the signed audit trail), and a same
+ *                  name@version collision is the immutability red line:
+ *                  refused on digest disagreement and on any attempt to
+ *                  un-revoke; removing an old pin is the explicit retire
+ *                  flow (revoke, then retire), never an accept side
+ *                  effect. Idempotency is a canonical
+ *                  (key-order-insensitive) deep comparison, so a
  *                  same-content replay of a hand-written entry whose key
- *                  order differs from the normalizer's is a no-op — never a
- *                  pure key-reordering commit; when a write IS needed it
+ *                  order differs from the normalizer's is a no-op — never
+ *                  a pure key-reordering commit; when a write IS needed it
  *                  stays minimal: untouched entries keep their reviewed
  *                  spelling, and the applied entry inherits the key order
- *                  of the entry it replaces. --keep-both is deliberately
- *                  absent: the catalog has never carried two active
- *                  versions of one plugin (YAGNI).
+ *                  of the package's first active entry.
  *   5 commit       `git add` of the allowlist file ONLY — refused up front
  *                  while the allowlist carries uncommitted changes (the
  *                  acceptance commit must carry exactly the accepted entry,
@@ -362,19 +364,21 @@ function resolveVerifiedEntry({ receipt, repositoryOverride, companyCatalogOrigi
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: the merge — one ACTIVE version per plugin, revoked history kept
+// Step 4: the merge — multi-version pins: active entries join, revoked kept
 // ---------------------------------------------------------------------------
 
 /**
- * Merge the verified entry into the reviewed entries:
+ * Merge the verified entry into the reviewed entries (P15 Phase 0):
  *
  *   - same name@version already listed with a DIFFERENT treeDigest → the
  *     immutability red line (a published name@version never changes);
  *   - same name@version listed revoked → refused: accept-handoff never
  *     un-revokes (that is a deliberate hand edit, not a one-command replay);
- *   - the package's ACTIVE entries are replaced by this one (the catalog's
- *     single-active-version shape), REVOKED entries stay verbatim for the
- *     signed audit trail.
+ *   - the package's ACTIVE entries stay — the new version JOINS them
+ *     (promote adds a pin and keeps the old ones; clients boot by exact
+ *     name@version), REVOKED entries stay verbatim for the signed audit
+ *     trail, and removing an old pin is the explicit retire flow (revoke,
+ *     then retire) — never an accept side effect.
  */
 function mergeIntoEntries({ entries, entry }) {
   const samePackage = []
@@ -390,16 +394,24 @@ function mergeIntoEntries({ entries, entry }) {
       refuse(`${entryKey(entry)} is already listed with ${sameVersion.existing.treeDigest === undefined ? 'no treeDigest' : `treeDigest ${sameVersion.existing.treeDigest}`} but the verdict measured ${entry.treeDigest} — a listed name@version is immutable; bump the version and resubmit`)
     }
   }
-  const replaced = samePackage.filter(({ existing }) => !existing.revoked).map(({ existing }) => entryKey(existing))
+  const keptActive = samePackage.filter(({ existing }) => !existing.revoked && existing.version !== entry.version).map(({ existing }) => entryKey(existing))
   const keptRevoked = samePackage.filter(({ existing }) => existing.revoked).map(({ existing }) => entryKey(existing))
   const merged = []
   const insertionIndex = samePackage.length > 0 ? samePackage[0].index : entries.length
   entries.forEach((existing, index) => {
-    if (index === insertionIndex) merged.push(entry)
-    if (existing.packageName !== entry.packageName || existing.revoked) merged.push(existing)
+    // A same name@version replay swaps in place (canonical no-op when the
+    // content is equal); a new version inserts at the head of the package's
+    // block and every existing entry — active pins and revoked history
+    // alike — stays.
+    if (sameVersion === undefined && index === insertionIndex) merged.push(entry)
+    if (sameVersion !== undefined && existing === sameVersion.existing) {
+      merged.push(entry)
+      return
+    }
+    merged.push(existing)
   })
   if (samePackage.length === 0) merged.push(entry)
-  return { merged, replaced, keptRevoked }
+  return { merged, keptActive, keptRevoked }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +437,7 @@ export const canonicalJson = (value) => {
 
 /**
  * Re-key `entry` into the field order of `reference` (the reviewed entry
- * being replaced): reviewed keys first in their reviewed order, then any
+ * being inherited): reviewed keys first in their reviewed order, then any
  * field this entry adds, in the entry's own order. Returns `entry` as-is
  * when there is nothing to inherit (a brand-new package).
  */
@@ -443,12 +455,12 @@ function reorderEntryKeys(entry, reference) {
 
 /**
  * Serialize the merge over the file's own entries (`rawEntries`, the direct
- * parse of the reviewed bytes — key order as written): untouched and
- * revoked entries keep their reviewed spelling (and thus their exact
- * bytes), and the applied entry — re-keyed to the order of the entry it
- * replaces, preferring a same name@version match — lands at the same
- * insertion point {@link mergeIntoEntries} chose. The written diff is the
- * content change alone.
+ * parse of the reviewed bytes — key order as written): untouched entries
+ * (active pins and revoked history alike) keep their reviewed spelling (and
+ * thus their exact bytes), and the applied entry — re-keyed to the order of
+ * the package's first active entry — lands at the head of the package's
+ * block, the insertion point {@link mergeIntoEntries} chose. The written
+ * diff is the content change alone.
  */
 function renderMergedAllowlist({ rawEntries, entry }) {
   const samePackageIndexes = []
@@ -461,8 +473,14 @@ function renderMergedAllowlist({ rawEntries, entry }) {
   const insertionIndex = samePackageIndexes.length > 0 ? samePackageIndexes[0] : rawEntries.length
   const rendered = []
   rawEntries.forEach((existing, index) => {
-    if (index === insertionIndex) rendered.push(orderedEntry)
-    if (existing.packageName !== entry.packageName || existing.revoked === true) rendered.push(existing)
+    // Mirror the merge: a same name@version replay swaps in place; a new
+    // version inserts at the package's head and every existing entry stays.
+    if (sameVersionIndex === undefined && index === insertionIndex) rendered.push(orderedEntry)
+    if (sameVersionIndex !== undefined && index === sameVersionIndex) {
+      rendered.push(orderedEntry)
+      return
+    }
+    rendered.push(existing)
   })
   if (samePackageIndexes.length === 0) rendered.push(orderedEntry)
   return rendered
@@ -624,7 +642,7 @@ function writeAndCommit({ git, gitEnv, allowlistPath, originalText, nextText, to
  * {@link AcceptanceRefusal} on every fail-closed path (nothing was applied);
  * on success returns:
  *
- *   { ok: true, submissionDir, receiptPath, identity, entry, replaced,
+ *   { ok: true, submissionDir, receiptPath, identity, entry, keptActive,
  *     keptRevoked, dryRun, alreadyAccepted?, commitSha?, message,
  *     allowlistPath, repoRelative?, diff? }
  *
@@ -679,7 +697,7 @@ export function acceptHandoffVerdict(options) {
   const entries = loadAllowlist(allowlistPath, {
     ...(options.companyCatalogOrigin === undefined ? {} : { companyCatalogOrigin: options.companyCatalogOrigin }),
   })
-  const { merged, replaced, keptRevoked } = mergeIntoEntries({ entries, entry })
+  const { merged, keptActive, keptRevoked } = mergeIntoEntries({ entries, entry })
   const message = commitMessageFor(entry)
   let originalText
   try {
@@ -699,7 +717,7 @@ export function acceptHandoffVerdict(options) {
       receiptPath,
       identity: receipt.identity,
       entry,
-      replaced: [],
+      keptActive: [],
       keptRevoked,
       dryRun: false,
       alreadyAccepted: true,
@@ -710,10 +728,10 @@ export function acceptHandoffVerdict(options) {
   // A real change: serialize over the file's own entries so the written
   // diff is the content change alone — untouched entries keep their
   // reviewed spelling, and the applied entry inherits the key order of the
-  // entry it replaces.
+  // package's first active entry.
   const nextText = `${JSON.stringify(renderMergedAllowlist({ rawEntries: JSON.parse(originalText), entry }), null, 2)}\n`
   const diff = unifiedTextDiff(originalText, nextText, { fromLabel: allowlistPath, toLabel: allowlistPath })
-  if (replaced.length > 0) log(`merge:    replaces ${replaced.join(', ')} (one active version per plugin — the catalog's existing shape)`)
+  if (keptActive.length > 0) log(`merge:    joins ${keptActive.join(', ')} (multi-version pins — promote adds an entry and keeps the old ones; removing an old pin is the explicit retire flow)`)
   else log(`merge:    new package ${entry.packageName} (appended)`)
   if (keptRevoked.length > 0) log(`merge:    keeps revoked ${keptRevoked.join(', ')} verbatim (revocation is a state, not a deletion)`)
 
@@ -732,7 +750,7 @@ export function acceptHandoffVerdict(options) {
       receiptPath,
       identity: receipt.identity,
       entry,
-      replaced,
+      keptActive,
       keptRevoked,
       dryRun: true,
       message,
@@ -755,7 +773,7 @@ export function acceptHandoffVerdict(options) {
     receiptPath,
     identity: receipt.identity,
     entry,
-    replaced,
+    keptActive,
     keptRevoked,
     dryRun: false,
     commitSha,
