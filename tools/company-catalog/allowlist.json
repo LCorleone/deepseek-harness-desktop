@@ -7,8 +7,7 @@
     "revoked": false,
     "runtime": {
       "dshRuntimeVersion": "^0.1.2-rc.1"
-    },
-    "channel": "beta"
+    }
   },
   {
     "packageName": "dsh-free-search",
@@ -28,7 +27,6 @@
   {
     "packageName": "dsh-dai-context",
     "version": "0.41.4",
-    "channel": "beta",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-context-0.41.4.tgz",
     "revoked": false,
@@ -63,6 +61,7 @@
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-engramory-0.2.4.tgz",
     "revoked": false,
+    "channel": "beta",
     "runtime": {
       "dshRuntimeVersion": "0.1.2-rc.1"
     },
