@@ -4,9 +4,11 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -567,6 +569,173 @@ describe('Desktop plugin install recovery consecutive installs', () => {
       receiptId: 'receipt-0003',
     })
     expect(third.phase).toBe('prepared')
+  })
+
+  it('keeps the sealed WAL when the follow-up preimage capture fails, then supersedes it later', async () => {
+    const target = fixture()
+    const origin = store(target)
+    const first = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await origin.seal(first.transactionId)
+
+    // Install #2 cannot capture its preimages: one allowlisted file stops
+    // being a regular file.
+    rmSync(join(target.profileDir, 'pnpm-lock.yaml'))
+    mkdirSync(join(target.profileDir, 'pnpm-lock.yaml'))
+    await expect(origin.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })).rejects.toThrow('only accepts regular files')
+
+    // Install #1's WAL survives intact — its awaiting-restart verification
+    // obligation is not lost — and the aborted attempt left no backup behind.
+    const backups = join(dirname(target.statePath), 'backups')
+    expect(await origin.read()).toMatchObject({
+      transactionId: first.transactionId,
+      phase: 'awaiting-restart',
+    })
+    expect(readdirSync(backups)).toEqual([first.transactionId])
+
+    // Once the profile heals, the next begin still supersedes #1.
+    rmSync(join(target.profileDir, 'pnpm-lock.yaml'), { recursive: true })
+    writeFileSync(join(target.profileDir, 'pnpm-lock.yaml'), POSTINSTALL['pnpm-lock.yaml'], { mode: 0o640 })
+    const second = await origin.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+    expect(second.phase).toBe('prepared')
+    expect(existsSync(join(backups, first.transactionId))).toBe(false)
+  })
+
+  it('lazily sweeps orphan backup directories that predate the current transaction', async () => {
+    const target = fixture()
+    const origin = store(target)
+    const current = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+
+    const backups = join(dirname(target.statePath), 'backups')
+    // A stale orphan: crash after clearLocked or supersede retired the WAL
+    // state but before its preimages were removed.
+    const stale = join(backups, 'orphaned-transaction-stale')
+    mkdirSync(stale, { recursive: true })
+    writeFileSync(join(stale, 'package.json.before'), PREINSTALL['package.json'])
+    const staleTime = new Date('2026-01-01T00:00:00.000Z')
+    utimesSync(stale, staleTime, staleTime)
+    // A directory newer than the current transaction's creation could belong
+    // to an in-flight begin: conservative, keep it.
+    const fresh = join(backups, 'orphaned-transaction-fresh')
+    mkdirSync(fresh, { recursive: true })
+    const freshTime = new Date('2027-06-01T00:00:00.000Z')
+    utimesSync(fresh, freshTime, freshTime)
+    // Not transaction-shaped: never touched.
+    const short = join(backups, 'shorty')
+    mkdirSync(short, { recursive: true })
+
+    expect(await origin.read()).toMatchObject({ transactionId: current.transactionId })
+
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    expect(existsSync(short)).toBe(true)
+    expect(existsSync(join(backups, current.transactionId))).toBe(true)
+  })
+
+  it('lets a later generation begin over a cross-generation sealed awaiting-restart WAL', async () => {
+    const target = fixture()
+    const origin = store(target, 'generation-0001')
+    const first = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await origin.seal(first.transactionId)
+    expect((await origin.read())?.phase).toBe('awaiting-restart')
+
+    // Standalone follow-up: a different generation calls begin directly
+    // instead of claiming verification first.
+    const successor = store(target, 'generation-0002')
+    const second = await successor.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+
+    expect(second.phase).toBe('prepared')
+    expect(second.createdByGeneration).toBe('generation-0002')
+    expect(second.transactionId).not.toBe(first.transactionId)
+    expect(await successor.read()).toMatchObject({
+      transactionId: second.transactionId,
+      phase: 'prepared',
+      createdByGeneration: 'generation-0002',
+    })
+    const backups = join(dirname(target.statePath), 'backups')
+    expect(existsSync(join(backups, first.transactionId))).toBe(false)
+    for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
+      expect(readFileSync(join(backups, second.transactionId, `${name}.before`), 'utf8'))
+        .toBe(POSTINSTALL[name])
+    }
+    // begin never touched the profile itself.
+    expectProfile(target, POSTINSTALL)
+  })
+
+  it('claims and verifies the second transaction stream after both installs sealed in one boot', async () => {
+    const target = fixture()
+    const origin = store(target, 'generation-0001')
+    const first = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await origin.seal(first.transactionId)
+
+    const second = await origin.begin({
+      packageName: 'plugin-b',
+      packageVersion: '2.0.0',
+      receiptId: 'receipt-0002',
+    })
+    // Install #2 ships its own declarative state on top of install #1's.
+    const secondPost = {
+      'package.json': '{"name":"fixture-private-marker","private":true,"dependencies":{"plugin-a":"1.0.0","plugin-b":"2.0.0"}}\n',
+      'pnpm-lock.yaml': 'lockfileVersion: "9.0"\n# installed-plugin-a installed-plugin-b\n',
+      'pnpm-workspace.yaml': 'packages:\n  - fixture-private-marker\n  - installed-plugin-a\n  - installed-plugin-b\n',
+    } as const
+    for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
+      writeFileSync(join(target.profileDir, name), secondPost[name], { mode: 0o640 })
+    }
+    const sealed = await origin.seal(second.transactionId)
+    expect(sealed.phase).toBe('awaiting-restart')
+    expect(sealed.files.every(file => file.after?.present === true)).toBe(true)
+
+    // The next boot's claim sees transaction #2's stream, not #1's.
+    const restarted = store(target, 'generation-0002')
+    const claimed = await restarted.claim()
+    expect(claimed).toMatchObject({
+      action: 'verify',
+      transaction: {
+        transactionId: second.transactionId,
+        receiptId: 'receipt-0002',
+        phase: 'verifying',
+        verifyingGeneration: 'generation-0002',
+      },
+    })
+    if (claimed.action !== 'verify') throw new Error('expected verification claim')
+
+    const verified = await restarted.markHealthy(second.transactionId)
+    expect(verified).toMatchObject({
+      phase: 'verified',
+      transactionId: second.transactionId,
+    })
+    await expect(restarted.claim()).resolves.toMatchObject({ action: 'terminal' })
   })
 })
 

@@ -1,13 +1,14 @@
 /** Crash-recoverable write-ahead log for one Desktop-managed plugin install. */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
+import { constants, type Dirent } from 'node:fs'
 import {
   chmod,
   lstat,
   mkdir,
   open,
   readFile,
+  readdir,
   rm,
   unlink,
 } from 'node:fs/promises'
@@ -375,13 +376,19 @@ export class DesktopInstallRecoveryStore {
       throw new Error(`${BIN_NAME}: plugin install recovery state is too large`)
     }
     await chmod(this.statePath, STATE_FILE_MODE)
+    let state: DesktopInstallRecoveryTransaction
     try {
-      return parseTransaction(JSON.parse(await readFile(this.statePath, 'utf8')) as unknown)
+      state = parseTransaction(JSON.parse(await readFile(this.statePath, 'utf8')) as unknown)
     } catch (cause) {
       throw new Error(
         `${BIN_NAME}: invalid plugin install recovery state: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     }
+    // Lazy orphan sweep: a crash between retiring one WAL and removing its
+    // private preimages leaves a backup directory no state references. One
+    // directory scan; failures only log so reads never fail because of it.
+    if (this.matchesCurrentProfile(state)) await this.sweepOrphanBackups(state)
+    return state
   }
 
   /** Publish a pre-install WAL only after all allowlisted preimages are private and complete. */
@@ -396,6 +403,7 @@ export class DesktopInstallRecoveryStore {
     assertPackageVersion(input.packageVersion)
     assertOpaqueId('receipt id', input.receiptId)
     const pending = await this.read()
+    let superseded: DesktopInstallRecoveryTransaction | undefined
     if (pending !== undefined) {
       // Phase dispatch: only this profile's sealed or terminal-but-
       // unacknowledged transactions may make room for a new install. Anything
@@ -410,13 +418,26 @@ export class DesktopInstallRecoveryStore {
       if (!supersede) {
         throw new Error(`${BIN_NAME}: another plugin install recovery transaction is pending`)
       }
-      await this.supersedeSealed(pending)
+      if (pending.phase === 'rolled-back') {
+        // A rolled-back receipt only lingers here when its rollback notice
+        // never landed: startup reconciliation runs before any new install,
+        // so this window is extremely narrow. Record the outstanding
+        // receipt instead of blocking the next install on it.
+        console.warn(
+          `${BIN_NAME}: superseding rolled-back plugin install recovery transaction`
+          + ` ${pending.transactionId} with receipt ${pending.receiptId} still outstanding`,
+        )
+      }
+      // The old WAL stays untouched until the replacement below is durable,
+      // so any failure before that leaves it fully able to supersede again.
+      superseded = pending
     }
     await this.assertProfileDirectory()
     const transactionId = randomUUID()
     const backupDir = this.backupDirectory(transactionId)
     await this.ensureNewPrivateDirectory(backupDir)
     const files: DesktopInstallRecoveryFileRecord[] = []
+    let transaction: DesktopInstallRecoveryTransaction
     try {
       for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
         const image = await this.readProfileFile(name)
@@ -438,7 +459,7 @@ export class DesktopInstallRecoveryStore {
         }
         files.push({ name, before })
       }
-      const state: DesktopInstallRecoveryTransaction = {
+      transaction = {
         version: STATE_VERSION,
         transactionId,
         profileName: this.profileName,
@@ -451,12 +472,19 @@ export class DesktopInstallRecoveryStore {
         phase: 'prepared',
         files,
       }
-      await this.writeState(state)
-      return state
+      await this.writeState(transaction)
     } catch (cause) {
       await rm(backupDir, { recursive: true, force: true }).catch(() => {})
       throw cause
     }
+    // The replacement WAL and all of its private preimages are durable now,
+    // and writeState's atomic rename already retired the old state file in
+    // the same commit, so the superseded transaction's guarantees live on in
+    // this WAL. Only the old preimages remain to be removed — last, and
+    // best-effort, because a failure here leaves nothing but an orphan
+    // backup directory for the lazy sweep in read().
+    if (superseded !== undefined) await this.retireSuperseded(superseded)
+    return transaction
   }
 
   /** Seal exact post-install hashes before exposing success or a restart grant. */
@@ -762,22 +790,32 @@ export class DesktopInstallRecoveryStore {
   }
 
   /**
-   * Remove one superseded transaction's WAL state and private preimages so
-   * the same boot can begin the next plugin install.
+   * Remove one superseded transaction's private preimages so the same boot
+   * can begin the next plugin install.
    *
-   * Superseding a sealed 'awaiting-restart' transaction is safe because that
-   * install already succeeded: the superseding transaction's preimages capture
-   * exactly the post-install state, so a failed follow-up rolls back to it
-   * (correct), and the next startup's claim verifies the final combined state.
-   * 'verified'/'rolled-back' are terminal transactions whose ack or notice
-   * flow simply has not cleared them yet — an explanation obligation never
-   * blocks an active install — so the same removal clearLocked performs is
-   * safe here. Unlike clearLocked this is an internal begin-path dispatch,
-   * not the terminal-phase assertion path.
+   * Only ever called after the superseding transaction's WAL and preimages
+   * are durable: writeState's atomic rename already replaced the old state
+   * file in that same commit, so this removal can no longer cost a WAL its
+   * verification obligation. Superseding a sealed 'awaiting-restart'
+   * transaction is safe because that install already succeeded: the
+   * superseding transaction's preimages capture exactly the post-install
+   * state, so a failed follow-up rolls back to it (correct), and the next
+   * startup's claim verifies the final combined state. 'verified'/'rolled-
+   * back' are terminal transactions whose ack or notice flow simply has not
+   * cleared them yet — an explanation obligation never blocks an active
+   * install — so the same removal clearLocked performs is safe here.
+   *
+   * Removal is best-effort and deliberately last: a failure or crash here
+   * only leaves an orphan backup directory that the lazy sweep in read()
+   * removes later, never a superseded-but-unreplaced WAL.
    */
-  private async supersedeSealed(state: DesktopInstallRecoveryTransaction): Promise<void> {
-    await unlink(this.statePath)
+  private async retireSuperseded(state: DesktopInstallRecoveryTransaction): Promise<void> {
     await rm(this.backupDirectory(state.transactionId), { recursive: true, force: true })
+      .catch(cause => console.warn(
+        `${BIN_NAME}: failed to remove superseded plugin install recovery preimages`
+        + ` for transaction ${state.transactionId}:`
+        + ` ${cause instanceof Error ? cause.message : String(cause)}`,
+      ))
   }
 
   private verifyingState(state: DesktopInstallRecoveryTransaction): DesktopInstallRecoveryTransaction {
@@ -839,6 +877,45 @@ export class DesktopInstallRecoveryStore {
 
   private backupDirectory(transactionId: string): string {
     return join(dirname(this.statePath), BACKUP_DIRECTORY_NAME, transactionId)
+  }
+
+  /**
+   * Lazily remove backup directories no WAL state references anymore. A crash
+   * between retiring a state file and removing its preimages — in clearLocked
+   * or while superseding — leaves exactly such an orphan behind. One scan of
+   * this profile's private backups directory removes only transaction-shaped
+   * directories that predate the current transaction's creation, so a
+   * concurrent begin's fresh preimage directory is never touched. Every
+   * failure is logged and swallowed: sweeping is housekeeping, never a
+   * recovery decision.
+   */
+  private async sweepOrphanBackups(state: DesktopInstallRecoveryTransaction): Promise<void> {
+    try {
+      const cutoff = Date.parse(state.createdAt)
+      if (Number.isNaN(cutoff)) return
+      const backups = join(dirname(this.statePath), BACKUP_DIRECTORY_NAME)
+      let entries: readonly Dirent[]
+      try {
+        entries = await readdir(backups, { withFileTypes: true })
+      } catch (cause) {
+        if (!isENOENT(cause)) throw cause
+        return
+      }
+      for (const entry of entries) {
+        if (entry.name === state.transactionId
+          || entry.isSymbolicLink()
+          || !entry.isDirectory()
+          || !OPAQUE_ID_PATTERN.test(entry.name)) continue
+        const orphan = join(backups, entry.name)
+        if ((await lstat(orphan)).mtimeMs >= cutoff) continue
+        await rm(orphan, { recursive: true, force: true })
+      }
+    } catch (cause) {
+      console.warn(
+        `${BIN_NAME}: plugin install recovery orphan backup sweep failed:`
+        + ` ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
   }
 
   private async writeState(state: DesktopInstallRecoveryTransaction): Promise<void> {
