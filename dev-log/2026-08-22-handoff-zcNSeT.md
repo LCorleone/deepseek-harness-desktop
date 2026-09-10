@@ -483,7 +483,7 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 ### 当前 TODO 快照（2026-09-10 17:10，晚）
 **阻塞在用户输入**：P6 批④ 要内置哪些 skill（给目录/名字即可）→ 我打包+发布（allowlist/handoff/CI/sequence）→ 市场可装（b88 客户端即可，无需再发版）。
 **待决策**：① `sandbox_escalation` 遥测（接上游 approval 事件 or 裁掉）② engramory 走哪条路（①插件侧写盘推荐 / ②工作区降级）③ fleet 群发时机（b88=当前最完整候选）。
-**就绪待做**：fleet 群发 b88 → 版本分布确认 → 通知重装插件（stable 已在 seq25，sidebar 0.18.1 / dai-context 0.41.4 已上线，P15 retire 记录已就位）。
+**就绪待做**：fleet 群发 b88（tag `v2.0.4-b88-fleet`，安装包 SHA `8b06138d7b…f35bec`）→ 版本分布确认 → 通知重装插件（stable 已在 seq25，sidebar 0.18.1 / dai-context 0.41.4 已上线，P15 retire 记录已就位）。
 **排队**：P11 后续（无）· P15 Phase 1-3 收尾（目录侧已用起来，客户端侧待排）· free-search rebase · 沙箱档2（已由 P16 覆盖，可关）· sso-gate 浏览器路径测。
 **基线**：desktop 2333+8skip · market 466 · company-skills 52 · HEAD `23851b31fb`。
 
