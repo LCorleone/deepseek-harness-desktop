@@ -1,0 +1,45 @@
+{
+  "channel": "beta",
+  "sequence": 23,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "44a0f213057d24df31994da60c9a94dcffda27d4a04f2dd68b234220f1b5cc04",
+  "testers": [
+    "julu@deloittecn.com.cn",
+    "sebtang@deloittecn.com.cn",
+    "lizywu@deloittecn.com.cn"
+  ],
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.18.1",
+      "treeDigest": "698b28cedc13148993f25ce4fe72286b6dd5a745eaf061aa4111851c848d8475",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-agent-teams",
+      "version": "0.1.16",
+      "treeDigest": "1e0caabe6f304fb91cbf32e815c2a2cbe93c7548b0433dce2a21a6f8754d1a83",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-context",
+      "version": "0.41.4",
+      "treeDigest": "de0f7a0b17c7a99128959d921ba355475c8858edf5c8ad15a97567a62a2fbe20",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-free-search",
+      "version": "0.4.184",
+      "treeDigest": "40ebd1d973371706fd434aebb22b1da4c7ce9b1b80b1c3ecf056be4b6be1d343",
+      "sourceKind": "tarball",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-09-10T05:01:02.208Z",
+  "gitSha": "cb24b1049e520ac8f9d3ecb6424a9ccac1637a7d",
+  "runId": "34439260762",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34439260762"
+}
