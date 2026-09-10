@@ -61,6 +61,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   bootVerify: 'boot_verify',
   disclaimer: 'disclaimer',
   pluginReset: 'plugin_reset',
+  pythonRuntime: 'python_runtime',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -247,6 +248,20 @@ export interface PluginResetEventDetail {
   readonly receiptsCleared: number
   /** Which automatic rule fired; omitted for the manual recovery-window action. */
   readonly rule?: 'forced' | 'version'
+}
+
+/**
+ * `python_runtime` (P11): whether this boot enabled the desktop's bundled
+ * Python command surface, plus the pinned CPython version when the packaged
+ * digest manifest names one. One row per boot on every platform: disabled
+ * surfaces (non-Windows builds, unpackaged development runs) and digest-gate
+ * refusals report `available: false` without a version, so fleet adoption of
+ * the bundled runtime stays observable from either state.
+ */
+export interface PythonRuntimeEventDetail {
+  readonly available: boolean
+  /** Pinned CPython version (e.g. `3.12.10`); omitted when unknown. */
+  readonly version?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +691,28 @@ export function pluginResetEvent(
   }
 }
 
+/** Longest version string kept in a `python_runtime` detail. */
+export const PYTHON_RUNTIME_VERSION_LIMIT = 64
+
+/**
+ * Project the boot's Python-surface state into a `python_runtime` detail.
+ * The version comes from the packaged digest manifest (a build-time constant
+ * in practice), but it is control-stripped and bounded anyway: a tampered
+ * manifest must not smuggle arbitrary bytes into a telemetry row.
+ */
+export function pythonRuntimeEvent(
+  available: boolean,
+  version: string | undefined,
+): PythonRuntimeEventDetail {
+  const bounded = version === undefined
+    ? undefined
+    : version.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, PYTHON_RUNTIME_VERSION_LIMIT)
+  return {
+    available,
+    ...(bounded === undefined || bounded.length === 0 ? {} : { version: bounded }),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collector (typed facade over the reporter) and desktop wiring
 // ---------------------------------------------------------------------------
@@ -735,6 +772,10 @@ export class ClientEventCollector {
 
   pluginReset(detail: PluginResetEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.pluginReset, detail)
+  }
+
+  pythonRuntime(detail: PythonRuntimeEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.pythonRuntime, detail)
   }
 
   #emit<T extends object>(eventType: string, detail: T): void {

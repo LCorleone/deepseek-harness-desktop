@@ -442,6 +442,10 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 
 ### b83 真机终判通过（2026-09-10 09:50）
 **遥测实证**（julu 机）：09:45:32 启动 → 09:46:29 free-search 装成（#1）→ 09:47:34 sidebar 0.18.1 装成（#2，同会话 65 秒间隔无重启）——旧 bug 正死于第二装，WAL 链式修复实证 ✓。终端 `python --version`=3.12.10（P11-A 捆绑链全通）✓。**b83 判定 fleet 就绪**；三连环 blocker（pnpm 闸/WAL pending/整链）全部闭环。安装包 156MB（+8MB=Python）。**待用户决策**：P11 方案一（捆绑优先，现状）vs 方案二（尊重已有 python，仅 stub/缺失才落捆绑）——Phase B 时定。
+
+### P11 Phase B+C 收口（2026-09-10 10:30）
+**Phase B 落地** `71472fc808`（构建期 sha256 钉扎 get-pip.py 引导 pip+virtualenv 21.7.9 进捆绑树、digest 清单后生成钉最终树；workspace `.venv` 装包约定+deloitte-standard preset python 感知；pip×WinINET 代理互不干扰已记 corporate-network-env）→ **评审零发现**（免修）。
+**Phase C 瘦版落地（本提交）**：遥测 `python_runtime {available, version}` 每 boot 一行（disabled/拒启也报 `available:false` 无版本，fleet 采用率两态可观测；B 留下的 spawn-free pip 探测助手接线供版本号）；README 双语小节+`docs/telemetry.zh.md` 事件行；P11 卡收口（A/B/C 链齐）。**政策开关砍除（2026-09-10 用户拍板）**：构建期 policy 非远端下发、开关救不了运行时，digest fail-closed 已自动禁面，彻底移除捆绑属打包改动而非开关——瘦版不做开关。
 ### 当前 TODO 快照（2026-09-10 07:30，晨）
 **就绪待验**：b81 安装包已下载（asserts 目录，SHA `1ce1b61e0c…9f856d`，含 pnpm 闸修复/收尾批/按钮隐藏；**不含 P15**）。
 **今天顺序**：①用户装 b81 → 连装 3 插件（第二装必败终判）+ 详情弹窗无「打开源码仓库」按钮；②sebtang 装 b81（市场卡死修复+换新）+ 提两个 MR（compat.json 已放行 2.0.4/seq22）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。

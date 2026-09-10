@@ -402,8 +402,11 @@ const BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE = 'Lib/site-packages/virtualenv/__i
 /** dist-info directory pattern capturing one installed package version. */
 const BUNDLED_PYTHON_DIST_INFO_PATTERN = /^Lib\/site-packages\/(pip|virtualenv)-([0-9][0-9A-Za-z.+-]*)\.dist-info\//u
 
-/** Availability of pip and virtualenv inside one bundled Python tree. */
+/** Availability of the bundled Python tree: the pinned interpreter version
+ * plus pip and virtualenv readiness inside it. */
 export interface DesktopPythonPipAvailability {
+  /** Pinned CPython version from the digest manifest header. */
+  readonly pythonVersion: string | undefined
   /** `import pip` works inside the bundled interpreter. */
   readonly pipAvailable: boolean
   /** `import virtualenv` works inside the bundled interpreter. */
@@ -416,6 +419,7 @@ export interface DesktopPythonPipAvailability {
 
 /** Frozen "nothing bundled" answer shared by every unavailable probe path. */
 const PYTHON_PIP_UNAVAILABLE: DesktopPythonPipAvailability = Object.freeze({
+  pythonVersion: undefined,
   pipAvailable: false,
   virtualenvAvailable: false,
   pipVersion: undefined,
@@ -423,7 +427,8 @@ const PYTHON_PIP_UNAVAILABLE: DesktopPythonPipAvailability = Object.freeze({
 })
 
 /**
- * Derive pip/virtualenv availability from one digest manifest.
+ * Derive the interpreter version plus pip/virtualenv availability from one
+ * digest manifest.
  *
  * The manifest lists every file of the verified tree, so a present
  * `Lib/site-packages/pip/__init__.py` marker means `import pip` works: the
@@ -447,6 +452,7 @@ export function pipAvailabilityFromBundledPythonManifest(
       undefined,
     )
   return Object.freeze({
+    pythonVersion: manifest.version,
     pipAvailable: manifest.files[BUNDLED_PYTHON_PIP_PACKAGE_FILE] !== undefined,
     virtualenvAvailable: manifest.files[BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE] !== undefined,
     pipVersion: newest(installedVersions.pip),
@@ -463,7 +469,9 @@ export function pipAvailabilityFromBundledPythonManifest(
  * or malformed manifest answer the frozen "unavailable" record instead of
  * throwing — resolving and verifying the interpreter itself stays the
  * fail-loud gate, this probe merely classifies availability for callers
- * such as the python-runtime telemetry.
+ * such as the python-runtime telemetry: the manifest header also names the
+ * pinned CPython version, so the boot-time `python_runtime` event can stamp
+ * it without spawning the interpreter.
  * @param moduleUrl - URL of a module emitted below the package's `lib` directory.
  * @param inputs - manifest-reader seam; the other seams are unused here.
  * @returns pip/virtualenv availability of the bundled tree.

@@ -27,6 +27,8 @@ import {
   disclaimerEvent,
   pluginInstallEvent,
   pluginResetEvent,
+  PYTHON_RUNTIME_VERSION_LIMIT,
+  pythonRuntimeEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
   stableManifestEntryCount,
@@ -136,7 +138,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -309,10 +311,12 @@ describe('client event collector', () => {
     collector.pluginInstall({ packageName: 'corp-plugin', version: '1.0.0', channel: 'stable', outcome: 'installed' })
     collector.bootVerify({ rejected: [{ packageName: 'corp-plugin', code: 'revoked' }], loaded: 4 })
     collector.disclaimer({ decision: 'agree', clientVersion: '9.9.9-test', textHash: 'a'.repeat(64) })
+    collector.pythonRuntime({ available: true, version: '3.12.10' })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
       'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
+      'python_runtime',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -320,6 +324,7 @@ describe('client event collector', () => {
       expect(captured.createdAt).toEqual(new Date(1_700_000_000_000))
     }
     expect(rows[1]?.detail).toEqual({ result: 'failure', reason: 'the portal rejected the token', mode: 'browser' })
+    expect(rows[7]?.detail).toEqual({ available: true, version: '3.12.10' })
   })
 
   it('carries a null email when no SSO session exists', async () => {
@@ -558,6 +563,29 @@ describe('plugin reset projection', () => {
         receiptsCleared,
       }).receiptsCleared).toBe(0)
     }
+  })
+})
+
+describe('python runtime projection', () => {
+  it('projects an enabled surface with the pinned manifest version', () => {
+    expect(pythonRuntimeEvent(true, '3.12.10')).toEqual({ available: true, version: '3.12.10' })
+  })
+
+  it('projects a disabled or refused surface without a version field', () => {
+    // Non-Windows builds, dev checkouts, and digest-gate refusals all land
+    // here: the row still exists (fleet adoption stays observable) but
+    // carries no fact the desktop cannot vouch for.
+    const detail = pythonRuntimeEvent(false, undefined)
+    expect(detail).toEqual({ available: false })
+    expect('version' in detail).toBe(false)
+  })
+
+  it('bounds and control-strips a manifest version before it enters a row', () => {
+    expect(pythonRuntimeEvent(true, `3.12.10\r\n${'x'.repeat(80)}`)).toEqual({
+      available: true,
+      version: `3.12.10 ${'x'.repeat(PYTHON_RUNTIME_VERSION_LIMIT - 8)}`,
+    })
+    expect('version' in pythonRuntimeEvent(true, ' \t ')).toBe(false)
   })
 })
 

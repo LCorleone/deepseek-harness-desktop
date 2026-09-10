@@ -593,6 +593,7 @@ describe('bundled Python pip availability probe', () => {
     const manifest = parseBundledPythonDigestManifest(JSON.parse(windowsManifestText(BOOTSTRAPPED_MANIFEST_FILES)))
 
     expect(pipAvailabilityFromBundledPythonManifest(manifest)).toEqual({
+      pythonVersion: BUNDLED_PYTHON_VERSION,
       pipAvailable: true,
       virtualenvAvailable: true,
       pipVersion: '26.2.1',
@@ -604,6 +605,7 @@ describe('bundled Python pip availability probe', () => {
     const manifest = parseBundledPythonDigestManifest(JSON.parse(windowsManifestText()))
 
     expect(pipAvailabilityFromBundledPythonManifest(manifest)).toEqual({
+      pythonVersion: BUNDLED_PYTHON_VERSION,
       pipAvailable: false,
       virtualenvAvailable: false,
       pipVersion: undefined,
@@ -619,6 +621,7 @@ describe('bundled Python pip availability probe', () => {
       environment: { PATH: 'C:\\Windows' },
       readDigestManifest,
     })).toEqual({
+      pythonVersion: BUNDLED_PYTHON_VERSION,
       pipAvailable: true,
       virtualenvAvailable: true,
       pipVersion: '26.2.1',
@@ -633,6 +636,7 @@ describe('bundled Python pip availability probe', () => {
       environment: { PATH: 'C:\\Windows' },
       readDigestManifest: () => { throw new Error('ENOENT') },
     })).toEqual({
+      pythonVersion: undefined,
       pipAvailable: false,
       virtualenvAvailable: false,
       pipVersion: undefined,
@@ -650,6 +654,7 @@ describe('bundled Python pip availability probe', () => {
       environment: { PATH: 'C:\\Python312' },
       readDigestManifest,
     })).toEqual({
+      pythonVersion: undefined,
       pipAvailable: false,
       virtualenvAvailable: false,
       pipVersion: undefined,

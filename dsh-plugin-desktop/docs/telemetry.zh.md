@@ -38,6 +38,7 @@ Gateway）/ `Kimi`——面板 SQL 按新值过滤（b68 及以前的存量行�
 | `boot_verify` | **仅当启动有插件被拒或有更新被延迟**（成功不打扰；P15 起延迟窗也触发一行） | `rejected:[{packageName, code}]`（9 码：not-pinned-newer-pinned/not-in-manifest/revoked/integrity-mismatch/tree-mismatch/unresolved/no-lock-integrity/**client-update-required**/other）· `loaded`（**计数含延迟加载的 bundle**——它确实加载了，延迟事实由 deferredUpdates 承载）· `deferredUpdates:[{packageName, requiredRuntime}]`（**仅当有 bundle 走 client-update-required 延迟窗才出现**：已装版被目录判「离窗、只剩别的 runtime 线」，按安装回执 treeDigest 继续加载、等桌面客户端升级才能更新；`requiredRuntime`=等待更新的钉版条目所要求的 `runtime.dshRuntimeVersion` 区间串（如 `^0.1.2-rc.1`）——读数含义是「升客户端而非逛市场」） |
 | `disclaimer` | 内测声明弹窗决策：**仅弹窗真出现才报**（装后无 ack / 升级版本变 / 声明改版哈希变，三者各弹一次；日常启动不弹不报） | `decision` agree/disagree · `clientVersion`（本次同意的版本） · `textHash`（声明文案 JSON 的 sha256，改版即变） |
 | `plugin_reset` | P14 全新 Profile 重建（自动层=构建身份变化按 `rule` 换新；手动层=恢复窗一键） | `trigger` version-change/recovery-window · `rule` **forced/version**（仅自动层带；forced=`pluginResetOnVersionChange` 开，任何构建身份变化都换新，含 `2.0.3+b78`→`2.0.3+b79`；version=开关关（2.0.4 起默认），仅产品版本号变化换新，`2.0.3`→`2.0.4` 清、构建号变化不清） · `profileName` · `outcome` swapped/failed/**deferred**（Windows 外部进程持 profile 目录句柄致改名退避 6 次仍失败：旧 Profile 继续启动，写 `fresh-profile-pending.json` 标记待下次启动最早时刻重试，版本记录不写） · `materialized`（pnpm 同步是否成功） · `receiptsCleared`（清掉的市场装权台账条数） |
+| `python_runtime` | 每次启动一行（P11）：桌面捆绑 Python 命令面本次启动是否启用——非 Windows 平台、未打包 dev 运行、digest fail-closed 拒启也都报 `available:false`（无版本），采用率两态都可观测 | `available` true/false · `version`（打包 digest 清单钉扎的 CPython 版本，如 `3.12.10`；未知即省略，64 上限+控制字符清洗） |
 
 ## 3. 常用查询（老板面板直抄）
 

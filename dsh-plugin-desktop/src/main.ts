@@ -52,7 +52,7 @@ import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } 
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
-import { resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
+import { pythonPipAvailable, resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
 import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
@@ -106,6 +106,7 @@ import {
   disclaimerEvent,
   pluginInstallEvent,
   pluginResetEvent,
+  pythonRuntimeEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
 } from './client-event-reporter.ts'
@@ -551,7 +552,8 @@ async function start(): Promise<void> {
   // profile composition (boot verification, market, CLI environment).
   const policy = readDesktopPolicy()
   // Low-frequency client event telemetry (2026-09-07): SSO logins, catalog
-  // refresh outcomes, boot verification refusals, and market installs land
+  // refresh outcomes, boot verification refusals, market installs, and the
+  // bundled python runtime's per-boot availability land
   // in `dsh_client_events` of the same company database as the model usage
   // reporter (own connection, fire-and-forget, drop-on-failure). Created
   // BEFORE the SSO gate so login attempts are covered; a `usageReport:`
@@ -964,6 +966,18 @@ async function start(): Promise<void> {
       }
     }
     const releasePythonRuntime = generation.own(() => { pythonRuntime?.dispose() })
+    // Client event telemetry (P11): one `python_runtime` row per boot reports
+    // whether the bundled Python command surface came up — installation
+    // covers the fail-closed digest gate, and every disabled surface
+    // (non-Windows builds, dev checkouts, refused trees) reports
+    // `available: false` — plus the pinned version the packaged digest
+    // manifest names. The spawn-free pip probe supplies that version, so
+    // fleet adoption of the bundled runtime stays observable from both
+    // states without ever running the interpreter for telemetry.
+    clientEvents?.pythonRuntime(pythonRuntimeEvent(
+      pythonRuntime !== undefined,
+      pythonPipAvailable(import.meta.url, { platform: process.platform }).pythonVersion,
+    ))
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')
     const pluginManagementStatePath = join(app.getPath('userData'), 'plugin-management', 'state.json')
     const startupRecoveryStatePath = join(app.getPath('userData'), 'startup-recovery', 'state.json')
