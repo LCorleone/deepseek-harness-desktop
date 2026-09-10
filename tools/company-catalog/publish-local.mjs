@@ -763,7 +763,7 @@ async function main() {
   // fields the fleet already sees authoritatively from stable.
   const deployedPackages = Array.isArray(ratchetBase.manifest.packages) ? ratchetBase.manifest.packages : []
   const gatedEntries = packages.flatMap((signed) => {
-    const newly = ['source', 'treeDigest', 'approvedBuilds'].filter((field) => signed[field] !== undefined)
+    const newly = ['source', 'treeDigest', 'approvedBuilds', 'description'].filter((field) => signed[field] !== undefined)
     if (newly.length === 0) return []
     const current = deployedPackages.find((candidate) => candidate?.packageName === signed.packageName && candidate?.version === signed.version)
     const firsts = current === undefined ? newly : newly.filter((field) => current[field] === undefined)
@@ -775,10 +775,10 @@ async function main() {
       `the deployed manifest at ${masterRawUrl} does not carry those fields on the same entries. ` +
       'Older clients verify with additionalProperties:false and reject the ENTIRE manifest on a single unknown key: pushing now ' +
       'blacks out the whole catalog on every machine not yet upgraded to a field-aware build ' +
-      '(for `source`: one whose boot verification, locked terminal add gate, AND market catalog provider — the injected verifier — ' +
+      '(for `source`/`description`: one whose boot verification, locked terminal add gate, AND market catalog provider — the injected verifier — ' +
       'all verify through verifyDesktopCompanyManifest). ' +
       'The publication order is fixed (tools/company-catalog/README.md, "Fleet upgrade ordering (publication gate)" / 「fleet 升级顺序（发布门禁）」): ' +
-      '(1) upgrade the whole fleet to builds that know source/treeDigest/approvedBuilds, (2) only then publish. ' +
+      '(1) upgrade the whole fleet to builds that know source/treeDigest/approvedBuilds/description, (2) only then publish. ' +
       'Re-run with --confirm-fleet-upgraded once every client is upgraded to acknowledge the gate.',
     )
     return

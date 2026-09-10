@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   canonicalJsonText,
@@ -462,5 +462,24 @@ describe('policy-pinned effective provider', () => {
     expect(() => readDesktopMarketStateForUserData(userData)).toThrow(
       'unreadable desktop policy asset',
     )
+  })
+})
+
+// ── recognized-extension key lists must not drift between the signer and the
+// verifier (review P2, description card): `tools/company-catalog` gates what
+// may be signed (manifest-shape.mjs) and this module gates what a client
+// accepts (desktop-market.ts). One side learning a key the other does not
+// signs a manifest the whole fleet rejects — the exact fleet-gate accident
+// class, caught here at test time instead of publish time.
+describe('company entry recognized-extension key sync with the catalog signer', () => {
+  it('ENTRY_OPTIONAL_KEYS (signer) equals COMPANY_ENTRY_OPTIONAL_KEYS (verifier)', () => {
+    const readKeys = (source: string, name: string): readonly string[] => {
+      const match = new RegExp(`const ${name} = \\[([^\\]]+)\\]`, 'u').exec(source)
+      if (match === null) throw new Error(`key list ${name} not found`)
+      return match[1]!.split(',').map((item) => item.trim().replace(/^['"`]|['"`]$/gu, '')).filter((item) => item.length > 0).sort()
+    }
+    const signer = readFileSync(resolve(__dirname, '../../tools/company-catalog/lib/manifest-shape.mjs'), 'utf8')
+    const verifier = readFileSync(resolve(__dirname, '../src/desktop-market.ts'), 'utf8')
+    expect(readKeys(verifier, 'COMPANY_ENTRY_OPTIONAL_KEYS')).toEqual(readKeys(signer, 'ENTRY_OPTIONAL_KEYS'))
   })
 })

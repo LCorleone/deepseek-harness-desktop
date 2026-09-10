@@ -515,7 +515,10 @@ describe('origin-mode host HTTP client injection', () => {
     // injection the same manifest is rejected whole — the field-unaware
     // default the fleet-upgrade gate still pins.
     const sourceCarrying = signedManifestText([
-      packageEntry(safePackage, safeVersion, safeIntegrity, { source: { kind: 'npm' } }),
+      packageEntry(safePackage, safeVersion, safeIntegrity, {
+        source: { kind: 'npm' },
+        description: '上下文洞察与管理：仪表盘查看上下文占用',
+      }),
     ])
     const fixture = packagedAppFixture(sourceCarrying)
     // Field-aware plumbing double (the same contract the Desktop host
@@ -528,10 +531,11 @@ describe('origin-mode host HTTP client injection', () => {
       const parsed = JSON.parse(text) as { packages?: Array<Record<string, unknown>>; signature?: unknown }
       const packages = Array.isArray(parsed.packages) ? parsed.packages : []
       const sources = packages.map(entry => entry.source)
+      const descriptions = packages.map(entry => entry.description)
       const { signature: _wireSignature, ...document } = parsed
       const projection = {
         ...document,
-        packages: packages.map(({ source: _source, ...rest }) => rest),
+        packages: packages.map(({ source: _source, description: _description, ...rest }) => rest),
       }
       const signature = createCompanyManifestSignature(
         projection as unknown as Parameters<typeof createCompanyManifestSignature>[0],
@@ -540,9 +544,10 @@ describe('origin-mode host HTTP client injection', () => {
       )
       const market = verifyCompanyManifest(canonicalJsonText({ ...projection, signature }), options)
       if (!market.ok) return market
-      const extended = market.manifest.packages.map((entry, index) => (
-        sources[index] === undefined ? entry : { ...entry, source: sources[index] }
-      ))
+      const extended = market.manifest.packages.map((entry, index) => {
+        const withSource = sources[index] === undefined ? entry : { ...entry, source: sources[index] }
+        return descriptions[index] === undefined ? withSource : { ...withSource, description: descriptions[index] }
+      })
       return { ...market, manifest: { ...market.manifest, packages: extended } }
     }
     const injectedWiring = createCommunityMarketCompanyCatalog(fixture.policy, memoryScope(), {
@@ -560,6 +565,12 @@ describe('origin-mode host HTTP client injection', () => {
 
     expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.id)))
       .toEqual([`npm:${safePackage}@${safeVersion}`])
+    // The description rides the same wired chain onto the market card text
+    // (item.summary); without the extension round trip the field-unaware
+    // projection would have dropped it and the card would fall back to the
+    // placeholder.
+    expect(index?.snapshots.flatMap(snapshot => snapshot.items.map(item => item.summary)))
+      .toEqual(['上下文洞察与管理：仪表盘查看上下文占用'])
     expect(injectedWiring.installTargetAuthority.canInstall({
       packageName: safePackage,
       version: safeVersion,

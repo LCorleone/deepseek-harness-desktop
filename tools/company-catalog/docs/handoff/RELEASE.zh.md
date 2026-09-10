@@ -149,7 +149,7 @@ gh workflow run "Company catalog publish" -f channel=beta
 
 | 拦截信息 | 含义 | 过闸 |
 |---|---|---|
-| fleet-upgrade gate | 条目首次带 source/treeDigest 上 stable | `--confirm-fleet-upgraded`（前提：全 fleet 已是 field-aware 构建——#47 起都是） |
+| fleet-upgrade gate | 条目首次带 source/treeDigest/description 上 stable | `--confirm-fleet-upgraded`（前提：全 fleet 已是 field-aware 构建——#47 起都是） |
 | package-removal guard | stable 将丢一个未吊销的包（浸泡窗口陷阱） | 先转正该包，或真下架先 revoke；有意移除 `--allow-package-removal` |
 | version-retire guard | stable 将丢同包一个未吊销版本（静默撤版） | 默认保留旧钉（promote 即如此）；显式下窗走 revoke→发布→retire（见 D2）；有意立即撤 `--allow-version-retire` |
 | sequence ratchet … stale | 产物序号 ≤ 已部署 | 重新跑 CI（state 旧了） |

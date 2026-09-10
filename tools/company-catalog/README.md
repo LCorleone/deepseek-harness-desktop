@@ -403,13 +403,13 @@ manifest may be published until the whole fleet runs builds at or beyond
 it.
 
 **fleet 升级顺序（发布门禁）**。这些字段对签名者是可选的，对 fleet 不是：
-任何携带 `treeDigest`/`approvedBuilds`/`source` 的清单上架前，**全部**客户端必须已运行
+任何携带 `treeDigest`/`approvedBuilds`/`source`/`description` 的清单上架前，**全部**客户端必须已运行
 认识这些字段的构建——旧客户端以 `additionalProperties: false` 验签，一个未知
 键就会让它拒收**整份**清单，受影响机器上整个目录瘫痪（而不只是这一个插件）。
 因此发布顺序固定：先升级 fleet → 在标准参考环境实测 `treeDigest` → 以严格更
 高的 `sequence` 重签（计数器不可回退，坏发布只能被更高 sequence 覆盖，无法
 撤销）→ 再 push 清单。`publish-local.mjs` 已把该门禁机制化：当 artifact 携带
-`treeDigest`/`approvedBuilds` 而 GitLab 已部署清单的同条目尚未携带（首个权威发
+`treeDigest`/`approvedBuilds`/`source`/`description` 而 GitLab 已部署清单的同条目尚未携带（首个权威发
 布）时，不带 `--confirm-fleet-upgraded` 直接拒发并打印升级指引——该参数即操作
 者对「fleet 已全部运行认识字段的构建」的显式确认。
 
