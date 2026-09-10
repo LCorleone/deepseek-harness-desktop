@@ -40,5 +40,21 @@
       "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-context-0.41.4.tgz",
       "path": "tools/company-catalog/out/packages/dsh-dai-context-0.41.4.tgz"
     }
+  },
+  {
+    "packageName": "dsh-dai-agent-teams",
+    "version": "0.1.16",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-agent-teams-0.1.16.tgz",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "0.1.2-rc.1"
+    },
+    "treeDigest": "1e0caabe6f304fb91cbf32e815c2a2cbe93c7548b0433dce2a21a6f8754d1a83",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-agent-teams-0.1.16.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-dai-agent-teams-0.1.16.tgz"
+    }
   }
 ]
