@@ -446,6 +446,10 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 ### P11 Phase B+C 收口（2026-09-10 10:30）
 **Phase B 落地** `71472fc808`（构建期 sha256 钉扎 get-pip.py 引导 pip+virtualenv 21.7.9 进捆绑树、digest 清单后生成钉最终树；workspace `.venv` 装包约定+deloitte-standard preset python 感知；pip×WinINET 代理互不干扰已记 corporate-network-env）→ **评审零发现**（免修）。
 **Phase C 瘦版落地（本提交）**：遥测 `python_runtime {available, version}` 每 boot 一行（disabled/拒启也报 `available:false` 无版本，fleet 采用率两态可观测；B 留下的 spawn-free pip 探测助手接线供版本号）；README 双语小节+`docs/telemetry.zh.md` 事件行；P11 卡收口（A/B/C 链齐）。**政策开关砍除（2026-09-10 用户拍板）**：构建期 policy 非远端下发、开关救不了运行时，digest fail-closed 已自动禁面，彻底移除捆绑属打包改动而非开关——瘦版不做开关。
+### P11 整卡关闭 + b84（2026-09-10 11:05）
+**Phase B 落地过审零发现**（`71472fc808`）：构建期 bootstrap（unzip→校验→get-pip 钉 sha256 `fb24e6…`→virtualenv==21.7.9→生成逐文件 manifest；`DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE` 离线覆盖；`--no-compile`+清 Scripts 保可复现）；_pth 确认 A 已放 site；pip 探测助手；agent preset python/.venv 指引；corporate-network-env 仅注释（代理相容性文档化，零行为改动）。评审实网复核 get-pip 字节一致。
+**Phase C 瘦版落地过审**（`9c10b6f21e`+措辞修 `b23838b598`）：`python_runtime` 遥测（每 boot 一行 `{available, pythonVersion?}`；Windows digest 拒启仍带钉扎版本=可定位哪个版本被拒）；README 双语；P11 卡收口，**政策开关砍除**（构建期 policy 非远端，digest fail-closed 已自动禁面）。
+**b84 构建下载**（run 34430802041，SHA `3239ad13b3…36d00b`，161.8MB=+5.8MB pip/virtualenv）= P11 全量 + P15 + WAL 连装修复。**待用户真机验 pip**：`python -m pip --version` / `python -m virtualenv .venv` / `.venv\Scripts\pip install` 走代理零配置。
 ### 当前 TODO 快照（2026-09-10 07:30，晨）
 **就绪待验**：b81 安装包已下载（asserts 目录，SHA `1ce1b61e0c…9f856d`，含 pnpm 闸修复/收尾批/按钮隐藏；**不含 P15**）。
 **今天顺序**：①用户装 b81 → 连装 3 插件（第二装必败终判）+ 详情弹窗无「打开源码仓库」按钮；②sebtang 装 b81（市场卡死修复+换新）+ 提两个 MR（compat.json 已放行 2.0.4/seq22）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。
