@@ -604,5 +604,52 @@ describe('desktop terminal environment', () => {
     expect(launch.pythonShimPaths).toBeUndefined()
     expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pnpm.cmd'])
     expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PYTHON_EXECUTABLE')
+    expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_EXECUTABLE')
+  })
+
+  it('mirrors the shared environment pip alias beside the python aliases', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+    const options = windowsOptions(stateDir, harness.spawn)
+    options.pythonExecutable = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\python.exe'
+    options.pipExecutable = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\pip.exe'
+
+    const launch = openDesktopTerminal(options)
+
+    expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pip.cmd', 'pnpm.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(launch.pipShimPath).toBe(join(launch.shimDir, 'pip.cmd'))
+    expect(readFileSync(launch.pipShimPath!, 'utf8')).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      '"%DSH_DESKTOP_PIP_EXECUTABLE%" %*',
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
+    expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PIP_EXECUTABLE).toBe(options.pipExecutable)
+    expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PYTHON_EXECUTABLE).toBe(options.pythonExecutable)
+    expect(harness.unref).toHaveBeenCalledOnce()
+  })
+
+  it('omits the pip alias when the shared environment did not come up', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+    const options = windowsOptions(stateDir, harness.spawn)
+    options.pythonExecutable = 'C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe'
+
+    const launch = openDesktopTerminal(options)
+
+    expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pnpm.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(launch.pipShimPath).toBeUndefined()
+    expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_EXECUTABLE')
+  })
+
+  it('refuses a pip command without a Python command', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+    const options = windowsOptions(stateDir, harness.spawn)
+    options.pipExecutable = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\pip.exe'
+
+    expect(() => openDesktopTerminal(options)).toThrow('pip command requires a Python command')
+    expect(harness.calls).toHaveLength(0)
   })
 })

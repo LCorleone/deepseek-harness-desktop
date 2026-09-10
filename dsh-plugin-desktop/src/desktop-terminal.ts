@@ -13,7 +13,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, win32 } from 'node:path'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
-import { DESKTOP_PYTHON_ALIAS_NAMES } from './desktop-runtime-environment.ts'
+import { DESKTOP_PYTHON_ALIAS_NAMES, DESKTOP_PYTHON_PIP_ALIAS_NAME } from './desktop-runtime-environment.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
@@ -21,6 +21,7 @@ const DSH_HOME = 'DSH_HOME'
 const PATH = 'PATH'
 const WINDOWS_NODE_EXECUTABLE = 'DSH_DESKTOP_NODE_EXECUTABLE'
 const WINDOWS_PYTHON_EXECUTABLE = 'DSH_DESKTOP_PYTHON_EXECUTABLE'
+const WINDOWS_PIP_EXECUTABLE = 'DSH_DESKTOP_PIP_EXECUTABLE'
 const WINDOWS_DSH_BOOTSTRAP = 'DSH_DESKTOP_DSH_BOOTSTRAP'
 const WINDOWS_ELECTRON_VERSION = 'DSH_DESKTOP_ELECTRON_VERSION'
 const WINDOWS_PNPM_ENTRY = 'DSH_DESKTOP_PNPM_ENTRY'
@@ -34,6 +35,7 @@ const WINDOWS_GENERATED_ENVIRONMENT_KEYS = new Set([
   DEFAULT_PROFILE,
   WINDOWS_NODE_EXECUTABLE,
   WINDOWS_PYTHON_EXECUTABLE,
+  WINDOWS_PIP_EXECUTABLE,
   WINDOWS_DSH_BOOTSTRAP,
   WINDOWS_ELECTRON_VERSION,
   WINDOWS_PNPM_ENTRY,
@@ -107,6 +109,12 @@ export interface DesktopTerminalOptions {
    * `python`/`python3`/`py` aliases instead of failing to open.
    */
   pythonExecutable?: string
+  /**
+   * Windows pip command the additional `pip` alias executes; non-empty only
+   * while the shared Python environment (P16) is the published surface.
+   * Requires `pythonExecutable`: pip without an interpreter is never useful.
+   */
+  pipExecutable?: string
   /** Electron version used by pnpm native dependency installation. */
   electronVersion: string
   /** DSH profile selected by the desktop application. */
@@ -147,6 +155,8 @@ export interface DesktopTerminalLaunch {
   nodeShimPath: string
   /** Generated Windows `python`/`python3`/`py` alias shims, when Python ships. */
   pythonShimPaths?: readonly string[]
+  /** Generated Windows `pip` alias shim, when a pip command ships. */
+  pipShimPath?: string
   /** Generated script that configures and welcomes the interactive shell. */
   welcomePath: string
   /** Windows command broker that creates the visible console, when applicable. */
@@ -174,6 +184,7 @@ interface DesktopTerminalFiles {
   pnpmShimPath: string
   nodeShimPath: string
   pythonShimPaths?: readonly string[]
+  pipShimPath?: string
   welcomePath: string
   windowsCmdWelcomePath?: string
 }
@@ -255,23 +266,12 @@ function macShim(nodeExecutable: string): string {
   ].join('\n')
 }
 
-/** Build a generic Windows command shim backed by the bundled Node runtime. */
-function windowsShim(): string {
+/** Build one generic Windows command shim backed by a generated environment variable. */
+function windowsVariableShim(variable: string): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
-    `"%${WINDOWS_NODE_EXECUTABLE}%" %*`,
-    'exit /b %errorlevel%',
-    '',
-  ].join('\r\n')
-}
-
-/** Build one Windows Python alias backed by the bundled Python runtime. */
-function windowsPythonShim(): string {
-  return [
-    '@echo off',
-    'setlocal DisableDelayedExpansion',
-    `"%${WINDOWS_PYTHON_EXECUTABLE}%" %*`,
+    `"%${variable}%" %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -484,6 +484,9 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
     ['product version', options.productVersion],
   ] as const) assertScriptValue(label, value)
 
+  if (options.pythonExecutable === undefined && options.pipExecutable !== undefined) {
+    throw new Error('dsh-plugin-desktop: terminal pip command requires a Python command')
+  }
   prepareStateDirectory(options.stateDir)
   const shimDir = join(options.stateDir, 'bin')
   prepareStateDirectory(shimDir)
@@ -509,23 +512,38 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
     const pythonShimPaths = options.pythonExecutable === undefined
       ? undefined
       : DESKTOP_PYTHON_ALIAS_NAMES.map(alias => join(shimDir, alias))
+    const shipsPip = options.pythonExecutable !== undefined && options.pipExecutable !== undefined
+    const pipShimPath = shipsPip ? join(shimDir, DESKTOP_PYTHON_PIP_ALIAS_NAME) : undefined
     const files: DesktopTerminalFiles = {
       shimDir,
       dshShimPath: join(shimDir, 'dsh.cmd'),
       pnpmShimPath: join(shimDir, 'pnpm.cmd'),
       nodeShimPath: join(shimDir, 'node.cmd'),
       ...(pythonShimPaths === undefined ? {} : { pythonShimPaths }),
+      ...(pipShimPath === undefined ? {} : { pipShimPath }),
       welcomePath: join(options.stateDir, 'welcome.ps1'),
       windowsCmdWelcomePath,
     }
     replacePrivateFile(files.dshShimPath, windowsDshShim(options), PRIVATE_FILE_MODE)
     replacePrivateFile(files.pnpmShimPath, windowsPnpmShim(), PRIVATE_FILE_MODE)
-    replacePrivateFile(files.nodeShimPath, windowsShim(), PRIVATE_FILE_MODE)
+    replacePrivateFile(files.nodeShimPath, windowsVariableShim(WINDOWS_NODE_EXECUTABLE), PRIVATE_FILE_MODE)
     if (options.pythonExecutable !== undefined) {
       assertScriptValue('Python command', options.pythonExecutable)
       for (const alias of DESKTOP_PYTHON_ALIAS_NAMES) {
-        replacePrivateFile(join(shimDir, alias), windowsPythonShim(), PRIVATE_FILE_MODE)
+        replacePrivateFile(
+          join(shimDir, alias),
+          windowsVariableShim(WINDOWS_PYTHON_EXECUTABLE),
+          PRIVATE_FILE_MODE,
+        )
       }
+    }
+    if (options.pythonExecutable !== undefined && options.pipExecutable !== undefined) {
+      assertScriptValue('pip command', options.pipExecutable)
+      replacePrivateFile(
+        join(shimDir, DESKTOP_PYTHON_PIP_ALIAS_NAME),
+        windowsVariableShim(WINDOWS_PIP_EXECUTABLE),
+        PRIVATE_FILE_MODE,
+      )
     }
     replacePrivateFile(files.welcomePath, windowsWelcome(), PRIVATE_FILE_MODE)
     replacePrivateFile(windowsCmdWelcomePath, windowsCmdWelcome(), PRIVATE_FILE_MODE)
@@ -562,6 +580,7 @@ function terminalEnvironment(options: DesktopTerminalOptions, files: DesktopTerm
     env[DEFAULT_PROFILE] = options.profileName
     env[WINDOWS_NODE_EXECUTABLE] = options.nodeExecutable
     if (options.pythonExecutable !== undefined) env[WINDOWS_PYTHON_EXECUTABLE] = options.pythonExecutable
+    if (options.pipExecutable !== undefined) env[WINDOWS_PIP_EXECUTABLE] = options.pipExecutable
     env[WINDOWS_DSH_BOOTSTRAP] = options.dshBootstrapPath
     env[WINDOWS_ELECTRON_VERSION] = options.electronVersion
     env[WINDOWS_PNPM_ENTRY] = options.pnpmBinPath
@@ -780,6 +799,7 @@ export function openDesktopTerminal(options: DesktopTerminalOptions): DesktopTer
     pnpmShimPath: files.pnpmShimPath,
     nodeShimPath: files.nodeShimPath,
     ...(files.pythonShimPaths === undefined ? {} : { pythonShimPaths: files.pythonShimPaths }),
+    ...(files.pipShimPath === undefined ? {} : { pipShimPath: files.pipShimPath }),
     welcomePath: files.welcomePath,
     ...(windowsLauncherPath === undefined ? {} : { windowsLauncherPath }),
     child,

@@ -86,12 +86,22 @@ export interface DesktopDshRuntimeInstallation {
 /** Alias shims the Python runtime publishes, in reconciliation order. */
 export const DESKTOP_PYTHON_ALIAS_NAMES = ['py.cmd', 'python.cmd', 'python3.cmd'] as const
 
+/** Additional `pip` alias, published only while the shared environment ships one. */
+export const DESKTOP_PYTHON_PIP_ALIAS_NAME = 'pip.cmd' as const
+
 /** Inputs used to install the app-local Python command environment. */
 export interface DesktopPythonRuntimeOptions {
   /** Host platform; only the Windows embeddable distribution is bundled. */
   platform: NodeJS.Platform
   /** Windows Python command the generated aliases execute; packaged builds pass the bundled distribution. */
   pythonExecutable: string
+  /**
+   * Windows pip command the additional `pip` alias executes. The packaged
+   * tree strips `Scripts` launchers, so this is non-empty only while the
+   * desktop's shared Python environment (P16) is the published surface;
+   * absent keeps the alias unpublished instead of aliasing a dead command.
+   */
+  pipExecutable?: string
   /** Private application-owned directory receiving generated files. */
   stateDir: string
   /** Parent environment whose PATH is updated; defaults to `process.env`. */
@@ -108,6 +118,8 @@ export interface DesktopPythonRuntimeInstallation {
   python3ShimPath: string
   /** Public `py` alias shim. */
   pyShimPath: string
+  /** Public `pip` alias shim, present only while a pip command ships. */
+  pipShimPath?: string
   /** Private alias directory, invisible on PATH, reserved for app-owned process trees. */
   pythonRuntimeDir: string
   /** Remove this installation's PATH entry without deleting persistent generated files. */
@@ -482,7 +494,9 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
  *
  * The Windows package exposes the bundled embeddable CPython distribution
  * through three interchangeable command names — `python`, `python3`, and `py`
- * — so scripts written against any of them work unmodified. The aliases live
+ * — so scripts written against any of them work unmodified, plus a fourth
+ * `pip` alias whenever the caller ships a pip command (the shared Python
+ * environment, P16). The aliases live
  * in the public `bin` directory this installation prepends to PATH (matching
  * the pnpm runtime's non-clobbering semantics), and the same alias set is
  * mirrored into a private directory no PATH entry exposes, reserved for
@@ -497,7 +511,10 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
   for (const [label, value] of [
     ['Python command', options.pythonExecutable],
     ['state directory', options.stateDir],
-  ] as const) assertScriptValue(label, value)
+    ...(options.pipExecutable === undefined
+      ? []
+      : [['pip command', options.pipExecutable] as const]),
+  ] as readonly (readonly [string, string])[]) assertScriptValue(label, value)
 
   const pathDir = join(options.stateDir, 'bin')
   const pythonRuntimeDir = join(options.stateDir, 'private', 'python-runtime')
@@ -505,16 +522,24 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
   preparePrivateDirectory(pathDir)
   preparePrivateDirectory(pythonRuntimeDir)
 
-  for (const alias of DESKTOP_PYTHON_ALIAS_NAMES) {
-    removeStaleTemporaryFiles(pathDir, alias)
-    removeStaleTemporaryFiles(pythonRuntimeDir, alias)
-  }
-  reconcileOwnedDirectoryEntries(pathDir, [...DESKTOP_PYTHON_ALIAS_NAMES])
-  reconcileOwnedDirectoryEntries(pythonRuntimeDir, [...DESKTOP_PYTHON_ALIAS_NAMES])
-  const shim = windowsPythonAliasShim(options.pythonExecutable)
+  const aliases: readonly { name: string, shim: string }[] = [
+    ...DESKTOP_PYTHON_ALIAS_NAMES.map(name => ({ name, shim: windowsPythonAliasShim(options.pythonExecutable) })),
+    ...(options.pipExecutable === undefined
+      ? []
+      : [{
+          name: DESKTOP_PYTHON_PIP_ALIAS_NAME,
+          shim: windowsPythonAliasShim(options.pipExecutable),
+        }]),
+  ]
+  const aliasNames = aliases.map(alias => alias.name)
   for (const directory of [pathDir, pythonRuntimeDir]) {
-    for (const alias of DESKTOP_PYTHON_ALIAS_NAMES) {
-      replacePrivateFile(join(directory, alias), shim, PRIVATE_FILE_MODE)
+    for (const alias of aliases) removeStaleTemporaryFiles(directory, alias.name)
+  }
+  reconcileOwnedDirectoryEntries(pathDir, aliasNames)
+  reconcileOwnedDirectoryEntries(pythonRuntimeDir, aliasNames)
+  for (const directory of [pathDir, pythonRuntimeDir]) {
+    for (const alias of aliases) {
+      replacePrivateFile(join(directory, alias.name), alias.shim, PRIVATE_FILE_MODE)
     }
   }
 
@@ -523,6 +548,9 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
     pythonShimPath: join(pathDir, 'python.cmd'),
     python3ShimPath: join(pathDir, 'python3.cmd'),
     pyShimPath: join(pathDir, 'py.cmd'),
+    ...(options.pipExecutable === undefined
+      ? {}
+      : { pipShimPath: join(pathDir, DESKTOP_PYTHON_PIP_ALIAS_NAME) }),
     pythonRuntimeDir,
     dispose: installPathDirectory(options.environment ?? process.env, pathDir, options.platform),
   }

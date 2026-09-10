@@ -1,3 +1,5 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopShellSpec } from '../src/runtime.ts'
@@ -1513,6 +1515,48 @@ describe('Electron desktop runtime', () => {
       expect(error).toHaveBeenCalledOnce()
     } finally {
       delete (process.versions as { electron?: string }).electron
+    }
+  })
+
+  it('targets the shared python environment from the terminal when one exists', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    Object.defineProperty(process.versions, 'electron', {
+      configurable: true,
+      value: '43.4.0',
+    })
+    const localAppData = mkdtempSync(join(tmpdir(), 'dsh-desktop-pyenv-localappdata-'))
+    const previousLocalAppData = process.env.LOCALAPPDATA
+    process.env.LOCALAPPDATA = localAppData
+    try {
+      const scripts = join(localAppData, 'DSH Desktop', 'pyenv', 'Scripts')
+      mkdirSync(scripts, { recursive: true })
+      writeFileSync(join(scripts, 'python.exe'), 'stub')
+      writeFileSync(join(scripts, 'pip.exe'), 'stub')
+      const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+      const runtime = new ElectronDesktopRuntime(async () => {})
+      runtime.configureTerminal({
+        profileName: 'desktop',
+        profileDir: 'C:\\Users\\Example\\.dsh\\profiles\\desktop',
+        homeDir: 'C:\\Users\\Example\\.dsh',
+      })
+      pythonRuntime.resolve.mockClear()
+
+      runtime.openTerminal()
+
+      // The shared environment wins over the bundled interpreter, its pip
+      // rides along, and the bundled resolution is not even consulted.
+      expect(terminal.open).toHaveBeenCalledOnce()
+      expect(terminal.open.mock.calls[0]?.[0]).toMatchObject({
+        pythonExecutable: join(scripts, 'python.exe'),
+        pipExecutable: join(scripts, 'pip.exe'),
+      })
+      expect(pythonRuntime.resolve).not.toHaveBeenCalled()
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA
+      else process.env.LOCALAPPDATA = previousLocalAppData
+      delete (process.versions as { electron?: string }).electron
+      rmSync(localAppData, { recursive: true, force: true })
+      platformSpy.mockRestore()
     }
   })
 

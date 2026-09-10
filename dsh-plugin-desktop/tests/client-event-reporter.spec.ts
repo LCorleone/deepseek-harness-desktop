@@ -29,6 +29,7 @@ import {
   pluginResetEvent,
   PYTHON_RUNTIME_VERSION_LIMIT,
   pythonRuntimeEvent,
+  sandboxEscalationEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
   stableManifestEntryCount,
@@ -138,7 +139,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -312,11 +313,12 @@ describe('client event collector', () => {
     collector.bootVerify({ rejected: [{ packageName: 'corp-plugin', code: 'revoked' }], loaded: 4 })
     collector.disclaimer({ decision: 'agree', clientVersion: '9.9.9-test', textHash: 'a'.repeat(64) })
     collector.pythonRuntime({ available: true, version: '3.12.10' })
+    collector.sandboxEscalation({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
       'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
-      'python_runtime',
+      'python_runtime', 'sandbox_escalation',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -325,6 +327,7 @@ describe('client event collector', () => {
     }
     expect(rows[1]?.detail).toEqual({ result: 'failure', reason: 'the portal rejected the token', mode: 'browser' })
     expect(rows[7]?.detail).toEqual({ available: true, version: '3.12.10' })
+    expect(rows[8]?.detail).toEqual({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
   })
 
   it('carries a null email when no SSO session exists', async () => {
@@ -586,6 +589,28 @@ describe('python runtime projection', () => {
       version: `3.12.10 ${'x'.repeat(PYTHON_RUNTIME_VERSION_LIMIT - 8)}`,
     })
     expect('version' in pythonRuntimeEvent(true, ' \t ')).toBe(false)
+  })
+})
+
+describe('sandbox escalation projection', () => {
+  it('projects all three escalation outcomes with the sandbox mode', () => {
+    for (const outcome of ['approved', 'rejected', 'suppressed'] as const) {
+      expect(sandboxEscalationEvent('0123456789abcdef', outcome, 'workspace-write')).toEqual({
+        commandHash: '0123456789abcdef',
+        outcome,
+        mode: 'workspace-write',
+      })
+    }
+  })
+
+  it('never lets command text ride the hash field into a row', () => {
+    // Uppercase hex normalizes, separators drop, and anything that is not
+    // exactly 16 hex characters after bounding degrades to zeros instead of
+    // throwing or leaking free text.
+    expect(sandboxEscalationEvent('0123456789ABCDEF', 'approved', 'read-only').commandHash).toBe('0123456789abcdef')
+    expect(sandboxEscalationEvent('0123-4567-89ab-cdef', 'approved', 'read-only').commandHash).toBe('0123456789abcdef')
+    expect(sandboxEscalationEvent('pip install requests', 'approved', 'read-only').commandHash).toBe('0000000000000000')
+    expect(sandboxEscalationEvent('deadbeef', 'approved', 'read-only').commandHash).toBe('0000000000000000')
   })
 })
 

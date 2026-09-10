@@ -52,7 +52,12 @@ import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } 
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
-import { pythonPipAvailable, resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
+import { pythonPipAvailable, resolveDesktopLocalPythonExecutable, resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
+import {
+  desktopSharedPythonEnvironmentRoot,
+  ensureDesktopSharedPythonEnvironment,
+} from './desktop-shared-python-environment.ts'
+import { setDesktopSandboxEscalationSink } from './windows-pwsh-sandbox.ts'
 import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
@@ -107,6 +112,7 @@ import {
   pluginInstallEvent,
   pluginResetEvent,
   pythonRuntimeEvent,
+  sandboxEscalationEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
 } from './client-event-reporter.ts'
@@ -567,6 +573,14 @@ async function start(): Promise<void> {
     logInfo: message => { electronLogger.error(`${message}`) },
     logError: message => { electronLogger.error(`${message}`) },
   })
+  // P16 sandbox-escalation telemetry: the Windows PowerShell sandbox adapter
+  // is constructed by the Cordis loader from composition data, so the
+  // collector reaches it through the adapter's module seam instead of a
+  // constructor argument. Only the command HASH travels — the dialog keeps
+  // the command text local (see client-event-reporter's privacy contract).
+  setDesktopSandboxEscalationSink(event => {
+    clientEvents?.sandboxEscalation(sandboxEscalationEvent(event.commandHash, event.outcome, event.mode))
+  })
   generation.own(() => { void clientEvents?.dispose() })
   // Launcher-environment hygiene (review guard-clamp P2-1): the locked GUI
   // evaluates the base rows' `!!js` sandbox/approval expressions in THIS
@@ -946,15 +960,39 @@ async function start(): Promise<void> {
     // missing or unverifiable distribution disables only this command
     // surface instead of failing application startup — the digest gate is
     // fail-closed per surface, not per application.
+    //
+    // P16: when the surface is enabled, the published aliases target the
+    // desktop-wide shared Python environment (`%LOCALAPPDATA%\DSH Desktop`
+    // + `pyenv`), provisioned once from a real local Python when one exists
+    // (WindowsApps store stubs excluded by the shared resolution) and from
+    // the digest-verified bundled interpreter otherwise. The provisioning
+    // command writes only below the shared root, so the bundled tree stays
+    // byte-identical and its packaged digest keeps verifying; any failure
+    // logs once and keeps today's behavior (bundled aliases, no pip alias).
     let pythonRuntime: DesktopPythonRuntimeInstallation | undefined
     if (process.platform === 'win32') {
       try {
-        pythonRuntime = installDesktopPythonRuntime({
+        const bundledPythonExecutable = resolveDesktopPythonExecutable(import.meta.url, {
           platform: process.platform,
-          pythonExecutable: resolveDesktopPythonExecutable(import.meta.url, {
+          environment: process.env,
+        })
+        const sharedPythonEnvironment = await ensureDesktopSharedPythonEnvironment({
+          platform: process.platform,
+          localPythonExecutable: resolveDesktopLocalPythonExecutable({
             platform: process.platform,
             environment: process.env,
           }),
+          bundledPythonExecutable,
+          rootDirectory: desktopSharedPythonEnvironmentRoot(process.env, app.getPath('userData')),
+          environment: process.env,
+          log: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
+        })
+        pythonRuntime = installDesktopPythonRuntime({
+          platform: process.platform,
+          pythonExecutable: sharedPythonEnvironment.pythonExecutable,
+          ...(sharedPythonEnvironment.pipExecutable === undefined
+            ? {}
+            : { pipExecutable: sharedPythonEnvironment.pipExecutable }),
           stateDir: join(app.getPath('userData'), 'python-runtime-commands'),
           environment: process.env,
         })

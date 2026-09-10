@@ -14,7 +14,7 @@ import {
 } from '../src/company-agent-presets.ts'
 import { companyPresetRoot, shippedPresetRoot } from '../src/profile.ts'
 
-const COMPANY_PRESET_DESCRIPTION = '功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流；附带公司安全管控约束，桌面端自身配置不由 Agent 修改；内置 Python 3.12 运行时，装包使用 workspace .venv。'
+const COMPANY_PRESET_DESCRIPTION = '功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流；附带公司安全管控约束，桌面端自身配置不由 Agent 修改；内置共享 Python 环境，pip install 一次全工作区生效。'
 const companyComposition = join(
   fileURLToPath(new URL('../agent-presets/', import.meta.url)),
   COMPANY_PRESET_ID,
@@ -188,13 +188,22 @@ describe('company agent preset guard', () => {
     expect(persona).toContain('Sandbox discipline')
     expect(persona).toContain('retry the exact same operation once, with sandbox_permissions')
     expect(persona).toContain('a sandbox denial is a gate, not a verdict')
-    // The bundled-Python guidance: the desktop's interpreter, the workspace
-    // .venv convention, no global installs, and no proxy configuration.
-    expect(persona).toContain('Desktop Python: the `python`, `python3`, and `py` commands run the Python 3.12 runtime bundled inside DSH Desktop')
-    expect(persona).toContain('python -m virtualenv .venv')
-    expect(persona).toContain('.venv\\Scripts\\python -m pip install requests')
-    expect(persona).toContain('Never install Python itself or packages into the global environment')
-    expect(persona).toContain('no proxy or certificate configuration of their own')
+    // The shared-Python guidance (P16): the desktop's shared environment on
+    // PATH, `pip install` as the only install path, the first-install
+    // authorization dialog instead of denials to work around, and no proxy
+    // configuration of its own. The retired workspace-.venv convention must
+    // not creep back: the sandbox cannot create venvs (b84), so the preset
+    // must never point the agent at one.
+    expect(persona).toContain('Desktop Python: the `python`, `python3`, `py`, and `pip` commands run the desktop\'s shared Python environment')
+    expect(persona).toContain('one environment shared by every workspace')
+    expect(persona).toContain('`pip install <package>`')
+    expect(persona).toContain('pip install requests')
+    expect(persona).toContain('do not create project virtualenvs for desktop work')
+    expect(persona).not.toContain('.venv')
+    expect(persona).not.toContain('python -m virtualenv')
+    expect(persona).toContain('the desktop then shows an authorization dialog')
+    expect(persona).toContain('Never install into the application\'s own directories')
+    expect(persona).toContain('no proxy or certificate configuration of its own')
     expect(persona.endsWith('accept that refusal, state plainly what could not be done and why, and continue with whatever remains possible inside the sandbox.')).toBe(true)
   })
 

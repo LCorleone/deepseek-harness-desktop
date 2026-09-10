@@ -55,6 +55,10 @@ function optionalDesktopPythonExecutable(
 }
 import { ElectronShellGeneration } from './electron-shell-generation.ts'
 import { electronPlatformStrategy, type ElectronPlatformStrategy } from './electron-platform.ts'
+import {
+  desktopSharedPythonEnvironmentRoot,
+  resolveDesktopSharedPythonEnvironment,
+} from './desktop-shared-python-environment.ts'
 import type {
   DesktopNotification,
   DesktopLocale,
@@ -411,7 +415,17 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         throw new Error('dsh-plugin-desktop: terminal requires the Electron runtime version')
       }
       const terminalSpec: DesktopTerminalSpec = spec
-      const pythonExecutable = optionalDesktopPythonExecutable(message => { this.logError(message) })
+      // P16: the terminal mirrors the startup-published aliases — when the
+      // shared Python environment exists it wins (and its pip rides along);
+      // otherwise the aliases keep targeting the bundled interpreter exactly
+      // as before, with the same per-surface degradation logging.
+      const sharedPython = resolveDesktopSharedPythonEnvironment({
+        platform: this.platform,
+        rootDirectory: desktopSharedPythonEnvironmentRoot(process.env, app.getPath('userData')),
+      })
+      const pythonExecutable = sharedPython?.pythonExecutable
+        ?? optionalDesktopPythonExecutable(message => { this.logError(message) })
+      const pipExecutable = sharedPython?.pipExecutable
       openDesktopTerminal({
         platform: this.platform,
         nodeExecutable: resolveDesktopNodeExecutable(import.meta.url, {
@@ -421,6 +435,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         // A missing or unverifiable Python distribution removes only the
         // terminal's python aliases; the terminal itself must still open.
         ...(pythonExecutable === undefined ? {} : { pythonExecutable }),
+        ...(pipExecutable === undefined ? {} : { pipExecutable }),
         dshBootstrapPath: unpackedAsarPath(
           fileURLToPath(new URL('./desktop-cli.js', import.meta.url)),
         ),

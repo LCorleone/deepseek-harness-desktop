@@ -607,4 +607,55 @@ describe('desktop Host python runtime', () => {
       { pythonExecutable: 'C:\\python.exe\nmalicious' },
     ))).toThrow('must not contain NUL or newlines')
   })
+
+  it('publishes the pip alias pointing at the shared environment while one ships', () => {
+    const stateDir = join(temporaryDirectory(), 'python-runtime-state')
+    const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
+    const pyenvPython = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\python.exe'
+    const pyenvPip = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\pip.exe'
+
+    const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment, {
+      pythonExecutable: pyenvPython,
+      pipExecutable: pyenvPip,
+    }))
+
+    // All four aliases publish in BOTH the public bin and the private mirror.
+    expect(readdirSync(installation.pathDir).sort()).toEqual(['pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readdirSync(installation.pythonRuntimeDir).sort()).toEqual(['pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readFileSync(installation.pythonShimPath, 'utf8')).toContain(`"${pyenvPython}" %*`)
+    expect(installation.pipShimPath).toBe(join(installation.pathDir, 'pip.cmd'))
+    expect(readFileSync(installation.pipShimPath!, 'utf8')).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      `"${pyenvPip}" %*`,
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
+    installation.dispose()
+  })
+
+  it('keeps pip unpublished without a pip command and reconciles a stale pip alias away', () => {
+    const root = temporaryDirectory()
+    const stateDir = join(root, 'python-runtime')
+    const pathDir = join(stateDir, 'bin')
+    mkdirSync(pathDir, { recursive: true })
+    writeFileSync(join(pathDir, 'pip.cmd'), 'stale')
+    const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
+
+    const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment))
+
+    expect(readdirSync(pathDir).sort()).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(installation.pipShimPath).toBeUndefined()
+    expect(environment.Path).toBe(`${pathDir};C:\\Windows`)
+    installation.dispose()
+  })
+
+  it('rejects an unsafe pip command value', () => {
+    const root = temporaryDirectory()
+    expect(() => installDesktopPythonRuntime(pythonOptions(
+      join(root, 'newline-pip'),
+      { Path: 'C:\\Windows' },
+      { pipExecutable: 'C:\\pip.exe\nmalicious' },
+    ))).toThrow('must not contain NUL or newlines')
+  })
 })

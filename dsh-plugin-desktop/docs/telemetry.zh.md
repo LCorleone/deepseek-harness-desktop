@@ -39,6 +39,7 @@ Gateway）/ `Kimi`——面板 SQL 按新值过滤（b68 及以前的存量行�
 | `disclaimer` | 内测声明弹窗决策：**仅弹窗真出现才报**（装后无 ack / 升级版本变 / 声明改版哈希变，三者各弹一次；日常启动不弹不报） | `decision` agree/disagree · `clientVersion`（本次同意的版本） · `textHash`（声明文案 JSON 的 sha256，改版即变） |
 | `plugin_reset` | P14 全新 Profile 重建（自动层=构建身份变化按 `rule` 换新；手动层=恢复窗一键） | `trigger` version-change/recovery-window · `rule` **forced/version**（仅自动层带；forced=`pluginResetOnVersionChange` 开，任何构建身份变化都换新，含 `2.0.3+b78`→`2.0.3+b79`；version=开关关（2.0.4 起默认），仅产品版本号变化换新，`2.0.3`→`2.0.4` 清、构建号变化不清） · `profileName` · `outcome` swapped/failed/**deferred**（Windows 外部进程持 profile 目录句柄致改名退避 6 次仍失败：旧 Profile 继续启动，写 `fresh-profile-pending.json` 标记待下次启动最早时刻重试，版本记录不写） · `materialized`（pnpm 同步是否成功） · `receiptsCleared`（清掉的市场装权台账条数） |
 | `python_runtime` | 每次启动一行（P11）：桌面捆绑 Python 命令面本次启动是否启用——非 Windows 平台与未打包 dev 运行报 `available:false` 且无版本；digest fail-closed 拒启报 `available:false` 但**仍带钉扎版本**（清单完好可读，便于定位是哪个版本被拒），采用率两态都可观测 | `available` true/false · `version`（打包 digest 清单钉扎的 CPython 版本，如 `3.12.10`；未知即省略，64 上限+控制字符清洗） |
+| `sandbox_escalation` | 每次沙箱写拒绝升权决策一行（P16，仅 Electron GUI 弹窗路径；CLI 宿主不弹不报）：用户允许一次无沙箱重跑=approved；拒绝=rejected；同会话同命令（规范化后）第二次拒绝不再弹=suppressed。**命令明文绝不入表**——只有规范化命令 sha256 前 16 位（弹窗本地才显示原文） | `commandHash`（16 位 hex） · `outcome` approved/rejected/suppressed · `mode`（被拒运行实际模式：read-only/workspace-write/danger-full-access） |
 
 ## 3. 常用查询（老板面板直抄）
 

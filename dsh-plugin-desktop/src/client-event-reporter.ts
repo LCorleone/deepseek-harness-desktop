@@ -62,6 +62,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   disclaimer: 'disclaimer',
   pluginReset: 'plugin_reset',
   pythonRuntime: 'python_runtime',
+  sandboxEscalation: 'sandbox_escalation',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -264,6 +265,29 @@ export interface PythonRuntimeEventDetail {
   readonly available: boolean
   /** Pinned CPython version (e.g. `3.12.10`); omitted when unknown. */
   readonly version?: string
+}
+
+/** How one sandbox-write-denial escalation ended (P16). */
+export type SandboxEscalationOutcome = 'approved' | 'rejected' | 'suppressed'
+
+/** The sandbox modes the upstream executor reports (mirrors `SandboxMode`). */
+export type SandboxEscalationMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+/**
+ * `sandbox_escalation` (P16): one row per sandbox write-denial escalation
+ * decision on the Electron GUI. The command itself NEVER enters a row —
+ * only the 16-hex-character sha256 prefix of its normalized text; the full
+ * command appears only in the local authorization dialog. `approved` means
+ * the user allowed one unsandboxed rerun, `rejected` kept the denial, and
+ * `suppressed` hit the per-session once-per-command prompt guard (a repeat
+ * denial answered without asking again).
+ */
+export interface SandboxEscalationEventDetail {
+  /** sha256 of the normalized command text, first 16 hex characters. */
+  readonly commandHash: string
+  readonly outcome: SandboxEscalationOutcome
+  /** Sandbox mode the denied run executed under. */
+  readonly mode: SandboxEscalationMode
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +720,9 @@ export function pluginResetEvent(
 /** Longest version string kept in a `python_runtime` detail. */
 export const PYTHON_RUNTIME_VERSION_LIMIT = 64
 
+/** Exact shape every `sandbox_escalation` command hash must carry. */
+export const SANDBOX_ESCALATION_HASH_PATTERN = /^[0-9a-z]{16}$/u
+
 /**
  * Project the boot's Python-surface state into a `python_runtime` detail.
  * The version comes from the packaged digest manifest (a build-time constant
@@ -712,6 +739,26 @@ export function pythonRuntimeEvent(
   return {
     available,
     ...(bounded === undefined || bounded.length === 0 ? {} : { version: bounded }),
+  }
+}
+
+/**
+ * Project one escalation decision into a `sandbox_escalation` detail. The
+ * hash arrives from the desktop adapter's own sha256 pipeline; it is
+ * lowercased, control-stripped, and pattern-checked anyway so a future
+ * caller cannot smuggle command text into the telemetry column, and a
+ * malformed hash drops to a harmless constant instead of throwing.
+ */
+export function sandboxEscalationEvent(
+  commandHash: string,
+  outcome: SandboxEscalationOutcome,
+  mode: SandboxEscalationMode,
+): SandboxEscalationEventDetail {
+  const bounded = commandHash.toLowerCase().replace(/[^0-9a-f]/gu, '').slice(0, 16)
+  return {
+    commandHash: SANDBOX_ESCALATION_HASH_PATTERN.test(bounded) ? bounded : '0000000000000000',
+    outcome,
+    mode,
   }
 }
 
@@ -778,6 +825,10 @@ export class ClientEventCollector {
 
   pythonRuntime(detail: PythonRuntimeEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.pythonRuntime, detail)
+  }
+
+  sandboxEscalation(detail: SandboxEscalationEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.sandboxEscalation, detail)
   }
 
   #emit<T extends object>(eventType: string, detail: T): void {

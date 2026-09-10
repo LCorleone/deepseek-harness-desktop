@@ -350,6 +350,25 @@ function commandOnPath(
 }
 
 /**
+ * Resolve a REAL local Python command from PATH, Windows Store stubs
+ * excluded.
+ *
+ * Stock Windows puts `Microsoft\WindowsApps` ahead of any real install and
+ * its `python.exe` is a zero-byte store stub that never executes Python, so
+ * the scan reuses the development resolution's stub-directory exclusion: a
+ * later real install wins and a stub-only PATH resolves to nothing. This is
+ * the shared environment's PREFERRED base (a full local interpreter keeps
+ * the desktop-wide venv independent of the packaged tree); the bundled
+ * interpreter remains the fallback base and the direct alias target.
+ */
+export function resolveDesktopLocalPythonExecutable(
+  inputs: DesktopPythonRuntimeInputs,
+): string | undefined {
+  if (inputs.platform !== 'win32') return undefined
+  return commandOnPath(bundledPythonCommandName(), inputs, inputs.exists ?? isRegularFile)
+}
+
+/**
  * Resolve the Python command the desktop application exposes through its
  * `python`/`python3`/`py` aliases.
  *
