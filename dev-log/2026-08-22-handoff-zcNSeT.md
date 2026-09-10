@@ -480,6 +480,24 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **目录线（其余 session）**：stable 已到 **sequence 25**（用户机 b88 遥测实证）；`dsh-better-sidebar@0.15.2` 已按 P15 retire 流程钉成 revoked 记录；engramory 目前在用户机被判 `not-in-manifest`（beta 未收录，预期行为）。
 **基线**：desktop **2333+8skip** · market **466** · company-skills **52** · catalog e2e PASS · typecheck 0 · HEAD `9c5d0c363e`（fork+backup 已推）。
 
+### 2026-09-10 夜间战报（20:00）
+**tag `v2.0.4-b88-fleet`**（→ `9c5d0c363e`，安装包 SHA `8b06138d7b…f35bec`）已双推；b88 四台全量验收通过。
+**fleet 现状**：4 台（julu/sebtang/webhu/lizywu）**全部已在 b88**；python_runtime 4/4 ✓；stable seq25 已应用。
+**P15 首次实战实证（webhu 机）**：残留 sidebar 0.15.2 被 `revoked` 正确拦下（boot_verify loaded:0）→ 市场原位升 0.18.1（updated-in-place）✓。
+**P14「无备份」疑问结案**：webhu（b70）/lizywu（b71）旧版早于 P14（`27af02223a` 09-09 15:46 引入 generation 记录）⇒ 无记录 → 判「首次观测」只记身份不换新（fresh-profile.ts:360-371，by-design）；lizywu 另因从未装插件无内容可备份。一次性过渡窗口：他们这次已写入记录，下次产品版本变化全员正常换新。倾向不改现行行为（webhu 的原位升级体验优于全量重建）。
+**用户本地投放 skill 的边界（查实）**：skill-filesystem 在锁定预设中无 config 注册=默认根全开（~/.dsh/skills 等四处）⇒ 用户自投 skill **会被发现加载**；沙箱只拦「写」：__pycache__/npm 缓存/~/Downloads 被拒，tmpdir/工作区/127.0.0.1 端口放行，升权弹窗可解。两个待拍板小项：①沙箱 shell 全局注 PYTHONDONTWRITEBYTECODE=1（消最常见误拒）②要不要 includeDefaultRoots:false 堵本地投放（与 preset 同性质决定）。
+**MR session 今日发布（背景已读档）**：seq23 agent-teams 0.1.16（!21）/ seq24 engramory 0.2.4（!22）/ seq25 首批 stable 转正（sidebar 0.18.1+dai-context 0.41.4+free-search 0.4.184+agent-teams 0.1.16，engramory 留 beta）+ sidebar 0.15.2 revoked 钉（A 路：seq16 抄字段手工补 allowlist 重签）。流程=CI 签名→publish-local→手工棘轮。
+**市场条目描述卡（全链落地+评审闭环）**：`aec64b01a7`（pipeline 带描述/严格形状认可/卡片映射/5 条中文草稿）→ 评审 P1（publish 门禁缺 description）P2（两份键清单无交叉断言）P3（无 wired 测试）→ `c74d7f7ea9` 三条全修（门禁+文案+README/RELEASE 同步、同步断言变异红验证、wired 链断言）→ `718258ac18` free-search 描述简化（July）→ **必填闸** `9000b14614`（verify `--description` 必填 failCheck 于 staging 之前、accept 对缺描述回执 refuse、键序 version→description→bundlePatch 按现状钉死、186 全绿）→ 复审 APPROVED。**顺序铁律已机械化**：fleet 全员 b89 前带 description 的 seq26 会被 publish 门禁拦。
+**b89 已构建**：run 34467722519，SHA `97647dd75b…7266b3`（161.9MB）= b88+描述链。待 4 台升级后发 seq26。
+**P6 批④（skill 打包）按 July 指示暂缓**（skill 先不做）；skill-creator/ppt-designer 可行性结论已给出（creator 三处小改造可发；designer 需平台三项能力+与明文不落盘承诺冲突，建议单独立项）。
+
+### 当前 TODO 快照（2026-09-10 20:00，夜）
+**主链（等 fleet）**：① 4 台升 b89（July 先装自验）→ 我盯 DSH_LOG 确认 → ② 发 seq26（beta+stable 双发）→ 市场描述上线 → ③ 首个走必填闸的新插件验证 verify --description 流程。
+**阻塞在 July**：批④ skill 清单（已指示暂缓）；engramory 反馈稿要不要起草（建议①插件侧写入）。
+**待拍板小项**：sandbox_escalation 遥测（接上游 approval 事件 or 裁掉）；沙箱 shell 注 PYTHONDONTWRITEBYTECODE；本地 skill 投放要不要堵（includeDefaultRoots）；P14「无记录+已 materialized」要不要 reset（我倾向不改）。
+**排队**：free-search rebase v0.4.19+ · sso-gate 浏览器路径测 · ppt-designer 立项评估（若批④解冻）。
+**基线**：desktop 2339+8skip · market 467 · company-skills 52 · catalog **186** · HEAD `9000b14614`（fork+backup 已推）· 安装包 b89 `97647dd75b…7266b3`。
+
 ### 当前 TODO 快照（2026-09-10 17:10，晚）
 **阻塞在用户输入**：P6 批④ 要内置哪些 skill（给目录/名字即可）→ 我打包+发布（allowlist/handoff/CI/sequence）→ 市场可装（b88 客户端即可，无需再发版）。
 **待决策**：① `sandbox_escalation` 遥测（接上游 approval 事件 or 裁掉）② engramory 走哪条路（①插件侧写盘推荐 / ②工作区降级）③ fleet 群发时机（b88=当前最完整候选）。
