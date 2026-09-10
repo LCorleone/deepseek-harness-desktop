@@ -56,5 +56,21 @@
       "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-agent-teams-0.1.16.tgz",
       "path": "tools/company-catalog/out/packages/dsh-dai-agent-teams-0.1.16.tgz"
     }
+  },
+  {
+    "packageName": "dsh-dai-engramory",
+    "version": "0.2.4",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-engramory-0.2.4.tgz",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "0.1.2-rc.1"
+    },
+    "treeDigest": "f7e59d72e906198bf1e56357170708653cf9e65408a036bb528ba1eb26e9cc59",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-engramory-0.2.4.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-dai-engramory-0.2.4.tgz"
+    }
   }
 ]
