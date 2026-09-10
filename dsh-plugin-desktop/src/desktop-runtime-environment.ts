@@ -14,6 +14,7 @@ import { basename, dirname, join } from 'node:path'
 import {
   DSH_PIP_COMMAND_NAME,
   DSH_PIP_EXECUTABLE_ENV,
+  DSH_PIP_GATE_ENTRY_ENV,
   DSH_PIP_PYTHON_ENV,
 } from './desktop-pip-gate.ts'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
@@ -321,9 +322,10 @@ function windowsPythonAliasShim(pythonExecutable: string): string {
 }
 
 /**
- * Build the public Windows `dsh-pip` pre-gate shim: hand the real pip (and
- * the interpreter behind the `-m pip` fallback) to the gate entry, which
- * denies a sandboxed install immediately instead of hanging inside pip.
+ * Build the public Windows `dsh-pip` pre-gate shim: mark the gate-entry launch
+ * (the entry check cannot rely on the bundle's argv shape) and hand the real
+ * pip (and the interpreter behind the `-m pip` fallback) to the gate entry,
+ * which denies a sandboxed install immediately instead of hanging inside pip.
  */
 function windowsDshPipShim(
   nodeExecutable: string,
@@ -334,6 +336,7 @@ function windowsDshPipShim(
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
+    `set "${DSH_PIP_GATE_ENTRY_ENV}=1"`,
     `set "${DSH_PIP_EXECUTABLE_ENV}=${escapeBatchSetValue(pipExecutable)}"`,
     `set "${DSH_PIP_PYTHON_ENV}=${escapeBatchSetValue(pythonExecutable)}"`,
     `${quoteBatchWord(nodeExecutable)} ${quoteBatchWord(pipGatePath)} %*`,

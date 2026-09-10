@@ -1,10 +1,13 @@
 import { EventEmitter } from 'node:events'
+import { fileURLToPath } from 'node:url'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   DSH_PIP_DENIED_EXIT,
   DSH_PIP_EXECUTABLE_ENV,
+  DSH_PIP_GATE_ENTRY_ENV,
   DSH_PIP_PYTHON_ENV,
+  isDirectExecution,
   isSandboxConfinedEnvironment,
   isSandboxPrivateTempDirectory,
   runDshPipGate,
@@ -60,8 +63,32 @@ describe('dsh-pip sandbox criterion', () => {
     expect(isSandboxConfinedEnvironment({ TEMP: CONFINED_TEMP })).toBe(true)
     expect(isSandboxConfinedEnvironment({ TMP: CONFINED_TEMP })).toBe(true)
     expect(isSandboxConfinedEnvironment({ temp: CONFINED_TEMP })).toBe(true)
-    expect(isSandboxConfinedEnvironment({ TEMP: 'C:\\Temp' })).toBe(false)
+    expect(isSandboxConfinedEnvironment({ TEMP: 'C\\Temp' })).toBe(false)
     expect(isSandboxConfinedEnvironment({})).toBe(false)
+  })
+})
+
+describe('dsh-pip gate entry detection', () => {
+  it('treats the generated shim marker as an entry even when argv names another module', () => {
+    // The bundler may hoist this module into a shared chunk and leave the
+    // `dsh-pip` entry file a re-export stub, so `argv[1]` never equals this
+    // module's `import.meta.url` — the shim's marker must still run the gate.
+    expect(isDirectExecution(
+      { [DSH_PIP_GATE_ENTRY_ENV]: '1' },
+      'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\shared-chunk-a1b2c3.js',
+    )).toBe(true)
+  })
+
+  it('still recognizes the plain `node lib/desktop-pip-gate.js` launch', () => {
+    const entry = fileURLToPath(new URL('../src/desktop-pip-gate.ts', import.meta.url))
+    expect(isDirectExecution({ TEMP: 'C:\\Temp' }, entry)).toBe(true)
+  })
+
+  it('stays inert when another module imports it', () => {
+    expect(isDirectExecution({}, 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\main.js')).toBe(false)
+    expect(isDirectExecution({}, undefined)).toBe(false)
+    // An empty marker is not a marker.
+    expect(isDirectExecution({ [DSH_PIP_GATE_ENTRY_ENV]: '' }, 'C:\\app\\main.js')).toBe(false)
   })
 })
 

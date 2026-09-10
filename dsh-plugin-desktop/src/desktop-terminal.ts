@@ -12,7 +12,7 @@ import {
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, win32 } from 'node:path'
-import { DSH_PIP_COMMAND_NAME, DSH_PIP_EXECUTABLE_ENV, DSH_PIP_PYTHON_ENV } from './desktop-pip-gate.ts'
+import { DSH_PIP_COMMAND_NAME, DSH_PIP_EXECUTABLE_ENV, DSH_PIP_GATE_ENTRY_ENV, DSH_PIP_PYTHON_ENV } from './desktop-pip-gate.ts'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
 import { DESKTOP_PYTHON_ALIAS_NAMES, DESKTOP_PYTHON_PIP_ALIAS_NAME } from './desktop-runtime-environment.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
@@ -322,14 +322,16 @@ function windowsDshShim(options: DesktopTerminalOptions): string {
 }
 
 /**
- * Build the Windows `dsh-pip` pre-gate shim beside the `pip` alias: hand the
- * shared environment's pip (and interpreter) to the gate entry, which denies a
- * sandboxed install immediately instead of hanging inside pip.
+ * Build the Windows `dsh-pip` pre-gate shim beside the `pip` alias: mark the
+ * gate-entry launch (the entry check cannot rely on the bundle's argv shape)
+ * and hand the shared environment's pip (and interpreter) to the gate entry,
+ * which denies a sandboxed install immediately instead of hanging inside pip.
  */
 function windowsDshPipShim(): string {
   return [
     '@echo off',
     'setlocal DisableDelayedExpansion',
+    `set "${DSH_PIP_GATE_ENTRY_ENV}=1"`,
     `set "${DSH_PIP_EXECUTABLE_ENV}=%${WINDOWS_PIP_EXECUTABLE}%"`,
     `set "${DSH_PIP_PYTHON_ENV}=%${WINDOWS_PYTHON_EXECUTABLE}%"`,
     `"%${WINDOWS_NODE_EXECUTABLE}%" "%${WINDOWS_PIP_GATE}%" %*`,

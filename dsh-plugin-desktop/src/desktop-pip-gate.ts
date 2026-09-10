@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 /**
  * Field evidence (b85): a sandboxed `pip install` does not fail — pip retries
- * the denied write and hangs until the tool's 120 s timeout. The run never
- * settles with `sandbox.denied = true`, so the desktop's escalation dialog
- * (`windows-pwsh-sandbox.ts`, P16) never gets the chance to appear and the
- * install sticks forever.
+ * the denied write and hangs until the shell command's 120 s timeout
+ * (`tool-pwsh` declares no `timeoutMs`; the 120 s comes from the shell command
+ * timeout policy). The run never settles with `sandbox.denied = true`, so the
+ * desktop's escalation dialog (`windows-pwsh-sandbox.ts`, P16) never gets the
+ * chance to appear and the install sticks forever.
  *
  * The `dsh-pip` command turns that hang into an immediate, signature-bearing
  * denial: inside the sandbox it prints an `Access is denied` line and exits
@@ -21,9 +22,13 @@ import { fileURLToPath } from 'node:url'
  * directory created with `mkdtempSync(join(tmpdir(), 'dsh-'))`
  * (`packages/sandbox/sandbox-local/src/index.ts:415`), so a process whose
  * `TEMP`/`TMP` names a `<...>/dsh-<6 random chars>` component runs under the
- * `workspace-write` confinement. Read-only confinement leaves the ambient
- * temp alone, but read-only cannot write the workspace either, so no install
- * is ever attempted under it.
+ * `workspace-write` confinement. COVERAGE: this criterion is calibrated for
+ * `workspace-write`, the desktop baseline, where a denied install makes pip
+ * hang. Read-only confinement leaves the ambient temp alone, so the gate
+ * classifies a read-only install as "outside the sandbox" and passes through
+ * to the real pip — a read-only `pip install` can still hang inside pip
+ * (it cannot write the workspace either, so nothing would ever be installed);
+ * closing that gap needs a runner-supplied marker, not a temp-shape guess.
  * @module dsh-plugin-desktop/desktop-pip-gate
  */
 
@@ -35,6 +40,9 @@ export const DSH_PIP_EXECUTABLE_ENV = 'DSH_PIP_REAL_PIP'
 
 /** Environment hand-off naming the interpreter behind the `python -m pip` fallback. */
 export const DSH_PIP_PYTHON_ENV = 'DSH_PIP_REAL_PYTHON'
+
+/** Environment marker the generated `dsh-pip` shim sets to mark the gate-entry launch. */
+export const DSH_PIP_GATE_ENTRY_ENV = 'DSH_PIP_GATE_ENTRY'
 
 /** Exit status of a pre-gated denial: non-zero, and distinct from the runner's 127 failure. */
 export const DSH_PIP_DENIED_EXIT = 1
@@ -142,9 +150,27 @@ export async function runDshPipGate(options: DshPipGateOptions): Promise<number>
   })
 }
 
-/** Whether this module is the process entry the generated `dsh-pip` shim launched. */
-function isDirectExecution(): boolean {
-  const entry = process.argv[1]
+/**
+ * Whether this module is the process entry the generated `dsh-pip` shim
+ * launched.
+ *
+ * The shim marks its launch with `DSH_PIP_GATE_ENTRY=1`, because argv identity
+ * is a bet on the bundle shape: the bundler may hoist this module into a
+ * shared chunk and leave the entry file a pure re-export stub (see
+ * `lib/electron-runtime.js`), and the stub's `argv[1]` then never equals the
+ * chunk's `import.meta.url` — the gate would silently exit 0 and do nothing.
+ * The marker survives any chunk shape; the plain `node lib/desktop-pip-gate.js`
+ * launch still matches by path.
+ * @param environment - process environment to inspect; defaults to `process.env`.
+ * @param entry - the launched script path; defaults to `process.argv[1]`.
+ * @returns whether this module should run the gate as the process entry.
+ */
+export function isDirectExecution(
+  environment: NodeJS.ProcessEnv = process.env,
+  entry: string | undefined = process.argv[1],
+): boolean {
+  const marker = environmentValue(environment, DSH_PIP_GATE_ENTRY_ENV)
+  if (marker !== undefined && marker.length > 0) return true
   return entry !== undefined && fileURLToPath(import.meta.url) === entry
 }
 

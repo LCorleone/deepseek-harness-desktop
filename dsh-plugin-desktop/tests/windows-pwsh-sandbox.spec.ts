@@ -394,6 +394,38 @@ describe('sandbox escalation popup parenting', () => {
     expect(calls).toEqual(['restore', 'show', 'focus', 'ask'])
   })
 
+  it('unhides the macOS application before the window it reveals', async () => {
+    const calls: string[] = []
+    const shell = fakeWindow({ minimized: true, calls })
+    const application = {
+      isHidden: () => true,
+      show: () => { calls.push('app.show') },
+    }
+
+    const seen = await withSandboxEscalationParentWindow([shell], async parent => {
+      calls.push('ask')
+      return parent
+    }, { application, platform: 'darwin' })
+
+    // A Cmd+H-hidden NSApp keeps every window invisible: `window.show()`
+    // alone does not unhide it, so `app.show()` must come first (b85).
+    expect(seen).toBe(shell)
+    expect(calls).toEqual(['app.show', 'restore', 'show', 'focus', 'ask'])
+  })
+
+  it('leaves a visible macOS application alone when revealing a window', async () => {
+    const calls: string[] = []
+    const shell = fakeWindow({ calls })
+    const application = {
+      isHidden: () => false,
+      show: () => { calls.push('app.show') },
+    }
+
+    await withSandboxEscalationParentWindow([shell], async () => {}, { application, platform: 'darwin' })
+
+    expect(calls).toEqual(['show', 'focus'])
+  })
+
   it('falls back to the parentless dialog without touching any window', async () => {
     const calls: string[] = []
     const browser = fakeWindow({ url: 'file:///C:/app/sso-gate.html', calls })

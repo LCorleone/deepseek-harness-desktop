@@ -10,6 +10,7 @@ import type { ShellExecSpec, ShellProcess, ShellRunResult, ShellSandboxInfo } fr
 import { SandboxPwshExecutor } from '@deepseek-ai/dsh-pwsh-sandbox'
 import type { Config as PwshConfig } from '@deepseek-ai/dsh-pwsh-local'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
+import { revealWindow, type RevealableApplication } from './window-reveal.ts'
 
 const UPSTREAM_RUNNER = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/runner'))
 
@@ -151,8 +152,8 @@ const SHELL_WINDOW_URL_PREFIX = 'http://127.0.0.1'
 /**
  * Pick the desktop's main shell window to parent the escalation popup to.
  * A dialog attached to a hidden or minimized window is invisible with it
- * (b85: a tray-hidden shell swallowed the popup for the whole 120s tool
- * timeout), so the caller must also reveal the returned window before
+ * (b85: a tray-hidden shell swallowed the popup for the whole 120 s shell
+ * command timeout), so the caller must also reveal the returned window before
  * asking. Destroyed windows and auxiliary `file://` windows never qualify;
  * `undefined` means no shell window exists and the caller falls back to a
  * parentless dialog. The Cordis loader builds this executor from composition
@@ -167,24 +168,38 @@ export function sandboxEscalationParentWindow(
     && window.webContents.getURL().startsWith(SHELL_WINDOW_URL_PREFIX))
 }
 
+/** Reveal inputs for the escalation popup's parent window: the Electron `app`
+ * handle (macOS a Cmd+H-hidden application must be shown before any window can
+ * appear — b85) and the host platform. This module is loaded by CLI hosts
+ * too, so it never imports `electron`; the caller hands the handle in. */
+export interface SandboxEscalationRevealOptions {
+  /** Electron `app` handle; `undefined` in non-Electron hosts. */
+  readonly application?: RevealableApplication
+  /** Host platform; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform
+}
+
 /**
  * Ask one escalation question with the popup parented to the app's main shell
- * window, revealing that window first (restore + show + focus). A dialog
- * attached to a minimized or tray-hidden window is invisible with it, so the
- * question would sit unanswered until the tool timeout (b85). With no shell
- * window at all, `ask` receives `undefined` and the caller falls back to the
- * parentless dialog.
+ * window, revealing that window first (app before window, then restore + show
+ * + focus, through the same `revealWindow` policy `revealApplication` uses).
+ * A dialog attached to a minimized or tray-hidden window is invisible with it,
+ * so the question would sit unanswered until the shell command timeout (b85).
+ * With no shell window at all, `ask` receives `undefined` and the caller falls
+ * back to the parentless dialog.
  * @param windows - every open native window this host owns.
  * @param ask - the question; its `parent` is the revealed shell window, or `undefined` for the fallback.
+ * @param reveal - the Electron `app` handle and platform to reveal with.
  * @returns the question's answer.
  */
 export async function withSandboxEscalationParentWindow<Answer>(
   windows: readonly SandboxEscalationParentWindow[],
   ask: (parent: SandboxEscalationParentWindow | undefined) => Promise<Answer>,
+  reveal: SandboxEscalationRevealOptions = {},
 ): Promise<Answer> {
   const parent = sandboxEscalationParentWindow(windows)
   if (parent === undefined) return await ask(undefined)
-  revealSandboxEscalationParent(parent)
+  revealWindow(reveal.application, parent, reveal.platform)
   return await ask(parent)
 }
 
@@ -244,16 +259,6 @@ function withEscalation(result: ShellRunResult, escalation: SandboxEscalationOut
   return { ...result, sandbox }
 }
 
-/** Reveal one main window so a dialog parented to it is actually on screen.
- * Mirrors `revealApplication` (electron-reveal.ts) at the window level; the
- * macOS `app.show()` step stays there because this module keeps `electron` a
- * dynamic import (CLI hosts and these specs load it without Electron). */
-function revealSandboxEscalationParent(window: SandboxEscalationParentWindow): void {
-  if (window.isMinimized()) window.restore()
-  window.show()
-  window.focus()
-}
-
 /** The escalation message box, shared by the parented and fallback paths. */
 function sandboxEscalationMessageBoxOptions(command: string): MessageBoxOptions {
   return {
@@ -279,13 +284,14 @@ function sandboxEscalationMessageBoxOptions(command: string): MessageBoxOptions 
  * to its (now-focused) parent, which is the accepted visibility posture.
  */
 async function electronSandboxEscalationPrompt(command: string): Promise<boolean> {
-  const { BrowserWindow, dialog } = await import('electron')
+  const { app, BrowserWindow, dialog } = await import('electron')
   const options = sandboxEscalationMessageBoxOptions(command)
   return await withSandboxEscalationParentWindow(
     BrowserWindow.getAllWindows(),
     async parent => (parent === undefined
       ? await dialog.showMessageBox(options)
       : await dialog.showMessageBox(parent as BrowserWindow, options)).response === 0,
+    { application: app },
   )
 }
 
@@ -319,7 +325,7 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
    * namespaced by session. Only real decisions (approved/rejected) land
    * here: a cancelled prompt records nothing, so the agent's retry asks
    * again (b85 — the old mark-first dedup swallowed the retry's popup after
-   * a tool-timeout cancellation and the install stuck forever). */
+   * a shell command timeout cancellation and the install stuck forever). */
   private readonly promptedKeys = new Set<string>()
 
   /** Normalized-command keys with a prompt currently on screen. Guards
@@ -391,8 +397,9 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
    * reruns the SAME spec under `danger-full-access`, rejection returns the
    * denied result stamped `escalation: 'rejected'`. Only a real user decision
    * consumes the per-session prompt: when the caller aborts while the dialog
-   * is pending (tool timeout / stop), the original denied result returns
-   * unchanged, nothing is recorded, and a retry prompts again. Non-Electron
+   * is pending (shell command timeout / stop), the original denied result
+   * returns unchanged, nothing is recorded, and a retry prompts again.
+   * Non-Electron
    * (CLI) hosts, non-denied results, and already-prompted commands keep the
    * upstream behavior verbatim. Background `start()` is not overridden and
    * never escalates.

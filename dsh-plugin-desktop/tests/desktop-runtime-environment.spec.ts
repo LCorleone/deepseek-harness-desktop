@@ -639,6 +639,7 @@ describe('desktop Host python runtime', () => {
     expect(readFileSync(installation.dshPipShimPath!, 'utf8')).toBe([
       '@echo off',
       'setlocal DisableDelayedExpansion',
+      'set "DSH_PIP_GATE_ENTRY=1"',
       `set "DSH_PIP_REAL_PIP=${pyenvPip}"`,
       `set "DSH_PIP_REAL_PYTHON=${pyenvPython}"`,
       '"C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe" "C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-pip-gate.js" %*',

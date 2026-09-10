@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
+import { revealWindow } from './window-reveal.ts'
 
 /**
  * Return whether an activation event needs to bring the application forward.
@@ -24,8 +25,5 @@ export function revealApplication(
   window: Pick<BrowserWindow, 'isMinimized' | 'show' | 'restore' | 'focus'>,
   platform: NodeJS.Platform = process.platform,
 ): void {
-  if (platform === 'darwin' && app.isHidden()) app.show()
-  if (window.isMinimized()) window.restore()
-  window.show()
-  window.focus()
+  revealWindow(app, window, platform)
 }

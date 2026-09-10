@@ -631,6 +631,7 @@ describe('desktop terminal environment', () => {
     expect(readFileSync(launch.dshPipShimPath!, 'utf8')).toBe([
       '@echo off',
       'setlocal DisableDelayedExpansion',
+      'set "DSH_PIP_GATE_ENTRY=1"',
       'set "DSH_PIP_REAL_PIP=%DSH_DESKTOP_PIP_EXECUTABLE%"',
       'set "DSH_PIP_REAL_PYTHON=%DSH_DESKTOP_PYTHON_EXECUTABLE%"',
       '"%DSH_DESKTOP_NODE_EXECUTABLE%" "%DSH_DESKTOP_PIP_GATE%" %*',
