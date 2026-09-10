@@ -255,7 +255,9 @@ export interface PluginResetEventDetail {
  * Python command surface, plus the pinned CPython version when the packaged
  * digest manifest names one. One row per boot on every platform: disabled
  * surfaces (non-Windows builds, unpackaged development runs) and digest-gate
- * refusals report `available: false` without a version, so fleet adoption of
+ * refusals report `available: false`; the version is omitted only when
+ * unknown — a digest refusal on Windows still carries the pinned version
+ * (the packaged manifest stays readable), so fleet adoption of
  * the bundled runtime stays observable from either state.
  */
 export interface PythonRuntimeEventDetail {

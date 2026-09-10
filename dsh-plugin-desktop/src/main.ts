@@ -971,7 +971,9 @@ async function start(): Promise<void> {
     // covers the fail-closed digest gate, and every disabled surface
     // (non-Windows builds, dev checkouts, refused trees) reports
     // `available: false` — plus the pinned version the packaged digest
-    // manifest names. The spawn-free pip probe supplies that version, so
+    // manifest names, when that manifest is still readable (a Windows
+    // digest refusal keeps it; dev and non-Windows omit the version).
+    // The spawn-free pip probe supplies that version, so
     // fleet adoption of the bundled runtime stays observable from both
     // states without ever running the interpreter for telemetry.
     clientEvents?.pythonRuntime(pythonRuntimeEvent(
