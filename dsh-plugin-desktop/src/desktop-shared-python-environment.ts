@@ -234,7 +234,7 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * with `--version`); a present-but-broken interpreter means a corrupt
  * environment, which is removed once — logging the repair — and rebuilt
  * through the same two tiers. Every failure degrades to the bundled
- * aliases and unpublished `pip` with exactly one log line — the shared
+ * aliases and unpublished `pip` with one log line per degradation stage — the shared
  * environment is an enhancement, not a boot dependency.
  */
 export async function ensureDesktopSharedPythonEnvironment(
