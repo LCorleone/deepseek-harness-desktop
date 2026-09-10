@@ -435,6 +435,11 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 
 **TODO 快照刷新（01:31）**：P15 四阶段全落地，**未构建未发目录**——客户端代码随下下个构建进 fleet（b81 不含 P15）；明早 b81 下载/验证链不变（连装 3 插件终判+详情无源码按钮+sebtang MR），promote 纪律照 21:21 快照。**P15 首战＝下次 sidebar promote 双钉（0.15.2 保留 stable）**，需先发带 P15 代码的客户端版本才有意义——目录先行只护老客户端精确查找，更新提示/市场选版要新客户端。
 
+### 上午战斗（2026-09-10 08:15）
+**b81 第二装仍败→第三个连环 blocker 破案**：报错带真因（文案透传生效）"another plugin install recovery transaction is pending"——安装恢复 WAL 的相位流=seal 成功后 'awaiting-restart'，要等**下次启动** claim 验证；而 `beginLocked` 对任何现存事务一律拒 ⇒ 同会话连装 by-design 不可能（P14 清插件后人人要连装，产品上必须支持）。修 `a15399bf0b`：begin 按相位分派——'awaiting-restart'(同 profile)→**链式取代**（新 preimage=#1 后状态，失败回滚到它正确，下次启动验最终组合）；'verified'/'rolled-back'→清理后续；真待恢复相位照拒。评审 APPROVED（1×P2：unlink 先于采集有零 WAL 窗口）→ 修 `a942c9dc6a`（先采集备份、writeState 原子取代、孤儿 backupDir 清扫、覆盖补钉）。
+**P11 Phase A 落地**：scout 地图（node-runtime 先例全链/暴露链/沙箱 WRITE_RESTRICTED 只限写/测试基建）→ brief `f7e27c8927` → 实现 `4676002ec1`（bundled-python.ts 钉扎 3.12.10+sha256 分发表+缓存/staging；win32 beforePack；desktop-python-runtime.ts 逐文件 digest+指纹缓存；installDesktopPythonRuntime 三别名 python/python3/py.cmd，独立 stateDir `python-runtime-commands` 与 pnpm bin 互不删；终端可用）→ 评审 **APPROVED**（评审者亲测 python.org 下载逐字节 sha256 一致；1×P2=afterPack 门禁缺 Python 项）→ 修 `ec3f222289`（win32 作用域必需清单+resources/python-runtime/python.exe 物理探测+终端路径日志+WindowsApps stub 排除）。
+**构建**：b82（仅 P15）完成即被取代；**b83 构建中**（run 34420576031）=P15+WAL 修复+P11-A 全量。终验 desktop **2254+8skip**/market 466/typecheck 0/layout ✓，HEAD `ec3f222289` 双推。
+
 ### 当前 TODO 快照（2026-09-10 07:30，晨）
 **就绪待验**：b81 安装包已下载（asserts 目录，SHA `1ce1b61e0c…9f856d`，含 pnpm 闸修复/收尾批/按钮隐藏；**不含 P15**）。
 **今天顺序**：①用户装 b81 → 连装 3 插件（第二装必败终判）+ 详情弹窗无「打开源码仓库」按钮；②sebtang 装 b81（市场卡死修复+换新）+ 提两个 MR（compat.json 已放行 2.0.4/seq22）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。

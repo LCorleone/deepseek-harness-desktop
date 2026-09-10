@@ -359,7 +359,9 @@ inner harness 最新 dsh-v0.1.2-alpha.4（rc.2→alpha.4 = 1727 commits/7624 文
 
 **状态（2026-09-09 晚）：已并入 P15**（见 `66c52e6c2e`；兼容窗治本，本卡场景自然消失，不再单独立项）。
 
-## P11 · 捆绑 Python 运行时 —— 立项 2026-09-08（用户拍板：跑 python 是同事常见需求）
+## P11 · 捆绑 Python 运行时 —— 立项 2026-09-08
+
+**状态（2026-09-10 08:15，Phase A 已落地+过审）**：brief=`dev-log/briefs/2026-09-10-p11-python-runtime.md`（scout 地图+约束+验收）。Phase A `4676002ec1`+`ec3f222289`：CPython 3.12.10 embeddable 钉扎（sha256 分发、评审亲测逐字节一致）、win32 beforePack、逐文件 digest+指纹缓存、`python/python3/py` 三别名（独立 stateDir）、终端可用、afterPack win32 门禁。**待 B（ensurepip/pip 引导+workspace .venv 约定+agent preset 感知）与 C（遥测 python_runtime/政策开关/文档/体积实测）**。上 fleet=b83 起。（用户拍板：跑 python 是同事常见需求）
 
 **动机**：fleet 同事多为电脑小白（零环境），Node 已捆绑（P3-1）但 python 未带——同事让 agent 跑 python 脚本/pandas 数据分析时会得到「未安装」。属能力边界非故障，立项补齐。
 
