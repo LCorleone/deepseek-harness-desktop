@@ -1133,6 +1133,13 @@ export function prepareDesktopProfile(
     const config = {
       ...rowConfig(presets),
       ...(companyRoster ? { default: COMPANY_PRESET_ID } : {}),
+      // The upstream config gained `includeShippedRoot` (default true) with the
+      // 0.1.2 line: a locked row that only lists `roots` still scans the
+      // package's shipped presets, so the retired upstream ids (standard / ptc
+      // / cordis / minimal) reappear as unselectable rows in Settings. Locked
+      // builds therefore switch the shipped root off explicitly; the user root
+      // stays on so a person can still author their own presets.
+      ...(companyRoster ? { includeShippedRoot: false } : {}),
       roots: [{ path: companyRoster ? companyPresetRoot() : shippedPresetRoot(), trust: 'system' }],
     }
     if (presets.name === UPSTREAM_AGENT_PRESETS_PACKAGE

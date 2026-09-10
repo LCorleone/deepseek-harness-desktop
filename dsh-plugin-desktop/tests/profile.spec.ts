@@ -1418,6 +1418,7 @@ describe('desktop profile composition', {
         config: {
           default: 'deloitte-standard',
           roots: [{ path: companyPresetRoot(), trust: 'system' }],
+          includeShippedRoot: false,
         },
       })
       expect(rows.map(row => row.id), platform).not.toContain('desktop-windows-agent-presets')
