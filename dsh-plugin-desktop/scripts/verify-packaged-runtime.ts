@@ -155,6 +155,18 @@ export const REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES = [
 ] as const
 
 /**
+ * Archive entries only the Windows package requires: the build-time Python
+ * digest manifest (`lib/python-runtime-sha256.json`). `beforePack` stages
+ * the embeddable CPython tree and writes this manifest for win32 targets
+ * only, so the requirement must stay win32-scoped — demanding it on macOS or
+ * Linux would fail every non-Windows package that legitimately ships no
+ * Python at all.
+ */
+export const REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES = [
+  'lib/python-runtime-sha256.json',
+] as const
+
+/**
  * Application files that must live inside app.asar with no physical mirror.
  *
  * P3-2 moved the build-time icon assets out of `asarUnpack`: only the
@@ -230,6 +242,9 @@ export const REQUIRED_RUN_AS_NODE_FUSE = REQUIRED_ELECTRON_FUSES.runAsNode
 
 /** Directory `extraResources` places the bundled Node distribution into. */
 export const BUNDLED_NODE_RESOURCE_DIRECTORY = 'node-runtime'
+
+/** Directory `extraResources` places the bundled Python distribution into. */
+export const BUNDLED_PYTHON_RESOURCE_DIRECTORY = 'python-runtime'
 
 /** CPU-specific runtime assets that must coexist in a universal macOS application. */
 export const REQUIRED_MACOS_UNIVERSAL_ENTRIES = [
@@ -532,6 +547,50 @@ export function verifyBundledNodeRuntime(
     )
   }
   return nodePath
+}
+
+/** Command file the embeddable CPython distribution installs as. */
+function bundledPythonResourceCommandName(): string {
+  return 'python.exe'
+}
+
+/**
+ * Resolve the bundled Python command shipped beside app.asar (win32 only).
+ * @param context - completed application directory and target platform.
+ * @returns the packaged `python-runtime` command path for the Windows package.
+ */
+export function resolveBundledPythonResourcePath(context: PackagedRuntimeContext): string {
+  return join(
+    resolvePackagedResourcesDirectory(context),
+    BUNDLED_PYTHON_RESOURCE_DIRECTORY,
+    bundledPythonResourceCommandName(),
+  )
+}
+
+/**
+ * Verify the bundled Python command shipped beside app.asar.
+ *
+ * The embeddable CPython distribution is Windows-only (`beforePack` stages
+ * nothing for other platforms), so the probe skips non-win32 packages
+ * instead of failing them; on win32 a missing `python.exe` fails the package
+ * before signing, mirroring {@link verifyBundledNodeRuntime}.
+ * @param context - completed application directory and target platform.
+ * @param exists - physical-file probe for the packaged application tree.
+ * @returns the verified bundled Python command path, or `undefined` on the
+ * platforms that bundle no Python.
+ */
+export function verifyBundledPythonRuntime(
+  context: PackagedRuntimeContext,
+  exists: FileProbe = existsSync,
+): string | undefined {
+  if (context.electronPlatformName !== 'win32') return undefined
+  const pythonPath = resolveBundledPythonResourcePath(context)
+  if (!exists(pythonPath)) {
+    throw new Error(
+      `dsh-plugin-desktop: packaged runtime at ${resolvePackagedResourcesDirectory(context)} is missing the bundled Python command: ${pythonPath}`,
+    )
+  }
+  return pythonPath
 }
 
 /** Read the Electron fuse values the shipped application configures. */
@@ -1047,15 +1106,26 @@ function normalizeArchiveEntry(entry: string): string {
   return entry.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }
 
+/** Archive entries every supported platform requires inside app.asar. */
+const REQUIRED_PLATFORM_ARCHIVE_ENTRIES: readonly string[] = [
+  ...REQUIRED_PACKAGED_RUNTIME_ENTRIES,
+  ...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+]
+
 /**
  * Inspect one archive and reject an incomplete packaged runtime.
  * @param archivePath - resolved app.asar path.
  * @param list - ASAR listing implementation.
+ * @param requiredArchiveEntries - required archive entries; defaults to the
+ * platform-agnostic set, and callers add the platform-scoped extras (the
+ * Windows-only Python digest manifest) the way the physical-tree gate adds
+ * `REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES`.
  * @returns The normalized archive entry set for physical mirror verification.
  */
 export function verifyPackagedAsar(
   archivePath: string,
   list: ArchiveLister = listPackage,
+  requiredArchiveEntries: readonly string[] = REQUIRED_PLATFORM_ARCHIVE_ENTRIES,
 ): ReadonlySet<string> {
   let entries: readonly string[]
   try {
@@ -1068,11 +1138,7 @@ export function verifyPackagedAsar(
   }
 
   const present = new Set(entries.map(normalizeArchiveEntry))
-  const required = [
-    ...REQUIRED_PACKAGED_RUNTIME_ENTRIES,
-    ...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
-  ]
-  const missing = required.filter(entry => !present.has(entry))
+  const missing = requiredArchiveEntries.filter(entry => !present.has(entry))
   if (missing.length > 0) {
     throw new Error(
       `dsh-plugin-desktop: packaged runtime at ${archivePath} is missing required ASAR entries: ${missing.join(', ')}`,
@@ -1182,7 +1248,13 @@ export function verifyPackagedRuntime(
   resolvePackage?: PackageResolver,
   read: (filename: string) => string = filename => readFileSync(filename, 'utf8'),
 ): void {
-  const archiveEntries = verifyPackagedAsar(resolvePackagedAsarPath(context), list)
+  const archiveEntries = verifyPackagedAsar(
+    resolvePackagedAsarPath(context),
+    list,
+    context.electronPlatformName === 'win32'
+      ? [...REQUIRED_PLATFORM_ARCHIVE_ENTRIES, ...REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES]
+      : REQUIRED_PLATFORM_ARCHIVE_ENTRIES,
+  )
   const unpackedRoot = resolvePackagedUnpackedRoot(context)
   const requiredPhysicalEntries = context.electronPlatformName === 'win32'
     ? [...REQUIRED_UNPACKED_RUNTIME_ENTRIES, ...REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES]
@@ -1250,6 +1322,7 @@ export async function afterPack(
 ): Promise<void> {
   verify(context)
   verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
+  verifyBundledPythonRuntime(context, probe.exists ?? existsSync)
   verifyElectronFuseStage(
     (probe.readFuses ?? (() => readPackagedElectronFuses(context.packager)))(),
   )

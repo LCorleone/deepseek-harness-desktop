@@ -21,8 +21,10 @@ import {
   NATIVE_UI_WINDOW_DOCUMENTS,
   REQUIRED_UNPACKED_PACKAGE_SPECIFIERS,
   REQUIRED_UNPACKED_RUNTIME_ENTRIES,
+  REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES,
   REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES,
   resolveBundledNodeResourcePath,
+  resolveBundledPythonResourcePath,
   resolvePackagedAsarPath,
   resolvePackagedExecutablePath,
   resolvePackagedResourcesDirectory,
@@ -34,6 +36,7 @@ import {
   UPDATE_TRUST_ROOTS_DEVELOPMENT_MARKER,
   verifyArchiveOnlyPartition,
   verifyBundledNodeRuntime,
+  verifyBundledPythonRuntime,
   verifyCompanyReleaseChecklist,
   verifyElectronFuseStage,
   verifyElectronFuseWire,
@@ -89,6 +92,10 @@ function completeArchiveEntries(separator = '/'): string[] {
   return [
     ...REQUIRED_PACKAGED_RUNTIME_ENTRIES,
     ...REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES,
+    // The Windows-only Python digest manifest rides win32 packages only;
+    // extra archive entries never fail the one-directional missing check, so
+    // including it keeps every fixture realistic for both platform cases.
+    ...REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES,
   ].map(entry => `${separator}${entry.replaceAll('/', separator)}`)
 }
 
@@ -248,6 +255,7 @@ describe('packaged desktop runtime verification', () => {
     expect(calls).toEqual([
       'static',
       join('/build', 'resources', BUNDLED_NODE_RESOURCE_DIRECTORY, 'node.exe'),
+      join('/build', 'resources', 'python-runtime', 'python.exe'),
       'fuse',
       `flip:${join('/build', 'DSH Desktop.exe')}`,
       `wire:${join('/build', 'DSH Desktop.exe')}`,
@@ -340,6 +348,20 @@ describe('packaged desktop runtime verification', () => {
     expect(() => verifyBundledNodeRuntime(runtimeContext, () => false))
       .toThrow(`missing the bundled Node command: ${nodePath}`)
     expect(verifyBundledNodeRuntime(runtimeContext, filename => filename === nodePath)).toBe(nodePath)
+  })
+
+  it('requires the bundled Python command beside the packaged app.asar on Windows only', () => {
+    const runtimeContext = context('/build', 'win32')
+    const pythonPath = resolveBundledPythonResourcePath(runtimeContext)
+
+    expect(pythonPath).toBe(join('/build', 'resources', 'python-runtime', 'python.exe'))
+    expect(() => verifyBundledPythonRuntime(runtimeContext, () => false))
+      .toThrow(`missing the bundled Python command: ${pythonPath}`)
+    expect(verifyBundledPythonRuntime(runtimeContext, filename => filename === pythonPath)).toBe(pythonPath)
+    // The embeddable CPython distribution is Windows-only, so non-Windows
+    // packages carry no python.exe to probe: the check is a skip there, not
+    // a failure.
+    expect(verifyBundledPythonRuntime(context('/build', 'darwin'), () => false)).toBeUndefined()
   })
 
   it('reads and enforces the staged Electron fuse map', () => {
@@ -732,6 +754,9 @@ describe('packaged desktop runtime verification', () => {
       REQUIRED_UNPACKED_RUNTIME_ENTRIES.length
         + (platform === 'win32' ? REQUIRED_WINDOWS_X64_NODE_PTY_ENTRIES.length : 0)
         + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
+        // The fixture archive carries the win32-only Python manifest on every
+        // platform, so the mirror check probes it once here too.
+        + REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES.length
         + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length
         + NATIVE_UI_WINDOW_DOCUMENTS.length
         + 1 // inject-target client bundle (#73 composition gate)
@@ -774,6 +799,8 @@ describe('packaged desktop runtime verification', () => {
         + REQUIRED_MACOS_UNIVERSAL_ENTRIES.length
         + FORBIDDEN_MACOS_UNIVERSAL_ENTRIES.length
         + REQUIRED_PACKAGED_RUNTIME_ENTRIES.length
+        // Same fixture-archive Python manifest probe as the platform case above.
+        + REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES.length
         + REQUIRED_ARCHIVE_ONLY_RUNTIME_ENTRIES.length
         + NATIVE_UI_WINDOW_DOCUMENTS.length
         + 1 // inject-target client bundle (#73 composition gate)
@@ -845,6 +872,7 @@ describe('packaged desktop runtime verification', () => {
     'lib/desktop-runtime-environment.js',
     'lib/policy/desktop-policy.json',
     'lib/node-runtime-sha256.json',
+    'lib/python-runtime-sha256.json',
     'lib/profile-service.js',
     'lib/diagnostics.js',
     'lib/diagnostic-export-worker.js',
@@ -865,6 +893,27 @@ describe('packaged desktop runtime verification', () => {
 
       expect(() => verifyPackagedRuntime(context('/build', 'win32'), () => entries, () => false))
         .toThrow(`missing required ASAR entries: ${missing}`)
+    },
+  )
+
+  it.each(['darwin', 'linux'])(
+    'does not require the Windows-only Python digest manifest from %s packages',
+    (platform) => {
+      const runtimeContext = context('/build', platform)
+      const unpackedRoot = resolvePackagedUnpackedRoot(runtimeContext)
+      // Non-Windows packages ship no Python at all: their app.asar omits
+      // lib/python-runtime-sha256.json, and the gate must stay green — a
+      // platform-unscoped requirement would break every mac/linux build.
+      const entries = completeArchiveEntries()
+        .filter(entry => !REQUIRED_WINDOWS_ARCHIVE_RUNTIME_ENTRIES.some(required => required === entry))
+
+      expect(() => verifyPackagedRuntime(
+        runtimeContext,
+        () => entries,
+        completeFileProbe(unpackedRoot),
+        completePackageResolver(unpackedRoot),
+        completeRuntimeReader(),
+      )).not.toThrow()
     },
   )
 

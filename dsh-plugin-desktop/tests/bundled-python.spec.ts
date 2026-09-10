@@ -506,6 +506,50 @@ describe('bundled Python runtime resolution', () => {
       environment: { PATH: '/usr/bin' },
     })).toThrow('unsupported on darwin')
   })
+
+  it('skips the WindowsApps store stub while scanning the development PATH', () => {
+    const stubDirectory = 'C:\\Users\\Example\\AppData\\Local\\Microsoft\\WindowsApps'
+    const stub = join(stubDirectory, 'python.exe')
+    const realDirectory = 'C:\\Python312'
+    const real = join(realDirectory, 'python.exe')
+    const moduleUrl = new URL(
+      'file:///workspace/dsh-plugin-desktop/lib/desktop-python-runtime.js',
+    ).href
+    const probe = (filename: string): boolean => filename === stub || filename === real
+
+    // The WindowsApps execution alias exists on disk (that is how the store
+    // stub works) and shadows any later real install, so the scan must pass
+    // it over and select the real interpreter further down PATH.
+    expect(resolveDesktopPythonExecutable(moduleUrl, {
+      platform: 'win32',
+      environment: { PATH: `C:\\Windows;${stubDirectory};${realDirectory}` },
+      exists: probe,
+    })).toBe(real)
+
+    // A stub-only PATH fails loud instead of handing the terminal a dead
+    // alias that opens the Microsoft Store.
+    expect(() => resolveDesktopPythonExecutable(moduleUrl, {
+      platform: 'win32',
+      environment: { PATH: `C:\\Windows;${stubDirectory}` },
+      exists: probe,
+    })).toThrow('no Python command is available')
+
+    // The exclusion is segment-wise and case-insensitive: localized and
+    // lowercased alias directories are skipped too, while a directory merely
+    // containing the substring is not.
+    expect(resolveDesktopPythonExecutable(moduleUrl, {
+      platform: 'win32',
+      environment: { PATH: `c:\\users\\example\\appdata\\local\\microsoft\\windowsapps;${realDirectory}` },
+      exists: probe,
+    })).toBe(real)
+    const windowsappsTools = 'C:\\Tools\\windowsapps-scripts'
+    const substringInterpreter = join(windowsappsTools, 'python.exe')
+    expect(resolveDesktopPythonExecutable(moduleUrl, {
+      platform: 'win32',
+      environment: { PATH: windowsappsTools },
+      exists: filename => filename === substringInterpreter,
+    })).toBe(substringInterpreter)
+  })
 })
 
 describe('staged development bundle', () => {
@@ -516,6 +560,11 @@ describe('staged development bundle', () => {
     BUNDLED_PYTHON_COMMAND_NAME,
   )
 
+  // This probe is inherently win32-only, mirroring the bundled-Node staged
+  // probe precedent: the embeddable CPython distribution is staged by
+  // `beforePack` for Windows packages only, so on a linux/macOS checkout
+  // `build/python-runtime/python.exe` never exists and `it.runIf` skips it —
+  // the skip below is that expected behavior, not a broken gate.
   it.runIf(existsFileSync(stagedCommand))('holds a real staged command for this host', () => {
     expect(statSync(stagedCommand).isFile()).toBe(true)
     expect(readFileSync(stagedCommand).byteLength).toBeGreaterThan(1_000_000)

@@ -48,6 +48,13 @@ vi.mock('../src/desktop-node-runtime.ts', async (importOriginal) => ({
   resolveDesktopNodeExecutable: vi.fn(() => process.execPath),
 }))
 
+const pythonRuntime = vi.hoisted(() => ({ resolve: vi.fn() }))
+
+vi.mock('../src/desktop-python-runtime.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/desktop-python-runtime.ts')>(),
+  resolveDesktopPythonExecutable: pythonRuntime.resolve,
+}))
+
 vi.mock('../src/diagnostic-export.ts', () => ({
   exportDesktopDiagnostics: diagnostics.export,
 }))
@@ -1452,6 +1459,58 @@ describe('Electron desktop runtime', () => {
         profileDir: '/other',
         homeDir: '/other',
       })).toThrow('already configured')
+    } finally {
+      delete (process.versions as { electron?: string }).electron
+    }
+  })
+
+  it('logs a terminal-path Python resolution failure instead of silently dropping the aliases', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    Object.defineProperty(process.versions, 'electron', {
+      configurable: true,
+      value: '43.4.0',
+    })
+    try {
+      const error = vi.fn()
+      const { ElectronDesktopRuntime } = await import('../src/electron-runtime.ts')
+      const runtime = new ElectronDesktopRuntime(async () => {}, () => {}, {
+        error,
+        errorCause: vi.fn(),
+      })
+      runtime.configureTerminal({
+        profileName: 'desktop',
+        profileDir: 'C:\\Users\\Example\\.dsh\\profiles\\desktop',
+        homeDir: 'C:\\Users\\Example\\.dsh',
+      })
+      pythonRuntime.resolve.mockImplementationOnce(() => {
+        throw new Error('the packaged digest manifest is unreadable')
+      })
+
+      runtime.openTerminal()
+
+      // The terminal itself still opens without the python aliases, but the
+      // degradation is logged on this path (review P3): previously the same
+      // failure surfaced only through the main-process startup installation,
+      // leaving the terminal path silent.
+      expect(terminal.open).toHaveBeenCalledOnce()
+      expect(terminal.open.mock.calls[0]?.[0]).not.toHaveProperty('pythonExecutable')
+      expect(error).toHaveBeenCalledOnce()
+      expect(error).toHaveBeenCalledWith(
+        'dsh-plugin-desktop: the bundled Python runtime is unavailable; '
+          + 'this terminal opens without python aliases: '
+          + 'the packaged digest manifest is unreadable',
+      )
+
+      // Non-Windows platforms bundle no Python at all, so their guaranteed
+      // resolution failure must stay noise-free instead of logging per open.
+      platformSpy.mockReturnValue('darwin')
+      pythonRuntime.resolve.mockImplementationOnce(() => {
+        throw new Error('bundled Python runtime is unsupported on darwin')
+      })
+      runtime.openTerminal()
+
+      expect(terminal.open).toHaveBeenCalledTimes(2)
+      expect(error).toHaveBeenCalledOnce()
     } finally {
       delete (process.versions as { electron?: string }).electron
     }

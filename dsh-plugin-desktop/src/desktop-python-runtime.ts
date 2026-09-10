@@ -307,6 +307,20 @@ function verifyBundledPythonRuntimeIntegrity(
   verifiedBundledPythonRuntimes.set(directory, fingerprints)
 }
 
+/**
+ * Whether one PATH directory is a Windows Store execution-alias directory.
+ *
+ * Stock Windows puts `Microsoft\WindowsApps` on PATH ahead of any real
+ * Python: its `python.exe` is a zero-byte store stub that opens the Microsoft
+ * Store instead of running Python, so selecting it would hand the terminal
+ * an alias that never executes. The match is segment-wise and
+ * case-insensitive (the directory capitalization varies across installs and
+ * locale directories), mirroring how the shell resolves the alias itself.
+ */
+function isWindowsAppsAliasDirectory(directory: string): boolean {
+  return directory.split(/[\\/]/).some(segment => segment.toLowerCase() === 'windowsapps')
+}
+
 /** Find one command name on PATH without trusting a command interpreter. */
 function commandOnPath(
   command: string,
@@ -322,6 +336,11 @@ function commandOnPath(
       ? rawDirectory.slice(1, -1)
       : rawDirectory
     if (directory.length === 0) continue
+    // Skip the WindowsApps store stub even when it satisfies the file probe:
+    // the stub exists on disk (that is how execution aliases work) but never
+    // executes Python, so a later real install must win and a stub-only PATH
+    // must fail loud instead of handing the terminal a dead alias.
+    if (inputs.platform === 'win32' && isWindowsAppsAliasDirectory(directory)) continue
     const candidate = join(directory, command)
     if (exists(candidate)) return candidate
   }

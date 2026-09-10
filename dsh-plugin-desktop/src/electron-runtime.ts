@@ -18,14 +18,38 @@ import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-pat
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
 import { resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
 
-/** Resolve the Python command for terminal aliases without failing the terminal itself. */
-function optionalDesktopPythonExecutable(): string | undefined {
+/**
+ * Resolve the Python command for terminal aliases without failing the terminal itself.
+ *
+ * A failed resolution previously vanished silently on this path (review
+ * P3): the main process logs its own startup failure when the Python command
+ * surface cannot install, but the terminal path has no such log, so a
+ * terminal opening without python aliases was indistinguishable from a
+ * packaged tree that never shipped them. The two logs are deliberately
+ * separate events — startup covers the command surface, this one covers each
+ * terminal's aliases — so a shared failure does surface twice, once per
+ * affected surface, which is the smallest fix that leaves neither path
+ * silent. Non-Windows platforms bundle no Python at all (resolution always
+ * throws there), so logging is scoped to win32 to keep expected absence
+ * noise-free.
+ * @param logError - sink for the degradation report; defaults to stderr.
+ */
+function optionalDesktopPythonExecutable(
+  logError: (message: string) => void = message => { process.stderr.write(`${message}\n`) },
+): string | undefined {
   try {
     return resolveDesktopPythonExecutable(import.meta.url, {
       platform: process.platform,
       environment: process.env,
     })
-  } catch {
+  } catch (cause) {
+    if (process.platform === 'win32') {
+      logError(
+        'dsh-plugin-desktop: the bundled Python runtime is unavailable; '
+          + 'this terminal opens without python aliases: '
+          + `${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
     return undefined
   }
 }
@@ -387,7 +411,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         throw new Error('dsh-plugin-desktop: terminal requires the Electron runtime version')
       }
       const terminalSpec: DesktopTerminalSpec = spec
-      const pythonExecutable = optionalDesktopPythonExecutable()
+      const pythonExecutable = optionalDesktopPythonExecutable(message => { this.logError(message) })
       openDesktopTerminal({
         platform: this.platform,
         nodeExecutable: resolveDesktopNodeExecutable(import.meta.url, {
