@@ -31,3 +31,11 @@
 - A：打包态终端敲 `python --version` 出 3.12.x、`python3`/`py` 别名可用；digest 校验失败=拒绝启动该面（fail-closed）；PATH 幂等；`tests/bundled-python.spec.ts` 等新 spec 全绿；基线 desktop 测试只增不减；typecheck 0；layout 绿。
 - B：`python -m pip --version` 可用；`pip install` 落 workspace `.venv`（沙箱内实测路径断言）；agent preset/终端提示提及 python 可用性（最小面）。
 - C：遥测 `python_runtime {available, version, origin}`（形状照 client-event-reporter 先例）；政策开关（release 默认 enabled）；文档（README.zh/telemetry.zh）+ 安装包体积实测数字进战报。
+
+
+## 6. 重设计决策（2026-09-10 11:30 用户拍板，推翻 .venv 约定）
+真机实证：沙箱内 virtualenv 双重失败（AppData\pypa 缓存拒 + 私有 temp 内 distlib 生成 exe 被拒）；且用户明确要「无 venv 仪式感」。三条新决策：
+1. **本地优先**：PATH 上有真实本地 python（排除 WindowsApps 商店 stub）则用本地的，捆绑仅兜底（原方案二）。
+2. **全局安装**：pip 直接装全局，不要 .venv。技术前提：捆绑运行时改为**打包 zip + 首启解压到 %LOCALAPPDATA%\DSH Desktop\python-runtime 用户副本**（部署时 zip sha256 一次校验；副本用户可写=「全局」，不再逐启动逐文件校验——信任边界移到部署时，与 profile 同信任级）。
+3. **沙箱放行 python home**：agent 沙箱可写根追加用户级 python home（等上游 ACL adapter 侦查结论确认传法），使 agent 驱动的 pip 全局安装可行。
+preset 随之改为「直接 pip install，无需 venv；绝不装进打包资源树（只读）」。P11-B 的 ensurepip/venv 路线废弃（fix-venv-sandbox 已叫停，只留侦查结论）。
