@@ -55,28 +55,32 @@ profile 依然能拿到 provider，等服务后挂载时再自动拿到工具。
 
 ## 脚本执行通道：零明文通道
 
-`company_skill_run` 是执行 bundle 里 `scripts/…` 条目的唯一入口。引擎（`src/execute.ts`）刻意不依赖桌面：它从
-子进程 `PATH` 解析 `node`/`python`（桌面正是在那里注入自带运行时命令），并通过宿主的 `ctx.subprocess.spawn`
-接缝 spawn。
+`company_skill_run` 是执行 bundle 里 `scripts/…` 条目的唯一入口。引擎（`src/execute.ts`）刻意不依赖桌面：它按
+`DSH_DESKTOP_NODE_EXECUTABLE` / `DSH_DESKTOP_PYTHON_EXECUTABLE`（桌面在运行时发布的绝对命令）→ 子进程
+`PATH` → 宿主可执行文件自身（仅 Node：`process.execPath` 配 `ELECTRON_RUN_AS_NODE=1`，CLI 宿主即 node，
+桌面宿主即 Electron-as-node）的顺序解析解释器，并通过宿主的 `ctx.subprocess.spawn` 接缝 spawn。因此打包后的
+Windows 机器即使 `PATH` 上只有 shell-less spawn 跑不了的 `.cmd` 垫片，也能跑 `.mjs` 与 `.py` 脚本。
 
 - **参数**：`skill`（公司 skill 名）、`script`（bundle 根相对路径，必须**恰好等于该 skill 自己的**某个
   `scripts[]` 路径，如 `scripts/report.mjs`）、可选 `args`（额外 argv，原样追加在解释器的 `-` 脚本标记之后）。
 - **送达**：解密后的脚本正文写入子进程 **stdin**（`node -` / `python -`）；绝不写入文件，也绝不出现在日志、
   遥测事件或错误信息里。Node 的 stdin 模块探测让 `require` 与 `import` 两种写法都能跑。
-- **解释器**：按扩展名选择：`.mjs`/`.js` → `node`，`.py` → `python`；其它扩展名在 spawn 之前就拒掉。
+- **解释器**：按扩展名选择解释器家族（`.mjs`/`.js` → Node，`.py` → Python）并按上述顺序解析；解析不到在
+  spawn 前以清晰错误拒绝，非法 UTF-8 正文也拒绝而不是有损解码；其它扩展名在 spawn 之前就拒掉。
 - **寻址**：`script` 与已校验的 bundle 条目做精确相等比较，绝不拼进文件系统路径，所以 `../`、绝对路径、
   未声明名字都在 spawn 之前拒掉。
 - **资产**：skill 带 assets 时，解到一个私有 `mkdtemp` 目录（`$TMPDIR/dsh-skill-assets-*`）代表 bundle 根
   （`assets/notes.md` → `<dir>/assets/notes.md`），以 `DSH_SKILL_ASSETS` 传给子进程，并在运行一结束就于
-  `finally` 里删除——超时、取消、失败同样删除。无 assets 的 skill 不建目录，也不设该环境变量。
+  `finally` 里删除——超时、取消、失败同样删除。清理失败（Windows 上刚退出的子进程可能仍持有句柄而报
+  EPERM）只记 warning，绝不改变已结算的结果。无 assets 的 skill 不建目录，也不设该环境变量。
 - **边界**：每条流只保留有界尾部（默认 64 KiB，溢出报 `truncated`），每次运行有独立的 120 s 死线并与调用方
   signal 融合，同一会话最多 1 个运行在飞。所有拒绝都是 `SkillRunError`，只含 skill 名与脚本路径。
 - **返回**：`{ skill, script, exitCode, stdout, stderr, stdoutTruncated, stderrTruncated }`；非零退出码是数据，
   不是抛出的错误。
 
-零落盘保证由脚本自己在 `tests/execute.spec.ts` 里断言：测试脚本在运行期间遍历临时根目录，统计含自身源码
-canary 的文件数，必须是 `0`。`tests/tool.spec.ts` 再把制品里的 `fixture-hello/scripts/hello.mjs` 经真实插件
-接线端到端跑一遍。
+零落盘保证由脚本自己在 `tests/execute.spec.ts` 里断言：测试脚本在运行期间遍历临时根目录，以及（被固定的）
+默认临时根的顶层，统计含自身源码 canary 的文件数，必须是 `0`。`tests/tool.spec.ts` 再把制品里的
+`fixture-hello/scripts/hello.mjs` 经真实插件接线端到端跑一遍。
 
 ## bundle 格式
 
@@ -145,7 +149,7 @@ script、asset 被解析、校验或交给 registry。
 ```bash
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc 声明
 corepack yarn workspace dsh-company-skills typecheck
-corepack yarn workspace dsh-company-skills test           # vitest，41 个用例
+corepack yarn workspace dsh-company-skills test           # vitest，50 个用例
 corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle 与 fixtures/ 一致
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
@@ -163,7 +167,7 @@ node dsh-company-skills/scripts/build-bundle-asset.mjs
 | --- | --- | --- |
 | `tests/container.spec.ts` | 11 | codec 常量与打包器一致；制品 asset 解出每个 fixture 一条索引；打包器→解码器交叉一致（规范化文档与源码树均逐字节）；裸 blob 与生成模块两种形态；确定性；制品无明文（附解码反向对照）且发布的插件文件也无明文；坏 frame / 坏元素与打包器同拒；发布面白名单 |
 | `tests/provider.spec.ts` | 11 | `inject(['skills'])` 反应式注册与随插件卸载；注册表后挂载；裸 `ctx.skills` 抛；源码形态钉测；`list()` 仅索引（无正文、无 `content`）；`get()` 只物化一个正文；未知名与不可用 locator；payload 损坏仍可列但拒载；asset 缺失/损坏退化不抛；退化目录在活宿主上；模块导出 |
-| `tests/execute.spec.ts` | 14 | 解释器选择；真实 `node -` 经 stdin 运行（输出、args 透传、非零退出当数据）；零落盘（脚本自身遍历临时根目录找不到自身源码副本、staged assets 被删除、结果不含 canary）；未知 skill / 未声明脚本 / 路径穿越 / 无解释器均在 spawn 前拒绝；死线、输出尾部截断、调用方取消；会话并发上限与槽位释放；接缝透传（argv、stdin 正文、cwd、grace、signal） |
+| `tests/execute.spec.ts` | 23 | 解释器选择与解析（注入命令 → PATH → 宿主可执行文件）；真实 `node -` 经 stdin 运行（输出、args 透传、非零退出当数据）；零落盘（脚本自身遍历注入根与默认临时根顶层找不到自身源码副本、staged assets 被删除、结果不含 canary、清理失败只记 warning）；未知 skill / 未声明脚本 / 路径穿越 / 无解释器 / 非法 UTF-8 均在 spawn 前拒绝；死线、输出尾部截断、调用方取消、启动抛错均清理 staged assets；会话并发上限与槽位释放；接缝透传（argv、stdin 正文、cwd、grace、signal） |
 | `tests/tool.spec.ts` | 5 | 工具 schema、输出形状、预算与 `presentCall`；从执行上下文解析 cwd/session/signal；render 与 `toRunValue`；在 tools 接缝上的反应式注册与卸载；制品 fixture 脚本经真实插件端到端运行并清理 staged assets |
 
 红绿证（本批实测）：
@@ -181,6 +185,10 @@ node dsh-company-skills/scripts/build-bundle-asset.mjs
   `carries no script` 断言失败。
 - 去掉 `AbortSignal`/死线融合、只靠宿主超时 → **红**：执行器的 `timed out after … ms` 与 `was cancelled`
   分类永不触发。
+- 忽略 `DSH_DESKTOP_NODE_EXECUTABLE`、直接 spawn PATH 裸名 → **红**：注入命令用例看到的是 `node` 而不是发布
+  的绝对路径。
+- 去掉 staged-assets 目录的 `finally` 清理 → **红**：超时、取消、启动抛错三条用例都留下非空的临时根目录。
+- 让清理 `rm` 的失败逃出 `finally` → **红**：一次清理遇 EPERM 的成功运行被报成失败，而不是返回结果。
 
 ## 目录
 

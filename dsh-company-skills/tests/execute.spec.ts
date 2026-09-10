@@ -22,9 +22,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadCatalogFromText } from '../src/catalog.js'
 import {
   ASSETS_ENV_VAR,
+  DESKTOP_NODE_EXECUTABLE_ENV,
+  DESKTOP_PYTHON_EXECUTABLE_ENV,
+  ELECTRON_RUN_AS_NODE_ENV,
   SkillRunError,
   createScriptExecutor,
   interpreterFor,
+  resolveInterpreter,
   supportedScriptExtensions,
   type ScriptSpawn,
 } from '../src/execute.js'
@@ -43,7 +47,7 @@ console.log('${OUT_CANARY}')
 console.error('RUNNER-STDERR-CANARY')
 `
 
-interface EntrySpec { readonly path: string; readonly text: string }
+interface EntrySpec { readonly path: string; readonly text?: string; readonly content?: string }
 interface SkillSpec {
   readonly name?: string
   readonly body?: string
@@ -54,6 +58,9 @@ interface SkillSpec {
 /** Encode one base64 bundle entry. */
 const b64 = (text: string): string => Buffer.from(text, 'utf8').toString('base64')
 
+/** Encode one declared entry, honoring a raw pre-encoded `content` override. */
+const encodeEntry = (entry: EntrySpec): string => entry.content ?? b64(entry.text ?? '')
+
 /** Build one raw skill bundle element. */
 function bundleOf(spec: SkillSpec = {}): Record<string, unknown> {
   return {
@@ -61,8 +68,8 @@ function bundleOf(spec: SkillSpec = {}): Record<string, unknown> {
     description: 'Fixture skill used to exercise the batch-3 script executor.',
     body: spec.body ?? `# runner demo\n\n${BODY_CANARY}\n`,
     scripts: (spec.scripts ?? [{ path: 'scripts/demo.mjs', text: DEMO_SCRIPT }])
-      .map((entry) => ({ path: entry.path, content: b64(entry.text) })),
-    assets: (spec.assets ?? []).map((entry) => ({ path: entry.path, content: b64(entry.text) })),
+      .map((entry) => ({ path: entry.path, content: encodeEntry(entry) })),
+    assets: (spec.assets ?? []).map((entry) => ({ path: entry.path, content: encodeEntry(entry) })),
   }
 }
 
@@ -141,6 +148,39 @@ describe('interpreter selection', () => {
   })
 })
 
+describe('interpreter resolution', () => {
+  it('prefers the desktop-published absolute command over a PATH lookup', () => {
+    const probe = (): boolean => { throw new Error('PATH must not be probed when a command was injected') }
+    expect(resolveInterpreter('node', {
+      environment: { PATH: '/usr/bin', [DESKTOP_NODE_EXECUTABLE_ENV]: '/opt/dsh/node-runtime/node' },
+      commandOnPath: probe,
+    })).toEqual({ command: '/opt/dsh/node-runtime/node', env: {} })
+    expect(resolveInterpreter('python', {
+      environment: { PATH: '/usr/bin', [DESKTOP_PYTHON_EXECUTABLE_ENV]: 'C:/pyenv/Scripts/python.exe' },
+      commandOnPath: probe,
+    })).toEqual({ command: 'C:/pyenv/Scripts/python.exe', env: {} })
+  })
+
+  it('falls back to the bare family name when it is executable on PATH', () => {
+    expect(resolveInterpreter('node', { environment: { PATH: '/usr/bin' }, commandOnPath: () => true }))
+      .toEqual({ command: 'node', env: {} })
+    expect(resolveInterpreter('python', { environment: {}, commandOnPath: () => true }))
+      .toEqual({ command: 'python', env: {} })
+  })
+
+  it('falls back to the host executable as Node, and rejects an unresolvable Python', () => {
+    expect(resolveInterpreter('node', {
+      environment: {},
+      execPath: '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop',
+      commandOnPath: () => false,
+    })).toEqual({
+      command: '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop',
+      env: { [ELECTRON_RUN_AS_NODE_ENV]: '1' },
+    })
+    expect(resolveInterpreter('python', { environment: {}, commandOnPath: () => false })).toBeUndefined()
+  })
+})
+
 describe('running a declared script (real node over stdin)', () => {
   it('executes the script from the bundle and returns its output and exit code', async () => {
     const executor = createScriptExecutor({
@@ -200,6 +240,7 @@ describe('zero plaintext on disk', () => {
     const scanScript = [
       "const { readdirSync, readFileSync } = require('node:fs')",
       "const { join } = require('node:path')",
+      "const { tmpdir } = require('node:os')",
       `const canary = '${SCRIPT_CANARY}'`,
       'const root = process.argv[2]',
       'let hits = 0',
@@ -211,6 +252,13 @@ describe('zero plaintext on disk', () => {
       '  }',
       '}',
       'walk(root)',
+      // The default temp root is scanned at its top level too, so a mutant
+      // that materializes the body directly in `os.tmpdir()` (rather than
+      // below the injected root) also turns this test red.
+      'for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {',
+      "  if (!entry.isFile()) continue",
+      "  try { if (readFileSync(join(tmpdir(), entry.name), 'utf8').includes(canary)) hits += 1 } catch {}",
+      '}',
       "console.log('SCRIPT-SOURCE-HITS=' + hits)",
       `console.log('ASSET-READ=' + require('node:fs').readFileSync(process.env.${ASSETS_ENV_VAR} + '/assets/notes.md', 'utf8').trim())`,
     ].join('\n')
@@ -223,17 +271,33 @@ describe('zero plaintext on disk', () => {
       tempRoot,
     })
 
-    const result = await executor.run({
-      skill: 'runner-demo',
-      script: 'scripts/scan.mjs',
-      args: [tempRoot],
-      cwd: tempRoot,
-      sessionKey: 'session-a',
-      signal: callerSignal(),
-    })
+    // Pin TMPDIR so `os.tmpdir()` — used by the executor's default temp root
+    // and by the scan script — is a small, test-owned directory instead of a
+    // shared machine-wide one. The child inherits it through the spawn spec.
+    const defaultTempRoot = await mkdtemp(join(tmpdir(), 'company-skills-default-'))
+    const previousTmpdir = process.env.TMPDIR
+    const runScan = async () => {
+      process.env.TMPDIR = defaultTempRoot
+      try {
+        return await executor.run({
+          skill: 'runner-demo',
+          script: 'scripts/scan.mjs',
+          args: [tempRoot],
+          cwd: tempRoot,
+          sessionKey: 'session-a',
+          signal: callerSignal(),
+        })
+      } finally {
+        if (previousTmpdir === undefined) delete process.env.TMPDIR
+        else process.env.TMPDIR = previousTmpdir
+        await rm(defaultTempRoot, { recursive: true, force: true })
+      }
+    }
+    const result = await runScan()
 
     // The source was piped, never materialized: the script's own walk of the
-    // temp root finds zero copies of its own canary while it runs.
+    // temp root (plus the top level of the default temp root) finds zero
+    // copies of its own canary while it runs.
     expect(result.stdout.text).toContain('SCRIPT-SOURCE-HITS=0')
     // The asset was staged and readable through DSH_SKILL_ASSETS.
     expect(result.stdout.text).toContain(`ASSET-READ=${ASSET_CANARY}`)
@@ -247,7 +311,12 @@ describe('zero plaintext on disk', () => {
 
   it('does not stage assets for a skill that has none, and never sets the env var', async () => {
     const { spawn, specs } = immediateSpawn()
-    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      interpreterResolution: { commandOnPath: () => true },
+    })
     await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
@@ -258,6 +327,34 @@ describe('zero plaintext on disk', () => {
     expect(specs).toHaveLength(1)
     expect(specs[0]?.env).toBeUndefined()
     await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('returns the settled result even when staged-asset cleanup fails', async () => {
+    const { spawn, specs } = immediateSpawn(0, { stdout: 'ok' })
+    const warnings: string[] = []
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({
+        assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
+      })),
+      spawn,
+      tempRoot,
+      removeStagedAssets: () => Promise.reject(new Error('EPERM: directory not empty')),
+      logWarning: message => { warnings.push(message) },
+    })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(specs).toHaveLength(1)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text).toBe('ok')
+    // The failure is reported as a warning and never as the run's outcome.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('could not remove the staged assets')
+    expect(warnings[0]).not.toContain(SCRIPT_CANARY)
   })
 })
 
@@ -314,10 +411,106 @@ describe('addressing is validation, never path arithmetic', () => {
   })
 })
 
+describe('script text decoding', () => {
+  it('rejects a body that is not valid UTF-8 instead of decoding it lossily', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const invalid = Buffer.from([0x70, 0x72, 0x69, 0x6e, 0x74, 0xff, 0xfe, 0x29]).toString('base64')
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ scripts: [{ path: 'scripts/bad.mjs', content: invalid }] })),
+      spawn,
+      tempRoot,
+    })
+    const failure = executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/bad.mjs',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    await expect(failure).rejects.toThrow(SkillRunError)
+    await expect(failure).rejects.toThrow(/is not valid UTF-8 text/)
+    let error: Error | undefined
+    await failure.catch((cause: unknown) => { error = cause as Error })
+    expect(error?.message).not.toContain('print')
+    expect(specs).toHaveLength(0)
+  })
+})
+
+describe('interpreter resolution through the seam', () => {
+  it('launches the desktop-published command in preference to a PATH name', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      interpreterResolution: {
+        environment: { [DESKTOP_NODE_EXECUTABLE_ENV]: '/opt/dsh/node-runtime/node' },
+        commandOnPath: () => { throw new Error('PATH must not be probed for an injected command') },
+      },
+    })
+    await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(specs[0]?.argv[0]).toBe('/opt/dsh/node-runtime/node')
+    expect(specs[0]?.env).toBeUndefined()
+  })
+
+  it('falls back to the host executable as Node, publishing ELECTRON_RUN_AS_NODE', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      interpreterResolution: {
+        environment: {},
+        execPath: '/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop',
+        commandOnPath: () => false,
+      },
+    })
+    await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(specs[0]?.argv[0]).toBe('/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop')
+    expect(specs[0]?.env).toEqual({ [ELECTRON_RUN_AS_NODE_ENV]: '1' })
+  })
+
+  it('rejects an unresolvable Python script without spawning', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ scripts: [{ path: 'scripts/report.py', text: "print('ok')\n" }] })),
+      spawn,
+      tempRoot,
+      interpreterResolution: { environment: {}, commandOnPath: () => false },
+    })
+    const failure = executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/report.py',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    await expect(failure).rejects.toThrow(SkillRunError)
+    await expect(failure).rejects.toThrow(/no python interpreter was found/)
+    expect(specs).toHaveLength(0)
+  })
+})
+
 describe('timeout, truncation, and cancellation', () => {
-  it('fails a run that outlives its deadline and terminates the process', async () => {
+  const assetBundle = (): ReturnType<typeof bundleOf> => bundleOf({
+    assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
+  })
+
+  it('fails a run that outlives its deadline, terminates it, and removes staged assets', async () => {
     const { spawn, specs } = abortTerminatedSpawn()
-    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot, timeoutMs: 25, graceMs: 10 })
+    const executor = createScriptExecutor({ catalog: catalogOf(assetBundle()), spawn, tempRoot, timeoutMs: 25, graceMs: 10 })
     await expect(executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
@@ -326,6 +519,20 @@ describe('timeout, truncation, and cancellation', () => {
       signal: callerSignal(),
     })).rejects.toThrow(/timed out after 25 ms/)
     expect(specs[0]?.signal?.aborted).toBe(true)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('removes staged assets when the launch itself throws', async () => {
+    const spawn: ScriptSpawn = () => { throw new Error('EACCES: launch refused') }
+    const executor = createScriptExecutor({ catalog: catalogOf(assetBundle()), spawn, tempRoot })
+    await expect(executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      cwd: tempRoot,
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })).rejects.toThrow(/could not start/)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 
   it('reports truncation when a stream overflows its cap, keeping the tail', async () => {
@@ -353,9 +560,13 @@ describe('timeout, truncation, and cancellation', () => {
     expect(result.stderr.text).toHaveLength(512)
   })
 
-  it('classifies a caller cancellation as cancelled, not as a launch failure', async () => {
+  it('classifies a caller cancellation as cancelled and removes staged assets', async () => {
     const { spawn, specs } = abortTerminatedSpawn()
-    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }] })),
+      spawn,
+      tempRoot,
+    })
     const controller = new AbortController()
     const run = executor.run({
       skill: 'runner-demo',
@@ -367,6 +578,7 @@ describe('timeout, truncation, and cancellation', () => {
     controller.abort()
     await expect(run).rejects.toThrow(/was cancelled/)
     expect(specs[0]?.signal?.aborted).toBe(true)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 })
 
@@ -408,7 +620,13 @@ describe('session concurrency bound', () => {
 describe('seam passthrough', () => {
   it('hands the seam the interpreter argv, stdin body, cwd, and grace', async () => {
     const { spawn, specs } = immediateSpawn()
-    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot, graceMs: 1234 })
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      graceMs: 1234,
+      interpreterResolution: { commandOnPath: () => true },
+    })
     await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',

@@ -955,6 +955,11 @@ async function start(): Promise<void> {
       stateDir: join(app.getPath('userData'), 'runtime-commands'),
       environment: process.env,
     })
+    // Installing the pnpm and Python runtimes also publishes their absolute
+    // interpreter commands to this process environment
+    // (DSH_DESKTOP_NODE_EXECUTABLE / DSH_DESKTOP_PYTHON_EXECUTABLE): a packaged
+    // desktop exposes only `.cmd` shims on PATH, which a shell-less spawn
+    // cannot execute, so host plugins resolve the real command from there.
     const releasePnpmRuntime = generation.own(() => { pnpmRuntime.dispose() })
     // The bundled Python runtime is Windows-only (embeddable CPython), and a
     // missing or unverifiable distribution disables only this command

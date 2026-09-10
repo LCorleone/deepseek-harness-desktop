@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -28,6 +29,19 @@ const DIRECTORY_MODE = 0o700
 const EXECUTABLE_FILE_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
 const TEMPORARY_ID = /^\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+
+/**
+ * Environment variable the desktop publishes to host plugins: the absolute
+ * bundled/shared Node command.
+ *
+ * A packaged desktop exposes only `.cmd` shims on PATH, which a shell-less
+ * spawn cannot execute, so host plugins resolve their interpreter from this
+ * variable instead of a PATH lookup.
+ */
+export const DESKTOP_NODE_EXECUTABLE_ENV = 'DSH_DESKTOP_NODE_EXECUTABLE'
+
+/** Environment variable the desktop publishes: the absolute shared Python command. */
+export const DESKTOP_PYTHON_EXECUTABLE_ENV = 'DSH_DESKTOP_PYTHON_EXECUTABLE'
 
 /** Inputs used to install one app-local pnpm command environment. */
 export interface DesktopPnpmRuntimeOptions {
@@ -154,6 +168,18 @@ function assertScriptValue(label: string, value: string): void {
   if (/[\0\r\n]/u.test(value)) {
     throw new Error(`dsh-plugin-desktop: command runtime ${label} must not contain NUL or newlines`)
   }
+}
+
+/**
+ * Publish one absolute interpreter command to the Host environment, but only
+ * while the file exists — a resolution that failed to produce a runnable
+ * command stays absent instead of publishing a path that cannot launch.
+ *
+ * The value intentionally outlives the installation's `dispose`: it is a
+ * process-lifetime interpreter fact, not a reversible PATH entry.
+ */
+function publishInterpreterCommand(environment: NodeJS.ProcessEnv, name: string, command: string): void {
+  if (existsSync(command)) environment[name] = command
 }
 
 /** Quote one arbitrary value as a POSIX shell word. */
@@ -524,6 +550,8 @@ export function installDesktopPnpmRuntime(options: DesktopPnpmRuntimeOptions): D
     windows ? PRIVATE_FILE_MODE : EXECUTABLE_FILE_MODE,
   )
 
+  publishInterpreterCommand(options.environment ?? process.env, DESKTOP_NODE_EXECUTABLE_ENV, options.nodeExecutable)
+
   return {
     pathDir,
     pnpmShimPath,
@@ -599,6 +627,8 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
       replacePrivateFile(join(directory, alias.name), alias.shim, PRIVATE_FILE_MODE)
     }
   }
+
+  publishInterpreterCommand(options.environment ?? process.env, DESKTOP_PYTHON_EXECUTABLE_ENV, options.pythonExecutable)
 
   return {
     pathDir,

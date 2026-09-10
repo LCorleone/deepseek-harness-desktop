@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,8 @@ import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  DESKTOP_NODE_EXECUTABLE_ENV,
+  DESKTOP_PYTHON_EXECUTABLE_ENV,
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
   installDesktopPythonRuntime,
@@ -674,5 +677,45 @@ describe('desktop Host python runtime', () => {
       { Path: 'C:\\Windows' },
       { pipExecutable: 'C:\\pip.exe\nmalicious' },
     ))).toThrow('must not contain NUL or newlines')
+  })
+})
+
+describe('desktop interpreter environment publication', () => {
+  it('publishes both absolute interpreter paths when the runtime is installed', () => {
+    const root = temporaryDirectory()
+    const nodeExecutable = join(root, 'node-runtime', 'node')
+    const pythonExecutable = join(root, 'python-runtime', 'python.exe')
+    mkdirSync(join(root, 'node-runtime'), { recursive: true })
+    mkdirSync(join(root, 'python-runtime'), { recursive: true })
+    writeFileSync(nodeExecutable, '')
+    writeFileSync(pythonExecutable, '')
+    const environment: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
+
+    installDesktopPnpmRuntime({ ...options(join(root, 'pnpm-state'), 'linux', environment), nodeExecutable })
+    installDesktopPythonRuntime({
+      platform: 'win32',
+      pythonExecutable,
+      nodeExecutable,
+      pipGatePath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-pip-gate.js',
+      stateDir: join(root, 'python-state'),
+      environment,
+    })
+
+    expect(environment[DESKTOP_NODE_EXECUTABLE_ENV]).toBe(nodeExecutable)
+    expect(environment[DESKTOP_PYTHON_EXECUTABLE_ENV]).toBe(pythonExecutable)
+    // Both published values point at files that really exist, so a plugin can
+    // launch them without a shell or a PATH shim.
+    expect(existsSync(environment[DESKTOP_NODE_EXECUTABLE_ENV] as string)).toBe(true)
+    expect(existsSync(environment[DESKTOP_PYTHON_EXECUTABLE_ENV] as string)).toBe(true)
+  })
+
+  it('leaves the variables unset when a resolution points at a missing file', () => {
+    const root = temporaryDirectory()
+    const environment: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
+    const missing = join(root, 'missing-node')
+
+    installDesktopPnpmRuntime({ ...options(join(root, 'pnpm-state'), 'linux', environment), nodeExecutable: missing })
+
+    expect(environment[DESKTOP_NODE_EXECUTABLE_ENV]).toBeUndefined()
   })
 })

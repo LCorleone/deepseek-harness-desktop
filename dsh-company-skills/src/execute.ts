@@ -14,11 +14,22 @@
  *
  * ## Interpreter selection
  *
- * The extension picks the interpreter: `.mjs`/`.js` → `node`, `.py` →
- * `python`. The bare name is resolved by the subprocess seam against the
- * child's `PATH` (the desktop injects its bundled runtime commands there), so
- * this module imports nothing from the desktop and stays a standalone plugin.
- * An extension with no interpreter is rejected before anything spawns.
+ * The extension picks the interpreter *family*: `.mjs`/`.js` → Node, `.py` →
+ * Python. The exact command is then resolved, in order:
+ *
+ * - Node: `DSH_DESKTOP_NODE_EXECUTABLE` (the absolute command the desktop
+ *   publishes for its bundled runtime) → `node` on the child's `PATH` → the
+ *   host executable itself (`process.execPath`) with `ELECTRON_RUN_AS_NODE=1`,
+ *   which is Node in a CLI host and Electron-as-Node in the desktop.
+ * - Python: `DSH_DESKTOP_PYTHON_EXECUTABLE` → `python` on the child's `PATH`.
+ *   There is no host-executable fallback: an unresolvable Python interpreter
+ *   rejects with a clear error naming the skill and script path.
+ *
+ * The desktop publishes the two variables because on a packaged Windows
+ * machine the only PATH entries are `.cmd` shims that `spawn` (no shell)
+ * cannot execute. This module never imports a desktop module: it reads the
+ * process environment and stays a standalone plugin. An extension with no
+ * interpreter family is rejected before anything spawns.
  *
  * ## Addressing and assets
  *
@@ -42,6 +53,7 @@
  * @module dsh-company-skills/execute
  */
 
+import { statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join } from 'node:path'
@@ -79,12 +91,24 @@ export const ASSETS_TMP_PREFIX = 'dsh-skill-assets-'
 /** Node's largest representable timer delay: a longer bound would overflow its timer. */
 export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1
 
-/** Extension → interpreter command, resolved against the child's `PATH`. */
-const INTERPRETER_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
+/** Extension → interpreter family, resolved to a command by {@link resolveInterpreter}. */
+const INTERPRETER_BY_EXTENSION: ReadonlyMap<string, ScriptInterpreterFamily> = new Map([
   ['.mjs', 'node'],
   ['.js', 'node'],
   ['.py', 'python'],
 ])
+
+/** Desktop-published absolute Node command; preferred over the `PATH` lookup. */
+export const DESKTOP_NODE_EXECUTABLE_ENV = 'DSH_DESKTOP_NODE_EXECUTABLE'
+
+/** Desktop-published absolute Python command; preferred over the `PATH` lookup. */
+export const DESKTOP_PYTHON_EXECUTABLE_ENV = 'DSH_DESKTOP_PYTHON_EXECUTABLE'
+
+/** Electron's "run as a plain Node CLI" switch, paired with `process.execPath`. */
+export const ELECTRON_RUN_AS_NODE_ENV = 'ELECTRON_RUN_AS_NODE'
+
+/** The interpreter families the executor can launch. */
+export type ScriptInterpreterFamily = 'node' | 'python'
 
 /** One resolved and enforced execution bound. */
 export interface ScriptExecutorLimits {
@@ -150,6 +174,36 @@ export interface ScriptExecutorOptions {
   readonly maxConcurrentPerSession?: number
   /** Temp root for the staged-assets directory; defaults to `os.tmpdir()`. */
   readonly tempRoot?: string
+  /**
+   * Interpreter-resolution seam; defaults to this process's environment,
+   * platform, `execPath`, and a real `PATH` probe. Tests override it to make
+   * the injected/PATH/host-executable order deterministic.
+   */
+  readonly interpreterResolution?: InterpreterResolutionInputs
+  /** Injected staged-assets remover; defaults to `fs.rm(..., { recursive, force })`. */
+  readonly removeStagedAssets?: (directory: string) => Promise<void>
+  /** Cleanup-failure sink; defaults to a no-op so a warning never changes a result. */
+  readonly logWarning?: (message: string) => void
+}
+
+/** Inputs controlling one interpreter resolution. */
+export interface InterpreterResolutionInputs {
+  /** Environment read for the desktop-published command; defaults to `process.env`. */
+  readonly environment?: NodeJS.ProcessEnv
+  /** Platform selecting the `PATH` dialect and executable extensions. */
+  readonly platform?: NodeJS.Platform
+  /** Host executable used as the Node fallback; defaults to `process.execPath`. */
+  readonly execPath?: string
+  /** Executable probe over the resolved environment; defaults to a real `PATH` search. */
+  readonly commandOnPath?: (command: string) => boolean
+}
+
+/** One resolved interpreter command plus the child environment it requires. */
+export interface ResolvedInterpreter {
+  /** `argv[0]` handed to the subprocess seam. */
+  readonly command: string
+  /** Extra environment entries to merge into the spawn spec. */
+  readonly env: Readonly<Record<string, string>>
 }
 
 /**
@@ -163,14 +217,65 @@ export class SkillRunError extends Error {
   }
 }
 
-/** Map one script path to its interpreter command, or `undefined` when unsupported. */
-export function interpreterFor(scriptPath: string): string | undefined {
+/** Map one script path to its interpreter family, or `undefined` when unsupported. */
+export function interpreterFor(scriptPath: string): ScriptInterpreterFamily | undefined {
   return INTERPRETER_BY_EXTENSION.get(extname(scriptPath).toLowerCase())
 }
 
 /** The extensions this executor can launch, in a stable display order. */
 export function supportedScriptExtensions(): readonly string[] {
   return [...INTERPRETER_BY_EXTENSION.keys()]
+}
+
+/** Whether one command is executable on the environment's `PATH`.
+ *
+ * Windows only accepts a native image (`.exe`/`.com`): a `.cmd` shim on `PATH`
+ * is not executable by a shell-less spawn, which is exactly the packaged-desktop
+ * case the injected variable exists to bypass. */
+function executableOnPath(command: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+  const rawPath = platform === 'win32'
+    ? Object.entries(environment).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? ''
+    : environment.PATH ?? ''
+  const delimiter = platform === 'win32' ? ';' : ':'
+  const extensions = platform === 'win32' ? ['.exe', '.com'] : ['']
+  for (const directory of rawPath.split(delimiter)) {
+    if (directory.length === 0) continue
+    for (const extension of extensions) {
+      try {
+        const stat = statSync(join(directory, command + extension))
+        if (stat.isFile() && (platform === 'win32' || (stat.mode & 0o111) !== 0)) return true
+      } catch {
+        // Not this candidate; keep searching the remaining PATH entries.
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Resolve one interpreter family to a concrete command.
+ *
+ * Order: the desktop-published absolute command, then the bare family name on
+ * the child's `PATH`, then — for Node only — the host executable itself with
+ * `ELECTRON_RUN_AS_NODE=1` (Node in a CLI host, Electron-as-Node in the
+ * desktop). Python has no host-executable fallback.
+ * @param family - the extension-selected interpreter family.
+ * @param inputs - environment, platform, host-executable, and `PATH`-probe seams.
+ * @returns the command and its required child environment, or `undefined` when
+ * no Python interpreter is available.
+ */
+export function resolveInterpreter(
+  family: ScriptInterpreterFamily,
+  inputs: InterpreterResolutionInputs = {},
+): ResolvedInterpreter | undefined {
+  const environment = inputs.environment ?? process.env
+  const platform = inputs.platform ?? process.platform
+  const injected = environment[family === 'node' ? DESKTOP_NODE_EXECUTABLE_ENV : DESKTOP_PYTHON_EXECUTABLE_ENV]
+  if (injected !== undefined && injected.length > 0) return { command: injected, env: {} }
+  const commandOnPath = inputs.commandOnPath ?? ((command: string) => executableOnPath(command, environment, platform))
+  if (commandOnPath(family)) return { command: family, env: {} }
+  if (family === 'python') return undefined
+  return { command: inputs.execPath ?? process.execPath, env: { [ELECTRON_RUN_AS_NODE_ENV]: '1' } }
 }
 
 function assertPositiveInteger(name: string, value: number): void {
@@ -209,9 +314,23 @@ function describeScripts(bundle: SkillBundle): string {
     : bundle.scripts.map((entry) => `"${entry.path}"`).join(', ')
 }
 
-/** Decode one base64 bundle entry to UTF-8 script text. */
+/** Strict UTF-8 decoder: invalid bytes throw instead of becoming U+FFFD. */
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
+
+/**
+ * Decode one base64 bundle entry to UTF-8 script text. Invalid UTF-8 is a
+ * rejection (never a silently lossy decode), and the error carries no bytes.
+ */
 function decodeScriptText(bundle: SkillBundle, script: { path: string; content: string }): string {
-  return decodeCanonicalBase64(script.content, `${bundle.name} script ${script.path}`).toString('utf8')
+  const bytes = decodeCanonicalBase64(script.content, `${bundle.name} script ${script.path}`)
+  try {
+    return UTF8_DECODER.decode(bytes)
+  } catch (cause) {
+    throw new SkillRunError(
+      `company skill "${bundle.name}" script "${script.path}" is not valid UTF-8 text`,
+      { cause },
+    )
+  }
 }
 
 /**
@@ -254,6 +373,7 @@ function collectOutput(reader: SubprocessOutputReader | undefined): ScriptOutput
 export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExecutor {
   const limits = resolveLimits(options)
   const tempRoot = options.tempRoot ?? tmpdir()
+  const logWarning = options.logWarning ?? (() => {})
   const activeBySession = new Map<string, number>()
 
   const release = (sessionKey: string): void => {
@@ -274,11 +394,19 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         `company skill "${bundle.name}" carries no script "${request.script}"; its scripts are ${describeScripts(bundle)}`,
       )
     }
-    const interpreter = interpreterFor(script.path)
-    if (interpreter === undefined) {
+    const family = interpreterFor(script.path)
+    if (family === undefined) {
       throw new SkillRunError(
         `company skill "${bundle.name}" script "${script.path}" has no supported interpreter `
         + `(supported extensions: ${supportedScriptExtensions().join(', ')})`,
+      )
+    }
+    const interpreter = resolveInterpreter(family, options.interpreterResolution)
+    if (interpreter === undefined) {
+      const variable = family === 'python' ? DESKTOP_PYTHON_EXECUTABLE_ENV : DESKTOP_NODE_EXECUTABLE_ENV
+      throw new SkillRunError(
+        `company skill "${bundle.name}" script "${script.path}" cannot run: `
+        + `no ${family} interpreter was found (set ${variable} or put ${family} on PATH)`,
       )
     }
     const body = decodeScriptText(bundle, script)
@@ -295,7 +423,7 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     // A start failure is classified before it is reported: a deadline or a
     // caller abort arriving between the claim and the spawn is a timeout or a
     // cancellation, not a launch failure.
-    const failLaunch = (interpreter: string, error: unknown): never => {
+    const failLaunch = (command: string, error: unknown): never => {
       if (timedOut) {
         throw new SkillRunError(
           `company skill "${bundle.name}" script "${script.path}" timed out after ${String(limits.timeoutMs)} ms`,
@@ -305,7 +433,7 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         throw new SkillRunError(`company skill "${bundle.name}" script "${script.path}" was cancelled`)
       }
       throw new SkillRunError(
-        `company skill "${bundle.name}" script "${script.path}" could not start (${interpreter} launch failed)`,
+        `company skill "${bundle.name}" script "${script.path}" could not start (${command} launch failed)`,
         { cause: error },
       )
     }
@@ -323,8 +451,10 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     let assetsDirectory: string | undefined
     try {
       if (bundle.assets.length > 0) assetsDirectory = await stageAssets(bundle, tempRoot)
+      const env: Record<string, string> = { ...interpreter.env }
+      if (assetsDirectory !== undefined) env[ASSETS_ENV_VAR] = assetsDirectory
       const spec: SubprocessSpawnSpec = {
-        argv: [interpreter, '-', ...(request.args ?? [])],
+        argv: [interpreter.command, '-', ...(request.args ?? [])],
         cwd: request.cwd,
         stdio: {
           stdin: { data: body },
@@ -333,7 +463,7 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         },
         graceMs: limits.graceMs,
         signal,
-        ...(assetsDirectory === undefined ? {} : { env: { [ASSETS_ENV_VAR]: assetsDirectory } }),
+        ...(Object.keys(env).length === 0 ? {} : { env }),
       }
 
       // The definite-assignment assertions hold because `failLaunch` never returns.
@@ -341,14 +471,14 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
       try {
         handle = options.spawn(spec)
       } catch (error) {
-        failLaunch(interpreter, error)
+        failLaunch(interpreter.command, error)
       }
 
       let outcome!: SubprocessOutcome
       try {
         outcome = await handle.done
       } catch (error) {
-        failLaunch(interpreter, error)
+        failLaunch(interpreter.command, error)
       }
 
       if (timedOut) {
@@ -377,7 +507,16 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
       clearTimeout(timer)
       release(request.sessionKey)
       if (assetsDirectory !== undefined) {
-        await rm(assetsDirectory, { recursive: true, force: true })
+        // A cleanup failure (Windows can report EPERM while a just-exited child
+        // still holds a handle) must never turn a settled run into an error.
+        try {
+          await (options.removeStagedAssets ?? ((directory: string) => rm(directory, { recursive: true, force: true })))(assetsDirectory)
+        } catch (error) {
+          logWarning(
+            `dsh-company-skills: could not remove the staged assets for company skill "${bundle.name}" `
+            + `script "${script.path}": ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
       }
     }
   }

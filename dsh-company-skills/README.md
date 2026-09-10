@@ -13,9 +13,6 @@ One Cordis plugin, one provider, and one model-facing tool:
 - **Plugin** `company-skills` — reads and decodes `assets/skills.bundle` once at module initialization and registers one provider through the skill registry seam.
 - **Provider** `company-skills` — `list()` returns the decrypted index (name, description, rank, opaque locator) and never a body; `get()` validates and materializes exactly the skill that locator names.
 - **Tool** `company_skill_run` — runs one declared `scripts/…` entry with the script source on the interpreter's stdin, so the bytes are executed without ever being written to disk (see [Script execution](#script-execution-the-zero-plaintext-channel)).
-
-- **Plugin** `company-skills` — reads and decodes `assets/skills.bundle` once at module initialization and registers one provider through the skill registry seam.
-- **Provider** `company-skills` — `list()` returns the decrypted index (name, description, rank, opaque locator) and never a body; `get()` validates and materializes exactly the skill that locator names.
 - **Precedence** — every skill reports `source: 'bundled'` and `BUNDLED_SKILL_RANK` (600), the packaged-root rank. A project (`.dsh/skills`, `.agents/skills`) or a user (`$DSH_HOME/skills`, `~/.agents/skills`) skill of the same name keeps winning: the company catalog is always available but never silently overrides a skill a repository or a user deliberately wrote down.
 - **Resource base** — `{ kind: 'opaque', description: … }`. The referenced scripts and assets travel inside the plugin, not on local disk, so the upstream loader renders an opaque hint instead of a directory or URL and every existing consumer needs zero changes. Bodies are never truncated (only catalog descriptions are bounded, at the catalog's own 500 characters, which the packer already enforces).
 
@@ -42,17 +39,17 @@ A bare `ctx.skills` read inside a plugin fiber throws (`cannot get property "ski
 
 ## Script execution: the zero-plaintext channel
 
-`company_skill_run` is the only way to execute a bundle's `scripts/…` entries. The engine (`src/execute.ts`) is deliberately independent of the desktop: it resolves `node`/`python` from the child's `PATH` (where the desktop injects its bundled runtime commands) and spawns through the host's `ctx.subprocess.spawn` seam.
+`company_skill_run` is the only way to execute a bundle's `scripts/…` entries. The engine (`src/execute.ts`) is deliberately independent of the desktop: it resolves the interpreter from `DSH_DESKTOP_NODE_EXECUTABLE` / `DSH_DESKTOP_PYTHON_EXECUTABLE` (the absolute commands the desktop publishes at runtime), then from the child's `PATH`, and — for Node only — from the host executable itself (`process.execPath` with `ELECTRON_RUN_AS_NODE=1`, which is Node in a CLI host and Electron-as-Node in the desktop). It spawns through the host's `ctx.subprocess.spawn` seam, so a packaged Windows machine whose PATH carries only `.cmd` shims (unusable by a shell-less spawn) still runs `.mjs` and `.py` scripts.
 
 - **Parameters** — `skill` (a company skill name), `script` (a bundle-relative path that must equal one of *that skill's own* `scripts[]` paths, e.g. `scripts/report.mjs`), and optional `args` (extra argv, appended verbatim after the interpreter's `-` script marker).
 - **Delivery** — the decoded script text is written to the child's **stdin** (`node -` / `python -`); it is never written to a file and never appears in a log, a telemetry event, or an error message. Node's stdin module detection means both `require`-style and `import`-style scripts work.
-- **Interpreter** — extension-selected: `.mjs` / `.js` → `node`, `.py` → `python`. Any other extension is rejected before anything spawns.
+- **Interpreter** — extension-selected family (`.mjs` / `.js` → Node, `.py` → Python), resolved as above; an unresolved interpreter rejects before anything spawns, and an invalid-UTF-8 body is rejected instead of being decoded lossily. Any other extension is rejected before anything spawns.
 - **Addressing** — `script` is compared for exact equality against the validated bundle entries, never joined into a filesystem path, so `../`, absolute paths, and undeclared names all reject without spawning.
-- **Assets** — when the skill carries assets they are materialized under one private `mkdtemp` directory (`$TMPDIR/dsh-skill-assets-*`) that stands in for the bundle root (`assets/notes.md` → `<dir>/assets/notes.md`), published to the child as `DSH_SKILL_ASSETS`, and deleted in a `finally` block as soon as the run settles — including on timeout, cancellation, and failure. A skill with no assets stages nothing and the variable is never set.
+- **Assets** — when the skill carries assets they are materialized under one private `mkdtemp` directory (`$TMPDIR/dsh-skill-assets-*`) that stands in for the bundle root (`assets/notes.md` → `<dir>/assets/notes.md`), published to the child as `DSH_SKILL_ASSETS`, and deleted in a `finally` block as soon as the run settles — including on timeout, cancellation, and failure. A cleanup failure (Windows can report EPERM while the just-exited child still holds a handle) is logged as a warning and never changes the settled result. A skill with no assets stages nothing and the variable is never set.
 - **Bounds** — each stream is retained as a bounded tail (64 KiB by default, overflow reported as `truncated`), the run has its own 120 s deadline fused with the caller's signal, and at most one run per session may be in flight. Every rejection is a `SkillRunError` naming the skill and script path only.
 - **Return** — `{ skill, script, exitCode, stdout, stderr, stdoutTruncated, stderrTruncated }`; a non-zero exit code is data, not a thrown error.
 
-The zero-disk guarantee is asserted by the script itself in `tests/execute.spec.ts`: the test script walks the temp root while it runs and reports the number of files containing its own source canary, which must be `0`. `tests/tool.spec.ts` then runs the shipped `fixture-hello/scripts/hello.mjs` end to end through the real plugin wiring.
+The zero-disk guarantee is asserted by the script itself in `tests/execute.spec.ts`: the test script walks the temp root — plus the top level of the (pinned) default temp root — while it runs and reports the number of files containing its own source canary, which must be `0`. `tests/tool.spec.ts` then runs the shipped `fixture-hello/scripts/hello.mjs` end to end through the real plugin wiring.
 
 ## Bundle formats
 
@@ -100,7 +97,7 @@ Two residual disclosures already signed off for P6 apply here unchanged: a skill
 ```bash
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc declarations
 corepack yarn workspace dsh-company-skills typecheck
-corepack yarn workspace dsh-company-skills test           # vitest, 41 cases
+corepack yarn workspace dsh-company-skills test           # vitest, 50 cases
 corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle matches fixtures/
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
@@ -116,7 +113,7 @@ The generator is a thin wrapper over the batch-1 packer (`tools/company-skills/p
 | --- | --- | --- |
 | `tests/container.spec.ts` | 11 | codec constants shared with the packer; shipped asset decodes to one entry per fixture; packer→decoder cross-consistency (canonical document and source tree, byte for byte); raw blob and generated module; determinism; no plaintext in the artifact (with a decoded positive control) and none in any shipped plugin file; malformed frame and element rejection parity with the packer; release-surface whitelist |
 | `tests/provider.spec.ts` | 11 | reactive `inject(['skills'])` registration plus disposal; late-mounted registry; bare `ctx.skills` throws; source-shape pin; `list()` index-only (no body, no `content`); `get()` materializes exactly one body; unknown name and unusable locator; a broken payload lists but refuses; missing/corrupt asset degrades without throwing; degraded catalog on a live host; module exports |
-| `tests/execute.spec.ts` | 14 | interpreter selection; real `node -` runs over stdin (output, args passthrough, non-zero exit as data); zero plaintext on disk (the script's own temp-root walk finds no copy of its source, staged assets are removed, the result carries no canary); unknown skill / undeclared script / traversal / missing interpreter all reject before spawning; deadline, output-tail truncation, caller cancellation; per-session concurrency bound and slot release; seam passthrough (argv, stdin body, cwd, grace, signal) |
+| `tests/execute.spec.ts` | 23 | interpreter selection and resolution (injected command → PATH → host executable); real `node -` runs over stdin (output, args passthrough, non-zero exit as data); zero plaintext on disk (the script's own walk of the injected root and the default temp root finds no copy of its source, staged assets are removed, the result carries no canary, a failing cleanup only warns); unknown skill / undeclared script / traversal / missing interpreter / invalid UTF-8 all reject before spawning; deadline, output-tail truncation, caller cancellation, launch failure — each removing staged assets; per-session concurrency bound and slot release; seam passthrough (argv, stdin body, cwd, grace, signal) |
 | `tests/tool.spec.ts` | 5 | tool schema, output shape, budget, and `presentCall`; cwd/session/signal resolution from the execution context; render/`toRunValue`; reactive registration on the tools seam and disposal; a shipped fixture script run end to end through the real plugin with staged-asset cleanup |
 
 Red-green evidence (measured in this batch):
@@ -128,6 +125,9 @@ Red-green evidence (measured in this batch):
 - Write the script body to a file and spawn the file (instead of piping it to stdin) → **red**: the zero-disk test's own scan reports `SCRIPT-SOURCE-HITS=1` instead of `0`, and the temp root is not left empty.
 - Resolve `script` by taking the first bundle entry instead of matching the declared path → **red**: every traversal/undeclared-name case starts spawning and the `carries no script` assertions fail.
 - Drop the `AbortSignal`/deadline fusion and rely on the host timeout only → **red**: the executor's `timed out after … ms` and `was cancelled` classifications never fire.
+- Ignore `DSH_DESKTOP_NODE_EXECUTABLE` and launch the bare PATH name → **red**: the injected-command test sees `node` instead of the published absolute path.
+- Remove the `finally` cleanup of the staged-assets directory → **red**: the timeout, cancellation, and launch-failure cases leave the temp root non-empty.
+- Let the cleanup `rm` reject out of the `finally` → **red**: a successful run whose removal hits EPERM is reported as a failure instead of returning its result.
 
 ## Layout
 

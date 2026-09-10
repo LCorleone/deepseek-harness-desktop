@@ -62,6 +62,9 @@ export function apply(ctx: Context): void {
       // The host's subprocess seam is the only spawn path: the executor never
       // imports a desktop module, so the plugin stays independently installable.
       spawn: (spec) => inner.subprocess.spawn(spec),
+      // A cleanup failure (e.g. a Windows EPERM while an exited child still
+      // holds a handle) is a warning, never the run's outcome.
+      logWarning: (message) => { ctx.logger.warn(message) },
     })
     inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
   })
