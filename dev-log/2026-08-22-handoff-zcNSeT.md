@@ -228,6 +228,9 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 第三单：agent-teams 0.1.16 上 beta（2026-09-10 12:55，seq23，0.1.2 线）
+sebtang 适配版三轮落地（!20 -rc 版本号被拒→!21 改 0.1.16 新 MR 一次过闸：compat 新钉死值 a66e4702/2.0.4、注入面 5→7 faces 对应新功能、scripts/运行时依赖均为无；registerContinuableSetup 死分支仍在但特性探测）。**当日大背景：另一 session 完成 runtime 换代手术**（0.1.1→0.1.2-rc.1：e4f3aa26 升 submodule、65838c6f89 显式下窗 beta 旧线件、dai-context 重发 0.41.4、sidebar 换 0.18.1、P15 多版本钉扎+市场按本机 runtime 选钉落地）；插件仓 compat 副本同步滞后一天坑了同事两单（!19/!20 声明旧值全拦），我补推同步（72a1fa0）。merge 6e0ad080 → accept 5b2409de86 → plugin-sources cb24b1049e → CI 34439260762 → beta **seq23**（四件 0.1.2 线纯新增无移除，P15 守卫视角干净）→ 棘轮 0d8d4008fe。
+
 ### 第二单同事 MR：dsh-dai-agent-teams 上 beta（2026-09-08 17:15，seq20）
 sebtang 第二件插件 dsh-dai-agent-teams@0.1.14 三轮拉锯（!16 PASS 但 description 宣称「零脚本」而 tgz 字节未变→拒；!17 提错关闭；!18 真删 scripts 重建→PASS）。人审三点全过（dshfind.com×10=README 徽章非运行时；运行时 fetch 仅本插件相对路由 /plugins/dsh-dai-agent-teams/plan|halt；scripts 段整体移除）。merge f78ef781 → accept eb244ae6cd（repository 惯例）→ plugin-sources 3249b179c6 → CI 34209299224 → beta **seq20**（--confirm-fleet-upgraded 过 fleet 门禁；三 tgz 验签一致）→ 棘轮 629a1ca0f1。浸泡开始。
 **流程新知**：①未受理未发布版本的本地暂存（out/packages/）撞不可变闸时，清陈旧暂存重跑即可（真源=allowlist/config 仓，零记录=未烧版本号）；②描述里的安全宣称（「零脚本」）人审必须对照包内字节核实——机器闸门不查文案；③July 定策：SOP「lifecycle 必须为无」字面不变，逐单人工确认（publish-only 类脚本事实无害但不免检）。
