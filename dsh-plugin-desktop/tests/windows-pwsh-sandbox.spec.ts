@@ -17,8 +17,11 @@ import {
   normalizeSandboxEscalationCommand,
   sandboxEscalationCommandHash,
   sandboxEscalationDedupeKey,
+  sandboxEscalationParentWindow,
   setDesktopSandboxEscalationSink,
+  withSandboxEscalationParentWindow,
   type DesktopSandboxInfo,
+  type SandboxEscalationParentWindow,
   type SandboxEscalationTelemetryEvent,
   type WindowsAclAdaptation,
 } from '../src/windows-pwsh-sandbox.ts'
@@ -194,11 +197,21 @@ class RecordingEscalationSandbox extends DesktopWindowsPwshSandbox {
   readonly reports: SandboxEscalationTelemetryEvent[] = []
   letPromptApprove = true
   letPromptCanAsk = true
+  /** Hold prompts open until {@link answerPrompt} instead of answering at once. */
+  letPromptDefer = false
   private letDenied = true
+  private pendingAnswer: ((approved: boolean) => void) | undefined
 
   /** Force every confined run denied (or not) for one scenario. */
   denyEveryRun(denied: boolean): void {
     this.letDenied = denied
+  }
+
+  /** Answer the deferred prompt (also used to prove a late reply is ignored). */
+  answerPrompt(approved: boolean): void {
+    const answer = this.pendingAnswer
+    this.pendingAnswer = undefined
+    answer?.(approved)
   }
 
   protected override async runArgv(spec: ShellExecSpec, argv: readonly string[]): Promise<ShellRunResult> {
@@ -225,7 +238,8 @@ class RecordingEscalationSandbox extends DesktopWindowsPwshSandbox {
 
   protected override async promptSandboxEscalation(command: string): Promise<boolean> {
     this.prompts.push(command)
-    return this.letPromptApprove
+    if (!this.letPromptDefer) return this.letPromptApprove
+    return await new Promise<boolean>(resolve => { this.pendingAnswer = resolve })
   }
 
   protected override reportSandboxEscalation(event: SandboxEscalationTelemetryEvent): void {
@@ -286,6 +300,14 @@ afterEach(async () => {
   await Promise.all(escalationContexts.splice(0).map(ctx => ctx.fiber.dispose()))
 })
 
+/** Spin the event loop until `condition` holds, so an unawaited run can reach its prompt. */
+async function waitUntil(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 500 && !condition(); attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1))
+  }
+  if (!condition()) throw new Error('escalation test condition was never reached')
+}
+
 describe('sandbox escalation pure helpers', () => {
   it('normalizes command text for dedupe keys and hashes', () => {
     expect(normalizeSandboxEscalationCommand('  pip   install\r\n requests ')).toBe('pip install requests')
@@ -321,6 +343,68 @@ describe('sandbox escalation pure helpers', () => {
       .not.toBe(sandboxEscalationDedupeKey('pip install requests', 'session-b'))
     expect(sandboxEscalationDedupeKey('pip install requests', undefined))
       .toBe(sandboxEscalationDedupeKey('pip install requests', undefined))
+  })
+})
+
+/** One structural stand-in for an open native window; `calls` records reveals. */
+function fakeWindow(options: {
+  url?: string
+  destroyed?: boolean
+  minimized?: boolean
+  calls?: string[]
+} = {}): SandboxEscalationParentWindow {
+  const calls = options.calls ?? []
+  return {
+    isDestroyed: () => options.destroyed ?? false,
+    isMinimized: () => options.minimized ?? false,
+    webContents: { getURL: () => options.url ?? 'http://127.0.0.1:5678/' },
+    restore: () => { calls.push('restore') },
+    show: () => { calls.push('show') },
+    focus: () => { calls.push('focus') },
+  }
+}
+
+describe('sandbox escalation popup parenting', () => {
+  it('parents the popup to the main loopback shell window', () => {
+    const shell = fakeWindow({ url: 'http://127.0.0.1:5678/?dsh-desktop-mode=advanced' })
+    const browser = fakeWindow({ url: 'file:///C:/app/agent-browser.html' })
+
+    expect(sandboxEscalationParentWindow([browser, shell])).toBe(shell)
+  })
+
+  it('never parents to a destroyed window or an auxiliary file:// window', () => {
+    const dead = fakeWindow({ url: 'http://127.0.0.1:5678/', destroyed: true })
+    const browser = fakeWindow({ url: 'file:///C:/app/agent-browser.html' })
+
+    expect(sandboxEscalationParentWindow([dead, browser])).toBeUndefined()
+  })
+
+  it('reveals a minimized or tray-hidden shell window before asking', async () => {
+    const calls: string[] = []
+    const shell = fakeWindow({ minimized: true, calls })
+
+    const seen = await withSandboxEscalationParentWindow([shell], async parent => {
+      calls.push('ask')
+      return parent
+    })
+
+    // Restore + show + focus all land BEFORE the question, so the parented
+    // box cannot open behind a hidden window (b85).
+    expect(seen).toBe(shell)
+    expect(calls).toEqual(['restore', 'show', 'focus', 'ask'])
+  })
+
+  it('falls back to the parentless dialog without touching any window', async () => {
+    const calls: string[] = []
+    const browser = fakeWindow({ url: 'file:///C:/app/sso-gate.html', calls })
+
+    const seen = await withSandboxEscalationParentWindow([browser], async parent => {
+      calls.push('ask')
+      return parent
+    })
+
+    expect(seen).toBeUndefined()
+    expect(calls).toEqual(['ask'])
   })
 })
 
@@ -482,6 +566,89 @@ describe('sandbox write-denial escalation', () => {
         outcome: 'approved',
         mode: 'workspace-write',
       }])
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P16 abort safety: a tool timeout during a pending dialog is not a decision
+// ---------------------------------------------------------------------------
+
+describe('sandbox escalation abort safety', () => {
+  it('returns the denied result and records nothing when the caller aborts while the dialog is pending', async () => {
+    const harness = await escalationHarness()
+    harness.executor.letPromptDefer = true
+    const controller = new AbortController()
+    try {
+      const pending = harness.executor.run(harness.executor.resolve(
+        harness.request({ signal: controller.signal }),
+      ))
+      await waitUntil(() => harness.executor.prompts.length === 1)
+
+      controller.abort()
+      const result = await pending
+
+      // The original denied result comes back untouched: no rerun happened.
+      expect(result.exitCode).toBe(1)
+      expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: true, enforcement: 'full' })
+      expect(harness.executor.runArgvCalls).toHaveLength(1)
+      // A timeout is not a user decision, so it is not recorded or reported.
+      expect(harness.executor.reports).toEqual([])
+
+      // The dialog's late reply — even a belated Allow — is ignored.
+      harness.executor.answerPrompt(true)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(harness.executor.runArgvCalls).toHaveLength(1)
+      expect(harness.executor.reports).toEqual([])
+
+      // Nothing was recorded, so the agent's retry asks again and escalates.
+      harness.executor.letPromptDefer = false
+      const retry = await harness.executor.run(harness.executor.resolve(harness.request()))
+      expect(harness.executor.prompts).toEqual(['pip install requests', 'pip install requests'])
+      expect(retry.exitCode).toBe(0)
+      expect((retry.sandbox as DesktopSandboxInfo | undefined)?.escalation).toBe('approved')
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('does not prompt at all when the signal is already aborted', async () => {
+    const harness = await escalationHarness()
+    const controller = new AbortController()
+    controller.abort()
+    try {
+      const result = await harness.executor.run(harness.executor.resolve(
+        harness.request({ signal: controller.signal }),
+      ))
+
+      expect(harness.executor.prompts).toEqual([])
+      expect(harness.executor.reports).toEqual([])
+      expect(harness.executor.runArgvCalls).toHaveLength(1)
+      expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: true, enforcement: 'full' })
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('does not stack a second dialog while one prompt for the same command is pending', async () => {
+    const harness = await escalationHarness()
+    harness.executor.letPromptDefer = true
+    try {
+      const first = harness.executor.run(harness.executor.resolve(harness.request()))
+      await waitUntil(() => harness.executor.prompts.length === 1)
+
+      // A parallel identical denial is answered without a stacked dialog.
+      const second = await harness.executor.run(harness.executor.resolve(harness.request()))
+      expect(harness.executor.prompts).toEqual(['pip install requests'])
+      expect((second.sandbox as DesktopSandboxInfo | undefined)?.escalation).toBeUndefined()
+
+      harness.executor.letPromptApprove = false
+      harness.executor.answerPrompt(false)
+      const decided = await first
+      expect((decided.sandbox as DesktopSandboxInfo | undefined)?.escalation).toBe('rejected')
+      expect(harness.executor.reports.map(report => report.outcome)).toEqual(['suppressed', 'rejected'])
     } finally {
       await harness.dispose()
     }

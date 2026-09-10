@@ -204,6 +204,19 @@ describe('company agent preset guard', () => {
     expect(persona).toContain('the desktop then shows an authorization dialog')
     expect(persona).toContain('Never install into the application\'s own directories')
     expect(persona).toContain('no proxy or certificate configuration of its own')
+    // The foreground-only rule (P16 b85): a backgrounded install can never
+    // raise the dialog and fails silently, the blocking wait for a sandboxed
+    // install must not be misread as a network failure, and a retry after a
+    // denial/timeout stays in the foreground and points at the popup.
+    expect(persona).toContain('Installs and other write commands must run in the FOREGROUND')
+    expect(persona).toContain('The background execution path cannot raise the desktop\'s authorization dialog')
+    expect(persona).toContain('run every command that installs packages or writes files in the foreground')
+    expect(persona).toContain('仅此一次允许 / Allow once')
+    expect(persona).toContain('it is NOT a network problem')
+    expect(persona).toContain('do not call it a timeout, a hang, or a network failure')
+    expect(persona).toContain('do not switch it to the background')
+    expect(persona).toContain('retry the exact same command in the foreground')
+    expect(persona).toContain('does not ask again for that same command in this session')
     expect(persona.endsWith('accept that refusal, state plainly what could not be done and why, and continue with whatever remains possible inside the sandbox.')).toBe(true)
   })
 

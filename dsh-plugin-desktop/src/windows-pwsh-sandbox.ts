@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { win32 } from 'node:path'
+import type { BrowserWindow, MessageBoxOptions } from 'electron'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { ShellExecSpec, ShellProcess, ShellRunResult, ShellSandboxInfo } from '@deepseek-ai/dsh-shell'
 import { SandboxPwshExecutor } from '@deepseek-ai/dsh-pwsh-sandbox'
@@ -113,6 +114,80 @@ export interface SandboxEscalationTelemetryEvent {
 /** Telemetry sink the Electron launcher wires to the client-event collector. */
 export type DesktopSandboxEscalationSink = (event: SandboxEscalationTelemetryEvent) => void
 
+/**
+ * One escalation answer: the user approved or rejected the unsandboxed
+ * rerun, or the caller aborted while the dialog was still pending and the
+ * question was settled as cancelled (the dialog's late reply is ignored).
+ */
+export type SandboxEscalationDecision = 'approved' | 'rejected' | 'cancelled'
+
+/**
+ * The native-window surface the escalation popup needs from one candidate
+ * main window. Structural, so a real Electron `BrowserWindow` satisfies it
+ * and tests can pass plain fakes (this module must not import `electron`
+ * statically — CLI hosts load it too).
+ */
+export interface SandboxEscalationParentWindow {
+  /** Whether the native window was already destroyed. */
+  isDestroyed(): boolean
+  /** Whether the window is minimized. */
+  isMinimized(): boolean
+  /** The window's loaded document URL. */
+  readonly webContents: { readonly getURL: () => string }
+  /** Un-minimize the window. */
+  restore(): void
+  /** Un-hide the window (a shell hidden to the tray included). */
+  show(): void
+  /** Bring the window to the front. */
+  focus(): void
+}
+
+/** The app shell always loads from its loopback web server; every auxiliary
+ * native window (agent browser, SSO gate, disclaimer, recovery, profile
+ * creator) loads a `file://` document — see `desktopRendererUrl` and
+ * `nativeUiDocumentUrl`. */
+const SHELL_WINDOW_URL_PREFIX = 'http://127.0.0.1'
+
+/**
+ * Pick the desktop's main shell window to parent the escalation popup to.
+ * A dialog attached to a hidden or minimized window is invisible with it
+ * (b85: a tray-hidden shell swallowed the popup for the whole 120s tool
+ * timeout), so the caller must also reveal the returned window before
+ * asking. Destroyed windows and auxiliary `file://` windows never qualify;
+ * `undefined` means no shell window exists and the caller falls back to a
+ * parentless dialog. The Cordis loader builds this executor from composition
+ * data, so it holds no reference to the shell generation/runtime that owns
+ * the window: `BrowserWindow.getAllWindows()` plus the shell URL is the
+ * available route, and the shell is the only window serving loopback.
+ */
+export function sandboxEscalationParentWindow(
+  windows: readonly SandboxEscalationParentWindow[],
+): SandboxEscalationParentWindow | undefined {
+  return windows.find(window => !window.isDestroyed()
+    && window.webContents.getURL().startsWith(SHELL_WINDOW_URL_PREFIX))
+}
+
+/**
+ * Ask one escalation question with the popup parented to the app's main shell
+ * window, revealing that window first (restore + show + focus). A dialog
+ * attached to a minimized or tray-hidden window is invisible with it, so the
+ * question would sit unanswered until the tool timeout (b85). With no shell
+ * window at all, `ask` receives `undefined` and the caller falls back to the
+ * parentless dialog.
+ * @param windows - every open native window this host owns.
+ * @param ask - the question; its `parent` is the revealed shell window, or `undefined` for the fallback.
+ * @returns the question's answer.
+ */
+export async function withSandboxEscalationParentWindow<Answer>(
+  windows: readonly SandboxEscalationParentWindow[],
+  ask: (parent: SandboxEscalationParentWindow | undefined) => Promise<Answer>,
+): Promise<Answer> {
+  const parent = sandboxEscalationParentWindow(windows)
+  if (parent === undefined) return await ask(undefined)
+  revealSandboxEscalationParent(parent)
+  return await ask(parent)
+}
+
 let sandboxEscalationSink: DesktopSandboxEscalationSink | undefined
 
 /**
@@ -169,14 +244,19 @@ function withEscalation(result: ShellRunResult, escalation: SandboxEscalationOut
   return { ...result, sandbox }
 }
 
-/**
- * Ask through the Electron main-process dialog whether one exact denied
- * command may rerun unsandboxed. The full command text is shown verbatim —
- * this is the one surface where the command appears outside the host.
- */
-async function electronSandboxEscalationPrompt(command: string): Promise<boolean> {
-  const { dialog } = await import('electron')
-  const result = await dialog.showMessageBox({
+/** Reveal one main window so a dialog parented to it is actually on screen.
+ * Mirrors `revealApplication` (electron-reveal.ts) at the window level; the
+ * macOS `app.show()` step stays there because this module keeps `electron` a
+ * dynamic import (CLI hosts and these specs load it without Electron). */
+function revealSandboxEscalationParent(window: SandboxEscalationParentWindow): void {
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+}
+
+/** The escalation message box, shared by the parented and fallback paths. */
+function sandboxEscalationMessageBoxOptions(command: string): MessageBoxOptions {
+  return {
     type: 'warning',
     title: '沙箱拦截 / Sandbox blocked a write',
     message: '沙箱拒绝了这条命令的写入操作。',
@@ -185,8 +265,28 @@ async function electronSandboxEscalationPrompt(command: string): Promise<boolean
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-  })
-  return result.response === 0
+  }
+}
+
+/**
+ * Ask through the Electron main-process dialog whether one exact denied
+ * command may rerun unsandboxed. The full command text is shown verbatim —
+ * this is the one surface where the command appears outside the host.
+ * The box is parented to the app's main shell window (revealed first when it
+ * was minimized or hidden, b85) so it cannot sit invisibly behind a hidden
+ * parent; with no window at all it falls back to the parentless dialog.
+ * MessageBoxOptions carries no always-on-top flag; a parented box is modal
+ * to its (now-focused) parent, which is the accepted visibility posture.
+ */
+async function electronSandboxEscalationPrompt(command: string): Promise<boolean> {
+  const { BrowserWindow, dialog } = await import('electron')
+  const options = sandboxEscalationMessageBoxOptions(command)
+  return await withSandboxEscalationParentWindow(
+    BrowserWindow.getAllWindows(),
+    async parent => (parent === undefined
+      ? await dialog.showMessageBox(options)
+      : await dialog.showMessageBox(parent as BrowserWindow, options)).response === 0,
+  )
 }
 
 /** PowerShell sandbox provider that repairs only Electron-hosted Windows ACL launches.
@@ -215,8 +315,17 @@ async function electronSandboxEscalationPrompt(command: string): Promise<boolean
  *   used here — the command string is never re-parsed or re-joined.
  */
 export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
-  /** Normalized-command keys already prompted this process, namespaced by session. */
+  /** Normalized-command keys already answered by the user this process,
+   * namespaced by session. Only real decisions (approved/rejected) land
+   * here: a cancelled prompt records nothing, so the agent's retry asks
+   * again (b85 — the old mark-first dedup swallowed the retry's popup after
+   * a tool-timeout cancellation and the install stuck forever). */
   private readonly promptedKeys = new Set<string>()
+
+  /** Normalized-command keys with a prompt currently on screen. Guards
+   * against two parallel identical denials opening stacked dialogs; cleared
+   * when the prompt settles either way. */
+  private readonly pendingPromptKeys = new Set<string>()
 
   /** Normalized-command keys whose suppressed denial was already reported.
    *
@@ -246,14 +355,47 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
   }
 
   /**
+   * Wait for one escalation answer, settling 'cancelled' the moment the
+   * caller's abort signal fires (the shell spec carries the tool call's
+   * signal). Electron cannot dismiss a pending message box, so the abort
+   * path races the dialog: this promise settles 'cancelled' immediately,
+   * and the dialog's late reply — including a belated "Allow" — is ignored
+   * and can never trigger an unsandboxed rerun the user may not have seen.
+   */
+  private async raceSandboxEscalationDecision(
+    command: string,
+    signal: AbortSignal | undefined,
+  ): Promise<SandboxEscalationDecision> {
+    if (signal?.aborted === true) return 'cancelled'
+    const answer = this.promptSandboxEscalation(command)
+      .then(approved => approved ? 'approved' as const : 'rejected' as const)
+    if (signal === undefined) return await answer
+    let onAbort: () => void = () => {}
+    const cancelled = new Promise<'cancelled'>(resolve => {
+      onAbort = () => { resolve('cancelled') }
+    })
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      // Promise.race keeps `answer` handled, so a late dialog error after
+      // cancellation cannot surface as an unhandled rejection.
+      return await Promise.race([answer, cancelled])
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /**
    * Foreground run with the P16 write-denial escalation: a settled result
    * whose `sandbox.denied` is true (and whose runner did not fail) is first
    * offered to the user once per normalized command per session — approval
    * reruns the SAME spec under `danger-full-access`, rejection returns the
-   * denied result stamped `escalation: 'rejected'`. Non-Electron (CLI) hosts,
-   * non-denied results, and already-prompted commands keep the upstream
-   * behavior verbatim. Background `start()` is not overridden and never
-   * escalates.
+   * denied result stamped `escalation: 'rejected'`. Only a real user decision
+   * consumes the per-session prompt: when the caller aborts while the dialog
+   * is pending (tool timeout / stop), the original denied result returns
+   * unchanged, nothing is recorded, and a retry prompts again. Non-Electron
+   * (CLI) hosts, non-denied results, and already-prompted commands keep the
+   * upstream behavior verbatim. Background `start()` is not overridden and
+   * never escalates.
    */
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
     const result = await super.run(spec)
@@ -263,7 +405,7 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
     if (!this.canPromptSandboxEscalation()) return result
     const denied = result.sandbox
     const key = sandboxEscalationDedupeKey(spec.command, policy.sessionId)
-    if (this.promptedKeys.has(key)) {
+    if (this.promptedKeys.has(key) || this.pendingPromptKeys.has(key)) {
       if (!this.suppressedKeys.has(key)) {
         this.suppressedKeys.add(key)
         this.reportSandboxEscalation({
@@ -274,14 +416,21 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
       }
       return result
     }
+    this.pendingPromptKeys.add(key)
+    let decision: SandboxEscalationDecision
+    try {
+      decision = await this.raceSandboxEscalationDecision(spec.command, spec.signal)
+    } finally {
+      this.pendingPromptKeys.delete(key)
+    }
+    if (decision === 'cancelled') return result
     this.promptedKeys.add(key)
-    const approved = await this.promptSandboxEscalation(spec.command)
     this.reportSandboxEscalation({
       commandHash: sandboxEscalationCommandHash(spec.command),
-      outcome: approved ? 'approved' : 'rejected',
+      outcome: decision,
       mode: denied.mode,
     })
-    if (!approved) return withEscalation(result, 'rejected')
+    if (decision === 'rejected') return withEscalation(result, 'rejected')
     const escalated = await super.run({
       ...spec,
       sandboxPolicy: { ...policy, mode: 'danger-full-access' },
