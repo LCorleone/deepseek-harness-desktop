@@ -228,6 +228,11 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 首批 stable 转正（2026-09-10 15:55，stable seq25）
+全员 b86（0.1.2 线）后 July 拍板首批转正：**sidebar 0.18.1 / dai-context 0.41.4 / free-search 0.4.184 / agent-teams 0.1.16 进 stable；engramory 0.2.4 留 beta**（实验先行）。执行：①allowlist 旗标调整（sidebar/dai-context 摘 channel:beta、engramory 补 channel:beta）→ ②publish-local 干跑逮到 **version-retire guard**（stable 要丢 0.15.2 未吊销钉）→ ③July 选 A 路：手补 0.15.2 revoked:true 条目（字段取自线上 seq16 签名条目）→ CI 重签（34452263273）→ 推 seq25（带签名吊销记录）→ 棘轮 25。
+**重要运营发现**：`retire` 需签名私钥而 **CI 无 retire/revoke 动作入口**（publish workflow 仅 dry-run/channel）——故 0.15.2 以 revoked:true 条目形式留在窗口（文档认可的稳态：条目保留、客户端 fail-closed 拒绝、市场按 P15 只显非吊销最新钉）。窗口真瘦身需给 workflow 加入口或一次性持钥，默认不做。
+回执：dai-context !15 / agent-teams !21 已贴转正通知；engramory !22 维持 beta。
+
 ### 第四单：engramory 0.2.4 上 beta（2026-09-10 14:10，seq24）
 dsh-dai-engramory@0.2.4（记忆类，策展式长期记忆 Markdown 文件）一次过闸 PASS 10/10：compat 直接读翻新后钉死值（a66e4702/2.0.4）、模板齐全、注入面最克制（react+locale+ui-settings）、无运行时依赖/无脚本、fetch 仅自家路由 /engramory/*。merge 9a912ef442 → accept 12487fcbab → plugin-sources 545b2f3129 → CI 34444093929 → beta **seq24**（五件纯新增，守卫视角干净）→ 棘轮 c2c23d4860。浸泡开始。
 **环境注意**：本 checkout 与另一 session **共用工作树/同一 clone**（他们在同仓并行 commit）——我的所有提交都严格路径限定（allowlist.json / plugin-sources / state / dev-log），push 前不 pull 也能 fast-forward（同一份本地历史）。
