@@ -81,6 +81,8 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
   根下的散文件（`README.md` 也不行）、symlink 一律拒。
 
 - 顶层除 `SKILL.md` 外只能有 `scripts/` 和 `assets/` 两个目录，多一个文件就拒（`README.md` 也不行）。
+- **剪枝清单**：名为 `__pycache__` 的目录在任意深度直接跳过不打包（解释器的机器本地字节码缓存——收编来的
+  skill 可能带着别的 CPython 版本的 `.pyc`，既不是源码也不是资源，不该进 bundle）。
 - 只读普通文件：symlink、目录套目录、空文件一律拒。
 - `SKILL.md` 必须 LF 行尾，frontmatter 必须闭合，`name`/`description` 必须存在。
 - `body` = 闭合 `---` 那一行的换行之后的**全部字节**，所以 `unpack --out` 重建出的 `SKILL.md`
@@ -172,14 +174,14 @@ node tools/company-skills/unpack.mjs --in <blob> [--out <dir>] [--expect-sha256 
 ## 6. 测试
 
 ```bash
-node --test tools/company-skills/tests/                # 39 个用例
+node --test tools/company-skills/tests/                # 40 个用例
 yarn test:company-skills                               # 同一组，已挂进 yarn check
 ```
 
 | 文件 | 覆盖 |
 | --- | --- |
 | `tests/bundle-format.test.mjs`（19） | 单 skill 字段/名称/描述/体积/路径/base64/引用闭包全部拒绝路径；容器字段/版本/非空/重名/总体积与按名规范化；codec 往返；frontmatter 引号规范化；`SKILL.md` 解析与单 skill/skills 根两种目录读取的布局拒绝 |
-| `tests/pack-roundtrip.test.mjs`（10） | ① pack→unpack→re-pack 逐字节一致且重建目录与源逐字节一致；② 缺资源/非法名/超长描述/杂散文件拒且无产物；③ artifact 不含源文件任一特征行（含 canary，附「blob 内确实能解出 canary」的反向对照）；④ 同输入两次打包逐字节相同、且与源 mtime 无关；digest 校验与篡改拒绝；⑥ N=3 容器往返逐字节一致 + 重建目录重打同字节 + 确定性；⑦ 容器产物不含任一 skill 的明文行；⑧ 容器重名/空根/根下散文件/单个非法成员均拒且无产物；⑨ 容器摘要列全 N 个 skill 且不打印正文 |
+| `tests/pack-roundtrip.test.mjs`（11） | ① pack→unpack→re-pack 逐字节一致且重建目录与源逐字节一致；② 缺资源/非法名/超长描述/杂散文件拒且无产物；③ artifact 不含源文件任一特征行（含 canary，附「blob 内确实能解出 canary」的反向对照）；④ 同输入两次打包逐字节相同、且与源 mtime 无关；digest 校验与篡改拒绝；⑥ N=3 容器往返逐字节一致 + 重建目录重打同字节 + 确定性；⑦ 容器产物不含任一 skill 的明文行；⑧ 容器重名/空根/根下散文件/单个非法成员均拒且无产物；⑨ 容器摘要列全 N 个 skill 且不打印正文；⑩ `__pycache__` 剪枝：任意深度跳过，产物与重建目录都不含缓存 |
 | `tests/unpack-release-guard.test.mjs`（10） | ⑤ 真仓库无违规 + `files`/`bin`/`main` 与目录规则的红用例，含「发布面覆盖 `lib/**`」与「`lib`/`dist`/`out`/`.build` 不剪枝」两条回归 |
 
 红绿证（本批实测）：

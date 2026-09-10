@@ -1,22 +1,23 @@
 /**
- * The P6 batch-3 execution channel: addressing, stdin delivery, zero-disk
- * staging, bounds, concurrency, and cancellation.
+ * The P6 batch-3 execution channel: addressing, per-run materialization,
+ * nothing-persists cleanup, bounds, concurrency, and cancellation.
  *
- * The load-bearing assertions are the zero-disk pair (the script's own source
- * text never appears under the temp root, and the staged assets directory is
- * gone once the run settles) and the addressing pair (an unknown skill or a
- * script outside the bundle's own `scripts[]` list rejects before anything
- * spawns). Both are mutation-killers: rewriting the body to a file, or
- * resolving `script` by path arithmetic, turns them red.
+ * The load-bearing assertions are the materialization pair (a staged script
+ * really runs from `<tmp>/scripts/…`, so `__file__` locates the skill root and
+ * a Python sibling import resolves through `sys.path[0]`) and the residue pair
+ * (the staged root is gone once the run settles, and no error message, warning,
+ * or result ever carries a byte of the script body or skill body). The
+ * addressing pair (an unknown skill or a script outside the bundle's own
+ * `scripts[]` list rejects before anything spawns) stays from the stdin era.
  *
- * The integration cases run a real `node -` process through
+ * The integration cases run real `node` / `python` processes through
  * {@link localSpawn}; the unit cases inject a seam so timeout, concurrency, and
  * passthrough behaviour is deterministic without spawning anything.
  */
 
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadCatalogFromText } from '../src/catalog.js'
@@ -41,11 +42,18 @@ const SCRIPT_CANARY = 'SCRIPT-SOURCE-CANARY'
 const OUT_CANARY = 'RUNNER-STDOUT-CANARY-4242'
 const ASSET_CANARY = 'ASSET-CONTENT-CANARY'
 
-/** A CommonJS/ESM-agnostic demo script (Node auto-detects stdin modules). */
-const DEMO_SCRIPT = `// ${SCRIPT_CANARY}: this source must never be written to disk.
-console.log('${OUT_CANARY}')
-console.error('RUNNER-STDERR-CANARY')
-`
+/** A demo script that proves it runs from disk: it reads its own file. */
+const DEMO_SCRIPT = [
+  `// ${SCRIPT_CANARY}: this source is staged for the run and removed after it.`,
+  "import { readFileSync } from 'node:fs'",
+  "import { dirname } from 'node:path'",
+  "import { fileURLToPath } from 'node:url'",
+  "const own = readFileSync(new URL(import.meta.url), 'utf8')",
+  `console.log('${OUT_CANARY}')`,
+  `console.log('OWN-SOURCE-READ=' + own.includes('${SCRIPT_CANARY}'))`,
+  "console.log('SKILL-ROOT=' + dirname(dirname(fileURLToPath(import.meta.url))))",
+  "console.error('RUNNER-STDERR-CANARY')",
+].join('\n')
 
 interface EntrySpec { readonly path: string; readonly text?: string; readonly content?: string }
 interface SkillSpec {
@@ -213,8 +221,8 @@ describe('interpreter resolution', () => {
   })
 })
 
-describe('running a declared script (real node over stdin)', () => {
-  it('executes the script from the bundle and returns its output and exit code', async () => {
+describe('running a declared script (real node, materialized)', () => {
+  it('executes the staged script file and returns its output and exit code', async () => {
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf()),
       spawn: localSpawn,
@@ -223,16 +231,17 @@ describe('running a declared script (real node over stdin)', () => {
     const result = await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     expect(result).toMatchObject({ skill: 'runner-demo', script: 'scripts/demo.mjs', exitCode: 0 })
     expect(result.stdout.text).toContain(OUT_CANARY)
+    // The script really ran from its staged file, not from a pipe.
+    expect(result.stdout.text).toContain('OWN-SOURCE-READ=true')
     expect(result.stderr.text).toContain('RUNNER-STDERR-CANARY')
   })
 
-  it('appends args after the interpreter script marker, verbatim', async () => {
+  it('appends args after the materialized script path, verbatim', async () => {
     const argvScript = "console.log('ARGV:' + process.argv.slice(2).join(','))\n"
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf({ name: 'runner-argv', scripts: [{ path: 'scripts/argv.mjs', text: argvScript }] })),
@@ -243,7 +252,6 @@ describe('running a declared script (real node over stdin)', () => {
       skill: 'runner-argv',
       script: 'scripts/argv.mjs',
       args: ['--flag', 'value with spaces'],
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -259,7 +267,6 @@ describe('running a declared script (real node over stdin)', () => {
     const result = await executor.run({
       skill: 'runner-demo',
       script: 'scripts/fail.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -267,81 +274,116 @@ describe('running a declared script (real node over stdin)', () => {
   })
 })
 
-describe('zero plaintext on disk', () => {
-  it('keeps the script source off disk and removes staged assets after the run', async () => {
-    const scanScript = [
-      "const { readdirSync, readFileSync } = require('node:fs')",
-      "const { join } = require('node:path')",
-      "const { tmpdir } = require('node:os')",
-      `const canary = '${SCRIPT_CANARY}'`,
-      'const root = process.argv[2]',
-      'let hits = 0',
-      'const walk = (dir) => {',
-      '  for (const entry of readdirSync(dir, { withFileTypes: true })) {',
-      '    const path = join(dir, entry.name)',
-      '    if (entry.isDirectory()) walk(path)',
-      "    else if (readFileSync(path, 'utf8').includes(canary)) hits += 1",
-      '  }',
-      '}',
-      'walk(root)',
-      // The default temp root is scanned at its top level too, so a mutant
-      // that materializes the body directly in `os.tmpdir()` (rather than
-      // below the injected root) also turns this test red.
-      'for (const entry of readdirSync(tmpdir(), { withFileTypes: true })) {',
-      "  if (!entry.isFile()) continue",
-      "  try { if (readFileSync(join(tmpdir(), entry.name), 'utf8').includes(canary)) hits += 1 } catch {}",
-      '}',
-      "console.log('SCRIPT-SOURCE-HITS=' + hits)",
-      `console.log('ASSET-READ=' + require('node:fs').readFileSync(process.env.${ASSETS_ENV_VAR} + '/assets/notes.md', 'utf8').trim())`,
+describe('materialized execution (the code-runtime-python paradigm)', () => {
+  it('lets __file__ locate the skill root: parent.parent is the staged root', async () => {
+    // The collected ppt-designer skill computes SKILL_DIR exactly this way
+    // (export_pptx.py:38); the staged layout must keep that working.
+    const rootScript = [
+      "import { dirname } from 'node:path'",
+      "import { fileURLToPath } from 'node:url'",
+      "const root = dirname(dirname(fileURLToPath(import.meta.url)))",
+      "console.log('SKILL-ROOT=' + root)",
+      "console.log('SKILL-ROOT-ENV-MATCH=' + (root === process.env.DSH_SKILL_ASSETS))",
+      "console.log('SKILL-ROOT-CWD-MATCH=' + (root === process.cwd()))",
+    ].join('\n')
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ scripts: [{ path: 'scripts/locate.mjs', text: rootScript }] })),
+      spawn: localSpawn,
+      tempRoot,
+    })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/locate.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    const root = result.stdout.text.match(/SKILL-ROOT=(.*)/u)?.[1] ?? ''
+    expect(root.startsWith(join(tempRoot, 'dsh-skill-assets-'))).toBe(true)
+    expect(result.stdout.text).toContain('SKILL-ROOT-ENV-MATCH=true')
+    expect(result.stdout.text).toContain('SKILL-ROOT-CWD-MATCH=true')
+  })
+
+  it('lets a Python script import a sibling module from the same scripts directory', async () => {
+    const peer = 'PEER_VALUE = "SIBLING-IMPORT-WORKS-1337"\n'
+    const usesPeer = [
+      'from peer_module import PEER_VALUE',
+      'import os',
+      'print("PEER=" + PEER_VALUE)',
+      'print("PEER-SCRIPT-DIR-OK=" + str("scripts" in os.path.dirname(os.path.abspath(__file__))))',
     ].join('\n')
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf({
-        assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
-        scripts: [{ path: 'scripts/scan.mjs', text: scanScript }],
+        scripts: [
+          { path: 'scripts/peer_module.py', text: peer },
+          { path: 'scripts/uses_peer.py', text: usesPeer },
+        ],
       })),
       spawn: localSpawn,
       tempRoot,
     })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/uses_peer.py',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text).toContain('PEER=SIBLING-IMPORT-WORKS-1337')
+    expect(result.stdout.text).toContain('PEER-SCRIPT-DIR-OK=True')
+  })
 
-    // Pin TMPDIR so `os.tmpdir()` — used by the executor's default temp root
-    // and by the scan script — is a small, test-owned directory instead of a
-    // shared machine-wide one. The child inherits it through the spawn spec.
-    const defaultTempRoot = await mkdtemp(join(tmpdir(), 'company-skills-default-'))
-    const previousTmpdir = process.env.TMPDIR
-    const runScan = async () => {
-      process.env.TMPDIR = defaultTempRoot
-      try {
-        return await executor.run({
-          skill: 'runner-demo',
-          script: 'scripts/scan.mjs',
-          args: [tempRoot],
-          cwd: tempRoot,
-          sessionKey: 'session-a',
-          signal: callerSignal(),
-        })
-      } finally {
-        if (previousTmpdir === undefined) delete process.env.TMPDIR
-        else process.env.TMPDIR = previousTmpdir
-        await rm(defaultTempRoot, { recursive: true, force: true })
-      }
-    }
-    const result = await runScan()
-
-    // The source was piped, never materialized: the script's own walk of the
-    // temp root (plus the top level of the default temp root) finds zero
-    // copies of its own canary while it runs.
-    expect(result.stdout.text).toContain('SCRIPT-SOURCE-HITS=0')
-    // The asset was staged and readable through DSH_SKILL_ASSETS.
+  it('runs with the staged root as cwd, so bundle-relative asset reads resolve', async () => {
+    const reader = [
+      "import { readFileSync } from 'node:fs'",
+      "console.log('ASSET-READ=' + readFileSync('assets/notes.md', 'utf8').trim())",
+    ].join('\n')
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({
+        name: 'runner-assets',
+        scripts: [{ path: 'scripts/read.mjs', text: reader }],
+        assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
+      })),
+      spawn: localSpawn,
+      tempRoot,
+    })
+    const result = await executor.run({
+      skill: 'runner-assets',
+      script: 'scripts/read.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
     expect(result.stdout.text).toContain(`ASSET-READ=${ASSET_CANARY}`)
-    // And the staged directory is gone once the run settles.
+  })
+})
+
+describe('nothing persists and no plaintext leaks', () => {
+  it('removes the staged skill root when the run settles, keeping only the output', async () => {
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({
+        assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
+      })),
+      spawn: localSpawn,
+      tempRoot,
+    })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    // While running, the script read its own source from disk (see above);
+    // once settled, the whole staged root is gone and the temp root is empty.
+    expect(result.stdout.text).toContain('OWN-SOURCE-READ=true')
+    const staged = result.stdout.text.match(/SKILL-ROOT=(.*)/u)?.[1] ?? undefined
+    if (staged !== undefined) await expect(stat(staged)).rejects.toThrow()
     await expect(readdir(tempRoot)).resolves.toEqual([])
 
+    // The settled result carries output lines but never the skill body.
     const serialized = JSON.stringify(result)
-    expect(serialized).not.toContain(SCRIPT_CANARY)
     expect(serialized).not.toContain(BODY_CANARY)
   })
 
-  it('does not stage assets for a skill that has none, and never sets the env var', async () => {
+  it('always stages under the injected root and always publishes the env var', async () => {
     const { spawn, specs } = immediateSpawn()
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf()),
@@ -352,16 +394,20 @@ describe('zero plaintext on disk', () => {
     await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     expect(specs).toHaveLength(1)
-    expect(specs[0]?.env).toBeUndefined()
+    const spec = specs[0] as SubprocessSpawnSpec
+    // The staged root is under the injected temp root, is the child's cwd, and
+    // is exactly what the env var publishes.
+    expect(spec.argv[1]).toBe(join(spec.cwd as string, 'scripts/demo.mjs'))
+    expect((spec.cwd as string).startsWith(join(tempRoot, 'dsh-skill-assets-'))).toBe(true)
+    expect(spec.env?.[ASSETS_ENV_VAR]).toBe(spec.cwd)
     await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 
-  it('returns the settled result even when staged-asset cleanup fails', async () => {
+  it('returns the settled result even when staged-directory cleanup fails', async () => {
     const { spawn, specs } = immediateSpawn(0, { stdout: 'ok' })
     const warnings: string[] = []
     const executor = createScriptExecutor({
@@ -376,7 +422,6 @@ describe('zero plaintext on disk', () => {
     const result = await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -385,8 +430,26 @@ describe('zero plaintext on disk', () => {
     expect(result.stdout.text).toBe('ok')
     // The failure is reported as a warning and never as the run's outcome.
     expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('could not remove the staged assets')
+    expect(warnings[0]).toContain('could not remove the staged skill files')
     expect(warnings[0]).not.toContain(SCRIPT_CANARY)
+  })
+
+  it('keeps the script body out of every rejection message', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
+    const rejections = [
+      executor.run({ skill: 'not-a-company-skill', script: 'scripts/demo.mjs', sessionKey: 's', signal: callerSignal() }),
+      executor.run({ skill: 'runner-demo', script: 'scripts/missing.mjs', sessionKey: 's', signal: callerSignal() }),
+      executor.run({ skill: 'runner-demo', script: 'scripts/../evil.mjs', sessionKey: 's', signal: callerSignal() }),
+    ]
+    for (const rejection of rejections) {
+      await expect(rejection).rejects.toThrow(SkillRunError)
+      let error: Error | undefined
+      await rejection.catch((cause: unknown) => { error = cause as Error })
+      expect(error?.message).not.toContain(SCRIPT_CANARY)
+      expect(error?.message).not.toContain(BODY_CANARY)
+    }
+    expect(specs).toHaveLength(0)
   })
 })
 
@@ -397,7 +460,6 @@ describe('addressing is validation, never path arithmetic', () => {
     const failure = executor.run({
       skill: 'not-a-company-skill',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -417,7 +479,6 @@ describe('addressing is validation, never path arithmetic', () => {
       await expect(executor.run({
         skill: 'runner-demo',
         script,
-        cwd: tempRoot,
         sessionKey: 'session-a',
         signal: callerSignal(),
       })).rejects.toThrow(/carries no script/)
@@ -435,7 +496,6 @@ describe('addressing is validation, never path arithmetic', () => {
     await expect(executor.run({
       skill: 'runner-demo',
       script: 'scripts/legacy.sh',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })).rejects.toThrow(/no supported interpreter/)
@@ -455,7 +515,6 @@ describe('script text decoding', () => {
     const failure = executor.run({
       skill: 'runner-demo',
       script: 'scripts/bad.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -465,6 +524,8 @@ describe('script text decoding', () => {
     await failure.catch((cause: unknown) => { error = cause as Error })
     expect(error?.message).not.toContain('print')
     expect(specs).toHaveLength(0)
+    // The rejected run leaves no partial staging behind.
+    await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 })
 
@@ -484,12 +545,12 @@ describe('interpreter resolution through the seam', () => {
     await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     expect(specs[0]?.argv[0]).toBe('/opt/dsh/node-runtime/node')
-    expect(specs[0]?.env).toBeUndefined()
+    // Only the staged-root variable rides along; no interpreter env is needed.
+    expect(specs[0]?.env).toEqual({ [ASSETS_ENV_VAR]: expect.any(String) })
   })
 
   it('falls back to the host executable as Node, publishing ELECTRON_RUN_AS_NODE', async () => {
@@ -507,12 +568,14 @@ describe('interpreter resolution through the seam', () => {
     await executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     expect(specs[0]?.argv[0]).toBe('/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop')
-    expect(specs[0]?.env).toEqual({ [ELECTRON_RUN_AS_NODE_ENV]: '1' })
+    expect(specs[0]?.env).toEqual({
+      [ELECTRON_RUN_AS_NODE_ENV]: '1',
+      [ASSETS_ENV_VAR]: expect.any(String),
+    })
   })
 
   it('rejects an unresolvable Python script without spawning', async () => {
@@ -526,42 +589,40 @@ describe('interpreter resolution through the seam', () => {
     const failure = executor.run({
       skill: 'runner-demo',
       script: 'scripts/report.py',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     await expect(failure).rejects.toThrow(SkillRunError)
     await expect(failure).rejects.toThrow(/no python interpreter was found/)
     expect(specs).toHaveLength(0)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 })
 
 describe('timeout, truncation, and cancellation', () => {
-  const assetBundle = (): ReturnType<typeof bundleOf> => bundleOf({
-    assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }],
-  })
-
-  it('fails a run that outlives its deadline, terminates it, and removes staged assets', async () => {
+  it('fails a run that outlives its deadline, terminates it, and removes the staged root', async () => {
     const { spawn, specs } = abortTerminatedSpawn()
-    const executor = createScriptExecutor({ catalog: catalogOf(assetBundle()), spawn, tempRoot, timeoutMs: 25, graceMs: 10 })
-    await expect(executor.run({
+    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot, timeoutMs: 25, graceMs: 10 })
+    const failure = executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
-    })).rejects.toThrow(/timed out after 25 ms/)
+    })
+    await expect(failure).rejects.toThrow(/timed out after 25 ms/)
+    let timeoutError: Error | undefined
+    await failure.catch((cause: unknown) => { timeoutError = cause as Error })
+    expect(timeoutError?.message).not.toContain(SCRIPT_CANARY)
     expect(specs[0]?.signal?.aborted).toBe(true)
     await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 
-  it('removes staged assets when the launch itself throws', async () => {
+  it('removes the staged root when the launch itself throws', async () => {
     const spawn: ScriptSpawn = () => { throw new Error('EACCES: launch refused') }
-    const executor = createScriptExecutor({ catalog: catalogOf(assetBundle()), spawn, tempRoot })
+    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
     await expect(executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })).rejects.toThrow(/could not start/)
@@ -582,7 +643,6 @@ describe('timeout, truncation, and cancellation', () => {
     const result = await executor.run({
       skill: 'runner-demo',
       script: 'scripts/noisy.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
@@ -593,7 +653,7 @@ describe('timeout, truncation, and cancellation', () => {
     expect(result.stderr.text).toHaveLength(512)
   })
 
-  it('classifies a caller cancellation as cancelled and removes staged assets', async () => {
+  it('classifies a caller cancellation as cancelled and removes the staged root', async () => {
     const { spawn, specs } = abortTerminatedSpawn()
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf({ assets: [{ path: 'assets/notes.md', text: `${ASSET_CANARY}\n` }] })),
@@ -604,7 +664,6 @@ describe('timeout, truncation, and cancellation', () => {
     const run = executor.run({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
-      cwd: tempRoot,
       sessionKey: 'session-a',
       signal: controller.signal,
     })
@@ -616,6 +675,13 @@ describe('timeout, truncation, and cancellation', () => {
 })
 
 describe('session concurrency bound', () => {
+  /** Let staging (mkdtemp + writes) finish so the seam spawn callbacks land. */
+  const waitForSpawns = async (pending: (() => void)[], count: number): Promise<void> => {
+    for (let round = 0; round < 200 && pending.length < count; round += 1) {
+      await new Promise((resolve) => { setImmediate(resolve) })
+    }
+  }
+
   it('allows one in-flight run per session and releases the slot when it settles', async () => {
     const pending: (() => void)[] = []
     const spawn: ScriptSpawn = () => {
@@ -626,16 +692,15 @@ describe('session concurrency bound', () => {
     }
     const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
 
-    const first = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', cwd: tempRoot, sessionKey: 's1', signal: callerSignal() })
-    await Promise.resolve()
+    const first = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', sessionKey: 's1', signal: callerSignal() })
+    await waitForSpawns(pending, 1)
     await expect(executor.run({
-      skill: 'runner-demo', script: 'scripts/demo.mjs', cwd: tempRoot, sessionKey: 's1', signal: callerSignal(),
+      skill: 'runner-demo', script: 'scripts/demo.mjs', sessionKey: 's1', signal: callerSignal(),
     })).rejects.toThrow(/already running/)
 
     // A different session has its own slot.
-    const other = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', cwd: tempRoot, sessionKey: 's2', signal: callerSignal() })
-    await Promise.resolve()
-    expect(pending).toHaveLength(2)
+    const other = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', sessionKey: 's2', signal: callerSignal() })
+    await waitForSpawns(pending, 2)
     pending[1]?.()
     await expect(other).resolves.toMatchObject({ exitCode: 0 })
 
@@ -643,15 +708,16 @@ describe('session concurrency bound', () => {
     await expect(first).resolves.toMatchObject({ exitCode: 0 })
 
     // The slot is free again after settlement.
-    const reused = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', cwd: tempRoot, sessionKey: 's1', signal: callerSignal() })
-    await Promise.resolve()
+    const reused = executor.run({ skill: 'runner-demo', script: 'scripts/demo.mjs', sessionKey: 's1', signal: callerSignal() })
+    await waitForSpawns(pending, 3)
     pending[2]?.()
     await expect(reused).resolves.toMatchObject({ exitCode: 0 })
+    await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 })
 
 describe('seam passthrough', () => {
-  it('hands the seam the interpreter argv, stdin body, cwd, and grace', async () => {
+  it('hands the seam the materialized argv, staged cwd, env, and grace', async () => {
     const { spawn, specs } = immediateSpawn()
     const executor = createScriptExecutor({
       catalog: catalogOf(bundleOf()),
@@ -664,15 +730,18 @@ describe('seam passthrough', () => {
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
       args: ['--alpha'],
-      cwd: '/some/workspace',
       sessionKey: 'session-a',
       signal: callerSignal(),
     })
     const spec = specs[0]
-    expect(spec?.argv).toEqual(['node', '-', '--alpha'])
-    expect(spec?.cwd).toBe('/some/workspace')
+    expect(spec?.argv[0]).toBe('node')
+    expect((spec?.argv[1] as string).endsWith(join('scripts', 'demo.mjs'))).toBe(true)
+    expect(spec?.argv.slice(2)).toEqual(['--alpha'])
+    // cwd is the staged skill root — the parent of the script's own directory.
+    expect(spec?.cwd).toBe(dirname(dirname(spec?.argv[1] as string)))
     expect(spec?.graceMs).toBe(1234)
-    expect(spec?.stdio.stdin).toEqual({ data: DEMO_SCRIPT })
+    expect(spec?.stdio.stdin).toBe('ignore')
+    expect(spec?.env?.[ASSETS_ENV_VAR]).toBe(spec?.cwd)
     expect(spec?.signal).toBeInstanceOf(AbortSignal)
   })
 })

@@ -1,16 +1,26 @@
 /**
  * Company-skill script execution (P6 batch 3) — run one `scripts/…` entry that
- * travels inside the obfuscated bundle, without ever writing the script itself
- * to disk.
+ * travels inside the obfuscated bundle, staging it only for the lifetime of
+ * the run (the code-runtime-python paradigm).
  *
  * ## The channel
  *
- * The script's plaintext text is decoded in memory and handed to the
- * interpreter over **stdin** (`node -` / `python -`), so the source bytes only
- * ever touch the parent's heap and the child's pipe. Nothing here writes a
- * script to the filesystem: no workspace file, no temp file, no log line, no
- * error message. The only disk artifacts are the *assets* (see below), which
- * are staged on demand and removed in a `finally` block.
+ * The whole skill — every `scripts[]` and every `assets[]` entry — is decoded
+ * in memory and materialized into one private per-run directory created with
+ * `mkdtemp` (mode 0600 files under a `$TMPDIR/dsh-skill-assets-*` root), the
+ * interpreter is pointed at the materialized script file
+ * (`argv = [<interpreter>, <dir>/scripts/run.mjs, …]`), and the directory is
+ * removed in a `finally` block the moment the run settles — including on
+ * timeout, cancellation, and failure. Plaintext does not *persist*: nothing
+ * survives the run, and no log line, telemetry event, or error message ever
+ * carries a byte of the body.
+ *
+ * This shape is what makes unmodified collected skills work: `__file__`
+ * locates the skill root (`Path(__file__).parent.parent` is the staged root,
+ * exactly what `ppt-designer`'s `export_pptx.py` computes), sibling imports
+ * resolve through `sys.path[0]` / the script's own directory, and the child's
+ * working directory is the staged root so bundle-relative reads
+ * (`assets/notes.md`, `reference/pptd.md`) resolve as written.
  *
  * ## Interpreter selection
  *
@@ -31,16 +41,16 @@
  * process environment and stays a standalone plugin. An extension with no
  * interpreter family is rejected before anything spawns.
  *
- * ## Addressing and assets
+ * ## Addressing, staging, and assets
  *
  * `script` must be exactly one of the skill bundle's own `scripts[]` paths
  * (`bundle-root-relative`, e.g. `scripts/run.mjs`); it is compared for
- * equality, never joined into a filesystem path, so `../` cannot escape.
- * When the skill carries assets they are materialized under one private
- * `mkdtemp` directory (`$TMPDIR/dsh-skill-assets-*`) that stands in for the
- * bundle root — `assets/notes.md` lands at `<dir>/assets/notes.md` — and the
- * directory is published to the child as `DSH_SKILL_ASSETS` and deleted the
- * moment execution settles, including on timeout, cancellation, and failure.
+ * equality, never joined into a filesystem path, so `../` cannot escape — the
+ * file the interpreter runs is `<staged>/scripts/<that same path>`. When the
+ * skill carries assets they materialize beside the scripts under the same
+ * private root — `assets/notes.md` lands at `<dir>/assets/notes.md` — the root
+ * is published to the child as `DSH_SKILL_ASSETS`, serves as the child's
+ * `cwd`, and is deleted the moment execution settles.
  *
  * ## Bounds
  *
@@ -82,10 +92,10 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 /** Concurrent runs allowed per session; one keeps a stuck script from flooding the session. */
 export const DEFAULT_MAX_CONCURRENT_PER_SESSION = 1
 
-/** Environment variable carrying the staged-assets directory to the child. */
+/** Environment variable carrying the staged skill root (scripts + assets) to the child. */
 export const ASSETS_ENV_VAR = 'DSH_SKILL_ASSETS'
 
-/** Prefix of the per-run staged-assets directory under the temp root. */
+/** Prefix of the per-run staged-skill directory under the temp root. */
 export const ASSETS_TMP_PREFIX = 'dsh-skill-assets-'
 
 /** Node's largest representable timer delay: a longer bound would overflow its timer. */
@@ -124,10 +134,8 @@ export interface RunScriptRequest {
   readonly skill: string
   /** Bundle-root-relative script path that must be one of the skill's own scripts. */
   readonly script: string
-  /** Extra argv appended after the interpreter's `-` script marker. */
+  /** Extra argv appended after the materialized script path. */
   readonly args?: readonly string[]
-  /** Working directory for the child (the session workspace when available). */
-  readonly cwd: string
   /** Session identity for the concurrency bound. */
   readonly sessionKey: string
   /** Caller cancellation, forwarded to the subprocess seam. */
@@ -154,8 +162,9 @@ export interface RunScriptResult {
 export interface ScriptExecutor {
   readonly limits: ScriptExecutorLimits
   /**
-   * Validate, stage, and run one script.
-   * @param request - addressed script, cwd, session identity, and cancellation.
+   * Validate, stage, and run one script. The child runs with its working
+   * directory at the staged skill root.
+   * @param request - addressed script, session identity, and cancellation.
    * @returns the exit code and bounded output.
    * @throws {SkillRunError} for any rejected address, bound, or launch failure.
    */
@@ -172,7 +181,7 @@ export interface ScriptExecutorOptions {
   readonly graceMs?: number
   readonly maxOutputBytes?: number
   readonly maxConcurrentPerSession?: number
-  /** Temp root for the staged-assets directory; defaults to `os.tmpdir()`. */
+  /** Temp root for the staged-skill directory; defaults to `os.tmpdir()`. */
   readonly tempRoot?: string
   /**
    * Interpreter-resolution seam; defaults to this process's environment,
@@ -180,7 +189,7 @@ export interface ScriptExecutorOptions {
    * the injected/PATH/host-executable order deterministic.
    */
   readonly interpreterResolution?: InterpreterResolutionInputs
-  /** Injected staged-assets remover; defaults to `fs.rm(..., { recursive, force })`. */
+  /** Injected staged-directory remover; defaults to `fs.rm(..., { recursive, force })`. */
   readonly removeStagedAssets?: (directory: string) => Promise<void>
   /** Cleanup-failure sink; defaults to a no-op so a warning never changes a result. */
   readonly logWarning?: (message: string) => void
@@ -341,16 +350,27 @@ function decodeScriptText(bundle: SkillBundle, script: { path: string; content: 
 }
 
 /**
- * Stage every asset under one private temp directory that stands in for the
- * bundle root. On any failure the partial directory is removed before the
- * error propagates, so a failed run leaves nothing behind.
- * @param bundle - the skill whose assets are staged.
+ * Materialize the whole skill — every script and every asset — into one
+ * private temp directory that stands in for the skill root: `scripts/run.mjs`
+ * lands at `<dir>/scripts/run.mjs`, `assets/notes.md` at
+ * `<dir>/assets/notes.md`. Script entries are validated as UTF-8 text before
+ * they are written (a binary script is a rejection, never a lossy decode).
+ * On any failure the partial directory is removed before the error
+ * propagates, so a failed run leaves nothing behind.
+ * @param bundle - the skill whose scripts and assets are staged.
  * @param tempRoot - the temp root to create the private directory under.
- * @returns the directory published as `DSH_SKILL_ASSETS`.
+ * @returns the directory published as `DSH_SKILL_ASSETS` and used as `cwd`.
  */
-async function stageAssets(bundle: SkillBundle, tempRoot: string): Promise<string> {
+async function stageBundle(bundle: SkillBundle, tempRoot: string): Promise<string> {
   const directory = await mkdtemp(join(tempRoot, ASSETS_TMP_PREFIX))
   try {
+    for (const script of bundle.scripts) {
+      // `script.path` passed bundle validation (normalized relative, under
+      // `scripts/`), so joining it onto the private directory cannot escape.
+      const target = join(directory, script.path)
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, decodeScriptText(bundle, script), { mode: 0o600 })
+    }
     for (const asset of bundle.assets) {
       // `asset.path` passed bundle validation (normalized relative, under
       // `assets/`), so joining it onto the private directory cannot escape.
@@ -360,7 +380,10 @@ async function stageAssets(bundle: SkillBundle, tempRoot: string): Promise<strin
     }
   } catch (error) {
     await rm(directory, { recursive: true, force: true })
-    throw new SkillRunError(`company skill "${bundle.name}" assets could not be staged for execution`, { cause: error })
+    // A SkillRunError is already a classified rejection (for example the
+    // invalid-UTF-8 script diagnosis); wrapping it would only hide the cause.
+    if (error instanceof SkillRunError) throw error
+    throw new SkillRunError(`company skill "${bundle.name}" could not be staged for execution`, { cause: error })
   }
   return directory
 }
@@ -416,7 +439,6 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         + `no ${family} interpreter was found (set ${variable} or put ${family} on PATH)`,
       )
     }
-    const body = decodeScriptText(bundle, script)
 
     const running = activeBySession.get(request.sessionKey) ?? 0
     if (running >= limits.maxConcurrentPerSession) {
@@ -455,22 +477,21 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     }, limits.timeoutMs)
     const signal = AbortSignal.any([request.signal, deadline.signal])
 
-    let assetsDirectory: string | undefined
+    let stagedRoot: string | undefined
     try {
-      if (bundle.assets.length > 0) assetsDirectory = await stageAssets(bundle, tempRoot)
-      const env: Record<string, string> = { ...interpreter.env }
-      if (assetsDirectory !== undefined) env[ASSETS_ENV_VAR] = assetsDirectory
+      stagedRoot = await stageBundle(bundle, tempRoot)
+      const env: Record<string, string> = { ...interpreter.env, [ASSETS_ENV_VAR]: stagedRoot }
       const spec: SubprocessSpawnSpec = {
-        argv: [interpreter.command, '-', ...(request.args ?? [])],
-        cwd: request.cwd,
+        argv: [interpreter.command, join(stagedRoot, script.path), ...(request.args ?? [])],
+        cwd: stagedRoot,
         stdio: {
-          stdin: { data: body },
+          stdin: 'ignore',
           stdout: { maxBytes: limits.maxOutputBytes },
           stderr: { maxBytes: limits.maxOutputBytes },
         },
         graceMs: limits.graceMs,
         signal,
-        ...(Object.keys(env).length === 0 ? {} : { env }),
+        env,
       }
 
       // The definite-assignment assertions hold because `failLaunch` never returns.
@@ -513,14 +534,14 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     } finally {
       clearTimeout(timer)
       release(request.sessionKey)
-      if (assetsDirectory !== undefined) {
+      if (stagedRoot !== undefined) {
         // A cleanup failure (Windows can report EPERM while a just-exited child
         // still holds a handle) must never turn a settled run into an error.
         try {
-          await (options.removeStagedAssets ?? ((directory: string) => rm(directory, { recursive: true, force: true })))(assetsDirectory)
+          await (options.removeStagedAssets ?? ((directory: string) => rm(directory, { recursive: true, force: true })))(stagedRoot)
         } catch (error) {
           logWarning(
-            `dsh-company-skills: could not remove the staged assets for company skill "${bundle.name}" `
+            `dsh-company-skills: could not remove the staged skill files for company skill "${bundle.name}" `
             + `script "${script.path}": ${error instanceof Error ? error.message : String(error)}`,
           )
         }

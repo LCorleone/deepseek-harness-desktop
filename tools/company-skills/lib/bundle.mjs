@@ -40,6 +40,15 @@ export const SKILL_MANIFEST_NAME = 'SKILL.md'
 export const SCRIPTS_DIR = 'scripts'
 export const ASSETS_DIR = 'assets'
 
+/**
+ * Directory names pruned wherever they appear during the directory walk.
+ * `__pycache__` is the interpreter's machine-local bytecode cache: a collected
+ * skill may carry `.pyc` files compiled by whatever CPython ran the author's
+ * box (cpython-310, while the harness ships 3.12), and that cache is neither
+ * source nor resource — it must not ride along in the bundle.
+ */
+export const PRUNED_DIRECTORY_NAMES = Object.freeze(['__pycache__'])
+
 /** Canonical field order of a bundle document; the exact set, no more, no less. */
 export const BUNDLE_FIELDS = Object.freeze(['name', 'description', 'body', 'scripts', 'assets'])
 
@@ -333,6 +342,7 @@ function walkSkillDirectory(rootDir, relativeDir, collect) {
       throw invalid(`skill directory entry "${relative}" is a symlink; only regular files are packed`)
     }
     if (entry.isDirectory()) {
+      if (PRUNED_DIRECTORY_NAMES.includes(entry.name)) continue
       if (relativeDir !== '' || (entry.name !== SCRIPTS_DIR && entry.name !== ASSETS_DIR)) {
         throw invalid(
           `unexpected directory "${relative}" in the skill directory `

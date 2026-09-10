@@ -17,8 +17,9 @@ skill registry 接缝发布出去的容器插件。它是 P6 批②/③的交付
   接缝注册一个 provider。
 - **Provider** `company-skills`：`list()` 只返回解密后的索引（name、description、rank、opaque locator），
   **绝不返回正文**；`get()` 才校验并物化 locator 指向的那一个 skill。
-- **工具** `company_skill_run`：执行某个已声明的 `scripts/…` 条目，脚本正文经解释器 **stdin** 送达，
-  因此字节被真正执行却从不落盘（见[脚本执行通道](#脚本执行通道零明文通道)）。
+- **工具** `company_skill_run`：执行某个已声明的 `scripts/…` 条目——每次运行把整个 skill（scripts+assets）物化进一个私有
+  0600 `mkdtemp` 目录、从那里执行、结算即在 `finally` 里删除，明文**不留驻**
+  （见[脚本执行通道](#脚本执行通道staged-按运行物化通道)）。
 - **优先级**：每个 skill 都报 `source: 'bundled'` 与 `BUNDLED_SKILL_RANK`（600），即打包根 rank。
   同名时项目级（`.dsh/skills`、`.agents/skills`）与用户级（`$DSH_HOME/skills`、`~/.agents/skills`）
   skill 依然胜出：公司目录始终可用，但绝不会悄悄覆盖仓库或用户明确写下的 skill。
@@ -53,7 +54,7 @@ export function apply(ctx: Context): void {
 不存在直接的 `ctx.skills.` 用法。工具走同一个反应式形态（`['tools', 'subprocess']`），所以没有这两个服务的
 profile 依然能拿到 provider，等服务后挂载时再自动拿到工具。
 
-## 脚本执行通道：零明文通道
+## 脚本执行通道：staged（按运行物化）通道
 
 `company_skill_run` 是执行 bundle 里 `scripts/…` 条目的唯一入口。引擎（`src/execute.ts`）刻意不依赖桌面：它按
 `DSH_DESKTOP_NODE_EXECUTABLE` / `DSH_DESKTOP_PYTHON_EXECUTABLE`（桌面在运行时发布的绝对命令）→ 子进程
@@ -62,24 +63,30 @@ profile 依然能拿到 provider，等服务后挂载时再自动拿到工具。
 Windows 机器即使 `PATH` 上只有 shell-less spawn 跑不了的 `.cmd` 垫片，也能跑 `.mjs` 与 `.py` 脚本。
 
 - **参数**：`skill`（公司 skill 名）、`script`（bundle 根相对路径，必须**恰好等于该 skill 自己的**某个
-  `scripts[]` 路径，如 `scripts/report.mjs`）、可选 `args`（额外 argv，原样追加在解释器的 `-` 脚本标记之后）。
-- **送达**：解密后的脚本正文写入子进程 **stdin**（`node -` / `python -`）；绝不写入文件，也绝不出现在日志、
-  遥测事件或错误信息里。Node 的 stdin 模块探测让 `require` 与 `import` 两种写法都能跑。
+  `scripts[]` 路径，如 `scripts/report.mjs`）、可选 `args`（额外 argv，原样追加在物化后的脚本路径之后）。
+- **物化**：所有 `scripts[]` 与 `assets[]` 条目在内存解码后物化进同一个私有按运行目录
+  （`$TMPDIR/dsh-skill-assets-*`，文件一律 0600），代表 skill 根：`scripts/run.mjs` 落在
+  `<dir>/scripts/run.mjs`、`assets/notes.md` 落在 `<dir>/assets/notes.md`。解释器直接指向物化文件
+  （`argv = [<解释器>, <dir>/scripts/run.mjs, …]`），子进程 `cwd` 即该根，并以 `DSH_SKILL_ASSETS` 发布给子进程。
+  运行一结束（超时、取消、失败同样）就在 `finally` 里整目录删除——**明文不留驻：0600 mkdtemp、finally 即删**；
+  物化失败也先把半成品目录删干净再报错。清理失败（Windows 上刚退出的子进程可能仍持有句柄而报 EPERM）只记
+  warning，绝不改变已结算的结果。
+- **为什么物化而不是 stdin 管道**：这是上游 `code-runtime-python` 范式，正是让收编来的 skill **免改动**可跑的关键——
+  `__file__` 定位 skill 根（`Path(__file__).parent.parent`，ppt-designer 的 `export_pptx.py` 就是这么算的）、
+  兄弟 import 走 `sys.path[0]`、bundle 相对引用（`assets/data.json`、`reference/pptd.md`）按 cwd 直接解析。
+  瞬时落盘的暴露面与旧管道实质同等（同样短生命周期、同样 0600 私有目录），这是 P6 已签收的红线：**明文不留驻**。
 - **解释器**：按扩展名选择解释器家族（`.mjs`/`.js` → Node，`.py` → Python）并按上述顺序解析；解析不到在
-  spawn 前以清晰错误拒绝，非法 UTF-8 正文也拒绝而不是有损解码；其它扩展名在 spawn 之前就拒掉。
+  spawn 前以清晰错误拒绝，非法 UTF-8 脚本也拒绝而不是有损解码；其它扩展名在 spawn 之前就拒掉。
 - **寻址**：`script` 与已校验的 bundle 条目做精确相等比较，绝不拼进文件系统路径，所以 `../`、绝对路径、
-  未声明名字都在 spawn 之前拒掉。
-- **资产**：skill 带 assets 时，解到一个私有 `mkdtemp` 目录（`$TMPDIR/dsh-skill-assets-*`）代表 bundle 根
-  （`assets/notes.md` → `<dir>/assets/notes.md`），以 `DSH_SKILL_ASSETS` 传给子进程，并在运行一结束就于
-  `finally` 里删除——超时、取消、失败同样删除。清理失败（Windows 上刚退出的子进程可能仍持有句柄而报
-  EPERM）只记 warning，绝不改变已结算的结果。无 assets 的 skill 不建目录，也不设该环境变量。
+  未声明名字都在 spawn 之前拒掉；解释器真正执行的就是 `<staged>/scripts/<同名路径>`。
 - **边界**：每条流只保留有界尾部（默认 64 KiB，溢出报 `truncated`），每次运行有独立的 120 s 死线并与调用方
-  signal 融合，同一会话最多 1 个运行在飞。所有拒绝都是 `SkillRunError`，只含 skill 名与脚本路径。
+  signal 融合，同一会话最多 1 个运行在飞。所有拒绝都是 `SkillRunError`，只含 skill 名与脚本路径——正文一个字节
+  也不进消息、warning 或结算结果。
 - **返回**：`{ skill, script, exitCode, stdout, stderr, stdoutTruncated, stderrTruncated }`；非零退出码是数据，
   不是抛出的错误。
 
-零落盘保证由脚本自己在 `tests/execute.spec.ts` 里断言：测试脚本在运行期间遍历临时根目录，以及（被固定的）
-默认临时根的顶层，统计含自身源码 canary 的文件数，必须是 `0`。`tests/tool.spec.ts` 再把制品里的
+「不留驻」由 `tests/execute.spec.ts` 断言：脚本证明自己确实从物化文件运行（从磁盘读自己的源码），`__file__`
+定位根与 Python 兄弟 import 真跑真验，运行一结算 staged 根即消失、临时根为空。`tests/tool.spec.ts` 再把制品里的
 `fixture-hello/scripts/hello.mjs` 经真实插件接线端到端跑一遍。
 
 ## bundle 格式
@@ -138,7 +145,8 @@ script、asset 被解析、校验或交给 registry。
 ## 安全定位
 
 混淆**不是**加密。XOR key 是随包常量，它挡的只是明文 grep、asset 上的 `strings`、以及随手翻 profile
-目录的人；挡不住会读 shipped JS 的人。本批接受的底线是「让普通用户的明文不落盘」，共享单一固定 key
+目录的人；挡不住会读 shipped JS 的人。本批接受的底线是「让普通用户的明文**不留驻**」（脚本/资源允许瞬时落盘于
+0600 `mkdtemp`、finally 即删），共享单一固定 key
 的缺口与升级路径（每-skill 派生 key，或非对称包装）已记录并签收在 `tools/company-skills/README.zh.md`。
 
 两条 P6 已签收的残余披露在这里原样适用：skill 的 `description` 进 catalog、`body` 加载后进会话历史——
@@ -149,7 +157,7 @@ script、asset 被解析、校验或交给 registry。
 ```bash
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc 声明
 corepack yarn workspace dsh-company-skills typecheck
-corepack yarn workspace dsh-company-skills test           # vitest，50 个用例
+corepack yarn workspace dsh-company-skills test           # vitest，56 个用例
 corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle 与 fixtures/ 一致
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
@@ -167,8 +175,8 @@ node dsh-company-skills/scripts/build-bundle-asset.mjs
 | --- | --- | --- |
 | `tests/container.spec.ts` | 11 | codec 常量与打包器一致；制品 asset 解出每个 fixture 一条索引；打包器→解码器交叉一致（规范化文档与源码树均逐字节）；裸 blob 与生成模块两种形态；确定性；制品无明文（附解码反向对照）且发布的插件文件也无明文；坏 frame / 坏元素与打包器同拒；发布面白名单 |
 | `tests/provider.spec.ts` | 11 | `inject(['skills'])` 反应式注册与随插件卸载；注册表后挂载；裸 `ctx.skills` 抛；源码形态钉测；`list()` 仅索引（无正文、无 `content`）；`get()` 只物化一个正文；未知名与不可用 locator；payload 损坏仍可列但拒载；asset 缺失/损坏退化不抛；退化目录在活宿主上；模块导出 |
-| `tests/execute.spec.ts` | 23 | 解释器选择与解析（注入命令 → PATH → 宿主可执行文件）；真实 `node -` 经 stdin 运行（输出、args 透传、非零退出当数据）；零落盘（脚本自身遍历注入根与默认临时根顶层找不到自身源码副本、staged assets 被删除、结果不含 canary、清理失败只记 warning）；未知 skill / 未声明脚本 / 路径穿越 / 无解释器 / 非法 UTF-8 均在 spawn 前拒绝；死线、输出尾部截断、调用方取消、启动抛错均清理 staged assets；会话并发上限与槽位释放；接缝透传（argv、stdin 正文、cwd、grace、signal） |
-| `tests/tool.spec.ts` | 5 | 工具 schema、输出形状、预算与 `presentCall`；从执行上下文解析 cwd/session/signal；render 与 `toRunValue`；在 tools 接缝上的反应式注册与卸载；制品 fixture 脚本经真实插件端到端运行并清理 staged assets |
+| `tests/execute.spec.ts` | 29 | 解释器选择与解析（注入命令 → PATH → 宿主可执行文件）；真实物化 `node` 运行（输出、args 透传、非零退出当数据、脚本从磁盘读到自身源码）；code-runtime-python 范式真跑（`__file__` 定位根等于 staged 根与 `DSH_SKILL_ASSETS`、Python 兄弟 import 走 `sys.path[0]`、cwd 相对资产读取）；不留驻（结算后 staged 根消失、临时根为空、结果不含正文 canary、清理失败只记 warning）；未知 skill / 未声明脚本 / 路径穿越 / 无解释器 / 非法 UTF-8 均在 spawn 前拒绝且无残留；死线、输出尾部截断、调用方取消、启动抛错均清理 staged 根；会话并发上限与槽位释放；接缝透传（物化 argv、staged cwd、env、grace、signal） |
+| `tests/tool.spec.ts` | 5 | 工具 schema、输出形状、预算与 `presentCall`；从执行上下文解析 session/signal；render 与 `toRunValue`；在 tools 接缝上的反应式注册与卸载；制品 fixture 脚本经真实插件端到端运行并清理 staged 根 |
 
 红绿证（本批实测）：
 
@@ -179,15 +187,15 @@ node dsh-company-skills/scripts/build-bundle-asset.mjs
   `artifact.includes('# Fixture hello')` 报 `expected false, received true`。
 - 去掉读 asset 的 `try/catch` → **红**：退化用例以 `ENOENT` 失败，而不是空目录。
 - 改解码器的 key 字符串 → **红**：打包器→解码器交叉一致用例立刻失败。
-- 把脚本正文写进文件并 spawn 该文件（而不是走 stdin）→ **红**：零落盘用例自己的扫描报 `SCRIPT-SOURCE-HITS=1`
-  而非 `0`，且临时根目录不再为空。
+- 把物化执行改回 `[解释器, '-']` 走 stdin 管道 → **红**：范式用例报 `OWN-SOURCE-READ=false`、`__file__` 定位根
+  比对失败（管道脚本没有真实路径）。
+- 去掉 staged 目录的 `finally` 清理 → **红**：结算、超时、取消、启动抛错用例都留下非空的临时根目录。
 - 取 bundle 首个条目代替按声明路径匹配 `script` → **红**：所有穿越/未声明名字用例开始 spawn，
   `carries no script` 断言失败。
 - 去掉 `AbortSignal`/死线融合、只靠宿主超时 → **红**：执行器的 `timed out after … ms` 与 `was cancelled`
   分类永不触发。
 - 忽略 `DSH_DESKTOP_NODE_EXECUTABLE`、直接 spawn PATH 裸名 → **红**：注入命令用例看到的是 `node` 而不是发布
   的绝对路径。
-- 去掉 staged-assets 目录的 `finally` 清理 → **红**：超时、取消、启动抛错三条用例都留下非空的临时根目录。
 - 让清理 `rm` 的失败逃出 `finally` → **红**：一次清理遇 EPERM 的成功运行被报成失败，而不是返回结果。
 
 ## 目录
@@ -200,7 +208,7 @@ dsh-company-skills/
   src/container.ts      容器 frame 解码（独立于 tools/）
   src/bundle.ts         单个 skill bundle 的字段规则（独立于 tools/）
   src/codec.ts          XOR+base64 解码器与 key 常量
-  src/execute.ts        stdin 管道脚本执行器：寻址、资产、边界
+  src/execute.ts        staged 按运行物化脚本执行器：寻址、物化、边界
   src/tool.ts           company_skill_run 定义、render、presentCall
   assets/skills.bundle  随包发布的容器块（在 files 里）
   cordis.patch.yml      组合行（在 files 里）

@@ -2,11 +2,11 @@
  * The model-facing `company_skill_run` tool (P6 batch 3).
  *
  * The definition is deliberately thin: it validates the model's addressing
- * arguments, resolves the session workspace and session identity from the
- * execution context, and delegates every bound and every rejection to the
- * {@link ScriptExecutor}. The executor — not this layer — owns interpreter
- * selection, stdin delivery, asset staging, output caps, and the timeout, so
- * the tool definition cannot accidentally bypass one of them.
+ * arguments, resolves the session identity from the execution context, and
+ * delegates every bound and every rejection to the {@link ScriptExecutor}.
+ * The executor — not this layer — owns interpreter selection, per-run
+ * materialization into the private staged directory, output caps, and the
+ * timeout, so the tool definition cannot accidentally bypass one of them.
  *
  * `presentCall` renders a card from the arguments alone (skill + script), so a
  * replayed call never needs the body.
@@ -78,12 +78,14 @@ export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinit
   return defineTool({
     name: COMPANY_SKILL_RUN_TOOL_NAME,
     description:
-      'Run one script that ships inside a company skill. The script source travels inside the installed '
-      + 'skill bundle and is executed without being written to disk, so this tool is the only way to run '
-      + 'those scripts; a workspace `bash` or `read` cannot see them. `skill` must be a company skill name '
-      + 'from the skill catalog and `script` must be one of that skill\'s own declared script paths '
-      + '(for example "scripts/report.mjs"), passed exactly as the skill declares it. `args` is appended to '
-      + 'the interpreter argv verbatim. Returns the exit code plus stdout and stderr, each capped at '
+      'Run one script that ships inside a company skill. The skill is materialized into a private '
+      + '0600 temp directory for the duration of the run and removed the moment it settles, so the files never '
+      + 'persist and this tool is the only way to run those scripts; a workspace `bash` or `read` cannot see them. '
+      + '`skill` must be a company skill name from the skill catalog and `script` must be one of that skill\'s own '
+      + 'declared script paths (for example "scripts/report.mjs"), passed exactly as the skill declares it. The '
+      + 'script runs with the staged skill root as its working directory, so bundle-relative reads such as '
+      + '`assets/data.json` resolve as written and `__file__` locates the skill root. `args` is appended to the '
+      + 'interpreter argv verbatim. Returns the exit code plus stdout and stderr, each capped at '
       + `${String(Math.round(executor.limits.maxOutputBytes / 1024))} KiB (overflow keeps the tail and is reported as truncated). `
       + `A run is limited to ${String(executor.limits.maxConcurrentPerSession)} in flight per session and to a `
       + `${String(Math.round(executor.limits.timeoutMs / 1000))} s deadline.`,
@@ -101,7 +103,7 @@ export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinit
       args: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Extra argv appended after the script marker; passed to the interpreter verbatim.',
+        description: 'Extra argv appended after the script path; passed to the interpreter verbatim.',
       },
     },
     // Our own executor deadline fires first; this host-side budget is the
@@ -128,8 +130,8 @@ export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinit
         skill: args.skill,
         script: args.script,
         ...(args.args === undefined ? {} : { args: args.args }),
-        // The tool-context cwd is the caller's session workspace when one exists.
-        cwd: exec.agent?.session.header.cwd ?? process.cwd(),
+        // The executor stages the skill and runs the child with the staged root
+        // as its working directory; only session identity is resolved here.
         // One in-flight run per session; an unscoped call shares one slot.
         sessionKey: exec.agent?.id ?? 'unscoped',
         signal: exec.signal,

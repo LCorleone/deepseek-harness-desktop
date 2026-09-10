@@ -5,27 +5,21 @@
  * recording services for `tools` and `subprocess`, so the reactive
  * `ctx.inject(['tools', 'subprocess'], …)` seam, the spawn delegation, and
  * disposal are all exercised against real injection rather than a mock. The
- * recording subprocess delegates to the same real `node -` seam the executor
- * tests use, so this is a genuine end-to-end run: plugin → tool → executor →
- * child process → staged-asset cleanup.
+ * recording subprocess delegates to the same real child-process seam the
+ * executor tests use, so this is a genuine end-to-end run: plugin → tool →
+ * executor → staged skill directory → child process → cleanup.
  *
  * @module dsh-company-skills/tests/tool
  */
 
-import { readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
-import {
-  ASSETS_ENV_VAR,
-  type RunScriptRequest,
-  type ScriptExecutor,
-} from '../src/execute.js'
+import { ASSETS_ENV_VAR, type RunScriptRequest, type ScriptExecutor } from '../src/execute.js'
 import * as CompanySkills from '../src/index.js'
 import {
   COMPANY_SKILL_RUN_TOOL_NAME,
@@ -34,12 +28,6 @@ import {
   toRunValue,
 } from '../src/tool.js'
 import { localSpawn } from './local-spawn.js'
-import { PACKAGE_ROOT } from './tools.js'
-
-const HELLO_SCRIPT = readFileSync(
-  join(fileURLToPath(PACKAGE_ROOT), 'fixtures', 'fixture-hello', 'scripts', 'hello.mjs'),
-  'utf8',
-)
 
 /** A stub executor that records the request and returns a fixed run. */
 function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[] } {
@@ -118,7 +106,7 @@ describe('company_skill_run tool definition', () => {
     })
   })
 
-  it('resolves cwd and session identity from the execution context', async () => {
+  it('resolves session identity from the execution context', async () => {
     const { executor, requests } = stubExecutor()
     const tool = createCompanySkillRunTool(executor)
     const controller = new AbortController()
@@ -134,10 +122,10 @@ describe('company_skill_run tool definition', () => {
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
       args: ['--x'],
-      cwd: '/workspace/seven',
       sessionKey: 'session-7',
       signal: controller.signal,
     })
+    expect(requests[0]).not.toHaveProperty('cwd')
     expect(value).toEqual({
       skill: 'runner-demo',
       script: 'scripts/demo.mjs',
@@ -187,7 +175,7 @@ describe('registration wiring', () => {
     expect(tools.registered).toEqual([])
   })
 
-  it('runs a bundled fixture script end to end and removes the staged assets', async () => {
+  it('runs a bundled fixture script end to end and removes the staged skill root', async () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
     await ctx.plugin(RecordingTools)
@@ -205,12 +193,15 @@ describe('registration wiring', () => {
     expect(value.stdout).toContain('fixture-hello would read assets/notes.md')
 
     const spec = recordingSubprocess(ctx).specs[0]
-    // The source reached the child over stdin, byte for byte, and never a path.
-    expect(spec?.argv).toEqual(['node', '-'])
-    expect(spec?.stdio.stdin).toEqual({ data: HELLO_SCRIPT })
+    // The interpreter was pointed at the materialized script file — never a
+    // stdin pipe — with the staged root as cwd and stdin closed.
+    expect(spec?.argv[0]).toBe('node')
+    expect((spec?.argv[1] as string).endsWith(join('scripts', 'hello.mjs'))).toBe(true)
+    expect(spec?.stdio.stdin).toBe('ignore')
 
-    const assetsDirectory = spec?.env?.[ASSETS_ENV_VAR]
-    expect(typeof assetsDirectory).toBe('string')
-    await expect(stat(assetsDirectory as string)).rejects.toThrow()
+    const stagedRoot = spec?.env?.[ASSETS_ENV_VAR]
+    expect(typeof stagedRoot).toBe('string')
+    expect(spec?.cwd).toBe(stagedRoot)
+    await expect(stat(stagedRoot as string)).rejects.toThrow()
   })
 })

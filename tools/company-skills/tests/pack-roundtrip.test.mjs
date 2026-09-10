@@ -182,6 +182,26 @@ test('pack rejects invalid skill sources and writes nothing', () => {
   })
 })
 
+test('the packer prunes interpreter caches (__pycache__) wherever they appear', () => {
+  workspace((root) => {
+    const skillDir = join(root, 'cached-skill')
+    writeSkillTree(skillDir, {
+      'SKILL.md': CLEAN_MANIFEST,
+      'scripts/run.py': 'print("ok")\n',
+      'scripts/__pycache__/run.cpython-310.pyc': 'stale bytecode from another interpreter',
+    })
+    const artifact = join(root, 'out', 'cached.bundle.js')
+    const packed = run(PACK, ['--skill', skillDir, '--out', artifact])
+    assert.equal(packed.status, 0, packed.stderr)
+    const document = JSON.parse(decodeBundleBlob(extractBundleBlob(readFileSync(artifact, 'utf8'))))
+    assert.deepEqual(document.scripts.map((entry) => entry.path), ['scripts/run.py'], 'the cache must not ride along')
+
+    const verify = run(UNPACK, ['--in', artifact, '--out', join(root, 'tree')])
+    assert.equal(verify.status, 0, verify.stderr)
+    assert.equal(existsSync(join(root, 'tree', 'scripts', '__pycache__')), false)
+  })
+})
+
 test('unpack verifies the digest and refuses a tampered blob', () => {
   workspace((root) => {
     const artifact = join(root, 'out', 'fixture.bundle.js')

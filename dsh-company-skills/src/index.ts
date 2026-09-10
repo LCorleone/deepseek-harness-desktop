@@ -26,8 +26,9 @@
  * the `company_skill_run` tool as soon as the host provides `tools` and
  * `subprocess`, so a profile without those services still gets the provider
  * (and a profile that mounts them later gets the tool then). The tool's spawn
- * is the host's `ctx.subprocess.spawn`, and the script body is handed to it on
- * stdin — see `execute.ts`.
+ * is the host's `ctx.subprocess.spawn`, and the addressed script runs from a
+ * per-run staged copy of the skill that is removed when the run settles —
+ * see `execute.ts`.
  *
  * @module dsh-company-skills
  */
