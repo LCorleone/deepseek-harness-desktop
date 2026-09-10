@@ -1,0 +1,28 @@
+version: v2
+title: Deloitte D.Nova Template
+size: [1707, 960]
+theme:
+  colors:
+    deloitte_green: "#046A38"
+    deloitte_lime: "#86BC25"
+    deloitte_gray: "#53565A"
+    text_primary: "#111827"
+    text_secondary: "#374151"
+    text_muted: "#6B7280"
+    bg_white: "#FFFFFF"
+pages:
+  - pages/1.page
+  - pages/2.page
+  - pages/3.page
+  - pages/4.page
+  - pages/5.page
+  - pages/6.page
+  - pages/7.page
+  - pages/8.page
+  - pages/9.page
+  - pages/10.page
+  - pages/11.page
+  - pages/12.page
+  - pages/13.page
+  - pages/14.page
+  - pages/15.page

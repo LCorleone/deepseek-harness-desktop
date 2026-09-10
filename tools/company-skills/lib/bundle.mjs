@@ -9,18 +9,31 @@
  * shipped plugin cannot import this tool), and its `list`/`get` behaviour is
  * pinned against these field rules.
  *
- * Directory layout the packer accepts, and nothing else:
+ * Directory layout the packer accepts:
  *
  *   <skill-dir>/
  *     SKILL.md        YAML frontmatter (name, description) + body
- *     scripts/**      optional — executable text carried as `scripts[]`
- *     assets/**       optional — every other resource, carried as `assets[]`
+ *     scripts/**      optional — the executable addressing index, as `scripts[]`
+ *     <anything>/**   optional — every other resource, as `assets[]`
+ *
+ * The source-relative layout is preserved **verbatim**: a collected skill's
+ * `editor/`, `reference/`, `pptd-template/`, `assets/`, and `scripts/` trees
+ * land at the same bundle-relative paths (`editor/index.html`,
+ * `reference/pptd.md`, `LICENSE.txt`, `scripts/export_pptx.py`) and are
+ * materialized back into exactly that tree at execution time, so
+ * `__file__`-based root discovery and `SKILL_DIR/editor/index.html` keep
+ * working on a collected skill that was written for an on-disk skill root.
+ * `scripts[]` is the executable addressing index — only its paths can be
+ * addressed by `company_skill_run`, and only one whose extension has a
+ * supported interpreter can actually launch. `assets[]` carries every other
+ * resource (including non-executable files that happen to sit under
+ * `scripts/`, such as a bundled WASM binary).
  *
  * Paths inside the bundle are always bundle-root-relative POSIX paths
- * (`scripts/run.mjs`, `assets/data.json`), never skill-directory-relative:
+ * (`scripts/run.mjs`, `reference/pptd.md`), never skill-directory-relative:
  * the batch-2 provider resolves them through an `opaque` resourceBase, so a
- * script that wants its data file writes `assets/data.json`, not
- * `../assets/data.json`.
+ * script that wants its data file writes `reference/pptd.md`, not
+ * `../reference/pptd.md`.
  *
  * A plugin ships many skills, so the shipped document is a *container*:
  * `{version: 1, skills: [<bundle>, …]}`. Each element keeps exactly the field
@@ -36,8 +49,14 @@ import { decodeCanonicalBase64 } from './codec.mjs'
 /** The only file a skill directory may carry at its top level. */
 export const SKILL_MANIFEST_NAME = 'SKILL.md'
 
-/** Directory names the packer maps onto the two bundle arrays. */
+/** Directory whose tree is the executable addressing index (`scripts[]`). */
 export const SCRIPTS_DIR = 'scripts'
+
+/**
+ * The directory name the collected-first set happens to use for resources.
+ * It is no longer a required prefix: every path outside `scripts/` is an
+ * `assets[]` entry, keyed by its source-relative path.
+ */
 export const ASSETS_DIR = 'assets'
 
 /**
@@ -141,8 +160,13 @@ function decodeEntryContent(entry, site) {
   return bytes
 }
 
-/** Validate one `scripts[]`/`assets[]` path, including its required prefix. */
-function validateEntryPath(path, site, prefix) {
+/**
+ * Validate one `scripts[]`/`assets[]` path.
+ * @param {string} path - the candidate bundle-relative path.
+ * @param {string} site - subject for error messages.
+ * @param {'script' | 'asset'} kind - the array the path belongs to.
+ */
+function validateEntryPath(path, site, kind) {
   if (typeof path !== 'string' || path.length === 0) {
     throw invalid(`${site}.path must be a non-empty bundle-relative POSIX path`)
   }
@@ -158,13 +182,22 @@ function validateEntryPath(path, site, prefix) {
   if (posix.normalize(path) !== path || path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
     throw invalid(`${site}.path must be a normalized relative path without "." or ".." segments ("${path}")`)
   }
-  if (!path.startsWith(`${prefix}/`)) {
-    throw invalid(`${site}.path must live under ${prefix}/ ("${path}")`)
+  if (kind === 'script') {
+    if (!path.startsWith(`${SCRIPTS_DIR}/`)) {
+      throw invalid(`${site}.path must live under ${SCRIPTS_DIR}/ ("${path}")`)
+    }
+    return path
   }
+  if (path === SCRIPTS_DIR || path.startsWith(`${SCRIPTS_DIR}/`)) {
+    throw invalid(
+      `${site}.path must not live under ${SCRIPTS_DIR}/ — that tree is the executable index ("${path}")`,
+    )
+  }
+  return path
 }
 
-/** Read one array field, enforcing shape, prefix, uniqueness, and content bounds. */
-function validateEntryArray(value, field, prefix) {
+/** Read one array field, enforcing shape, role, uniqueness, and content bounds. */
+function validateEntryArray(value, field, kind) {
   if (!Array.isArray(value)) throw invalid(`${field} must be an array of {path, content} entries`)
   const seen = new Set()
   const entries = []
@@ -174,7 +207,7 @@ function validateEntryArray(value, field, prefix) {
     if (!sameKeySet(Object.keys(entry), ENTRY_FIELDS)) {
       throw invalid(`${site} must carry exactly path and content`)
     }
-    validateEntryPath(entry.path, site, prefix)
+    validateEntryPath(entry.path, site, kind)
     if (seen.has(entry.path)) throw invalid(`${site}.path "${entry.path}" duplicates an earlier entry`)
     seen.add(entry.path)
     decodeEntryContent(entry, site)
@@ -263,8 +296,8 @@ export function validateBundle(bundle) {
     throw invalid(`${name}: body exceeds the ${String(FILE_MAX_BYTES)}-byte per-file bound`)
   }
 
-  const scripts = validateEntryArray(bundle.scripts, 'scripts', SCRIPTS_DIR)
-  const assets = validateEntryArray(bundle.assets, 'assets', ASSETS_DIR)
+  const scripts = validateEntryArray(bundle.scripts, 'scripts', 'script')
+  const assets = validateEntryArray(bundle.assets, 'assets', 'asset')
 
   const canonical = canonicalBundle({ name, description, body, scripts, assets })
 
@@ -360,7 +393,11 @@ export function renderSkillManifest(bundle) {
   return `---\nname: ${bundle.name}\ndescription: ${bundle.description}\n---\n${bundle.body}`
 }
 
-/** Walk a skill directory and hand every carried file's relative path to `collect`. */
+/**
+ * Walk a skill directory and hand every carried file's source-relative path
+ * to `collect`. Any directory/file layout is accepted (only the manifest name
+ * is special) so a collected skill keeps its own root layout verbatim.
+ */
 function walkSkillDirectory(rootDir, relativeDir, collect) {
   const entries = readdirSync(join(rootDir, relativeDir), { withFileTypes: true })
   for (const entry of entries) {
@@ -370,30 +407,10 @@ function walkSkillDirectory(rootDir, relativeDir, collect) {
     }
     if (entry.isDirectory()) {
       if (PRUNED_DIRECTORY_NAMES.includes(entry.name)) continue
-      // Directories are allowed exactly inside the two carried roots, at any
-      // depth: a collected skill ships deep trees (`assets/editor/neo-ppt/…`,
-      // `scripts/local-export/…`), and the format's path rules already accept
-      // multi-segment relative paths. Anything else is an unexpected layout.
-      const insideCarriedRoot = relativeDir === ''
-        ? entry.name === SCRIPTS_DIR || entry.name === ASSETS_DIR
-        : relativeDir === SCRIPTS_DIR || relativeDir.startsWith(`${SCRIPTS_DIR}/`)
-          || relativeDir === ASSETS_DIR || relativeDir.startsWith(`${ASSETS_DIR}/`)
-      if (!insideCarriedRoot) {
-        throw invalid(
-          `unexpected directory "${relative}" in the skill directory `
-          + `(only ${SKILL_MANIFEST_NAME}, ${SCRIPTS_DIR}/, and ${ASSETS_DIR}/ are allowed)`,
-        )
-      }
       walkSkillDirectory(rootDir, relative, collect)
       continue
     }
     if (!entry.isFile()) throw invalid(`skill directory entry "${relative}" is not a regular file`)
-    if (relativeDir === '' && entry.name !== SKILL_MANIFEST_NAME) {
-      throw invalid(
-        `unexpected file "${relative}" in the skill directory `
-        + `(only ${SKILL_MANIFEST_NAME}, ${SCRIPTS_DIR}/, and ${ASSETS_DIR}/ are allowed)`,
-      )
-    }
     collect(relative)
   }
 }
@@ -407,8 +424,9 @@ function entryFromFile(rootDir, relative) {
 
 /**
  * Read a skill source directory into a validated canonical bundle.
- * Symlinks, unexpected files, empty files, and unreadable layouts all reject
- * here — nothing outside the declared layout can ride along.
+ * Symlinks, empty files, and unreadable layouts all reject here; the layout
+ * itself is preserved verbatim (`scripts/**` becomes `scripts[]`, every other
+ * regular file becomes an `assets[]` entry at its source-relative path).
  * @param {string} skillDir - the skill source directory.
  * @returns {object} the canonical bundle.
  */
@@ -433,8 +451,7 @@ export function readSkillDirectory(skillDir) {
   for (const relative of sortEntries(relativePaths.map((path) => ({ path })))) {
     const entry = entryFromFile(skillDir, relative.path)
     if (relative.path.startsWith(`${SCRIPTS_DIR}/`)) scripts.push(entry)
-    else if (relative.path.startsWith(`${ASSETS_DIR}/`)) assets.push(entry)
-    else throw invalid(`unexpected file "${relative.path}" in the skill directory`)
+    else assets.push(entry)
   }
 
   return validateBundle({

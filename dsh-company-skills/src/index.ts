@@ -23,12 +23,14 @@
  * catalog (see `catalog.ts` for the reasoning).
  *
  * Batch 3 adds the execution channel: the same reactive-injection form mounts
- * the `company_skill_run` tool as soon as the host provides `tools` and
- * `subprocess`, so a profile without those services still gets the provider
- * (and a profile that mounts them later gets the tool then). The tool's spawn
- * is the host's `ctx.subprocess.spawn`, and the addressed script runs from a
- * per-run staged copy of the skill that is removed when the run settles —
- * see `execute.ts`.
+ * the `company_skill_run` and `company_skill_read` tools as soon as the host
+ * provides `tools` and `subprocess`, so a profile without those services still
+ * gets the provider (and a profile that mounts them later gets the tools then).
+ * The run tool's spawn is the host's `ctx.subprocess.spawn`, and the addressed
+ * script runs from a per-run staged copy of the skill that is removed when the
+ * run settles — see `execute.ts`. The read tool resolves the opaque bundle's
+ * prose resources (which no workspace `read` can see) by materializing exactly
+ * one entry for the duration of the call.
  *
  * @module dsh-company-skills
  */
@@ -37,7 +39,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createProvider } from './provider.js'
 import { loadCatalogFromFile } from './catalog.js'
 import { createScriptExecutor } from './execute.js'
-import { createCompanySkillRunTool } from './tool.js'
+import { createCompanySkillReadTool, createCompanySkillRunTool } from './tool.js'
 
 /** Cordis plugin name. */
 export const name = 'company-skills'
@@ -68,5 +70,6 @@ export function apply(ctx: Context): void {
       logWarning: (message) => { ctx.logger.warn(message) },
     })
     inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
+    inner.effect(() => inner.tools.register(createCompanySkillReadTool(executor)))
   })
 }

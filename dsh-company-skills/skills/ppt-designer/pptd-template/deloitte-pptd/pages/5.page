@@ -1,0 +1,128 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: image
+    bounds: [1568, 32, 85, 75]
+    src: media/image2.png
+    fit: {mode: fill}
+  - elementId: el2
+    elementType: text
+    bounds: [62, 160, 1581, 67]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#000000"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: 智能问答模块概述
+  - elementId: el3
+    elementType: text
+    bounds: [64, 120, 1581, 40]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: false
+      text: 赋能自然语言交互与高效内容创作
+  - elementId: el4
+    elementType: text
+    bounds: [64, 245, 817, 47]
+    content:
+      align: [left, top]
+      fontSize: 28
+      color: "#046A38"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: 核心功能覆盖
+  - elementId: el5
+    elementType: text
+    bounds: [64, 303, 817, 87]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#1F2937"
+      fontFamily: Arial
+      wrap: false
+      text: 支持自然语言交互，完成问答、创作、翻译、改写、总结等多类任务，满足多样化内容处理需求。
+  - elementId: el6
+    elementType: text
+    bounds: [64, 405, 817, 47]
+    content:
+      align: [left, top]
+      fontSize: 28
+      color: "#046A38"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: 模型生态集成
+  - elementId: el7
+    elementType: text
+    bounds: [64, 463, 817, 87]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#1F2937"
+      fontFamily: Arial
+      wrap: false
+      text: <p>集成主流预训练大模型，支持自由切换与定期更新，保障技术持续领先；</p><p>提供100+模型选项，平均响应速度低于800毫秒。</p>
+  - elementId: el8
+    elementType: text
+    bounds: [64, 565, 817, 47]
+    content:
+      align: [left, top]
+      fontSize: 28
+      color: "#046A38"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: 性能与开源优势
+  - elementId: el9
+    elementType: text
+    bounds: [64, 623, 817, 87]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#1F2937"
+      fontFamily: Arial
+      wrap: false
+      text: <p>引入优质开源模型，在保证技术先进性的同时优化响应性能，</p><p>实现高性价比部署；95%的任务响应时间小于1秒。</p>
+  - elementId: el10
+    elementType: text
+    bounds: [64, 725, 817, 47]
+    content:
+      align: [left, top]
+      fontSize: 28
+      color: "#046A38"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: 智能写作支持
+  - elementId: el11
+    elementType: text
+    bounds: [64, 783, 817, 87]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#1F2937"
+      fontFamily: Arial
+      wrap: false
+      text: <p>提供结构化写作环境，支持分段编辑、AI补写和全文优化，</p><p>有效辅助长文本撰写与专业报告生成。</p>
+  - elementId: el12
+    elementType: image
+    bounds: [964, 331, 679, 480]
+    src: media/image9.png
+    fit: {mode: fill}
+  - elementId: el13
+    elementType: text
+    bounds: [32, 907, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: Noto Sans SC
+      wrap: false
+      text: © 2026。欲了解更多信息，请联系德勤中国。

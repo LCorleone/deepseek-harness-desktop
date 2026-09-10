@@ -163,21 +163,31 @@ test('the document must carry exactly the five bundle fields', () => {
   assert.throws(() => validateBundle({ ...bundleFixture(), version: 1 }), /must carry exactly/u)
 })
 
-test('entry paths must be normalized bundle-relative POSIX paths under the right prefix', () => {
+test('entry paths must be normalized bundle-relative POSIX paths in the right role', () => {
   const rejected = [
     ['assets/../data.json', /normalized relative path|characters the loader/u],
     ['/assets/data.json', /must be relative/u],
     ['assets\\data.json', /must be relative/u],
     ['./assets/data.json', /normalized relative path/u],
     ['assets//data.json', /normalized relative path/u],
-    ['scripts/data.json', /must live under assets\//u],
-    ['data.json', /must live under assets\//u],
+    ['scripts/data.json', /must not live under scripts\//u],
     ['assets/a b.json', /characters the loader cannot address/u],
     [`assets/${'a'.repeat(250)}.json`, /longer than the 200-character bound/u],
   ]
   for (const [path, pattern] of rejected) {
     assert.throws(() => validateBundle(bundleFixture({ assets: [entry(path, 'x')] })), pattern, `accepted ${path}`)
   }
+  // A top-level loose file is a legitimate asset: entries are keyed by their
+  // source-relative path, so a collected `LICENSE.txt` rides as `LICENSE.txt`.
+  assert.deepEqual(
+    validateBundle(bundleFixture({ assets: [entry('data.json', 'x')] })).assets.map((item) => item.path),
+    ['data.json'],
+  )
+  // A script must live under `scripts/`; the two arrays never overlap.
+  assert.throws(
+    () => validateBundle(bundleFixture({ scripts: [entry('assets/run.mjs', 'x')] })),
+    /must live under scripts\//u,
+  )
   assert.throws(
     () => validateBundle(bundleFixture({ assets: [entry('assets/a.json', '1'), entry('assets/a.json', '2')] })),
     /duplicates an earlier entry/u,
@@ -337,35 +347,36 @@ test('the skills root reader takes one directory per skill and rejects anything 
   })
 })
 
-test('the directory reader rejects every layout the format does not declare', () => {
+test('the directory reader preserves the source layout and rejects malformed trees', () => {
   assert.equal(readSkillDirectory(FIXTURE).name, 'fixture-hello')
 
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST.replace('name: demo-skill', 'name: Bad') }, (root) => {
     assert.throws(() => readSkillDirectory(root), /name must be kebab-case/u)
   })
+  // A loose top-level file is not the manifest: every non-script file is
+  // carried as an asset at its own relative path, so a collected skill's
+  // `LICENSE.txt` / `README.md` survives verbatim.
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'README.md': 'nope\n' }, (root) => {
-    assert.throws(() => readSkillDirectory(root), /unexpected file "README.md"/u)
+    const bundle = readSkillDirectory(root)
+    assert.deepEqual(bundle.assets.map((entry) => entry.path), ['README.md'])
   })
-  // Nested trees inside the carried roots are accepted — collected skills
-  // ship `scripts/local-export/…` and `assets/editor/neo-ppt/…` — while any
-  // directory outside the two roots still rejects.
+  // Nested trees of any shape are accepted and keyed by their source-relative
+  // paths: `scripts/local-export/…` indexes as a script, `editor/neo-ppt/…`
+  // rides as an asset (the layout ppt-designer's resolve_editor_root() needs).
   withSkillTree({
     'SKILL.md': MINIMAL_MANIFEST,
     'scripts/local-export/run.mjs': 'x\n',
-    'assets/editor/neo-ppt/index.html': '<p>x</p>\n',
+    'editor/neo-ppt/index.html': '<p>x</p>\n',
   }, (root) => {
     const bundle = readSkillDirectory(root)
     assert.deepEqual(bundle.scripts.map((entry) => entry.path), ['scripts/local-export/run.mjs'])
-    assert.deepEqual(bundle.assets.map((entry) => entry.path), ['assets/editor/neo-ppt/index.html'])
-  })
-  withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'editor/index.html': '<p>x</p>\n' }, (root) => {
-    assert.throws(() => readSkillDirectory(root), /unexpected directory "editor"/u)
+    assert.deepEqual(bundle.assets.map((entry) => entry.path), ['editor/neo-ppt/index.html'])
   })
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'scripts/.gitkeep': '' }, (root) => {
     assert.throws(() => readSkillDirectory(root), /"scripts\/.gitkeep" is empty/u)
   })
   withSkillTree({ 'README.md': 'no manifest\n' }, (root) => {
-    assert.throws(() => readSkillDirectory(root), /unexpected file "README.md"|carries no SKILL.md/u)
+    assert.throws(() => readSkillDirectory(root), /carries no SKILL\.md/u)
   })
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'scripts/hello.mjs': 'run\n' }, (root) => {
     symlinkSync(join(root, 'scripts', 'hello.mjs'), join(root, 'scripts', 'link.mjs'))

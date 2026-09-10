@@ -34,6 +34,7 @@ import {
   type ScriptSpawn,
 } from '../src/execute.js'
 import { localSpawn } from './local-spawn.js'
+import { pythonInterpreter, pythonResolution } from './python.js'
 import { toolsCodec } from './tools.js'
 
 /** The three canaries: the skill body, the script's own source, and a legit output line. */
@@ -303,7 +304,7 @@ describe('materialized execution (the code-runtime-python paradigm)', () => {
     expect(result.stdout.text).toContain('SKILL-ROOT-CWD-MATCH=true')
   })
 
-  it('lets a Python script import a sibling module from the same scripts directory', async () => {
+  it.skipIf(pythonInterpreter === undefined)('lets a Python script import a sibling module from the same scripts directory', async () => {
     const peer = 'PEER_VALUE = "SIBLING-IMPORT-WORKS-1337"\n'
     const usesPeer = [
       'from peer_module import PEER_VALUE',
@@ -320,6 +321,9 @@ describe('materialized execution (the code-runtime-python paradigm)', () => {
       })),
       spawn: localSpawn,
       tempRoot,
+      // CI runners ship `python3`, not the bare `python` the PATH fallback
+      // looks for; inject the absolute interpreter instead of depending on it.
+      ...(pythonResolution === undefined ? {} : { interpreterResolution: pythonResolution }),
     })
     const result = await executor.run({
       skill: 'runner-demo',
@@ -432,6 +436,26 @@ describe('nothing persists and no plaintext leaks', () => {
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain('could not remove the staged skill files')
     expect(warnings[0]).not.toContain(SCRIPT_CANARY)
+  })
+
+  it('keeps the settled result even when the cleanup warning sink itself throws', async () => {
+    const { spawn } = immediateSpawn(0, { stdout: 'ok' })
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      removeStagedAssets: () => Promise.reject(new Error('EPERM: directory not empty')),
+      logWarning: () => { throw new Error('the warning sink is broken') },
+    })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    // A throwing warning sink must not replace the already-settled result.
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text).toBe('ok')
   })
 
   it('keeps the script body out of every rejection message', async () => {
@@ -670,6 +694,90 @@ describe('timeout, truncation, and cancellation', () => {
     controller.abort()
     await expect(run).rejects.toThrow(/was cancelled/)
     expect(specs[0]?.signal?.aborted).toBe(true)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+})
+
+describe('reading a carried resource', () => {
+  /** A no-spawn seam: a read must never launch a process. */
+  const noSpawn: ScriptSpawn = () => { throw new Error('a read must never spawn') }
+
+  const readCatalog = () => catalogOf(bundleOf({
+    name: 'runner-read',
+    assets: [
+      { path: 'reference/notes.md', text: `# Notes\n\n${ASSET_CANARY}\n` },
+      { path: 'editor/neo-ppt/index.html', text: '<p>editor</p>\n' },
+      { path: 'editor/blob.bin', content: Buffer.from([0x00, 0xff, 0xfe, 0x01]).toString('base64') },
+    ],
+  }))
+
+  it('returns the UTF-8 text of a nested carried entry', async () => {
+    const executor = createScriptExecutor({ catalog: readCatalog(), spawn: noSpawn, tempRoot })
+    const result = await executor.read({ skill: 'runner-read', path: 'reference/notes.md' })
+    expect(result.skill).toBe('runner-read')
+    expect(result.path).toBe('reference/notes.md')
+    expect(result.text).toContain(ASSET_CANARY)
+    expect(result.bytes).toBe(Buffer.byteLength(result.text))
+    // The materialized copy is removed the moment the read settles.
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('reads a carried entry under scripts/ too (the index is also text)', async () => {
+    const executor = createScriptExecutor({ catalog: readCatalog(), spawn: noSpawn, tempRoot })
+    const result = await executor.read({ skill: 'runner-read', path: 'scripts/demo.mjs' })
+    expect(result.text).toContain(SCRIPT_CANARY)
+  })
+
+  it('materializes exactly one entry into a private directory and deletes it in a finally block', async () => {
+    const seen: string[] = []
+    const executor = createScriptExecutor({
+      catalog: readCatalog(),
+      spawn: noSpawn,
+      tempRoot,
+      removeStagedAssets: (directory) => {
+        seen.push(directory)
+        return rm(directory, { recursive: true, force: true })
+      },
+    })
+    await executor.read({ skill: 'runner-read', path: 'editor/neo-ppt/index.html' })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.startsWith(join(tempRoot, 'dsh-skill-assets-'))).toBe(true)
+    await expect(stat(seen[0] as string)).rejects.toThrow()
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('rejects an unknown path or unknown skill without staging anything', async () => {
+    const executor = createScriptExecutor({ catalog: readCatalog(), spawn: noSpawn, tempRoot })
+    for (const path of ['reference/missing.md', 'reference/../SKILL.md', '../SKILL.md', '/etc/passwd', 'editor']) {
+      await expect(executor.read({ skill: 'runner-read', path })).rejects.toThrow(/carries no resource/)
+    }
+    await expect(executor.read({ skill: 'nope', path: 'reference/notes.md' })).rejects.toThrow(/cannot read from company skill/)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('refuses an entry over the read bound instead of truncating it', async () => {
+    const executor = createScriptExecutor({ catalog: readCatalog(), spawn: noSpawn, tempRoot })
+    const failure = executor.read({ skill: 'runner-read', path: 'reference/notes.md', maxBytes: 4 })
+    await expect(failure).rejects.toThrow(SkillRunError)
+    await expect(failure).rejects.toThrow(/over the 4-byte read bound/)
+    let error: Error | undefined
+    await failure.catch((cause: unknown) => { error = cause as Error })
+    expect(error?.message).not.toContain(ASSET_CANARY)
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+    // A malformed bound is refused before anything is read.
+    await expect(executor.read({ skill: 'runner-read', path: 'reference/notes.md', maxBytes: 0 }))
+      .rejects.toThrow(/positive integer/)
+  })
+
+  it('refuses a binary entry and never leaks its bytes', async () => {
+    const executor = createScriptExecutor({ catalog: readCatalog(), spawn: noSpawn, tempRoot })
+    const failure = executor.read({ skill: 'runner-read', path: 'editor/blob.bin' })
+    await expect(failure).rejects.toThrow(SkillRunError)
+    await expect(failure).rejects.toThrow(/not UTF-8 text/)
+    let error: Error | undefined
+    await failure.catch((cause: unknown) => { error = cause as Error })
+    expect(error?.message).not.toContain('\u0000')
+    expect(error?.message).not.toContain('blob.bin\u0000')
     await expect(readdir(tempRoot)).resolves.toEqual([])
   })
 })

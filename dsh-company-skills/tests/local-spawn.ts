@@ -4,10 +4,10 @@
  * The executor's seam is the production subprocess contract; to exercise it
  * end to end without pulling the desktop's process runtime into this package's
  * dev graph, this helper implements the tiny slice the executor uses —
- * `stdio.stdin: { data }`, bounded tail-keep collection on stdout/stderr, and
- * `done` resolving at close — directly on `node:child_process`. The script
- * still runs in a real `node -` process over a real stdin pipe, so a body that
- * was written to disk or never piped would fail these tests.
+ * bounded tail-keep collection on stdout/stderr and `done` resolving at close —
+ * directly on `node:child_process`. The script still runs in a real `node` /
+ * `python` process from the materialized file, so a body that was never staged
+ * would fail these tests.
  *
  * @module dsh-company-skills/tests/local-spawn
  */
@@ -66,8 +66,10 @@ export function localSpawn(spec: SubprocessSpawnSpec): SubprocessHandle {
   const child = spawn(program as string, args, {
     cwd: spec.cwd,
     env: { ...process.env, ...spec.env },
+    // The executor always closes stdin ('ignore'); the materialized script file
+    // is the only input channel, so no stdin branch exists here.
     stdio: [
-      spec.stdio.stdin === 'ignore' ? 'ignore' : 'pipe',
+      'ignore',
       typeof spec.stdio.stdout === 'object' ? 'pipe' : spec.stdio.stdout,
       typeof spec.stdio.stderr === 'object' ? 'pipe' : spec.stdio.stderr,
     ],
@@ -77,9 +79,6 @@ export function localSpawn(spec: SubprocessSpawnSpec): SubprocessHandle {
   const stderr = collectorOf(spec.stdio.stderr)
   child.stdout?.on('data', (chunk: Buffer) => { if (stdout !== undefined) push(stdout, chunk) })
   child.stderr?.on('data', (chunk: Buffer) => { if (stderr !== undefined) push(stderr, chunk) })
-
-  if (typeof spec.stdio.stdin === 'object') child.stdin?.end(spec.stdio.stdin.data)
-  else child.stdin?.end()
 
   const done = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once('error', reject)

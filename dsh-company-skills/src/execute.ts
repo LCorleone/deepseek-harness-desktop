@@ -6,21 +6,40 @@
  * ## The channel
  *
  * The whole skill — every `scripts[]` and every `assets[]` entry — is decoded
- * in memory and materialized into one private per-run directory created with
- * `mkdtemp` (mode 0600 files under a `$TMPDIR/dsh-skill-assets-*` root), the
- * interpreter is pointed at the materialized script file
- * (`argv = [<interpreter>, <dir>/scripts/run.mjs, …]`), and the directory is
- * removed in a `finally` block the moment the run settles — including on
- * timeout, cancellation, and failure. Plaintext does not *persist*: nothing
- * survives the run, and no log line, telemetry event, or error message ever
- * carries a byte of the body.
+ * in memory and materialized at its own bundle-relative path into one private
+ * per-run directory created with `mkdtemp` under a
+ * `$TMPDIR/dsh-skill-assets-*` root, the interpreter is pointed at the
+ * materialized script file (`argv = [<interpreter>,
+ * <dir>/scripts/run.mjs, …]`), and the directory is removed in a `finally`
+ * block the moment the run settles — including on timeout, cancellation, and
+ * failure. Plaintext does not *persist*: nothing survives the run, and no log
+ * line, telemetry event, or error message ever carries a byte of the body.
+ *
+ * On-disk modes (measured, not assumed): `mkdtemp` creates the private root
+ * as 0700 on POSIX, the nested directories created for each entry default to
+ * 0755 under the process umask, and every materialized file is written 0600.
+ * `mode` is effectively ignored on Windows, where NTFS ACLs decide instead;
+ * the guarantee there is the same as everywhere else — the directory is
+ * private to the user and is deleted the moment the run settles.
  *
  * This shape is what makes unmodified collected skills work: `__file__`
  * locates the skill root (`Path(__file__).parent.parent` is the staged root,
  * exactly what `ppt-designer`'s `export_pptx.py` computes), sibling imports
  * resolve through `sys.path[0]` / the script's own directory, and the child's
  * working directory is the staged root so bundle-relative reads
- * (`assets/notes.md`, `reference/pptd.md`) resolve as written.
+ * (`reference/pptd.md`, `editor/index.html`) resolve as written.
+ *
+ * ## Reading resources
+ *
+ * The same bundle also carries prose a script expects the caller to have read
+ * first (`reference/pptd.md`, `references/workflows.md`). `read()` is the text
+ * channel for those: it addresses exactly one carried entry, materializes
+ * just that entry into a private directory under the same staging root, reads
+ * it back as UTF-8 text, and removes the directory in a `finally` block. The
+ * path must equal a bundle entry exactly (no traversal), the entry must be
+ * valid UTF-8 text (binaries are refused), and it must fit the read bound.
+ * Neither the directory nor the bytes survive the call. `company_skill_read`
+ * in the tool layer is the model-facing surface of `read()`.
  *
  * ## Interpreter selection
  *
@@ -46,25 +65,28 @@
  * `script` must be exactly one of the skill bundle's own `scripts[]` paths
  * (`bundle-root-relative`, e.g. `scripts/run.mjs`); it is compared for
  * equality, never joined into a filesystem path, so `../` cannot escape — the
- * file the interpreter runs is `<staged>/scripts/<that same path>`. When the
- * skill carries assets they materialize beside the scripts under the same
- * private root — `assets/notes.md` lands at `<dir>/assets/notes.md` — the root
- * is published to the child as `DSH_SKILL_ASSETS`, serves as the child's
- * `cwd`, and is deleted the moment execution settles.
+ * file the interpreter runs is `<staged>/<that same path>`. Every other
+ * entry — the rest of `scripts[]` and all of `assets[]` — materializes beside
+ * it at its own relative path (`reference/pptd.md` lands at
+ * `<dir>/reference/pptd.md`, `editor/index.html` at
+ * `<dir>/editor/index.html`), the root is published to the child as
+ * `DSH_SKILL_ASSETS`, serves as the child's `cwd`, and is deleted the moment
+ * execution settles.
  *
  * ## Bounds
  *
- * Per-stream output is retained as a bounded **tail** (default 64 KiB), the
- * run has its own deadline (default 120 s) independent of the caller's
- * cancellation, at most one run per session may be in flight (configurable),
- * and every failure is a {@link SkillRunError} whose message names the skill
- * and script path but never a byte of the body.
+ * Per-stream output is retained as a bounded **tail** (default 64 KiB), a
+ * resource read fits a separate bound (default 256 KiB), the run has its own
+ * deadline (default 120 s) independent of the caller's cancellation, at most
+ * one run per session may be in flight (configurable), and every failure is a
+ * {@link SkillRunError} whose message names the skill and path but never a
+ * byte of the body.
  *
  * @module dsh-company-skills/execute
  */
 
 import { existsSync, statSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join } from 'node:path'
 import type {
@@ -88,6 +110,9 @@ export const DEFAULT_GRACE_MS = 5_000
 
 /** Retained bytes per output stream; overflow keeps the tail. */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
+
+/** Largest single resource `read()` will decode as text. */
+export const DEFAULT_MAX_READ_BYTES = 256 * 1024
 
 /** Concurrent runs allowed per session; one keeps a stuck script from flooding the session. */
 export const DEFAULT_MAX_CONCURRENT_PER_SESSION = 1
@@ -126,6 +151,8 @@ export interface ScriptExecutorLimits {
   readonly graceMs: number
   readonly maxOutputBytes: number
   readonly maxConcurrentPerSession: number
+  /** Largest resource {@link ScriptExecutor.read} returns as text. */
+  readonly maxReadBytes: number
 }
 
 /** One run request: the addressed script plus the caller-owned execution context. */
@@ -158,6 +185,25 @@ export interface RunScriptResult {
   readonly stderr: ScriptOutput
 }
 
+/** One resource-read request: a carried entry addressed by exact path. */
+export interface ReadResourceRequest {
+  /** Skill name exactly as the catalog lists it. */
+  readonly skill: string
+  /** Bundle-root-relative path that must equal exactly one carried entry. */
+  readonly path: string
+  /** Reject when the entry exceeds this many bytes; defaults to `limits.maxReadBytes`. */
+  readonly maxBytes?: number
+}
+
+/** One decoded text resource. */
+export interface ReadResourceResult {
+  readonly skill: string
+  readonly path: string
+  readonly text: string
+  /** Byte length of the decoded text (equal to the entry's byte length). */
+  readonly bytes: number
+}
+
 /** The execution surface the tool layer consumes. */
 export interface ScriptExecutor {
   readonly limits: ScriptExecutorLimits
@@ -169,6 +215,15 @@ export interface ScriptExecutor {
    * @throws {SkillRunError} for any rejected address, bound, or launch failure.
    */
   run(request: RunScriptRequest): Promise<RunScriptResult>
+  /**
+   * Decode exactly one carried entry as UTF-8 text, materializing it only for
+   * the duration of the call.
+   * @param request - addressed entry and optional read bound.
+   * @returns the entry's text and byte length.
+   * @throws {SkillRunError} for an unknown skill/entry, a binary entry, or an
+   * entry over the read bound — never for a body byte.
+   */
+  read(request: ReadResourceRequest): Promise<ReadResourceResult>
 }
 
 /** Construction options; every bound and the spawn seam are explicit for testability. */
@@ -181,6 +236,8 @@ export interface ScriptExecutorOptions {
   readonly graceMs?: number
   readonly maxOutputBytes?: number
   readonly maxConcurrentPerSession?: number
+  /** Largest resource a read returns as text; defaults to 256 KiB. */
+  readonly maxReadBytes?: number
   /** Temp root for the staged-skill directory; defaults to `os.tmpdir()`. */
   readonly tempRoot?: string
   /**
@@ -306,11 +363,13 @@ function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
     graceMs: options.graceMs ?? DEFAULT_GRACE_MS,
     maxOutputBytes: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     maxConcurrentPerSession: options.maxConcurrentPerSession ?? DEFAULT_MAX_CONCURRENT_PER_SESSION,
+    maxReadBytes: options.maxReadBytes ?? DEFAULT_MAX_READ_BYTES,
   }
   assertPositiveInteger('timeoutMs', limits.timeoutMs)
   assertPositiveInteger('graceMs', limits.graceMs)
   assertPositiveInteger('maxOutputBytes', limits.maxOutputBytes)
   assertPositiveInteger('maxConcurrentPerSession', limits.maxConcurrentPerSession)
+  assertPositiveInteger('maxReadBytes', limits.maxReadBytes)
   if (limits.timeoutMs > MAX_TIMER_DELAY_MS || limits.graceMs > MAX_TIMER_DELAY_MS) {
     throw new Error(`dsh-company-skills: timeoutMs and graceMs must be no greater than ${String(MAX_TIMER_DELAY_MS)}`)
   }
@@ -320,6 +379,12 @@ function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
 /** Locate one declared script by exact path equality — never by path arithmetic. */
 function findScript(bundle: SkillBundle, script: string): { path: string; content: string } | undefined {
   const entry = bundle.scripts.find((candidate) => candidate.path === script)
+  return entry === undefined ? undefined : { path: entry.path, content: entry.content }
+}
+
+/** Locate one carried entry (script or asset) by exact path equality — never by path arithmetic. */
+function findEntry(bundle: SkillBundle, path: string): { path: string; content: string } | undefined {
+  const entry = [...bundle.scripts, ...bundle.assets].find((candidate) => candidate.path === path)
   return entry === undefined ? undefined : { path: entry.path, content: entry.content }
 }
 
@@ -334,13 +399,16 @@ function describeScripts(bundle: SkillBundle): string {
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true })
 
 /**
- * Decode one base64 bundle entry to UTF-8 script text. Invalid UTF-8 is a
- * rejection (never a silently lossy decode), and the error carries no bytes.
+ * Reject an addressed script that is not valid UTF-8 before anything is
+ * staged or spawned (a binary script can never be decoded losslessly, and the
+ * error carries no bytes). Entry content in general is written as raw bytes:
+ * a collected skill legitimately carries binaries under `scripts/` (a WASM
+ * module), and only the entry actually handed to an interpreter must be text.
  */
-function decodeScriptText(bundle: SkillBundle, script: { path: string; content: string }): string {
+function assertScriptText(bundle: SkillBundle, script: { path: string; content: string }): void {
   const bytes = decodeCanonicalBase64(script.content, `${bundle.name} script ${script.path}`)
   try {
-    return UTF8_DECODER.decode(bytes)
+    UTF8_DECODER.decode(bytes)
   } catch (cause) {
     throw new SkillRunError(
       `company skill "${bundle.name}" script "${script.path}" is not valid UTF-8 text`,
@@ -350,42 +418,68 @@ function decodeScriptText(bundle: SkillBundle, script: { path: string; content: 
 }
 
 /**
- * Materialize the whole skill — every script and every asset — into one
- * private temp directory that stands in for the skill root: `scripts/run.mjs`
- * lands at `<dir>/scripts/run.mjs`, `assets/notes.md` at
- * `<dir>/assets/notes.md`. Script entries are validated as UTF-8 text before
- * they are written (a binary script is a rejection, never a lossy decode).
- * On any failure the partial directory is removed before the error
+ * Materialize the whole skill — every `scripts[]` and every `assets[]` entry —
+ * into one private temp directory that stands in for the skill root, at each
+ * entry's own bundle-relative path: `scripts/export_pptx.py` lands at
+ * `<dir>/scripts/export_pptx.py`, `editor/index.html` at
+ * `<dir>/editor/index.html`, `reference/pptd.md` at `<dir>/reference/pptd.md`.
+ * The root is created 0700 by `mkdtemp`; entry directories default to 0755
+ * under the process umask and files are written 0600 (`mode` is a no-op on
+ * Windows). On any failure the partial directory is removed before the error
  * propagates, so a failed run leaves nothing behind.
- * @param bundle - the skill whose scripts and assets are staged.
+ * @param bundle - the skill whose entries are staged.
  * @param tempRoot - the temp root to create the private directory under.
  * @returns the directory published as `DSH_SKILL_ASSETS` and used as `cwd`.
  */
 async function stageBundle(bundle: SkillBundle, tempRoot: string): Promise<string> {
   const directory = await mkdtemp(join(tempRoot, ASSETS_TMP_PREFIX))
   try {
-    for (const script of bundle.scripts) {
-      // `script.path` passed bundle validation (normalized relative, under
-      // `scripts/`), so joining it onto the private directory cannot escape.
-      const target = join(directory, script.path)
+    for (const entry of [...bundle.scripts, ...bundle.assets]) {
+      // `entry.path` passed bundle validation (normalized relative, not
+      // escaping, and disjoint between the two arrays), so joining it onto the
+      // private directory cannot escape.
+      const target = join(directory, entry.path)
       await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, decodeScriptText(bundle, script), { mode: 0o600 })
-    }
-    for (const asset of bundle.assets) {
-      // `asset.path` passed bundle validation (normalized relative, under
-      // `assets/`), so joining it onto the private directory cannot escape.
-      const target = join(directory, asset.path)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, decodeCanonicalBase64(asset.content, `${bundle.name} asset ${asset.path}`), { mode: 0o600 })
+      await writeFile(target, decodeCanonicalBase64(entry.content, `${bundle.name} entry ${entry.path}`), { mode: 0o600 })
     }
   } catch (error) {
     await rm(directory, { recursive: true, force: true })
-    // A SkillRunError is already a classified rejection (for example the
-    // invalid-UTF-8 script diagnosis); wrapping it would only hide the cause.
+    // A SkillRunError is already a classified rejection; wrapping it would
+    // only hide the cause.
     if (error instanceof SkillRunError) throw error
     throw new SkillRunError(`company skill "${bundle.name}" could not be staged for execution`, { cause: error })
   }
   return directory
+}
+
+/**
+ * Materialize exactly one entry into its own private per-read directory so it
+ * can be read back as text; the caller removes the directory in a `finally`
+ * block. The same `mkdtemp`/`ASSETS_TMP_PREFIX` staging root the run channel
+ * uses is reused, and the entry lands at its own relative path.
+ * @param bundle - the skill the entry belongs to.
+ * @param entry - the addressed entry.
+ * @param bytes - the entry's decoded bytes.
+ * @param tempRoot - the temp root to create the private directory under.
+ * @returns the private directory and the materialized file path.
+ */
+async function stageEntry(
+  bundle: SkillBundle,
+  entry: { path: string },
+  bytes: Buffer,
+  tempRoot: string,
+): Promise<{ directory: string; file: string }> {
+  const directory = await mkdtemp(join(tempRoot, ASSETS_TMP_PREFIX))
+  try {
+    const file = join(directory, entry.path)
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, bytes, { mode: 0o600 })
+    return { directory, file }
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true })
+    if (error instanceof SkillRunError) throw error
+    throw new SkillRunError(`company skill "${bundle.name}" resource "${entry.path}" could not be staged`, { cause: error })
+  }
 }
 
 /** Read one collected stream at offset 0; `lossy` is the seam's truncation fact. */
@@ -431,6 +525,8 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         + `(supported extensions: ${supportedScriptExtensions().join(', ')})`,
       )
     }
+    // A script that is not valid UTF-8 rejects before any staging or spawn.
+    assertScriptText(bundle, script)
     const interpreter = resolveInterpreter(family, options.interpreterResolution)
     if (interpreter === undefined) {
       const variable = family === 'python' ? DESKTOP_PYTHON_EXECUTABLE_ENV : DESKTOP_NODE_EXECUTABLE_ENV
@@ -540,14 +636,79 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
         try {
           await (options.removeStagedAssets ?? ((directory: string) => rm(directory, { recursive: true, force: true })))(stagedRoot)
         } catch (error) {
-          logWarning(
-            `dsh-company-skills: could not remove the staged skill files for company skill "${bundle.name}" `
-            + `script "${script.path}": ${error instanceof Error ? error.message : String(error)}`,
-          )
+          // The warning sink is user-supplied: a throwing sink must not
+          // replace the already-settled result (or the classified rejection).
+          try {
+            logWarning(
+              `dsh-company-skills: could not remove the staged skill files for company skill "${bundle.name}" `
+              + `script "${script.path}": ${error instanceof Error ? error.message : String(error)}`,
+            )
+          } catch {
+            // Swallowed on purpose: cleanup reporting is best-effort.
+          }
         }
       }
     }
   }
 
-  return { limits, run }
+  async function read(request: ReadResourceRequest): Promise<ReadResourceResult> {
+    const bound = request.maxBytes ?? limits.maxReadBytes
+    if (!Number.isInteger(bound) || bound < 1) {
+      throw new SkillRunError(
+        `company skill "${request.skill}" read bound must be a positive integer (got ${JSON.stringify(request.maxBytes)})`,
+      )
+    }
+    const loaded = options.catalog.skill(request.skill)
+    if (!loaded.ok) {
+      throw new SkillRunError(`cannot read from company skill "${request.skill}": ${loaded.reason}`)
+    }
+    const bundle = loaded.bundle
+    // The path is compared for exact equality against the carried entries, so
+    // `../`, absolute paths, and unknown names all reject without a disk write.
+    const entry = findEntry(bundle, request.path)
+    if (entry === undefined) {
+      throw new SkillRunError(`company skill "${bundle.name}" carries no resource "${request.path}"`)
+    }
+    const bytes = decodeCanonicalBase64(entry.content, `${bundle.name} resource ${entry.path}`)
+    if (bytes.byteLength > bound) {
+      throw new SkillRunError(
+        `company skill "${bundle.name}" resource "${entry.path}" is ${String(bytes.byteLength)} bytes, `
+        + `over the ${String(bound)}-byte read bound`,
+      )
+    }
+
+    let staged: { directory: string; file: string } | undefined
+    try {
+      staged = await stageEntry(bundle, entry, bytes, tempRoot)
+      const stagedBytes = await readFile(staged.file)
+      let text: string
+      try {
+        text = UTF8_DECODER.decode(stagedBytes)
+      } catch (cause) {
+        throw new SkillRunError(
+          `company skill "${bundle.name}" resource "${entry.path}" is not UTF-8 text; `
+          + 'binary resources cannot be read',
+          { cause },
+        )
+      }
+      return { skill: bundle.name, path: entry.path, text, bytes: stagedBytes.byteLength }
+    } finally {
+      if (staged !== undefined) {
+        try {
+          await (options.removeStagedAssets ?? ((directory: string) => rm(directory, { recursive: true, force: true })))(staged.directory)
+        } catch (error) {
+          try {
+            logWarning(
+              `dsh-company-skills: could not remove the staged files for company skill "${bundle.name}" `
+              + `resource "${entry.path}": ${error instanceof Error ? error.message : String(error)}`,
+            )
+          } catch {
+            // Swallowed on purpose: cleanup reporting is best-effort.
+          }
+        }
+      }
+    }
+  }
+
+  return { limits, run, read }
 }

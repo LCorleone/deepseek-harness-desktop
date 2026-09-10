@@ -54,7 +54,7 @@ export const SKILL_INVOCATION = Object.freeze({ modelInvocable: true, userInvoca
  */
 export const RESOURCE_BASE: SkillResourceBase = Object.freeze({
   kind: 'opaque',
-  description: 'These company skills travel inside the dsh-company-skills plugin bundle; their referenced scripts and assets are not files on this machine, so they cannot be read as local paths.',
+  description: 'These company skills travel inside the dsh-company-skills plugin bundle; their referenced scripts and resources are not files on this machine, so they cannot be read as local paths. Use the company_skill_read tool to load a referenced text resource and company_skill_run to run a declared script.',
 })
 
 /** One indexed skill: everything `list()` needs and nothing that reads a body. */

@@ -1,0 +1,197 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: image
+    bounds: [1568, 32, 85, 75]
+    src: media/image2.png
+    fit: {mode: fill}
+  - elementId: el2
+    elementType: text
+    bounds: [64, 43, 1581, 67]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#000000"
+      bold: true
+      fontFamily: Arial
+      wrap: true
+      text: "亮点智能体展示：赋能高效决策与协作"
+  - elementId: el3
+    elementType: text
+    bounds: [64, 120, 1581, 40]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: true
+      text: "AI驱动的三大核心智能体，助力业务全流程提效"
+  - elementId: el4
+    elementType: text
+    bounds: [32, 907, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: "Noto Sans SC"
+      wrap: true
+      text: "© 2026。欲了解更多信息，请联系德勤中国。"
+  - elementId: el5
+    elementType: image
+    bounds: [1525, 779, 149, 149]
+    src: media/image15.png
+    fit: {mode: fill}
+  - elementId: el6
+    elementType: shape
+    bounds: [171, 267, 661, 219]
+    shapeName: roundRect
+    adjustments: [4878]
+    fill: {type: solid, color: "#FFFFFF"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el7
+    elementType: image
+    bounds: [192, 288, 128, 128]
+    src: media/image16.png
+    fit: {mode: fill}
+  - elementId: el8
+    elementType: text
+    bounds: [352, 288, 461, 37]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#1F2937"
+      bold: true
+      fontFamily: Arial
+      wrap: true
+      text: "Digital Consultant"
+  - elementId: el9
+    elementType: text
+    bounds: [352, 336, 461, 27]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: false
+      text: "智能方案生成与交付"
+  - elementId: el10
+    elementType: text
+    bounds: [352, 373, 461, 61]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Arial
+      lineHeight: 1.33
+      wrap: true
+      text: "协助撰写产品方案与运营策略，自动生成PPT与咨询报告，提升交付效率与专业度"
+  - elementId: el11
+    elementType: shape
+    bounds: [352, 461, 459, 3]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#59B210"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el12
+    elementType: shape
+    bounds: [875, 267, 661, 219]
+    shapeName: roundRect
+    adjustments: [4878]
+    fill: {type: solid, color: "#FFFFFF"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el13
+    elementType: image
+    bounds: [896, 288, 128, 128]
+    src: media/image16.png
+    fit: {mode: fill}
+  - elementId: el14
+    elementType: text
+    bounds: [1056, 288, 461, 37]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#1F2937"
+      bold: true
+      fontFamily: Arial
+      wrap: true
+      text: "Analytics Assistant"
+  - elementId: el15
+    elementType: text
+    bounds: [1056, 336, 461, 27]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: false
+      text: "数据洞察与决策支持"
+  - elementId: el16
+    elementType: text
+    bounds: [1056, 373, 461, 61]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Arial
+      lineHeight: 1.33
+      wrap: true
+      text: "执行SQL查询，生成可视化图表与关键洞察摘要，加速数据驱动决策流程"
+  - elementId: el17
+    elementType: shape
+    bounds: [1056, 461, 459, 3]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#59B210"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el18
+    elementType: shape
+    bounds: [171, 528, 661, 219]
+    shapeName: roundRect
+    adjustments: [4878]
+    fill: {type: solid, color: "#FFFFFF"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el19
+    elementType: image
+    bounds: [192, 549, 128, 128]
+    src: media/image17.png
+    fit: {mode: fill}
+  - elementId: el20
+    elementType: text
+    bounds: [352, 549, 461, 37]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#1F2937"
+      bold: true
+      fontFamily: Arial
+      wrap: true
+      text: "Translator Assistant"
+  - elementId: el21
+    elementType: text
+    bounds: [352, 597, 461, 27]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: false
+      text: "多语言智能翻译"
+  - elementId: el22
+    elementType: text
+    bounds: [352, 635, 461, 61]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Arial
+      lineHeight: 1.33
+      wrap: true
+      text: "支持中、英、日等多语言互译，实现文档快速翻译与专业级润色"
+  - elementId: el23
+    elementType: shape
+    bounds: [352, 721, 459, 3]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#59B210"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}

@@ -1,0 +1,212 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: image
+    bounds: [956, 0, 751, 192]
+    src: media/image5.png
+    fit: {mode: fill}
+  - elementId: el2
+    elementType: text
+    bounds: [64, 53, 1581, 60]
+    content:
+      align: [left, top]
+      fontSize: 36
+      color: "#111827"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: "核心目标与价值"
+  - elementId: el3
+    elementType: text
+    bounds: [64, 119, 1581, 40]
+    content:
+      align: [left, top]
+      fontSize: 22
+      color: "#6B7280"
+      fontFamily: Arial
+      wrap: true
+      text: "驱动智能升级，赋能组织高效发展"
+  - elementId: el4
+    elementType: text
+    bounds: [32, 907, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: "Noto Sans SC"
+      wrap: true
+      text: "© 2026。欲了解更多信息，请联系德勤中国。"
+  - elementId: el5
+    elementType: text
+    bounds: [64, 223, 1581, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "五大核心价值"
+  - elementId: el6
+    elementType: shape
+    bounds: [64, 269, 1579, 68]
+    shapeName: roundRect
+    adjustments: [7843]
+    fill: {type: solid, color: "#59B210"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el7
+    elementType: text
+    bounds: [85, 285, 355, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#FFFFFF"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: "提升效率"
+  - elementId: el8
+    elementType: text
+    bounds: [491, 285, 1133, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#FFFFFF"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: "增强质量"
+  - elementId: el9
+    elementType: shape
+    bounds: [64, 337, 1579, 1]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#FFFFFF00"}
+    border: {style: solid, width: 1.33, color: "#D1D5DB"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el10
+    elementType: text
+    bounds: [64, 360, 355, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "专业性"
+  - elementId: el11
+    elementType: text
+    bounds: [501, 360, 1144, 67]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: true
+      text: "通过AI智能校对与优化，确保输出内容精准、规范，符合行业标准，显著降低人工修改成本，提升交付速度与专业水准。"
+  - elementId: el12
+    elementType: text
+    bounds: [501, 433, 1144, 67]
+    content:
+      align: [left, top]
+      text: |
+        <p><span style="font-size:20px;color:#111827">支持多语言、多格式内容生成，覆盖技术文档、商业报告、代码注释等关键场景，输出质量随使用持续优化</span><span style="font-size:20px;color:#111827">。</span></p>
+  - elementId: el13
+    elementType: shape
+    bounds: [64, 521, 1579, 1]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#FFFFFF00"}
+    border: {style: solid, width: 1.33, color: "#D1D5DB"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el14
+    elementType: text
+    bounds: [64, 544, 355, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "促进创新"
+  - elementId: el15
+    elementType: text
+    bounds: [501, 544, 1144, 67]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: true
+      text: "基于智能体与提示词模板，激发创意构思与策略输出，支持快速原型设计与方案迭代，助力团队突破思维定式。"
+  - elementId: el16
+    elementType: text
+    bounds: [501, 616, 1144, 33]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: true
+      text: "支持个性化提示工程，适配不同业务场景与角色需求，推动创新从想法到落地的高效转化。"
+  - elementId: el17
+    elementType: shape
+    bounds: [64, 672, 1579, 1]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#FFFFFF00"}
+    border: {style: solid, width: 1.33, color: "#D1D5DB"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el18
+    elementType: text
+    bounds: [64, 695, 355, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "知识沉淀"
+  - elementId: el19
+    elementType: text
+    bounds: [501, 695, 1144, 67]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: true
+      text: "构建可复用的知识资产库，实现经验与最佳实践的结构化存储，支持版本管理与权限控制，确保知识安全共享。"
+  - elementId: el20
+    elementType: shape
+    bounds: [64, 775, 1579, 1]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#FFFFFF00"}
+    border: {style: solid, width: 1.33, color: "#D1D5DB"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}
+  - elementId: el21
+    elementType: text
+    bounds: [64, 799, 355, 36]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "灵活扩展"
+  - elementId: el22
+    elementType: text
+    bounds: [501, 794, 1144, 67]
+    content:
+      align: [left, top]
+      text: |
+        <p><span style="font-size:20px;color:#111827">支持API接入与第三方系统集成，无缝嵌入现有工作流，可按需扩展功能模块，适配不同业务规模与复杂度</span><span style="font-size:20px;color:#111827">。</span></p>
+  - elementId: el23
+    elementType: shape
+    bounds: [64, 1039, 1579, 1]
+    shapeName: roundRect
+    adjustments: [400000]
+    fill: {type: solid, color: "#FFFFFF00"}
+    border: {style: solid, width: 1.33, color: "#D1D5DB"}
+    shadow: {blur: 0.0, color: "#00000000", offset: [0.0, 0.0]}

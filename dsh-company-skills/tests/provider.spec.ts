@@ -138,7 +138,12 @@ describe('company-skills provider', () => {
     const provider = providerFor(readFileSync(ASSET, 'utf8'))
     const designer = await ctxGet(provider, 'ppt-designer')
     expect(designer?.content).toBe(manifestOf('ppt-designer').body)
-    expect(designer?.resourceBase).toEqual({ kind: 'opaque', description: expect.any(String) })
+    // The opaque hint must point the model at the read channel, since a
+    // workspace read/bash cannot see the carried resources.
+    expect(designer?.resourceBase).toMatchObject({
+      kind: 'opaque',
+      description: expect.stringContaining('company_skill_read'),
+    })
     expect(JSON.stringify(designer)).not.toContain(CANARIES[2] as string)
 
     const creator = await ctxGet(provider, 'skill-creator')

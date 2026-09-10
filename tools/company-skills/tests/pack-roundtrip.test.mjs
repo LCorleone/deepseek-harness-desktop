@@ -158,8 +158,7 @@ test('pack rejects invalid skill sources and writes nothing', () => {
         { 'SKILL.md': CLEAN_MANIFEST.replace('A demo skill for the packer tests.', 'x'.repeat(501)) },
         /description is 501 characters/u,
       ],
-      ['stray-file', { 'SKILL.md': CLEAN_MANIFEST, 'README.md': 'stray\n' }, /unexpected file "README.md"/u],
-      ['no-manifest', { 'assets/data.json': '{}\n' }, /unexpected file "assets\/data.json"|carries no SKILL.md/u],
+      ['no-manifest', { 'assets/data.json': '{}\n' }, /carries no SKILL.md/u],
     ]
 
     for (const [name, files, pattern] of cases) {
@@ -171,6 +170,26 @@ test('pack rejects invalid skill sources and writes nothing', () => {
       assert.match(result.stderr, pattern, name)
       assert.equal(existsSync(outDir), false, `${name} must not create an output directory`)
     }
+  })
+})
+
+test('a loose top-level file is carried verbatim as an asset', () => {
+  // The collector preserves the source skill root layout, so a stray file like
+  // skill-creator's `LICENSE.txt` must pack as an asset at its own path.
+  workspace((root) => {
+    const skillDir = join(root, 'loose-skill')
+    writeSkillTree(skillDir, {
+      'SKILL.md': CLEAN_MANIFEST,
+      'LICENSE.txt': 'Apache License\n',
+      'scripts/run.mjs': 'run\n',
+    })
+    const outDir = join(root, 'loose-out')
+    const artifact = join(outDir, 'x.bundle.js')
+    const result = run(PACK, ['--skill', skillDir, '--out', artifact])
+    assert.equal(result.status, 0, result.stderr)
+    const document = JSON.parse(decodeBundleBlob(extractBundleBlob(readFileSync(artifact, 'utf8'))))
+    assert.deepEqual(document.assets.map((entry) => entry.path), ['LICENSE.txt'])
+    assert.deepEqual(document.scripts.map((entry) => entry.path), ['scripts/run.mjs'])
   })
 })
 

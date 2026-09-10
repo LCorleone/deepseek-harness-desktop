@@ -21,21 +21,37 @@ import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-sub
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
-import { ASSETS_ENV_VAR, type RunScriptRequest, type ScriptExecutor } from '../src/execute.js'
+import {
+  ASSETS_ENV_VAR,
+  DESKTOP_PYTHON_EXECUTABLE_ENV,
+  type ReadResourceRequest,
+  type RunScriptRequest,
+  type ScriptExecutor,
+} from '../src/execute.js'
 import * as CompanySkills from '../src/index.js'
 import {
+  COMPANY_SKILL_READ_TOOL_NAME,
   COMPANY_SKILL_RUN_TOOL_NAME,
+  createCompanySkillReadTool,
   createCompanySkillRunTool,
   renderRunValue,
   toRunValue,
 } from '../src/tool.js'
 import { localSpawn } from './local-spawn.js'
+import { pythonInterpreter } from './python.js'
 
-/** A stub executor that records the request and returns a fixed run. */
-function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[] } {
+/** A stub executor that records the request and returns a fixed run/read. */
+function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[]; reads: ReadResourceRequest[] } {
   const requests: RunScriptRequest[] = []
+  const reads: ReadResourceRequest[] = []
   const executor: ScriptExecutor = {
-    limits: { timeoutMs: 120_000, graceMs: 5_000, maxOutputBytes: 64 * 1024, maxConcurrentPerSession: 1 },
+    limits: {
+      timeoutMs: 120_000,
+      graceMs: 5_000,
+      maxOutputBytes: 64 * 1024,
+      maxConcurrentPerSession: 1,
+      maxReadBytes: 256 * 1024,
+    },
     run(request) {
       requests.push(request)
       return Promise.resolve({
@@ -46,8 +62,12 @@ function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[
         stderr: { text: '', truncated: false },
       })
     },
+    read(request) {
+      reads.push(request)
+      return Promise.resolve({ skill: request.skill, path: request.path, text: 'READ-LINE\n', bytes: 10 })
+    },
   }
-  return { executor, requests }
+  return { executor, requests, reads }
 }
 
 /** A minimal `tools` service whose registrations are observable. */
@@ -162,6 +182,42 @@ describe('company_skill_run tool definition', () => {
   })
 })
 
+describe('company_skill_read tool definition', () => {
+  it('declares the addressing parameters and the output shape, and delegates the read', async () => {
+    const { executor, reads } = stubExecutor()
+    const tool = createCompanySkillReadTool(executor)
+    expect(tool.name).toBe(COMPANY_SKILL_READ_TOOL_NAME)
+    expect(tool.name).toBe('company_skill_read')
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      required: ['skill', 'path'],
+      properties: {
+        skill: { type: 'string' },
+        path: { type: 'string' },
+        maxBytes: { type: 'integer' },
+      },
+    })
+    expect(tool.output.schema).toMatchObject({
+      type: 'object',
+      required: ['skill', 'path', 'text', 'bytes'],
+    })
+    expect(tool.presentCall?.({ skill: 'ppt-designer', path: 'reference/pptd.md' })).toEqual({
+      card: 'generic',
+      kind: 'read',
+      title: 'Read ppt-designer/reference/pptd.md',
+      rawInput: 'reference/pptd.md',
+    })
+
+    const exec = { signal: new AbortController().signal } as unknown as ToolRunContext
+    const value = await tool.execute(
+      { skill: 'ppt-designer', path: 'reference/pptd.md', maxBytes: 1024 },
+      exec,
+    )
+    expect(reads).toEqual([{ skill: 'ppt-designer', path: 'reference/pptd.md', maxBytes: 1024 }])
+    expect(value).toEqual({ skill: 'ppt-designer', path: 'reference/pptd.md', text: 'READ-LINE\n', bytes: 10 })
+  })
+})
+
 describe('registration wiring', () => {
   it('registers on the tools seam once tools and subprocess exist, and disposes with the plugin', async () => {
     const ctx = new Context()
@@ -171,13 +227,16 @@ describe('registration wiring', () => {
 
     const app = await ctx.plugin(CompanySkills)
     const tools = recordingTools(ctx)
-    expect(tools.registered.map((tool) => tool.name)).toEqual([COMPANY_SKILL_RUN_TOOL_NAME])
+    expect(tools.registered.map((tool) => tool.name)).toEqual([
+      COMPANY_SKILL_RUN_TOOL_NAME,
+      COMPANY_SKILL_READ_TOOL_NAME,
+    ])
 
     await app.dispose()
     expect(tools.registered).toEqual([])
   })
 
-  it('runs a shipped company skill script end to end and removes the staged skill root', async () => {
+  it.skipIf(pythonInterpreter === undefined)('runs a shipped company skill script end to end and removes the staged skill root', async () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
     await ctx.plugin(RecordingTools)
@@ -191,6 +250,10 @@ describe('registration wiring', () => {
     // documented usage), proving addressing, staging, args, the Python
     // interpreter, and cleanup all work on shipped content.
     const workspace = await mkdtemp(join(tmpdir(), 'company-skills-e2e-'))
+    const previous = process.env[DESKTOP_PYTHON_EXECUTABLE_ENV]
+    // CI runners ship `python3`, not the bare `python` the PATH fallback looks
+    // for; publish the absolute interpreter the desktop would publish.
+    process.env[DESKTOP_PYTHON_EXECUTABLE_ENV] = pythonInterpreter as string
     try {
       const value = await tool.execute({
         skill: 'skill-creator',
@@ -205,12 +268,14 @@ describe('registration wiring', () => {
       expect(readFileSync(created, 'utf8')).toContain('name: collected-e2e-skill')
     } finally {
       await rm(workspace, { recursive: true, force: true })
+      if (previous === undefined) delete process.env[DESKTOP_PYTHON_EXECUTABLE_ENV]
+      else process.env[DESKTOP_PYTHON_EXECUTABLE_ENV] = previous
     }
 
     const spec = recordingSubprocess(ctx).specs[0]
     // The interpreter was pointed at the materialized script file — never a
     // stdin pipe — with the staged root as cwd and stdin closed.
-    expect(spec?.argv[0]).toBe('python')
+    expect(spec?.argv[0]).toBe(pythonInterpreter)
     expect((spec?.argv[1] as string).endsWith(join('scripts', 'init_skill.py'))).toBe(true)
     expect(spec?.stdio.stdin).toBe('ignore')
 

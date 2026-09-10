@@ -185,8 +185,8 @@ describe('company skills container decode', () => {
       // inside the bundle — ppt-designer's local editor README (text) and its
       // 4.9 MiB binary font table (byte size), plus skill-creator's Apache-2.0
       // license — not just the manifests.
-      ['ppt-designer', 'NeoDeck Local', 'assets/editor/README.md'],
-      ['skill-creator', 'Apache License', 'assets/LICENSE.txt'],
+      ['ppt-designer', 'NeoDeck Local', 'editor/README.md'],
+      ['skill-creator', 'Apache License', 'LICENSE.txt'],
     ] as const) {
       const skill = container.skills.find((candidate) => candidate.name === name)
       const asset = skill?.assets.find((entry) => entry.path === assetPath)
@@ -194,7 +194,7 @@ describe('company skills container decode', () => {
       expect(Buffer.from(asset?.content ?? '', 'base64').toString('utf8')).toContain(canary)
     }
     const fonts = container.skills.find((candidate) => candidate.name === 'ppt-designer')
-      ?.assets.find((entry) => entry.path === 'assets/editor/neo-ppt/fonts/fnt/MiSans.fntdata')
+      ?.assets.find((entry) => entry.path === 'editor/neo-ppt/fonts/fnt/MiSans.fntdata')
     expect(Buffer.from(fonts?.content ?? '', 'base64').byteLength).toBeGreaterThan(4_000_000)
   })
 
@@ -256,6 +256,7 @@ describe('container frame rules', () => {
       ['an empty body', { ...skill, body: '' }],
       ['a non-string body', { ...skill, body: 42 }],
       ['a script outside scripts/', { ...skill, scripts: [{ path: 'assets/run.mjs', content: encoded('x') }] }],
+      ['an asset under scripts/', { ...skill, assets: [{ path: 'scripts/data.json', content: encoded('x') }] }],
       ['a path with a parent segment', { ...skill, scripts: [{ path: 'scripts/../run.mjs', content: encoded('x') }] }],
       ['a non-canonical base64 content', { ...skill, assets: [{ path: 'assets/notes.md', content: '!!!!' }] }],
       ['an empty content', { ...skill, assets: [{ path: 'assets/notes.md', content: '' }] }],

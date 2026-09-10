@@ -6,12 +6,13 @@
  *   node scripts/collect-skills.mjs [--source <skills-root>] [<name> ...]
  *
  * Reads each named skill directory under the source root (default
- * `/opt/july/skills-hub/skills`) and writes an adapted copy under `skills/`:
- *
- *   SKILL.md       copied verbatim
- *   scripts/**     copied as `scripts/**` (the packer prunes `__pycache__`)
- *   <dir>/**       remapped under `assets/` (`editor/` → `assets/editor/`)
- *   <loose file>   remapped under `assets/` (`LICENSE.txt` → `assets/LICENSE.txt`)
+ * `/opt/july/skills-hub/skills`) and writes a verbatim copy under
+ * `skills/<name>/`: `SKILL.md`, `scripts/**`, and every other top-level entry
+ * keep their own relative paths (`editor/` stays `editor/`, `reference/`
+ * stays `reference/`, `LICENSE.txt` stays `LICENSE.txt`). The collected
+ * layout therefore reconstructs the original skill root exactly, and the
+ * packer keys every bundle entry by that same relative path. `__pycache__`
+ * directories are pruned; nothing else is moved, renamed, or rewritten.
  *
  * The source tree is only ever READ — this collector never writes anything
  * under the source root (the batch-4 red line: the skills-hub copy is
@@ -19,7 +20,7 @@
  *
  * Human adaptations live in the committed copy, not here: the ppt-designer
  * frontmatter description is trimmed to the packer's 500-character catalog
- * bound (the source carries 706). Re-running this script overwrites the
+ * bound (the source carries more). Re-running this script overwrites the
  * collected trees, so re-apply that trim afterwards if the source changed.
  *
  * @module dsh-company-skills/scripts/collect-skills
@@ -44,6 +45,9 @@ const PRUNED_DIRECTORY_NAMES = ['__pycache__']
 
 /** The collected set this package ships. */
 const DEFAULT_SKILLS = ['ppt-designer', 'skill-creator']
+
+/** Skill names the collector accepts: the registry's kebab-case grammar. */
+export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 
 /**
  * Parse the command line.
@@ -73,29 +77,34 @@ export function parseArgs(argv) {
 }
 
 /**
- * Map one source-relative path inside a skill onto its packable relative
- * path: the manifest and `scripts/` keep their names, everything else rides
- * under `assets/`.
- * @param {string} relative - source-relative POSIX path.
- * @returns {string} the target relative path.
+ * Guard one CLI-supplied skill name before it is turned into a target path.
+ * The name reaches `rmSync`, so only the registry's kebab-case grammar may
+ * pass: `..`, a path separator, or an absolute path would delete something
+ * outside `skills/` (`collect-skills.mjs ../src` must never touch `src/`).
+ * @param {string} name - the requested skill directory name.
+ * @returns {string} the validated name.
  */
-export function packablePath(relative) {
-  if (relative === 'SKILL.md') return relative
-  if (relative === 'scripts' || relative.startsWith('scripts/')) return relative
-  return `assets/${relative}`
+export function validateSkillName(name) {
+  if (typeof name !== 'string' || !SKILL_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `collect: invalid skill name ${JSON.stringify(name)} `
+      + '(expected kebab-case matching ^[a-z0-9]+(?:-[a-z0-9]+)*$; path segments and ".." are refused)',
+    )
+  }
+  return name
 }
 
 /**
  * Copy one collected skill from the read-only source into `skills/<name>`,
- * pruning interpreter caches.
+ * preserving the source root's relative layout verbatim and pruning
+ * interpreter caches.
  * @param {string} sourceDir - the skill's directory under the source root.
  * @param {string} targetDir - the destination directory (removed first).
- * @returns {{ files: number, remapped: string[] }} what was copied.
+ * @returns {{ files: number }} what was copied.
  */
 export function collectSkill(sourceDir, targetDir) {
   if (!existsSync(sourceDir)) throw new Error(`collect: no such skill directory: ${sourceDir}`)
   const files = []
-  const remapped = []
   const walk = (relativeDir) => {
     for (const entry of readdirSync(join(sourceDir, relativeDir), { withFileTypes: true })) {
       if (PRUNED_DIRECTORY_NAMES.includes(entry.name)) continue
@@ -105,10 +114,8 @@ export function collectSkill(sourceDir, targetDir) {
         continue
       }
       if (!entry.isFile()) throw new Error(`collect: not a regular file: ${join(sourceDir, relative)}`)
-      const target = packablePath(relative)
-      if (target !== relative) remapped.push(relative)
-      files.push(target)
-      const destination = join(targetDir, target)
+      files.push(relative)
+      const destination = join(targetDir, relative)
       mkdirSync(dirname(destination), { recursive: true })
       cpSync(join(sourceDir, relative), destination)
     }
@@ -116,7 +123,7 @@ export function collectSkill(sourceDir, targetDir) {
   rmSync(targetDir, { recursive: true, force: true })
   mkdirSync(targetDir, { recursive: true })
   walk('')
-  return { files: files.length, remapped }
+  return { files: files.length }
 }
 
 function main() {
@@ -124,13 +131,10 @@ function main() {
   const sourceRoot = resolve(options.sourceRoot)
   if (!existsSync(sourceRoot)) throw new Error(`collect: source root does not exist: ${sourceRoot}`)
   mkdirSync(TARGET_ROOT, { recursive: true })
-  for (const name of options.names) {
-    const { files, remapped } = collectSkill(join(sourceRoot, name), join(TARGET_ROOT, name))
-    process.stdout.write(
-      `collected ${name}: ${String(files)} files → skills/${name}`
-      + (remapped.length === 0 ? '' : ` (remapped under assets/: ${remapped.slice(0, 4).join(', ')}${remapped.length > 4 ? ', …' : ''})`)
-      + '\n',
-    )
+  for (const requested of options.names) {
+    const name = validateSkillName(requested)
+    const { files } = collectSkill(join(sourceRoot, name), join(TARGET_ROOT, name))
+    process.stdout.write(`collected ${name}: ${String(files)} files → skills/${name} (source layout preserved)\n`)
   }
   process.stdout.write('remember: re-apply the ppt-designer description trim if SKILL.md was overwritten\n')
 }

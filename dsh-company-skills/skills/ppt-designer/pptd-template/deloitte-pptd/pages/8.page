@@ -1,0 +1,180 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: text
+    bounds: [96, 64, 1517, 64]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#111827"
+      bold: true
+      fontFamily: Noto Sans SC
+      lineHeight: 0.9
+      wrap: false
+      text: 智能检索与知识复用
+  - elementId: el2
+    elementType: text
+    bounds: [96, 144, 1517, 40]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#6B7280"
+      fontFamily: Calibri
+      wrap: false
+      text: 语义理解驱动高效发现
+  - elementId: el3
+    elementType: shape
+    bounds: [96, 227, 631, 81]
+    shapeName: roundRect
+    adjustments: [13114]
+    fill: {type: solid, color: "#26890D"}
+    shadow: {blur: 0, color: "#00000000", offset: [0, 0]}
+  - elementId: el4
+    elementType: text
+    bounds: [123, 250.1, 580, 71]
+    content:
+      align: [center, top]
+      fontSize: 22
+      color: "#26890D"
+      fontFamily: Calibri
+      lineHeight: 0.9
+      wrap: false
+      text: '<p><span style="font-size: 32px;"><strong><span style="color: #111827;">突破关键词匹配局限</span></strong></span></p>'
+  - elementId: el5
+    elementType: text
+    bounds: [751, 245.1, 844, 81]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Calibri
+      lineHeight: 1.2
+      wrap: false
+      text: '<p><span style="font-size: 32px;">基于语义理解精准捕捉用户意图，提升检索准确率</span></p>'
+  - elementId: el6
+    elementType: shape
+    bounds: [96, 329, 631, 81]
+    shapeName: roundRect
+    adjustments: [13114]
+    fill: {type: solid, color: "#26890D"}
+    shadow: {blur: 0, color: "#00000000", offset: [0, 0]}
+  - elementId: el7
+    elementType: text
+    bounds: [123, 353.3, 580, 71]
+    content:
+      align: [center, top]
+      fontSize: 22
+      color: "#26890D"
+      fontFamily: Calibri
+      lineHeight: 0.9
+      wrap: false
+      text: '<p><span style="font-size: 32px;"><strong><span style="color: #333333;">跨文档关联分析</span></strong></span></p>'
+  - elementId: el8
+    elementType: text
+    bounds: [751, 348.3, 844, 81]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Calibri
+      lineHeight: 1.2
+      wrap: false
+      text: '<p><span style="font-size: 32px;">自动识别文档间隐含关系，构建知识网络</span></p>'
+  - elementId: el9
+    elementType: shape
+    bounds: [96, 432, 631, 81]
+    shapeName: roundRect
+    adjustments: [13114]
+    fill: {type: solid, color: "#26890D"}
+    shadow: {blur: 0, color: "#00000000", offset: [0, 0]}
+  - elementId: el10
+    elementType: text
+    bounds: [123, 452.7, 580, 71]
+    content:
+      align: [center, top]
+      fontSize: 22
+      color: "#26890D"
+      fontFamily: Calibri
+      lineHeight: 0.9
+      wrap: false
+      text: '<p><span style="font-size: 32px;"><strong><span style="color: #333333;">支持智能体动态调用</span></strong></span></p>'
+  - elementId: el11
+    elementType: text
+    bounds: [751, 452.7, 844, 81]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Calibri
+      lineHeight: 1.2
+      wrap: false
+      text: '<p><span style="font-size: 32px;">知识条目可被智能体和提示词模板调用，实现复用</span></p>'
+  - elementId: el12
+    elementType: shape
+    bounds: [96, 533, 631, 81]
+    shapeName: roundRect
+    adjustments: [13114]
+    fill: {type: solid, color: "#26890D"}
+    shadow: {blur: 0, color: "#00000000", offset: [0, 0]}
+  - elementId: el13
+    elementType: text
+    bounds: [123, 553.7, 580, 71]
+    content:
+      align: [center, top]
+      fontSize: 22
+      color: "#26890D"
+      fontFamily: Calibri
+      lineHeight: 0.9
+      wrap: false
+      text: '<p><span style="font-size: 32px;"><strong><span style="color: #333333;">促进组织知识沉淀</span></strong></span></p>'
+  - elementId: el14
+    elementType: text
+    bounds: [751, 548.7, 844, 81]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Calibri
+      lineHeight: 1.2
+      wrap: false
+      text: '<p><span style="font-size: 32px;">系统化积累最佳实践与项目经验，支持全员共享</span></p>'
+  - elementId: el15
+    elementType: shape
+    bounds: [96, 636, 631, 81]
+    shapeName: roundRect
+    adjustments: [13114]
+    fill: {type: solid, color: "#26890D"}
+    shadow: {blur: 0, color: "#00000000", offset: [0, 0]}
+  - elementId: el16
+    elementType: text
+    bounds: [123, 659.3, 580, 71]
+    content:
+      align: [center, top]
+      fontSize: 22
+      color: "#26890D"
+      fontFamily: Calibri
+      lineHeight: 0.9
+      wrap: false
+      text: '<p><span style="font-size: 32px;"><strong><span style="color: #333333;">赋能新人与项目启动</span></strong></span></p>'
+  - elementId: el17
+    elementType: text
+    bounds: [751, 649.3, 844, 81]
+    content:
+      align: [left, top]
+      fontSize: 20
+      color: "#374151"
+      fontFamily: Calibri
+      lineHeight: 1.2
+      wrap: false
+      text: '<p><span style="font-size: 32px;">提供即用型知识支持，缩短学习与启动周期</span></p>'
+  - elementId: el18
+    elementType: image
+    bounds: [956, 0, 751, 192]
+    src: media/image12.png
+    fit: {mode: fill}
+  - elementId: el19
+    elementType: image
+    bounds: [0, 768, 751, 192]
+    src: media/image13.png
+    fit: {mode: fill}

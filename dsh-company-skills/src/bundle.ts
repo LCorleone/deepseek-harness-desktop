@@ -17,7 +17,14 @@
  *  - the per-file (1 MiB) and whole-document (4 MiB) byte bounds;
  *  - bundle-root-relative POSIX entry paths, which is the addressing
  *    `resourceBase: { kind: 'opaque' }` implies (a script reads
- *    `assets/data.json`, never `../assets/data.json`).
+ *    `reference/pptd.md`, never `../reference/pptd.md`).
+ *
+ * Entry paths are keyed by their **source-skill-relative** location, so the
+ * layout a collected skill shipped with is preserved verbatim:
+ * `scripts/**` entries form the executable addressing index (`scripts[]`) and
+ * every other regular file rides in `assets[]` at its own relative path
+ * (`editor/index.html`, `reference/pptd.md`, `LICENSE.txt`). The batch-3
+ * executor materializes both arrays back into exactly that tree.
  *
  * Deliberately NOT re-checked here: the packed-reference closure (every
  * `scripts/…`/`assets/…` literal a body or script mentions must be carried).
@@ -52,10 +59,14 @@ export const BUNDLE_MAX_BYTES = 64 * 1024 * 1024
 /** Longest accepted relative entry path. */
 export const PATH_MAX_LENGTH = 200
 
-/** Directory prefix every `scripts[]` entry must carry. */
+/** Directory prefix every `scripts[]` entry must carry — the executable index. */
 export const SCRIPTS_DIR = 'scripts'
 
-/** Directory prefix every `assets[]` entry must carry. */
+/**
+ * The directory name the first collected skill set happens to use for
+ * resources. It is no longer a required prefix: every entry outside
+ * `scripts/` is an `assets[]` entry at its own source-relative path.
+ */
 export const ASSETS_DIR = 'assets'
 
 /** Canonical fields of one bundle element, in document order. */
@@ -111,8 +122,13 @@ function decodeEntryContent(entry: SkillBundleEntry, site: string): Buffer {
   return bytes
 }
 
-/** Validate one `scripts[]`/`assets[]` entry path, including its required prefix. */
-function validateEntryPath(path: unknown, site: string, prefix: string): string {
+/**
+ * Validate one `scripts[]`/`assets[]` entry path.
+ * @param path - the candidate bundle-relative path.
+ * @param site - subject for error messages.
+ * @param kind - `script` requires the `scripts/` prefix; `asset` forbids it.
+ */
+function validateEntryPath(path: unknown, site: string, kind: 'script' | 'asset'): string {
   if (typeof path !== 'string' || path.length === 0) {
     throw invalid(`${site}.path must be a non-empty bundle-relative POSIX path`)
   }
@@ -128,14 +144,22 @@ function validateEntryPath(path: unknown, site: string, prefix: string): string 
   if (path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
     throw invalid(`${site}.path must be a normalized relative path without "." or ".." segments ("${path}")`)
   }
-  if (!path.startsWith(`${prefix}/`)) {
-    throw invalid(`${site}.path must live under ${prefix}/ ("${path}")`)
+  if (kind === 'script') {
+    if (!path.startsWith(`${SCRIPTS_DIR}/`)) {
+      throw invalid(`${site}.path must live under ${SCRIPTS_DIR}/ ("${path}")`)
+    }
+    return path
+  }
+  if (path === SCRIPTS_DIR || path.startsWith(`${SCRIPTS_DIR}/`)) {
+    throw invalid(
+      `${site}.path must not live under ${SCRIPTS_DIR}/ — that tree is the executable index ("${path}")`,
+    )
   }
   return path
 }
 
-/** Read one array field, enforcing shape, prefix, uniqueness, and content bounds. */
-function validateEntryArray(value: unknown, field: string, prefix: string): SkillBundleEntry[] {
+/** Read one array field, enforcing shape, role, uniqueness, and content bounds. */
+function validateEntryArray(value: unknown, field: string, kind: 'script' | 'asset'): SkillBundleEntry[] {
   if (!Array.isArray(value)) throw invalid(`${field} must be an array of {path, content} entries`)
   const seen = new Set<string>()
   const entries: SkillBundleEntry[] = []
@@ -145,7 +169,7 @@ function validateEntryArray(value: unknown, field: string, prefix: string): Skil
     if (!sameKeySet(Object.keys(candidate), ENTRY_FIELDS)) {
       throw invalid(`${site} must carry exactly path and content`)
     }
-    const path = validateEntryPath(candidate.path, site, prefix)
+    const path = validateEntryPath(candidate.path, site, kind)
     if (seen.has(path)) throw invalid(`${site}.path "${path}" duplicates an earlier entry`)
     seen.add(path)
     const content = candidate.content
@@ -197,8 +221,8 @@ export function validateSkillBundle(document: unknown): SkillBundle {
     throw invalid(`${name}: body exceeds the ${String(FILE_MAX_BYTES)}-byte per-file bound`)
   }
 
-  const scripts = validateEntryArray(document.scripts, 'scripts', SCRIPTS_DIR)
-  const assets = validateEntryArray(document.assets, 'assets', ASSETS_DIR)
+  const scripts = validateEntryArray(document.scripts, 'scripts', 'script')
+  const assets = validateEntryArray(document.assets, 'assets', 'asset')
   const canonical: SkillBundle = {
     name,
     description,

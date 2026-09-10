@@ -52,42 +52,44 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
   "description": "一句话路由描述",              // 索引用，脱敏，≤ 500
   "body":        "\n# …",                       // SKILL.md 正文（frontmatter 之后逐字节原样）
   "scripts":     [{ "path": "scripts/hello.mjs", "content": "<base64>" }],
-  "assets":      [{ "path": "assets/notes.md",   "content": "<base64>" }]
+  "assets":      [{ "path": "reference/pptd.md", "content": "<base64>" }]
 }
 ```
 
 - 顶层字段**恰好**这 5 个（多一个少一个都拒），`scripts`/`assets` 元素**恰好** `path` + `content`。
-- `path` 一律是**bundle 根相对**的 POSIX 路径（不是 skill 目录相对）：脚本要读数据文件就写
-  `assets/data.json`，不要写 `../assets/data.json` —— 批②的 provider 用 `resourceBase: opaque`
-  解析，消费方零改动（`docs/subsystems/skills.md:231`）。
+- `path` 一律是**bundle 根相对**的 POSIX 路径（不是 skill 目录相对），且按**源 skill 相对位置逐字键控**：脚本要读数据文件就写
+  `reference/pptd.md`，不要写 `../reference/pptd.md` —— 批②的 provider 用 `resourceBase: opaque`
+  解析，消费方零改动（`docs/subsystems/skills.md:231`）；批③执行器把每个条目物化回同一相对路径。
 - `body` 与每个 `content` 解码后都 ≤ 8 MiB（收编的 ppt-designer 带看 4.9 MiB 字体表与 2.4 MiB WASM）；
   整个规范化 JSON ≤ 64 MiB（ppt-designer 实测 ≈ 43 MiB）。
 - 整个文档 UTF-8 JSON → 固定 key 循环 XOR → 标准 base64 → 单块 blob。
 
-### 2.2 作者侧目录布局（只接受这两种）
+### 2.2 作者侧目录布局（逐字保留源 skill 根）
 
 ```
 <skills-root>/            # --skills：一个容器（N 个 skill）
   <skill-dir>/            # 每个子目录 = 一个 skill，名字与 frontmatter name 无关
-    SKILL.md
-    scripts/**            # 可选
-    assets/**             # 可选
+    SKILL.md              # 必须
+    scripts/**            # 可选——可执行寻址索引，打包为 scripts[]
+    <其它任意条目>/**      # 可选——其余资源按源相对路径打包为 assets[]
+                          #（editor/index.html、reference/pptd.md、LICENSE.txt）
 
-<skill-dir>/              # --skill：单 skill 兼容入口
+<skill-dir>/              # --skill：单 skill 兼容入口（同上）
   SKILL.md
-  scripts/**              # 可选
-  assets/**               # 可选
+  scripts/**
+  <其它任意条目>/**
 ```
 
 - skills 根**只允许目录**，且每个目录必须是一个合法 skill（子目录缺 `SKILL.md` 就拒）；
-  根下的散文件（`README.md` 也不行）、symlink 一律拒。
-
-- 顶层除 `SKILL.md` 外只能有 `scripts/` 和 `assets/` 两个目录，多一个文件就拒（`README.md` 也不行）。
+  根下的散文件、symlink 一律拒。
+- 顶层布局**逐字保留**：除 `SKILL.md` 外的每个普通文件/目录按自己的源相对路径进 bundle，所以收编来的
+  `editor/`、`reference/`、`pptd-template/`、`LICENSE.txt` 原位落进 staged 根，`__file__` 定位根与
+  `SKILL_DIR/editor/index.html` 免改动可用。
+- `scripts/` 之下的一切都进 `scripts[]`（可执行寻址索引）；其余一切进 `assets[]`，两者不重叠。
 - **剪枝清单**：名为 `__pycache__` 的目录在任意深度直接跳过不打包（解释器的机器本地字节码缓存——收编来的
   skill 可能带着别的 CPython 版本的 `.pyc`，既不是源码也不是资源，不该进 bundle）。
-- 只读普通文件：symlink、空文件一律拒；目录只接受两个 carried 根内部的嵌套（见上）。
-- `scripts/` 与 `assets/` 内部允许**任意深度嵌套目录**（收编 skill 带 `scripts/local-export/…`、
-  `assets/editor/neo-ppt/…` 深树；格式本就接受多段相对路径）；两个根之外的目录仍然拒。
+- 只读普通文件：symlink、空文件一律拒。
+- 目录允许**任意深度嵌套**（收编 skill 带 `scripts/local-export/…`、`editor/neo-ppt/…` 深树）。
 - `SKILL.md` 必须 LF 行尾，frontmatter 必须闭合，`name`/`description` 必须存在。
 - `body` = 闭合 `---` 那一行的换行之后的**全部字节**，所以 `unpack --out` 重建出的 `SKILL.md`
   与源文件逐字节一致（frontmatter 是重新规范化生成的）。限定：规范化后的 frontmatter 一定不带引号——`description: "…"` 这种写法里引号是 YAML 语法而非内容，解析时剥掉（`parseFrontmatter`），重建时也不再补回，所以只有未加引号的规范化源文件才逐字节一致。
@@ -99,7 +101,7 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
 | `name` | `^[a-z0-9]+(?:-[a-z0-9]+)*$`，与上游 registry 同一常量（`packages/skill/skill/src/index.ts:21`） |
 | `description` | 非空、单行、无控制字符、无首尾空白、≤ **500** |
 | `body` | 非空、≤ 8 MiB |
-| `path` | 相对、POSIX、已规范化（无 `.`/`..`/空段）、≤ 200 字符、前缀分别为 `scripts/` 与 `assets/`、全局唯一、字符集 `[A-Za-z0-9._@%+~/-]` |
+| `path` | 相对、POSIX、已规范化（无 `.`/`..`/空段）、≤ 200 字符、按源相对路径键控：`scripts[]` 必须在 `scripts/` 之下，`assets[]` 反之（两数组不重叠、各自唯一）、字符集 `[A-Za-z0-9._@%+~/-]` |
 | `content` | 规范标准 base64（可往返）、解码后非空且 ≤ 8 MiB |
 | 引用闭包 | **打包期 lint（警告不拒）**：`body` 与每个脚本正文里出现的 `scripts/…`、`assets/…` 字面路径若不在
   bundle 里，`pack` 在 stderr 逐条报 `warning`（`danglingReferences`）。收编的第三方 skill 散文里合法地提到
