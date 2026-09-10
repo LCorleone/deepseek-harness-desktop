@@ -480,6 +480,13 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **目录线（其余 session）**：stable 已到 **sequence 25**（用户机 b88 遥测实证）；`dsh-better-sidebar@0.15.2` 已按 P15 retire 流程钉成 revoked 记录；engramory 目前在用户机被判 `not-in-manifest`（beta 未收录，预期行为）。
 **基线**：desktop **2333+8skip** · market **466** · company-skills **52** · catalog e2e PASS · typecheck 0 · HEAD `9c5d0c363e`（fork+backup 已推）。
 
+### 当前 TODO 快照（2026-09-10 17:10，晚）
+**阻塞在用户输入**：P6 批④ 要内置哪些 skill（给目录/名字即可）→ 我打包+发布（allowlist/handoff/CI/sequence）→ 市场可装（b88 客户端即可，无需再发版）。
+**待决策**：① `sandbox_escalation` 遥测（接上游 approval 事件 or 裁掉）② engramory 走哪条路（①插件侧写盘推荐 / ②工作区降级）③ fleet 群发时机（b88=当前最完整候选）。
+**就绪待做**：fleet 群发 b88 → 版本分布确认 → 通知重装插件（stable 已在 seq25，sidebar 0.18.1 / dai-context 0.41.4 已上线，P15 retire 记录已就位）。
+**排队**：P11 后续（无）· P15 Phase 1-3 收尾（目录侧已用起来，客户端侧待排）· free-search rebase · 沙箱档2（已由 P16 覆盖，可关）· sso-gate 浏览器路径测。
+**基线**：desktop 2333+8skip · market 466 · company-skills 52 · HEAD `23851b31fb`。
+
 ### 当前 TODO 快照（2026-09-10 07:30，晨）
 **就绪待验**：b81 安装包已下载（asserts 目录，SHA `1ce1b61e0c…9f856d`，含 pnpm 闸修复/收尾批/按钮隐藏；**不含 P15**）。
 **今天顺序**：①用户装 b81 → 连装 3 插件（第二装必败终判）+ 详情弹窗无「打开源码仓库」按钮；②sebtang 装 b81（市场卡死修复+换新）+ 提两个 MR（compat.json 已放行 2.0.4/seq22）；③fleet 群发 2.0.4 → DSH_LOG 版本分布确认 → promote stable（sidebar 0.18.1 + dai-context 0.41.4）→ 群通知重装。
