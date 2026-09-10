@@ -496,6 +496,8 @@ describe('desktop Host python runtime', () => {
     return {
       platform: 'win32' as const,
       pythonExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe',
+      nodeExecutable: 'C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe',
+      pipGatePath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-pip-gate.js',
       stateDir,
       environment,
       ...overrides,
@@ -619,15 +621,27 @@ describe('desktop Host python runtime', () => {
       pipExecutable: pyenvPip,
     }))
 
-    // All four aliases publish in BOTH the public bin and the private mirror.
-    expect(readdirSync(installation.pathDir).sort()).toEqual(['pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
-    expect(readdirSync(installation.pythonRuntimeDir).sort()).toEqual(['pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    // All five aliases publish in BOTH the public bin and the private mirror:
+    // the raw pip alias plus the fail-fast `dsh-pip` pre-gate beside it.
+    expect(readdirSync(installation.pathDir).sort()).toEqual(['dsh-pip.cmd', 'pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readdirSync(installation.pythonRuntimeDir).sort()).toEqual(['dsh-pip.cmd', 'pip.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
     expect(readFileSync(installation.pythonShimPath, 'utf8')).toContain(`"${pyenvPython}" %*`)
     expect(installation.pipShimPath).toBe(join(installation.pathDir, 'pip.cmd'))
     expect(readFileSync(installation.pipShimPath!, 'utf8')).toBe([
       '@echo off',
       'setlocal DisableDelayedExpansion',
       `"${pyenvPip}" %*`,
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
+    // The gate shim hands the real pip and interpreter to the gate entry.
+    expect(installation.dshPipShimPath).toBe(join(installation.pathDir, 'dsh-pip.cmd'))
+    expect(readFileSync(installation.dshPipShimPath!, 'utf8')).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      `set "DSH_PIP_REAL_PIP=${pyenvPip}"`,
+      `set "DSH_PIP_REAL_PYTHON=${pyenvPython}"`,
+      '"C:\\Program Files\\DSH Desktop\\resources\\node-runtime\\node.exe" "C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-pip-gate.js" %*',
       'exit /b %errorlevel%',
       '',
     ].join('\r\n'))
@@ -640,12 +654,14 @@ describe('desktop Host python runtime', () => {
     const pathDir = join(stateDir, 'bin')
     mkdirSync(pathDir, { recursive: true })
     writeFileSync(join(pathDir, 'pip.cmd'), 'stale')
+    writeFileSync(join(pathDir, 'dsh-pip.cmd'), 'stale')
     const environment: NodeJS.ProcessEnv = { Path: 'C:\\Windows' }
 
     const installation = installDesktopPythonRuntime(pythonOptions(stateDir, environment))
 
     expect(readdirSync(pathDir).sort()).toEqual(['py.cmd', 'python.cmd', 'python3.cmd'])
     expect(installation.pipShimPath).toBeUndefined()
+    expect(installation.dshPipShimPath).toBeUndefined()
     expect(environment.Path).toBe(`${pathDir};C:\\Windows`)
     installation.dispose()
   })

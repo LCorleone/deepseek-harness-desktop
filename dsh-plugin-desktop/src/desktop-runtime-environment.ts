@@ -11,6 +11,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import {
+  DSH_PIP_COMMAND_NAME,
+  DSH_PIP_EXECUTABLE_ENV,
+  DSH_PIP_PYTHON_ENV,
+} from './desktop-pip-gate.ts'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 
@@ -102,6 +107,18 @@ export interface DesktopPythonRuntimeOptions {
    * absent keeps the alias unpublished instead of aliasing a dead command.
    */
   pipExecutable?: string
+  /**
+   * Node command the generated `dsh-pip` pre-gate runs under; packaged builds
+   * pass the bundled distribution. The gate is a Node script because it needs
+   * the same fail-fast sandbox check inside and outside the confinement.
+   */
+  nodeExecutable: string
+  /**
+   * Physical `dsh-pip` gate entry (`lib/desktop-pip-gate.js`). Like
+   * `desktop-cli.js` it must be the app.asar.unpacked path: the bundled Node
+   * running it cannot read inside the archive.
+   */
+  pipGatePath: string
   /** Private application-owned directory receiving generated files. */
   stateDir: string
   /** Parent environment whose PATH is updated; defaults to `process.env`. */
@@ -120,6 +137,8 @@ export interface DesktopPythonRuntimeInstallation {
   pyShimPath: string
   /** Public `pip` alias shim, present only while a pip command ships. */
   pipShimPath?: string
+  /** Public `dsh-pip` pre-gate shim, present only while a pip command ships. */
+  dshPipShimPath?: string
   /** Private alias directory, invisible on PATH, reserved for app-owned process trees. */
   pythonRuntimeDir: string
   /** Remove this installation's PATH entry without deleting persistent generated files. */
@@ -296,6 +315,28 @@ function windowsPythonAliasShim(pythonExecutable: string): string {
     '@echo off',
     'setlocal DisableDelayedExpansion',
     `${quoteBatchWord(pythonExecutable)} %*`,
+    'exit /b %errorlevel%',
+    '',
+  ].join('\r\n')
+}
+
+/**
+ * Build the public Windows `dsh-pip` pre-gate shim: hand the real pip (and
+ * the interpreter behind the `-m pip` fallback) to the gate entry, which
+ * denies a sandboxed install immediately instead of hanging inside pip.
+ */
+function windowsDshPipShim(
+  nodeExecutable: string,
+  pipGatePath: string,
+  pipExecutable: string,
+  pythonExecutable: string,
+): string {
+  return [
+    '@echo off',
+    'setlocal DisableDelayedExpansion',
+    `set "${DSH_PIP_EXECUTABLE_ENV}=${escapeBatchSetValue(pipExecutable)}"`,
+    `set "${DSH_PIP_PYTHON_ENV}=${escapeBatchSetValue(pythonExecutable)}"`,
+    `${quoteBatchWord(nodeExecutable)} ${quoteBatchWord(pipGatePath)} %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -510,6 +551,8 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
   }
   for (const [label, value] of [
     ['Python command', options.pythonExecutable],
+    ['Node command', options.nodeExecutable],
+    ['pip gate entry', options.pipGatePath],
     ['state directory', options.stateDir],
     ...(options.pipExecutable === undefined
       ? []
@@ -526,10 +569,21 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
     ...DESKTOP_PYTHON_ALIAS_NAMES.map(name => ({ name, shim: windowsPythonAliasShim(options.pythonExecutable) })),
     ...(options.pipExecutable === undefined
       ? []
-      : [{
-          name: DESKTOP_PYTHON_PIP_ALIAS_NAME,
-          shim: windowsPythonAliasShim(options.pipExecutable),
-        }]),
+      : [
+          {
+            name: DESKTOP_PYTHON_PIP_ALIAS_NAME,
+            shim: windowsPythonAliasShim(options.pipExecutable),
+          },
+          {
+            name: DSH_PIP_COMMAND_NAME,
+            shim: windowsDshPipShim(
+              options.nodeExecutable,
+              options.pipGatePath,
+              options.pipExecutable,
+              options.pythonExecutable,
+            ),
+          },
+        ]),
   ]
   const aliasNames = aliases.map(alias => alias.name)
   for (const directory of [pathDir, pythonRuntimeDir]) {
@@ -550,7 +604,10 @@ export function installDesktopPythonRuntime(options: DesktopPythonRuntimeOptions
     pyShimPath: join(pathDir, 'py.cmd'),
     ...(options.pipExecutable === undefined
       ? {}
-      : { pipShimPath: join(pathDir, DESKTOP_PYTHON_PIP_ALIAS_NAME) }),
+      : {
+          pipShimPath: join(pathDir, DESKTOP_PYTHON_PIP_ALIAS_NAME),
+          dshPipShimPath: join(pathDir, DSH_PIP_COMMAND_NAME),
+        }),
     pythonRuntimeDir,
     dispose: installPathDirectory(options.environment ?? process.env, pathDir, options.platform),
   }

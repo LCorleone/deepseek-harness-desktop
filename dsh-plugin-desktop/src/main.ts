@@ -995,6 +995,10 @@ async function start(): Promise<void> {
           ...(sharedPythonEnvironment.pipExecutable === undefined
             ? {}
             : { pipExecutable: sharedPythonEnvironment.pipExecutable }),
+          nodeExecutable,
+          pipGatePath: unpackedAsarPath(
+            fileURLToPath(new URL('./desktop-pip-gate.js', import.meta.url)),
+          ),
           stateDir: join(app.getPath('userData'), 'python-runtime-commands'),
           environment: process.env,
         })

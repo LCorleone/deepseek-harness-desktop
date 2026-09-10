@@ -436,6 +436,13 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         // terminal's python aliases; the terminal itself must still open.
         ...(pythonExecutable === undefined ? {} : { pythonExecutable }),
         ...(pipExecutable === undefined ? {} : { pipExecutable }),
+        ...(pipExecutable === undefined
+          ? {}
+          : {
+              pipGatePath: unpackedAsarPath(
+                fileURLToPath(new URL('./desktop-pip-gate.js', import.meta.url)),
+              ),
+            }),
         dshBootstrapPath: unpackedAsarPath(
           fileURLToPath(new URL('./desktop-cli.js', import.meta.url)),
         ),

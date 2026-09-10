@@ -489,6 +489,7 @@ describe('published package surface', () => {
     expect(config).toContain("'desktop-cli': 'src/desktop-cli.ts'")
     expect(config).toContain("'desktop-runtime-environment': 'src/desktop-runtime-environment.ts'")
     expect(config).toContain("'desktop-terminal': 'src/desktop-terminal.ts'")
+    expect(config).toContain("'desktop-pip-gate': 'src/desktop-pip-gate.ts'")
     expect(config).toContain("'profile-manager': 'src/profile-manager.ts'")
     expect(config).toContain("'profile-service': 'src/profile-service.ts'")
     expect(config).toContain("pnpm: 'src/pnpm.ts'")

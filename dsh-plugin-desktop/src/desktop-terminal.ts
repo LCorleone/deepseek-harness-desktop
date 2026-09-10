@@ -12,6 +12,7 @@ import {
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join, win32 } from 'node:path'
+import { DSH_PIP_COMMAND_NAME, DSH_PIP_EXECUTABLE_ENV, DSH_PIP_PYTHON_ENV } from './desktop-pip-gate.ts'
 import { DESKTOP_INSTALL_RECOVERY_STATE_ENV } from './install-recovery.ts'
 import { DESKTOP_PYTHON_ALIAS_NAMES, DESKTOP_PYTHON_PIP_ALIAS_NAME } from './desktop-runtime-environment.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
@@ -22,6 +23,7 @@ const PATH = 'PATH'
 const WINDOWS_NODE_EXECUTABLE = 'DSH_DESKTOP_NODE_EXECUTABLE'
 const WINDOWS_PYTHON_EXECUTABLE = 'DSH_DESKTOP_PYTHON_EXECUTABLE'
 const WINDOWS_PIP_EXECUTABLE = 'DSH_DESKTOP_PIP_EXECUTABLE'
+const WINDOWS_PIP_GATE = 'DSH_DESKTOP_PIP_GATE'
 const WINDOWS_DSH_BOOTSTRAP = 'DSH_DESKTOP_DSH_BOOTSTRAP'
 const WINDOWS_ELECTRON_VERSION = 'DSH_DESKTOP_ELECTRON_VERSION'
 const WINDOWS_PNPM_ENTRY = 'DSH_DESKTOP_PNPM_ENTRY'
@@ -36,6 +38,7 @@ const WINDOWS_GENERATED_ENVIRONMENT_KEYS = new Set([
   WINDOWS_NODE_EXECUTABLE,
   WINDOWS_PYTHON_EXECUTABLE,
   WINDOWS_PIP_EXECUTABLE,
+  WINDOWS_PIP_GATE,
   WINDOWS_DSH_BOOTSTRAP,
   WINDOWS_ELECTRON_VERSION,
   WINDOWS_PNPM_ENTRY,
@@ -115,6 +118,14 @@ export interface DesktopTerminalOptions {
    * Requires `pythonExecutable`: pip without an interpreter is never useful.
    */
   pipExecutable?: string
+  /**
+   * Physical `dsh-pip` pre-gate entry (`lib/desktop-pip-gate.js`) the generated
+   * gate shim runs under the bundled Node. Required whenever `pipExecutable`
+   * ships: the gate is the fail-fast half of the shared-environment install
+   * path. Like `desktop-cli.js` it must be the app.asar.unpacked path, because
+   * the bundled Node running it cannot read inside the archive.
+   */
+  pipGatePath?: string
   /** Electron version used by pnpm native dependency installation. */
   electronVersion: string
   /** DSH profile selected by the desktop application. */
@@ -157,6 +168,8 @@ export interface DesktopTerminalLaunch {
   pythonShimPaths?: readonly string[]
   /** Generated Windows `pip` alias shim, when a pip command ships. */
   pipShimPath?: string
+  /** Generated Windows `dsh-pip` pre-gate shim, when a pip command ships. */
+  dshPipShimPath?: string
   /** Generated script that configures and welcomes the interactive shell. */
   welcomePath: string
   /** Windows command broker that creates the visible console, when applicable. */
@@ -185,6 +198,7 @@ interface DesktopTerminalFiles {
   nodeShimPath: string
   pythonShimPaths?: readonly string[]
   pipShimPath?: string
+  dshPipShimPath?: string
   welcomePath: string
   windowsCmdWelcomePath?: string
 }
@@ -302,6 +316,23 @@ function windowsDshShim(options: DesktopTerminalOptions): string {
     'setlocal DisableDelayedExpansion',
     ...policyLines,
     `"%${WINDOWS_NODE_EXECUTABLE}%" --expose-internals "%${WINDOWS_DSH_BOOTSTRAP}%" %*`,
+    'exit /b %errorlevel%',
+    '',
+  ].join('\r\n')
+}
+
+/**
+ * Build the Windows `dsh-pip` pre-gate shim beside the `pip` alias: hand the
+ * shared environment's pip (and interpreter) to the gate entry, which denies a
+ * sandboxed install immediately instead of hanging inside pip.
+ */
+function windowsDshPipShim(): string {
+  return [
+    '@echo off',
+    'setlocal DisableDelayedExpansion',
+    `set "${DSH_PIP_EXECUTABLE_ENV}=%${WINDOWS_PIP_EXECUTABLE}%"`,
+    `set "${DSH_PIP_PYTHON_ENV}=%${WINDOWS_PYTHON_EXECUTABLE}%"`,
+    `"%${WINDOWS_NODE_EXECUTABLE}%" "%${WINDOWS_PIP_GATE}%" %*`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n')
@@ -487,6 +518,14 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
   if (options.pythonExecutable === undefined && options.pipExecutable !== undefined) {
     throw new Error('dsh-plugin-desktop: terminal pip command requires a Python command')
   }
+  if (options.pipExecutable !== undefined && options.pipGatePath === undefined) {
+    throw new Error('dsh-plugin-desktop: terminal pip command requires the dsh-pip gate entry')
+  }
+  for (const [label, value] of [
+    ...(options.pythonExecutable === undefined ? [] : [['Python command', options.pythonExecutable] as const]),
+    ...(options.pipExecutable === undefined ? [] : [['pip command', options.pipExecutable] as const]),
+    ...(options.pipGatePath === undefined ? [] : [['pip gate entry', options.pipGatePath] as const]),
+  ]) assertScriptValue(label, value)
   prepareStateDirectory(options.stateDir)
   const shimDir = join(options.stateDir, 'bin')
   prepareStateDirectory(shimDir)
@@ -514,6 +553,7 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
       : DESKTOP_PYTHON_ALIAS_NAMES.map(alias => join(shimDir, alias))
     const shipsPip = options.pythonExecutable !== undefined && options.pipExecutable !== undefined
     const pipShimPath = shipsPip ? join(shimDir, DESKTOP_PYTHON_PIP_ALIAS_NAME) : undefined
+    const dshPipShimPath = shipsPip ? join(shimDir, DSH_PIP_COMMAND_NAME) : undefined
     const files: DesktopTerminalFiles = {
       shimDir,
       dshShimPath: join(shimDir, 'dsh.cmd'),
@@ -521,6 +561,7 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
       nodeShimPath: join(shimDir, 'node.cmd'),
       ...(pythonShimPaths === undefined ? {} : { pythonShimPaths }),
       ...(pipShimPath === undefined ? {} : { pipShimPath }),
+      ...(dshPipShimPath === undefined ? {} : { dshPipShimPath }),
       welcomePath: join(options.stateDir, 'welcome.ps1'),
       windowsCmdWelcomePath,
     }
@@ -538,10 +579,14 @@ function prepareDesktopTerminalFiles(options: DesktopTerminalOptions): DesktopTe
       }
     }
     if (options.pythonExecutable !== undefined && options.pipExecutable !== undefined) {
-      assertScriptValue('pip command', options.pipExecutable)
       replacePrivateFile(
         join(shimDir, DESKTOP_PYTHON_PIP_ALIAS_NAME),
         windowsVariableShim(WINDOWS_PIP_EXECUTABLE),
+        PRIVATE_FILE_MODE,
+      )
+      replacePrivateFile(
+        join(shimDir, DSH_PIP_COMMAND_NAME),
+        windowsDshPipShim(),
         PRIVATE_FILE_MODE,
       )
     }
@@ -581,6 +626,9 @@ function terminalEnvironment(options: DesktopTerminalOptions, files: DesktopTerm
     env[WINDOWS_NODE_EXECUTABLE] = options.nodeExecutable
     if (options.pythonExecutable !== undefined) env[WINDOWS_PYTHON_EXECUTABLE] = options.pythonExecutable
     if (options.pipExecutable !== undefined) env[WINDOWS_PIP_EXECUTABLE] = options.pipExecutable
+    if (files.dshPipShimPath !== undefined && options.pipGatePath !== undefined) {
+      env[WINDOWS_PIP_GATE] = options.pipGatePath
+    }
     env[WINDOWS_DSH_BOOTSTRAP] = options.dshBootstrapPath
     env[WINDOWS_ELECTRON_VERSION] = options.electronVersion
     env[WINDOWS_PNPM_ENTRY] = options.pnpmBinPath
@@ -800,6 +848,7 @@ export function openDesktopTerminal(options: DesktopTerminalOptions): DesktopTer
     nodeShimPath: files.nodeShimPath,
     ...(files.pythonShimPaths === undefined ? {} : { pythonShimPaths: files.pythonShimPaths }),
     ...(files.pipShimPath === undefined ? {} : { pipShimPath: files.pipShimPath }),
+    ...(files.dshPipShimPath === undefined ? {} : { dshPipShimPath: files.dshPipShimPath }),
     welcomePath: files.welcomePath,
     ...(windowsLauncherPath === undefined ? {} : { windowsLauncherPath }),
     child,

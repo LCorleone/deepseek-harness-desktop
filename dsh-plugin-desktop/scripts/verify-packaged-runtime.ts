@@ -80,6 +80,9 @@ export const REQUIRED_PACKAGED_RUNTIME_ENTRIES = [
   'lib/desktop-python-runtime.js',
   'lib/desktop-runtime-environment.js',
   'lib/desktop-terminal.js',
+  // The `dsh-pip` fail-fast pre-gate the Python aliases' install path runs
+  // under the bundled Node (plain Node, so the physical mirror matters).
+  'lib/desktop-pip-gate.js',
   'lib/terminal.js',
   'lib/update-checker.js',
   'lib/update-download.js',
@@ -128,6 +131,7 @@ export const REQUIRED_UNPACKED_RUNTIME_ENTRIES = [
   'lib/diagnostic-export-worker.js',
   'lib/desktop-node-runtime.js',
   'lib/desktop-python-runtime.js',
+  'lib/desktop-pip-gate.js',
   'lib/terminal.js',
   'lib/update-download.js',
   'lib/updates.js',

@@ -107,6 +107,7 @@ function windowsOptions(stateDir: string, spawn: DesktopTerminalSpawn): DesktopT
     platform: 'win32',
     nodeExecutable: 'C:\\Program Files\\DSH 100% Desktop\\resources\\node-runtime\\node.exe',
     dshBootstrapPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\lib\\dsh-terminal-bootstrap.js',
+    pipGatePath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\lib\\desktop-pip-gate.js',
     pnpmBinPath: 'C:\\Program Files\\DSH Desktop\\resources\\app.asar\\node_modules\\pnpm\\bin\\pnpm.mjs',
     electronVersion: '43.4.0',
     profileName: 'desktop',
@@ -605,6 +606,7 @@ describe('desktop terminal environment', () => {
     expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pnpm.cmd'])
     expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PYTHON_EXECUTABLE')
     expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_EXECUTABLE')
+    expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_GATE')
   })
 
   it('mirrors the shared environment pip alias beside the python aliases', () => {
@@ -616,7 +618,7 @@ describe('desktop terminal environment', () => {
 
     const launch = openDesktopTerminal(options)
 
-    expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pip.cmd', 'pnpm.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
+    expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh-pip.cmd', 'dsh.cmd', 'node.cmd', 'pip.cmd', 'pnpm.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
     expect(launch.pipShimPath).toBe(join(launch.shimDir, 'pip.cmd'))
     expect(readFileSync(launch.pipShimPath!, 'utf8')).toBe([
       '@echo off',
@@ -625,7 +627,18 @@ describe('desktop terminal environment', () => {
       'exit /b %errorlevel%',
       '',
     ].join('\r\n'))
+    expect(launch.dshPipShimPath).toBe(join(launch.shimDir, 'dsh-pip.cmd'))
+    expect(readFileSync(launch.dshPipShimPath!, 'utf8')).toBe([
+      '@echo off',
+      'setlocal DisableDelayedExpansion',
+      'set "DSH_PIP_REAL_PIP=%DSH_DESKTOP_PIP_EXECUTABLE%"',
+      'set "DSH_PIP_REAL_PYTHON=%DSH_DESKTOP_PYTHON_EXECUTABLE%"',
+      '"%DSH_DESKTOP_NODE_EXECUTABLE%" "%DSH_DESKTOP_PIP_GATE%" %*',
+      'exit /b %errorlevel%',
+      '',
+    ].join('\r\n'))
     expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PIP_EXECUTABLE).toBe(options.pipExecutable)
+    expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PIP_GATE).toBe(options.pipGatePath)
     expect(harness.calls[0]?.options.env?.DSH_DESKTOP_PYTHON_EXECUTABLE).toBe(options.pythonExecutable)
     expect(harness.unref).toHaveBeenCalledOnce()
   })
@@ -640,7 +653,21 @@ describe('desktop terminal environment', () => {
 
     expect(readdirSync(launch.shimDir).sort()).toEqual(['dsh.cmd', 'node.cmd', 'pnpm.cmd', 'py.cmd', 'python.cmd', 'python3.cmd'])
     expect(launch.pipShimPath).toBeUndefined()
+    expect(launch.dshPipShimPath).toBeUndefined()
     expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_EXECUTABLE')
+    expect(harness.calls[0]?.options.env).not.toHaveProperty('DSH_DESKTOP_PIP_GATE')
+  })
+
+  it('refuses a pip command without the dsh-pip gate entry', () => {
+    const stateDir = join(temporaryDirectory(), 'terminal-state')
+    const harness = spawnHarness()
+    const options = windowsOptions(stateDir, harness.spawn)
+    options.pythonExecutable = 'C:\\Program Files\\DSH Desktop\\resources\\python-runtime\\python.exe'
+    options.pipExecutable = 'C:\\Users\\Example\\AppData\\Local\\DSH Desktop\\pyenv\\Scripts\\pip.exe'
+    delete options.pipGatePath
+
+    expect(() => openDesktopTerminal(options)).toThrow('pip command requires the dsh-pip gate entry')
+    expect(harness.calls).toHaveLength(0)
   })
 
   it('refuses a pip command without a Python command', () => {

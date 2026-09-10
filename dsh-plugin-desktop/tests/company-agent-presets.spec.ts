@@ -14,7 +14,7 @@ import {
 } from '../src/company-agent-presets.ts'
 import { companyPresetRoot, shippedPresetRoot } from '../src/profile.ts'
 
-const COMPANY_PRESET_DESCRIPTION = '功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流；附带公司安全管控约束，桌面端自身配置不由 Agent 修改；内置共享 Python 环境，pip install 一次全工作区生效。'
+const COMPANY_PRESET_DESCRIPTION = '功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流；附带公司安全管控约束，桌面端自身配置不由 Agent 修改；内置共享 Python 环境，dsh-pip install 一次全工作区生效。'
 const companyComposition = join(
   fileURLToPath(new URL('../agent-presets/', import.meta.url)),
   COMPANY_PRESET_ID,
@@ -189,19 +189,26 @@ describe('company agent preset guard', () => {
     expect(persona).toContain('retry the exact same operation once, with sandbox_permissions')
     expect(persona).toContain('a sandbox denial is a gate, not a verdict')
     // The shared-Python guidance (P16): the desktop's shared environment on
-    // PATH, `pip install` as the only install path, the first-install
-    // authorization dialog instead of denials to work around, and no proxy
+    // PATH, the pre-gated `dsh-pip install` as the only install path, the
+    // fail-fast denial that lets the authorization dialog fire, and no proxy
     // configuration of its own. The retired workspace-.venv convention must
     // not creep back: the sandbox cannot create venvs (b84), so the preset
-    // must never point the agent at one.
+    // must never point the agent at one. The P16 b85 follow-up added the
+    // `dsh-pip` pre-gate after a sandboxed `pip install` hung instead of
+    // failing (the dialog could not fire), so the raw `pip install` form must
+    // never stand as the install instruction again.
     expect(persona).toContain('Desktop Python: the `python`, `python3`, `py`, and `pip` commands run the desktop\'s shared Python environment')
     expect(persona).toContain('one environment shared by every workspace')
-    expect(persona).toContain('`pip install <package>`')
-    expect(persona).toContain('pip install requests')
-    expect(persona).toContain('do not create project virtualenvs for desktop work')
+    expect(persona).toContain('`dsh-pip install <package>`')
+    expect(persona).toContain('dsh-pip install requests')
+    expect(persona).toContain('never run `pip install` directly')
+    expect(persona).toContain('the raw `pip` alias is not pre-gated and a sandboxed install can hang instead of failing')
+    expect(persona).toContain('`dsh-pip` wraps the same environment with a fail-fast sandbox check')
+    expect(persona).toContain('a denied first install comes back at once so the desktop can raise the authorization dialog')
+    expect(persona).not.toContain('pip install <package>` (for example `pip install requests`)')
+    expect(persona).toContain('Do not create project virtualenvs for desktop work')
     expect(persona).not.toContain('.venv')
     expect(persona).not.toContain('python -m virtualenv')
-    expect(persona).toContain('the desktop then shows an authorization dialog')
     expect(persona).toContain('Never install into the application\'s own directories')
     expect(persona).toContain('no proxy or certificate configuration of its own')
     // The foreground-only rule (P16 b85): a backgrounded install can never
