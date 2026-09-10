@@ -491,6 +491,13 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **b89 已构建**：run 34467722519，SHA `97647dd75b…7266b3`（161.9MB）= b88+描述链。待 4 台升级后发 seq26。
 **P6 批④（skill 打包）按 July 指示暂缓**（skill 先不做）；skill-creator/ppt-designer 可行性结论已给出（creator 三处小改造可发；designer 需平台三项能力+与明文不落盘承诺冲突，建议单独立项）。
 
+### 2026-09-10 夜间补记（20:20）上游沙箱逃生机制调研（scout 实证，pinned 0.1.2-rc.1）
+**沙箱只罩「模型驱动的工具调用」，不罩插件本体**。走 policy 仅三处：bash/pwsh（shell/bash-sandbox/src/index.ts:178）、terminal（terminal-bash:104-108）、ctx.fs 两个写（fs-sandbox/src/index.ts:114-155）。**不罩**：插件 host 侧代码（docs/user/develop/basic/publish.md:173 「outside any sandbox」）、ctx.subprocess（零处引用 confine，宿主直起）、读（fs-sandbox:7 「Reads pass through untouched」，bwrap/Landlock/Seatbelt 三后端只禁写）。
+**插件访问工作区外的上游四范式**：① host 侧裸 node:fs（credentials-local 写 ~/.dsh/.credentials.yaml，:41,44）② ctx.subprocess.spawn（lsp-stdio:157）③ ctx.fs.writeText 显式 per-call policy 形参（filesystem.md:415-417）④ 把活收进 tmpdir 而非扩根（code-runtime-python：mkdtemp+只给 TMPDIR，:183,504）。
+**升权只有档位无路径粒度**：WIDER_MODES 阶梯（escalation.ts:28-32），无 per-path allowlist，approval 结果闭集无记忆；0.1.2 无 roots 配置化迹象。
+**拍板落点**：engramory 反馈稿=推荐插件侧写盘（credentials-local 范式背书）；PYTHONDONTWRITEBYTECODE **不做**（上游靠 CPython 静默容忍）；includeDefaultRoots **不动**（保持用户逃生口；上游测试钉死 shell/fs 同根 parity）。
+**对 P6 的启示（批④方案定型）**：ppt-designer 两大死结用 code-runtime-python 范式解——脚本物化进已有 0600 临时目录再跑（`__file__`/兄弟 import 天然工作，**无需改动源 skill**）+ `OPEN_KIMI_PPT_EDITOR` env 指到 staged 目录；agent-browser/Chrome 降级可选（pptx 导出本体走本地 WASM 不依赖）。**红线放宽（July 20:19 批准）**：「明文不落盘」→「明文不留驻」：脚本/资源允许瞬时落盘于 0600 mkdtemp、finally 即删，与 stdin 管道实质同等暴露面。
+
 ### 当前 TODO 快照（2026-09-10 20:00，夜）
 **主链（等 fleet）**：① 4 台升 b89（July 先装自验）→ 我盯 DSH_LOG 确认 → ② 发 seq26（beta+stable 双发）→ 市场描述上线 → ③ 首个走必填闸的新插件验证 verify --description 流程。
 **阻塞在 July**：批④ skill 清单（已指示暂缓）；engramory 反馈稿要不要起草（建议①插件侧写入）。

@@ -19,6 +19,15 @@
 - opaque 下相对路径读文件：优先内存传参；退路=落 workspace 临时目录用后即删（workspace-write 下可行，无需弹窗）。
 
 ## 4. 已做决策与失败尝试
+
+- **批④ 决策（2026-09-10 20:19，July 拍板）**：首批装 **skill-creator + ppt-designer** 两个。
+  · **源路径只读**：/opt/july/skills-hub/skills/{ppt-designer,skill-creator} **严禁修改**——打包=只读复制，适配一律在我们仓侧。
+  · **红线放宽**：「明文不落盘」→「明文不留驻」：脚本/资源允许瞬时落盘于 0600 mkdtemp、finally 即删（与 stdin 管道实质同等暴露面；依据=上游 code-runtime-python 范式，调研见 devlog 2026-09-10 夜间补记）。
+  · **执行改型（code-runtime-python 范式）**：execute.ts 从 stdin 管道改为**物化执行**——把 bundle 的 scripts+assets 全部物化进同一个 per-run 0600 临时目录，`argv=[解释器, <tmp>/scripts/xxx.py]`、cwd=临时根。收益：`__file__` 定位 skill 根天然工作（export_pptx.py:38 无需改动）、兄弟 import 走 sys.path[0] 天然工作（package_skill.py 无需改动）、`OPEN_KIMI_PPT_EDITOR` 可不改 skill 直接指 staged 目录。旧 stdin 路径删除，错误信息仍不得含脚本正文。
+  · **剪枝补丁**：pack 剪枝清单加 `__pycache__`（skill-creator 带着 cpython-310 的 .pyc，我们是 3.12）。
+  · **agent-browser/Chrome 降级可选**：pptx 导出本体走本地 WASM 不依赖；不预装、不改动。
+  · **PyYAML 依赖**：skill-creator 的 quick_validate 要 yaml——不预装，agent 首次可走 dsh-pip 授权装共享 pyenv（P16 链）。
+  · 插件条目 description（必填闸）：`公司技能包：skill 创建指南与 PPT 设计器（PPTD）`。
 - 路线 B（原生 provider）已裁决（2026-09-02 scout-skill-seam），路线 A（自造 load 工具）否决。
 - 2026-09-02 用户曾把 P6 整体搁置；2026-09-10 因「想内置常用 skill + 防普通用户」解冻，**砍 P6-3 三层重防护**，保留 P6-1（加密 bundle 插件）+ P6-2（脚本通道）。
 - 无失败尝试记录。
