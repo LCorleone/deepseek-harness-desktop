@@ -26,6 +26,7 @@ for (const marker of [
   '- id: agent-presets',
   'disabled: true',
   'default: deloitte-standard',
+  'includeShippedRoot: false',
   'name: dsh-plugin-desktop/company-agent-presets',
   'trust: system',
   'path: !!js process.env.DSH_DESKTOP_LOCK_PRESET_ROOT',

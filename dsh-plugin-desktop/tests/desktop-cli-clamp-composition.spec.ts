@@ -166,9 +166,11 @@ describe('locked CLI clamp composition', () => {
       expect(companyRow?.disabled).toBeUndefined()
       const companyConfig = companyRow?.config as {
         default: string
+        includeShippedRoot: boolean
         roots: { path: { __jsExpr: string }, trust: string }[]
       }
       expect(companyConfig.default).toBe(COMPANY_PRESET_ID)
+      expect(companyConfig.includeShippedRoot).toBe(false)
       expect(companyConfig.roots).toEqual([
         {
           path: { __jsExpr: `process.env.${DESKTOP_CLI_CLAMP_ENVIRONMENT.presetRoot}` },

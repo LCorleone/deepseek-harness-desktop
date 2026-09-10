@@ -75,6 +75,10 @@
       name: dsh-plugin-desktop/company-agent-presets
       config:
         default: deloitte-standard
+        # 0.1.2 added `includeShippedRoot` defaulting to true: without this the
+        # locked CLI roster still discovers the retired upstream presets and
+        # Settings lists them as unselectable rows (same fix as profile.ts).
+        includeShippedRoot: false
         roots:
           - path: !!js process.env.DSH_DESKTOP_LOCK_PRESET_ROOT
             trust: system
