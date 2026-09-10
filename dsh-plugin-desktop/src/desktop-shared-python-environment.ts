@@ -1,7 +1,7 @@
 /** Shared desktop-wide Python environment provisioned once under `%LOCALAPPDATA%`. */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Directory name of the shared environment below its parent. */
@@ -12,6 +12,9 @@ const DESKTOP_SHARED_PYTHON_PARENT_NAME = 'DSH Desktop'
 
 /** Provisioning deadline: virtualenv seeding is local, so minutes mean a hang. */
 const SHARED_PYTHON_PROVISION_TIMEOUT_MS = 180_000
+
+/** Interpreter liveness deadline: `--version` only boots the interpreter. */
+const SHARED_PYTHON_PROBE_TIMEOUT_MS = 30_000
 
 /** Longest failure diagnostic kept for the degradation log line. */
 const SHARED_PYTHON_DIAGNOSTIC_LIMIT = 160
@@ -46,7 +49,11 @@ export interface DesktopSharedPythonEnvironmentInputs {
   readonly environment?: NodeJS.ProcessEnv
   /** File-existence probe; production uses `existsSync`. */
   readonly exists?: (filename: string) => boolean
-  /** Provisioning runner; production spawns `<base> -m virtualenv --always-copy`. */
+  /** Interpreter liveness probe; production runs `<python> --version`. */
+  readonly probe?: DesktopSharedPythonProbe
+  /** Recursive directory removal; production uses `rmSync`. */
+  readonly removeAll?: (directory: string) => void
+  /** Provisioning runner; production spawns the base interpreter (stdlib `venv` for a local base, bundled `virtualenv` otherwise). */
   readonly provision?: DesktopSharedPythonProvision
   /** Degradation sink; defaults to a no-op (the launcher wires its logger). */
   readonly log?: (message: string) => void
@@ -71,6 +78,16 @@ export type DesktopSharedPythonProvision = (
   args: readonly string[],
   options: { readonly environment?: NodeJS.ProcessEnv },
 ) => Promise<{ readonly exitCode: number | null, readonly diagnostic: string }>
+
+/**
+ * One interpreter liveness probe: resolves whether the executable at the
+ * given path actually runs (an existing but corrupt `python.exe` resolves
+ * `false`, a thrown probe counts as `false` too).
+ */
+export type DesktopSharedPythonProbe = (
+  pythonExecutable: string,
+  options: { readonly environment?: NodeJS.ProcessEnv },
+) => Promise<boolean>
 
 /** Locate the shared environment below one parent directory. */
 export function desktopSharedPythonEnvironmentPaths(
@@ -106,6 +123,20 @@ function sanitizeDiagnostic(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, SHARED_PYTHON_DIAGNOSTIC_LIMIT)
 }
 
+/**
+ * Bytecode-safe environment for every shared-environment python spawn.
+ *
+ * Provisioning imports the base interpreter's packages; without this guard
+ * CPython writes `__pycache__` bytecode while importing the bundled tree's
+ * `site-packages`, and the bundled manifest verifies an exact file set —
+ * one unexpected `__pycache__` entry would disable the whole python surface
+ * on the next boot. The local base is in no danger, but every spawn of this
+ * module uses the same environment so the guard cannot be forgotten.
+ */
+function sharedPythonSpawnEnvironment(environment: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  return { ...(environment ?? process.env), PYTHONDONTWRITEBYTECODE: '1' }
+}
+
 /** Default provisioning runner: spawn the base interpreter's virtualenv module. */
 async function spawnSharedPythonVirtualenv(
   command: string,
@@ -114,7 +145,7 @@ async function spawnSharedPythonVirtualenv(
 ): Promise<{ exitCode: number | null, diagnostic: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      env: options.environment ?? process.env,
+      env: sharedPythonSpawnEnvironment(options.environment),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       timeout: SHARED_PYTHON_PROVISION_TIMEOUT_MS,
@@ -132,6 +163,23 @@ async function spawnSharedPythonVirtualenv(
     child.once('close', exitCode => {
       resolve({ exitCode, diagnostic: sanitizeDiagnostic(output) })
     })
+  })
+}
+
+/** Default liveness probe: `--version` boots only the interpreter (no `-c` snippet to compile) and resolves `true` on exit 0. */
+async function spawnSharedPythonProbe(
+  pythonExecutable: string,
+  options: { readonly environment?: NodeJS.ProcessEnv },
+): Promise<boolean> {
+  return await new Promise(resolve => {
+    const child = spawn(pythonExecutable, ['--version'], {
+      env: sharedPythonSpawnEnvironment(options.environment),
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: SHARED_PYTHON_PROBE_TIMEOUT_MS,
+    })
+    child.once('error', () => { resolve(false) })
+    child.once('close', exitCode => { resolve(exitCode === 0) })
   })
 }
 
@@ -169,13 +217,25 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * Ensure the shared Python environment exists, creating it once from the
  * preferred base interpreter (a real local Python, else the bundled one).
  *
- * The provisioning command writes ONLY below the shared root — the bundled
- * runtime tree stays byte-identical, so its packaged digest keeps verifying.
- * Creation is idempotent: an environment whose interpreter already exists is
- * reused without spawning. Every failure degrades to today's behavior (the
- * aliases keep targeting the bundled interpreter and `pip` stays unpublished)
- * with exactly one log line — the shared environment is an enhancement, not
- * a boot dependency.
+ * The provisioning command writes ONLY below the shared root — and every
+ * python this module spawns runs with `PYTHONDONTWRITEBYTECODE=1`, so
+ * importing the bundled tree never writes `__pycache__` into it and its
+ * packaged digest keeps verifying against the exact file set.
+ *
+ * The base is chosen in two tiers: a local base is seeded through the
+ * standard library (`venv --copies` — `virtualenv` is a third-party package
+ * a stock local Python does not install), and any local failure (or no
+ * local Python at all) retries with the bundled base, whose tree ships
+ * `virtualenv` (`--always-copy`). Only when both tiers fail does the
+ * environment degrade to today's behavior.
+ *
+ * Creation is idempotent and self-healing: an existing environment is
+ * reused only when its interpreter both exists and actually runs (probed
+ * with `--version`); a present-but-broken interpreter means a corrupt
+ * environment, which is removed once — logging the repair — and rebuilt
+ * through the same two tiers. Every failure degrades to the bundled
+ * aliases and unpublished `pip` with exactly one log line — the shared
+ * environment is an enhancement, not a boot dependency.
  */
 export async function ensureDesktopSharedPythonEnvironment(
   inputs: DesktopSharedPythonEnvironmentInputs,
@@ -188,32 +248,79 @@ export async function ensureDesktopSharedPythonEnvironment(
   if (inputs.platform !== 'win32') return fallback
   const exists = inputs.exists ?? existsSync
   const paths = desktopSharedPythonEnvironmentPaths(inputs.rootDirectory)
-  if (exists(paths.pythonExecutable)) return sharedEnvironment(paths, exists)
+  const log = inputs.log ?? (() => {})
+  const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
 
-  const base = inputs.localPythonExecutable ?? inputs.bundledPythonExecutable
-  const provision = inputs.provision ?? spawnSharedPythonVirtualenv
-  let outcome: { exitCode: number | null, diagnostic: string }
-  try {
-    outcome = await provision(
-      base,
-      ['-m', 'virtualenv', '--always-copy', paths.root],
-      { ...(inputs.environment === undefined ? {} : { environment: inputs.environment }) },
-    )
-  } catch (cause) {
-    outcome = {
-      exitCode: null,
-      diagnostic: sanitizeDiagnostic(cause instanceof Error ? cause.message : String(cause)),
+  if (exists(paths.pythonExecutable)) {
+    const probe = inputs.probe ?? spawnSharedPythonProbe
+    let runnable = false
+    try {
+      runnable = await probe(paths.pythonExecutable, { environment: spawnEnvironment })
+    } catch {
+      runnable = false
     }
+    if (runnable) return sharedEnvironment(paths, exists)
+    // python.exe exists but does not run: a corrupt environment. Remove it
+    // once and rebuild below; an unremovable tree cannot be rebuilt in place.
+    const removeAll = inputs.removeAll ?? ((directory: string) => {
+      rmSync(directory, { recursive: true, force: true })
+    })
+    try {
+      removeAll(paths.root)
+    } catch (cause) {
+      log(
+        `dsh-plugin-desktop: the shared python environment at ${paths.root} holds an interpreter `
+          + `that no longer runs and could not be removed `
+          + `(${cause instanceof Error ? cause.message : String(cause)}); `
+          + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
+      )
+      return fallback
+    }
+    log(
+      `dsh-plugin-desktop: the shared python environment at ${paths.root} held an interpreter `
+        + 'that no longer runs; removed it and reprovisioning from scratch',
+    )
   }
-  if (outcome.exitCode === 0 && exists(paths.pythonExecutable)) {
-    return sharedEnvironment(paths, exists)
+
+  const provision = inputs.provision ?? spawnSharedPythonVirtualenv
+  const attempts: ReadonlyArray<{ readonly tool: string, readonly base: string, readonly args: readonly string[] }> = [
+    // Tier 1: a local base through the standard library it always ships.
+    ...(inputs.localPythonExecutable === undefined
+      ? []
+      : [{
+          tool: 'venv',
+          base: inputs.localPythonExecutable,
+          args: ['-m', 'venv', '--copies', paths.root] as const,
+        }]),
+    // Tier 2: the bundled base, whose tree ships virtualenv by construction.
+    {
+      tool: 'virtualenv',
+      base: inputs.bundledPythonExecutable,
+      args: ['-m', 'virtualenv', '--always-copy', paths.root] as const,
+    },
+  ]
+  const failures: string[] = []
+  for (const attempt of attempts) {
+    let outcome: { exitCode: number | null, diagnostic: string }
+    try {
+      outcome = await provision(attempt.base, attempt.args, { environment: spawnEnvironment })
+    } catch (cause) {
+      outcome = {
+        exitCode: null,
+        diagnostic: sanitizeDiagnostic(cause instanceof Error ? cause.message : String(cause)),
+      }
+    }
+    if (outcome.exitCode === 0 && exists(paths.pythonExecutable)) {
+      return sharedEnvironment(paths, exists)
+    }
+    const failure = outcome.exitCode === null
+      ? `could not start ${attempt.base} (${attempt.tool})`
+      : `${attempt.tool} exited with code ${outcome.exitCode} from ${attempt.base}`
+    failures.push(`${failure}${outcome.diagnostic === '' ? '' : `: ${outcome.diagnostic}`}`)
   }
-  const failure = outcome.exitCode === null
-    ? `could not start ${base}`
-    : `virtualenv exited with code ${outcome.exitCode} from ${base}`
-  ;(inputs.log ?? (() => {}))(
+  log(
     `dsh-plugin-desktop: the shared python environment at ${paths.root} is unavailable `
-      + `(${failure}${outcome.diagnostic === '' ? '' : `: ${outcome.diagnostic}`}); `
+      + `(${failures.join('; ')}); `
       + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
   )
   return fallback

@@ -965,8 +965,10 @@ async function start(): Promise<void> {
     // desktop-wide shared Python environment (`%LOCALAPPDATA%\DSH Desktop`
     // + `pyenv`), provisioned once from a real local Python when one exists
     // (WindowsApps store stubs excluded by the shared resolution) and from
-    // the digest-verified bundled interpreter otherwise. The provisioning
-    // command writes only below the shared root, so the bundled tree stays
+    // the digest-verified bundled interpreter otherwise — including when
+    // the local attempt fails, since the bundled tree ships `virtualenv`.
+    // Provisioning spawns run bytecode-blind (`PYTHONDONTWRITEBYTECODE=1`)
+    // and write only below the shared root, so the bundled tree stays
     // byte-identical and its packaged digest keeps verifying; any failure
     // logs once and keeps today's behavior (bundled aliases, no pip alias).
     let pythonRuntime: DesktopPythonRuntimeInstallation | undefined

@@ -124,9 +124,32 @@ export function setDesktopSandboxEscalationSink(sink: DesktopSandboxEscalationSi
   sandboxEscalationSink = sink
 }
 
-/** Normalize one command for dedupe keys and telemetry hashes: CRLF-safe whitespace collapse. */
+/** Normalize one command for dedupe keys and telemetry hashes: CRLF-safe
+ * whitespace collapse — but only outside quotes. Whitespace inside a
+ * quoted PowerShell argument stays verbatim, so two commands differing only
+ * in quoted whitespace keep distinct dedupe keys and telemetry hashes. */
 export function normalizeSandboxEscalationCommand(command: string): string {
-  return command.split(/\s+/u).join(' ').trim()
+  let normalized = ''
+  let space = false
+  let quote: '"' | "'" | undefined
+  for (const character of command) {
+    if (quote !== undefined) {
+      normalized += character
+      if (character === quote) quote = undefined
+    } else if (character === '"' || character === "'") {
+      if (space && normalized !== '') normalized += ' '
+      space = false
+      quote = character
+      normalized += character
+    } else if (/\s/u.test(character)) {
+      space = true
+    } else {
+      if (space && normalized !== '') normalized += ' '
+      space = false
+      normalized += character
+    }
+  }
+  return normalized
 }
 
 /** Telemetry identity of one command: sha256 of its normalized text, first 16 hex characters. */
@@ -195,6 +218,14 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
   /** Normalized-command keys already prompted this process, namespaced by session. */
   private readonly promptedKeys = new Set<string>()
 
+  /** Normalized-command keys whose suppressed denial was already reported.
+   *
+   * Repeated denials of one already-prompted command must not stream one
+   * `suppressed` telemetry row each, so only the first suppression per
+   * session per command is delivered; later ones are silent (the smallest
+   * dedupe — no counter field was added to the event schema). */
+  private readonly suppressedKeys = new Set<string>()
+
   constructor(ctx: ConstructorParameters<typeof SandboxPwshExecutor>[0], config: PwshConfig) {
     super(ctx, desktopWindowsPwshConfig(config, process.env, process.platform))
   }
@@ -233,11 +264,14 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
     const denied = result.sandbox
     const key = sandboxEscalationDedupeKey(spec.command, policy.sessionId)
     if (this.promptedKeys.has(key)) {
-      this.reportSandboxEscalation({
-        commandHash: sandboxEscalationCommandHash(spec.command),
-        outcome: 'suppressed',
-        mode: denied.mode,
-      })
+      if (!this.suppressedKeys.has(key)) {
+        this.suppressedKeys.add(key)
+        this.reportSandboxEscalation({
+          commandHash: sandboxEscalationCommandHash(spec.command),
+          outcome: 'suppressed',
+          mode: denied.mode,
+        })
+      }
       return result
     }
     this.promptedKeys.add(key)

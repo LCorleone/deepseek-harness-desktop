@@ -292,6 +292,21 @@ describe('sandbox escalation pure helpers', () => {
     expect(normalizeSandboxEscalationCommand('pip\tinstall\trequests')).toBe('pip install requests')
   })
 
+  it('collapses whitespace only outside quotes — quoted whitespace stays verbatim', () => {
+    expect(normalizeSandboxEscalationCommand('  git  commit -m "fix  spacing"  ')).toBe('git commit -m "fix  spacing"')
+    expect(normalizeSandboxEscalationCommand("Write-Host  'a  b'  "))
+      .toBe("Write-Host 'a  b'")
+  })
+
+  it('keeps commands that differ only in quoted whitespace on distinct keys', () => {
+    const wide = 'git commit -m "fix  spacing"'
+    const tight = 'git commit -m "fix spacing"'
+
+    expect(normalizeSandboxEscalationCommand(wide)).not.toBe(normalizeSandboxEscalationCommand(tight))
+    expect(sandboxEscalationDedupeKey(wide, 'session-a')).not.toBe(sandboxEscalationDedupeKey(tight, 'session-a'))
+    expect(sandboxEscalationCommandHash(wide)).not.toBe(sandboxEscalationCommandHash(tight))
+  })
+
   it('hashes the normalized command to 16 stable hex characters', () => {
     const hash = sandboxEscalationCommandHash('pip   install requests')
     expect(hash).toMatch(/^[0-9a-f]{16}$/u)
@@ -403,6 +418,24 @@ describe('sandbox write-denial escalation', () => {
       })))
       expect((otherSession.sandbox as DesktopSandboxInfo | undefined)?.escalation).toBe('approved')
       expect(harness.executor.prompts).toHaveLength(2)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('reports at most one suppressed telemetry row per command per session', async () => {
+    const harness = await escalationHarness()
+    try {
+      // The same denied command runs three times: one prompt, one approval
+      // row, and only ONE suppressed row — later silent denials must not
+      // stream one telemetry line each.
+      await harness.executor.run(harness.executor.resolve(harness.request()))
+      await harness.executor.run(harness.executor.resolve(harness.request()))
+      await harness.executor.run(harness.executor.resolve(harness.request()))
+
+      expect(harness.executor.prompts).toEqual(['pip install requests'])
+      expect(harness.executor.reports.map(report => report.outcome)).toEqual(['approved', 'suppressed'])
+      expect(harness.executor.reports.filter(report => report.outcome === 'suppressed')).toHaveLength(1)
     } finally {
       await harness.dispose()
     }
