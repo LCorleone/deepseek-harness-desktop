@@ -24,7 +24,7 @@
   {
     "packageName": "dsh-free-search",
     "version": "0.4.184",
-    "description": "网页搜索（上游 0.4.18 公司加固构建）：统一密钥与内网代理",
+    "description": "网页搜索工具",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://github.com/DDDMUC/dsh-free-search",
     "revoked": false,
