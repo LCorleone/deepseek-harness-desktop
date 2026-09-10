@@ -268,5 +268,5 @@ dsh-company-skills/
 
 ## 许可证
 
-MIT —— 见 [LICENSE](LICENSE)。收编的 `skill-creator` 在其 bundle 内以 `assets/LICENSE.txt`
+MIT —— 见 [LICENSE](LICENSE)。收编的 `skill-creator` 在其 bundle 内以 `LICENSE.txt`
 携带上游 Apache-2.0 许可证。

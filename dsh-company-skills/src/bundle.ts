@@ -67,7 +67,6 @@ export const SCRIPTS_DIR = 'scripts'
  * resources. It is no longer a required prefix: every entry outside
  * `scripts/` is an `assets[]` entry at its own source-relative path.
  */
-export const ASSETS_DIR = 'assets'
 
 /** Canonical fields of one bundle element, in document order. */
 export const BUNDLE_FIELDS = Object.freeze(['name', 'description', 'body', 'scripts', 'assets'])

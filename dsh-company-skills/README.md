@@ -199,4 +199,4 @@ tools, never as local paths.
 ## License
 
 MIT — see [LICENSE](LICENSE). The collected `skill-creator` carries its
-upstream Apache-2.0 license as `assets/LICENSE.txt` inside its bundle.
+upstream Apache-2.0 license as `LICENSE.txt` inside its bundle.

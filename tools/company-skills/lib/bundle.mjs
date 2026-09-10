@@ -57,7 +57,6 @@ export const SCRIPTS_DIR = 'scripts'
  * It is no longer a required prefix: every path outside `scripts/` is an
  * `assets[]` entry, keyed by its source-relative path.
  */
-export const ASSETS_DIR = 'assets'
 
 /**
  * Directory names pruned wherever they appear during the directory walk.
