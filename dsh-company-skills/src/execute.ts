@@ -53,7 +53,7 @@
  * @module dsh-company-skills/execute
  */
 
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join } from 'node:path'
@@ -196,6 +196,8 @@ export interface InterpreterResolutionInputs {
   readonly execPath?: string
   /** Executable probe over the resolved environment; defaults to a real `PATH` search. */
   readonly commandOnPath?: (command: string) => boolean
+  /** File-existence probe for the desktop-published command; defaults to `fs.existsSync`. */
+  readonly exists?: (path: string) => boolean
 }
 
 /** One resolved interpreter command plus the child environment it requires. */
@@ -271,7 +273,12 @@ export function resolveInterpreter(
   const environment = inputs.environment ?? process.env
   const platform = inputs.platform ?? process.platform
   const injected = environment[family === 'node' ? DESKTOP_NODE_EXECUTABLE_ENV : DESKTOP_PYTHON_EXECUTABLE_ENV]
-  if (injected !== undefined && injected.length > 0) return { command: injected, env: {} }
+  // The desktop only publishes a path it verified, but a CLI host inherits the
+  // user's shell: a stale export of the same name must not turn a working
+  // fallback into a launch failure, so the value is probed before it is used.
+  if (injected !== undefined && injected.length > 0 && (inputs.exists ?? existsSync)(injected)) {
+    return { command: injected, env: {} }
+  }
   const commandOnPath = inputs.commandOnPath ?? ((command: string) => executableOnPath(command, environment, platform))
   if (commandOnPath(family)) return { command: family, env: {} }
   if (family === 'python') return undefined

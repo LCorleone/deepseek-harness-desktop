@@ -154,11 +154,43 @@ describe('interpreter resolution', () => {
     expect(resolveInterpreter('node', {
       environment: { PATH: '/usr/bin', [DESKTOP_NODE_EXECUTABLE_ENV]: '/opt/dsh/node-runtime/node' },
       commandOnPath: probe,
+      exists: () => true,
     })).toEqual({ command: '/opt/dsh/node-runtime/node', env: {} })
     expect(resolveInterpreter('python', {
       environment: { PATH: '/usr/bin', [DESKTOP_PYTHON_EXECUTABLE_ENV]: 'C:/pyenv/Scripts/python.exe' },
       commandOnPath: probe,
+      exists: () => true,
     })).toEqual({ command: 'C:/pyenv/Scripts/python.exe', env: {} })
+  })
+
+  it('ignores a stale injection that no longer exists and keeps falling back', () => {
+    // A CLI host inherits the user's shell: an exported-but-deleted path must
+    // not shadow a working PATH lookup.
+    expect(resolveInterpreter('node', {
+      environment: { PATH: '/usr/bin', [DESKTOP_NODE_EXECUTABLE_ENV]: '/gone/node' },
+      commandOnPath: () => true,
+      exists: () => false,
+    })).toEqual({ command: 'node', env: {} })
+    expect(resolveInterpreter('python', {
+      environment: { [DESKTOP_PYTHON_EXECUTABLE_ENV]: 'C:/gone/python.exe' },
+      commandOnPath: () => false,
+      exists: () => false,
+    })).toBeUndefined()
+  })
+
+  it('skips a .cmd shim on a Windows PATH: only native images can be spawned', () => {
+    // The packaged desktop publishes .cmd shims on PATH; a shell-less spawn
+    // cannot execute them, which is why the injected variable exists. A PATH
+    // holding only node.cmd must NOT resolve to the bare name on Windows.
+    expect(resolveInterpreter('node', {
+      environment: { Path: 'C:\\shims' },
+      platform: 'win32',
+      execPath: 'C:/dsd/DSH Desktop.exe',
+      exists: () => false,
+    })).toEqual({
+      command: 'C:/dsd/DSH Desktop.exe',
+      env: { [ELECTRON_RUN_AS_NODE_ENV]: '1' },
+    })
   })
 
   it('falls back to the bare family name when it is executable on PATH', () => {
@@ -446,6 +478,7 @@ describe('interpreter resolution through the seam', () => {
       interpreterResolution: {
         environment: { [DESKTOP_NODE_EXECUTABLE_ENV]: '/opt/dsh/node-runtime/node' },
         commandOnPath: () => { throw new Error('PATH must not be probed for an injected command') },
+        exists: () => true,
       },
     })
     await executor.run({
