@@ -151,6 +151,74 @@ describe('company manifest entry source channel (P7)', () => {
   })
 })
 
+describe('company manifest entry description extension', () => {
+  // The next entry-level recognized extension after testers→channel→source
+  // (2026-09-10): the reviewed allowlist one-liner flows verbatim into the
+  // market card's summary. Optional non-empty string; old-shape manifests
+  // keep verifying byte-for-byte, and any misspelling (or empty value)
+  // still rejects the whole manifest like every unknown entry key.
+  const keyId = 'company-catalog-description-spec'
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const trustRoots = [{ keyId, fingerprint: ed25519PublicKeyFingerprint(publicKey) }]
+  const integrity = `sha512-${createHash('sha512').update(Buffer.from('description spec tarball\n')).digest('base64')}`
+
+  function manifestWith(entry: Record<string, unknown>): string {
+    const unsigned = {
+      manifestVersion: '1.0.0',
+      sequence: 11,
+      expiresAt: '2030-01-01T00:00:00Z',
+      packages: [{
+        packageName: 'company-plugin',
+        version: '1.0.0',
+        integrity,
+        bundlePatch: './cordis.patch.yml',
+        repository: { url: 'https://github.com/example/company-plugin' },
+        revoked: false,
+        runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+        ...entry,
+      }],
+    }
+    const signature = createCompanyManifestSignature(
+      unsigned as unknown as Parameters<typeof createCompanyManifestSignature>[0],
+      privateKey,
+      keyId,
+    )
+    return canonicalJsonText({ ...unsigned, signature })
+  }
+
+  it('verifies a description-carrying manifest and carries the value into the parsed entry', () => {
+    const description = '常驻侧边栏：上下文用量、会话与工具状态一目了然'
+    const verification = verifyDesktopCompanyManifest(
+      manifestWith({ description }),
+      { trustRoots, companyCatalogOrigin: null },
+    )
+    expect(verification).toMatchObject({ ok: true })
+    if (!verification.ok) return
+    expect(verification.manifest.packages[0]?.description).toBe(description)
+  })
+
+  it('keeps verifying the old shape with no description key at all', () => {
+    const verification = verifyDesktopCompanyManifest(manifestWith({}), { trustRoots, companyCatalogOrigin: null })
+    expect(verification).toMatchObject({ ok: true })
+    if (!verification.ok) return
+    expect(verification.manifest.packages[0]).not.toHaveProperty('description')
+  })
+
+  it.each([
+    ['an unknown near-miss key', { descriptionx: 'x' }, 'unknown field'],
+    ['an empty description', { description: '' }, 'non-empty string'],
+    ['a non-string description', { description: 42 }, 'non-empty string'],
+  ])('rejects the whole manifest for %s', (_label, entry, fragment) => {
+    const verification = verifyDesktopCompanyManifest(
+      manifestWith(entry),
+      { trustRoots, companyCatalogOrigin: null },
+    )
+    expect(verification).toMatchObject({ ok: false, code: 'invalid-manifest' })
+    if (verification.ok) return
+    expect(verification.reason).toContain(fragment)
+  })
+})
+
 describe('Desktop Market state path and parser', () => {
   it('uses one machine-level state path and rejects ambiguous paths', () => {
     const userData = temporaryUserData()

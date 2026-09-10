@@ -12,6 +12,7 @@ import { entryKey } from './allowlist.mjs'
 import { fingerprintOfRawPublicKey } from './keys.mjs'
 import { loadSemverRangeChecker } from './market.mjs'
 import {
+  manifestCarriesDescription,
   manifestCarriesSource,
   validateCompanyManifestShapeWithSources,
   verifyManifestSignature,
@@ -370,6 +371,12 @@ export function assembleUnsignedManifest({ market, sequence, expiresAt, entries,
         ...(tarballSource === undefined ? {} : {
           source: { kind: 'tarball', url: tarballSource.url, integrity: tarballSource.integrity },
         }),
+        // The reviewed market-card one-liner, the next recognized entry
+        // extension after testers→channel→source: signed verbatim when the
+        // allowlist carries it, omitted whole otherwise (old manifests keep
+        // their byte-exact shape; the allowlist is its only source — there
+        // is no registry-metadata fallback, by decision 2026-09-10).
+        ...(entry.description === undefined ? {} : { description: entry.description }),
       }
     })
   if (typeof expiresAt === 'string' ? Number.isNaN(Date.parse(expiresAt)) : !(expiresAt instanceof Date)) {
@@ -418,13 +425,14 @@ export function signUnsignedManifest(market, unsigned, privateKey, keyId, expect
  *   the market library's own `verifyCompanyManifest` — the published bytes
  *   stay verifiable by every field-unaware client, so the tool can never
  *   silently ship a legacy-incompatible source-free manifest;
- * - a manifest that carries `source` cannot verify there by design (one
- *   unknown key rejects it whole — the fleet-upgrade publication gate), so
- *   the dual-channel mirror is its only verifier on this side. The beta
- *   channel (`channel: 'beta'`, P9) is in the same position: its top-level
- *   `testers` roster is a key the market verifier rejects whole, and that is
- *   correct — the beta manifest is served at a URL only field-aware builds
- *   ever fetch, so no legacy-invariant applies to it.
+ * - a manifest that carries `source` or a per-entry `description` cannot
+ *   verify there by design (one unknown key rejects it whole — the
+ *   fleet-upgrade publication gate), so the dual-channel mirror is its only
+ *   verifier on this side. The beta channel (`channel: 'beta'`, P9) is in
+ *   the same position: its top-level `testers` roster is a key the market
+ *   verifier rejects whole, and that is correct — the beta manifest is
+ *   served at a URL only field-aware builds ever fetch, so no
+ *   legacy-invariant applies to it.
  */
 export async function verifyManifestText(market, text, { fingerprint, keyId, lastSeenSequence = 0, now, companyCatalogOrigin, channel = 'stable' }) {
   if (typeof text !== 'string' || text.length === 0) {
@@ -476,7 +484,11 @@ export async function verifyManifestText(market, text, { fingerprint, keyId, las
   if (verifiedAt >= expiresAtMs) {
     return { ok: false, code: 'expired', reason: `company manifest expired at ${manifest.expiresAt}` }
   }
-  if (!manifestCarriesSource(parsed) && channel !== 'beta') {
+  // The legacy cross-check applies only to documents that are entirely
+  // legacy-shaped: one entry-level extension (`source` or `description`)
+  // anywhere opts the whole manifest out — the market verifier would reject
+  // it over that one unknown key, which is the fleet gate, not a divergence.
+  if (!manifestCarriesSource(parsed) && !manifestCarriesDescription(parsed) && channel !== 'beta') {
     const legacy = market.verifyCompanyManifest(text, {
       trustRoots: [{ keyId, fingerprint }],
       lastSeenSequence,

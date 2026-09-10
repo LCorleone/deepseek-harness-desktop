@@ -11,7 +11,9 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { assembleUnsignedManifest } from '../lib/pipeline.mjs'
+import { assembleUnsignedManifest, signUnsignedManifest, verifyManifestText } from '../lib/pipeline.mjs'
+import { validateAllowlistEntry } from '../lib/allowlist.mjs'
+import { createEphemeralKeyPair, rawPublicKeyBytes } from '../lib/keys.mjs'
 import { loadMarketLibrary } from '../lib/market.mjs'
 
 const ORIGIN = 'https://gitlab.company.example'
@@ -87,4 +89,104 @@ test('manifest packages are sorted by (packageName, version) for deterministic r
     'alpha-plugin@2.0.0',
     'zeta-plugin@1.0.0',
   ])
+})
+
+// ---------------------------------------------------------------------------
+// Entry descriptions (2026-09-10): the optional allowlist `description`
+// one-liner is signed verbatim into the entry; entries without one keep the
+// exact previous byte shape (no `description` key at all).
+// ---------------------------------------------------------------------------
+
+test('a reviewed description is signed verbatim into the entry on both channels', async () => {
+  const market = await loadMarketLibrary()
+  const text = '常驻侧边栏：上下文用量、会话与工具状态一目了然'
+  const tarball = tarballEntry({
+    description: text,
+    source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.1.0.tgz'), integrity: INTEGRITY },
+  })
+  const npm = {
+    packageName: 'plain-plugin',
+    version: '1.0.0',
+    description: '另一个插件的描述',
+    bundlePatch: './cordis.patch.yml',
+    repository: 'https://github.com/example/plain-plugin',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+  }
+  const dists = new Map([['plain-plugin@1.0.0', { integrity: 'sha512-xyz', repository: { url: 'https://github.com/example/plain-plugin' } }]])
+  const { packages } = assemble(market, { entries: [tarball, npm], dists })
+  const signedTarball = packages.find((entry) => entry.packageName === 'company-hardened-plugin')
+  const signedNpm = packages.find((entry) => entry.packageName === 'plain-plugin')
+  assert.equal(signedTarball.description, text)
+  assert.equal(signedNpm.description, '另一个插件的描述')
+})
+
+test('entries without a description keep the exact previous shape — the key never appears', async () => {
+  const market = await loadMarketLibrary()
+  const entries = [
+    tarballEntry({ source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.1.0.tgz'), integrity: INTEGRITY } }),
+    {
+      packageName: 'plain-plugin',
+      version: '1.0.0',
+      bundlePatch: './cordis.patch.yml',
+      repository: 'https://github.com/example/plain-plugin',
+      revoked: false,
+      runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+    },
+  ]
+  const dists = new Map([['plain-plugin@1.0.0', { integrity: 'sha512-xyz', repository: { url: 'https://github.com/example/plain-plugin' } }]])
+  const { packages } = assemble(market, { entries, dists })
+  assert.equal(packages.length, 2)
+  for (const signed of packages) {
+    assert.equal('description' in signed, false)
+    assert.equal(JSON.stringify(signed).includes('"description"'), false)
+  }
+})
+
+test('the allowlist validator accepts only a non-empty string description and normalizes it through', () => {
+  const base = {
+    packageName: 'plain-plugin',
+    version: '1.0.0',
+    bundlePatch: './cordis.patch.yml',
+    repository: 'https://github.com/example/plain-plugin',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+  }
+  const good = validateAllowlistEntry({ ...base, description: '一句话描述' }, 'entry[0]')
+  assert.equal(good.ok, true)
+  assert.equal(good.value.description, '一句话描述')
+  const absent = validateAllowlistEntry({ ...base }, 'entry[0]')
+  assert.equal(absent.ok, true)
+  assert.equal('description' in absent.value, false)
+  assert.equal(validateAllowlistEntry({ ...base, description: '' }, 'entry[0]').ok, false)
+  assert.equal(validateAllowlistEntry({ ...base, description: 42 }, 'entry[0]').ok, false)
+})
+
+test('a description-carrying manifest round-trips the tool verifier (source-free npm channel included)', async () => {
+  const market = await loadMarketLibrary()
+  const { privateKey, publicKey } = createEphemeralKeyPair()
+  const keyId = 'description-spec-key'
+  const fingerprint = market.ed25519PublicKeyFingerprint(rawPublicKeyBytes(publicKey))
+  const integrity = `sha512-${Buffer.alloc(64, 7).toString('base64')}`
+  const entries = [{
+    packageName: 'plain-plugin',
+    version: '1.0.0',
+    description: '一句话描述',
+    bundlePatch: './cordis.patch.yml',
+    repository: 'https://github.com/example/plain-plugin',
+    revoked: false,
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+  }]
+  const dists = new Map([['plain-plugin@1.0.0', { integrity, repository: { url: 'https://github.com/example/plain-plugin' } }]])
+  const unsigned = assembleUnsignedManifest({ market, sequence: 4, expiresAt: new Date('2030-01-01T00:00:00Z'), entries, dists })
+  const { manifest, text } = signUnsignedManifest(market, unsigned, privateKey, keyId)
+  assert.equal(manifest.packages[0].description, '一句话描述')
+  assert.equal(text.includes('"description"'), true)
+  // The tool-side mirror accepts the extension, and the legacy cross-check
+  // scopes itself to extension-free documents: a description-only npm
+  // manifest is NOT market-verifiable (one unknown key), so verifying it
+  // through verifyManifestText must not abort as a mirror divergence.
+  const verification = await verifyManifestText(market, text, { fingerprint, keyId })
+  assert.equal(verification.ok, true)
+  assert.equal(verification.manifest.packages[0].description, '一句话描述')
 })

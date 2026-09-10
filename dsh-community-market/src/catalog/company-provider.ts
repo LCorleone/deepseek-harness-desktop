@@ -127,7 +127,9 @@ export class CompanyCatalogUntrustedError extends Error {
  * local DSH runtime. The signed npm dist `integrity`, the in-package
  * `bundlePatch` path, and the runtime compatibility ranges are carried
  * verbatim for the install-time signature check (P2-3); this card only
- * transports them and never evaluates them.
+ * transports them and never evaluates them. The optional `description`
+ * mirrors the signed entry's market-card one-liner onto the candidate so
+ * host surfaces can show it without re-reading the signed packages.
  */
 export interface CompanyCatalogCandidate {
   /** Snapshot item ID (`npm:<packageName>@<version>`) correlating catalog rows with signed entries. */
@@ -137,7 +139,19 @@ export interface CompanyCatalogCandidate {
   readonly integrity: string
   readonly bundlePatch: string
   readonly runtime: CompanyManifestRuntimeRanges
+  /** Signed market-card one-liner of the entry, when it carries one. */
+  readonly description?: string
 }
+
+/**
+ * Entry view the catalog cards read the optional signed `description` from:
+ * the market-known `CompanyManifestPackage` projection plus the entry-level
+ * extensions a field-aware Host verifier admits (Desktop's `source` install
+ * channel and `description` one-liner). The market verifier's own projection
+ * never carries the key — the read is optional by design, and an absent key
+ * means the placeholder summary below.
+ */
+type CompanyCatalogDescribedEntry = CompanyManifestPackage & { readonly description?: string }
 
 /** Summary of the last successful manifest verification. */
 export interface CompanyCatalogVerification {
@@ -168,14 +182,15 @@ export type CompanyManifestContentProvider = () => string | Uint8Array | Promise
  * override of the market library's field-unaware `verifyCompanyManifest`.
  * The embedding Host injects a field-aware verifier when its manifests may
  * carry entry fields beyond the market schema — Desktop's signed `source`
- * install channel — so the catalog scan keeps verifying those manifests
- * instead of rejecting them whole over one unknown key. Contract for
- * injected verifiers: `source`-free manifests decide exactly like
- * `verifyCompanyManifest` (same trust outcome, same failure codes), any
- * recognized extension fields are verified under the same fail-closed
- * rules, and a verified manifest carries the market-known projection of
- * every entry — the provider reads only those fields; extension fields
- * ride through `findSignedPackage` untouched.
+ * install channel and `description` market-card one-liner — so the catalog
+ * scan keeps verifying those manifests instead of rejecting them whole over
+ * one unknown key. Contract for injected verifiers: extension-free manifests
+ * decide exactly like `verifyCompanyManifest` (same trust outcome, same
+ * failure codes), any recognized extension fields are verified under the
+ * same fail-closed rules, and a verified manifest carries the market-known
+ * projection of every entry. The provider reads the market-known fields
+ * plus the one display extension (`description` → the card summary below);
+ * every other extension field rides through `findSignedPackage` untouched.
  */
 export type CompanyManifestVerifier = (
   raw: string | Uint8Array,
@@ -487,10 +502,10 @@ function newerVersion(entry: CompanyManifestPackage, current: CompanyManifestPac
  * same name.
  */
 function selectCatalogViewEntries(
-  packages: readonly CompanyManifestPackage[],
+  packages: readonly CompanyCatalogDescribedEntry[],
   dshRuntimeVersion: string,
-): readonly CompanyManifestPackage[] {
-  const newestByName = new Map<string, CompanyManifestPackage>()
+): readonly CompanyCatalogDescribedEntry[] {
+  const newestByName = new Map<string, CompanyCatalogDescribedEntry>()
   for (const entry of packages) {
     if (entry.revoked) continue
     if (!entryAcceptsDshRuntime(entry, dshRuntimeVersion)) continue
@@ -502,13 +517,16 @@ function selectCatalogViewEntries(
   return packages.filter(entry => newestByName.get(entry.packageName) === entry)
 }
 
-function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): CatalogItem {
+function catalogItem(entry: CompanyCatalogDescribedEntry, source: LocalSourceRecord): CatalogItem {
   const itemId = companyCatalogItemId(entry)
   return {
     id: itemId,
     name: entry.packageName,
     displayName: entry.packageName,
-    summary: `Company signed catalog entry ${entry.packageName}@${entry.version}`,
+    // The signed market-card one-liner when the entry carries one; the
+    // placeholder stays the fallback for every description-free entry (the
+    // historical shape, and the projection of every field-unaware verifier).
+    summary: entry.description ?? `Company signed catalog entry ${entry.packageName}@${entry.version}`,
     package: { registry: 'npm', name: entry.packageName },
     latestVersion: entry.version,
     // observeCatalog requires a repository identity before an item becomes an
@@ -526,7 +544,7 @@ function catalogItem(entry: CompanyManifestPackage, source: LocalSourceRecord): 
 }
 
 function buildScan(
-  packages: readonly CompanyManifestPackage[],
+  packages: readonly CompanyCatalogDescribedEntry[],
   providerRevision: string,
   source: LocalSourceRecord,
   verification: Omit<CompanyCatalogVerification, 'sequence' | 'expiresAt'> & { readonly finalUrl: string },
@@ -561,6 +579,7 @@ function buildScan(
       integrity: entry.integrity,
       bundlePatch: entry.bundlePatch,
       runtime: entry.runtime,
+      ...(entry.description === undefined ? {} : { description: entry.description }),
     })
   }
 

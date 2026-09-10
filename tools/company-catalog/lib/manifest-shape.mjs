@@ -1,17 +1,20 @@
 /**
  * Dual-channel company-manifest verification (P7): the strict schema mirror
- * of `dsh-community-market/docs/schemas/company-manifest.schema.json` plus the
- * one recognized extension — an optional per-entry `source` field selecting
- * the install channel:
+ * of `dsh-community-market/docs/schemas/company-manifest.schema.json` plus
+ * the recognized entry extensions — an optional per-entry `source` field
+ * selecting the install channel, and an optional per-entry `description`
+ * string (the reviewed market-card one-liner, the next extension after
+ * testers→channel→source):
  *
  *   `source` absent or {"kind":"npm"}            → the public npm channel
  *   {"kind":"tarball","url":…,"integrity":…}     → the intranet tarball channel
+ *   `description` present                        → signed display text, non-empty string
  *
  * The market library's `verifyCompanyManifest` stays the verifier for
- * `source`-free manifests (same accept/reject decisions — the shape rules
- * here mirror it key for key), but it rejects any `source`-carrying manifest
- * whole (`additionalProperties:false`), which is exactly the fleet gate the
- * publication runbook documents. This module is the tool-side verifier that
+ * extension-free manifests (same accept/reject decisions — the shape rules
+ * here mirror it key for key), but it rejects any extension-carrying
+ * manifest whole (`additionalProperties:false`), which is exactly the fleet
+ * gate the publication runbook documents. This module is the tool-side verifier that
  * can sign and round-trip the extended form; the desktop's
  * `verifyDesktopCompanyManifest` (dsh-plugin-desktop/src/desktop-market.ts) is
  * the client-side twin — keep the two mirrors in sync. The beta channel
@@ -31,7 +34,7 @@ const MANIFEST_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', '
 /** The beta channel adds exactly one recognized top-level key: the `testers` roster (P9). */
 const MANIFEST_BETA_KEYS = ['expiresAt', 'manifestVersion', 'packages', 'sequence', 'signature', 'testers']
 const ENTRY_REQUIRED_KEYS = ['bundlePatch', 'integrity', 'packageName', 'repository', 'revoked', 'runtime', 'version']
-const ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'source', 'treeDigest']
+const ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'description', 'source', 'treeDigest']
 const SIGNATURE_KEYS = ['keyId', 'publicKey', 'value']
 const RUNTIME_KEYS = ['cordisRuntimeVersion', 'dshRuntimeVersion', 'nodeRuntimeVersion']
 const REPOSITORY_KEYS = ['subdirectory', 'url']
@@ -270,6 +273,13 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
       throw new Error(`${at}.bundlePatch must be a safe relative path inside the package`)
     }
     if (typeof rawEntry.revoked !== 'boolean') throw new Error(`${at}.revoked must be a boolean`)
+    // The market-card one-liner: optional, non-empty when present (an empty
+    // string is a placeholder, not a description — reject it whole, exactly
+    // like the allowlist validator does at review time).
+    if (rawEntry.description !== undefined
+      && (typeof rawEntry.description !== 'string' || rawEntry.description.length === 0)) {
+      throw new Error(`${at}.description must be a non-empty string when present`)
+    }
     if (!isPlainObject(rawEntry.repository)) throw new Error(`${at}.repository must be an object`)
     {
       const repositoryUnknown = unknownFields(rawEntry.repository, REPOSITORY_KEYS)
@@ -336,6 +346,7 @@ export function validateCompanyManifestShapeWithSources(value, { companyCatalogO
       ...(rawEntry.treeDigest === undefined ? {} : { treeDigest: rawEntry.treeDigest }),
       ...(rawEntry.approvedBuilds === undefined ? {} : { approvedBuilds: rawEntry.approvedBuilds }),
       ...(rawEntry.source === undefined ? {} : { source }),
+      ...(rawEntry.description === undefined ? {} : { description: rawEntry.description }),
     })
   }
   return {
@@ -388,4 +399,15 @@ export function verifyManifestSignature(market, parsed, signature, trustRoot) {
 /** Whether any entry of a parsed manifest carries a `source` key. */
 export function manifestCarriesSource(parsed) {
   return Array.isArray(parsed?.packages) && parsed.packages.some((entry) => isPlainObject(entry) && entry.source !== undefined)
+}
+
+/**
+ * Whether any entry of a parsed manifest carries a `description` key — the
+ * second entry-level extension after `source`. Used to scope the legacy
+ * cross-check in `verifyManifestText` to documents that are entirely
+ * legacy-shaped (a description-carrying manifest is rejected by the field-
+ * unaware market verifier over that one key, by design).
+ */
+export function manifestCarriesDescription(parsed) {
+  return Array.isArray(parsed?.packages) && parsed.packages.some((entry) => isPlainObject(entry) && entry.description !== undefined)
 }

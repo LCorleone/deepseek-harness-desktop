@@ -36,7 +36,7 @@ export function expectedTarballFilename(packageName, version) {
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'channel', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
+const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'channel', 'description', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
 const SOURCE_KINDS = ['npm', 'tarball']
 const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'path', 'url']
 const NPM_SOURCE_FIELDS = ['kind']
@@ -280,7 +280,12 @@ export function repositoryFromPackument(value) {
  * signed verbatim when — and only when — present. The optional `source`
  * selects the install channel (P7): absent or `{kind:'npm'}` keeps the public
  * npm channel with no signed `source` key, `{kind:'tarball', url, integrity}`
- * signs the intranet tarball channel.
+ * signs the intranet tarball channel. The optional `description` is the
+ * market-card one-liner (a single non-empty string, Chinese by convention,
+ * reviewed right here in the MR): signed verbatim into the entry when
+ * present, omitted whole when absent — there is no registry-metadata
+ * fallback, because the npm and tarball channels have no common source of
+ * display text.
  */
 export function validateAllowlistEntry(entry, at, options = {}) {
   if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
@@ -296,6 +301,14 @@ export function validateAllowlistEntry(entry, at, options = {}) {
   }
   if (typeof version !== 'string' || !STABLE_VERSION_PATTERN.test(version)) {
     return { ok: false, reason: `${at}.version must be an exact stable semver (X.Y.Z, no prerelease or build metadata)` }
+  }
+  // The market-card one-liner: a non-empty string when present. An empty
+  // string is refused here — the signed entry carries the key only when it
+  // has text, exactly like the desktop verifier refuses an empty value whole
+  // — so review can never sign a placeholder-shaped description.
+  const description = entry.description
+  if (description !== undefined && (typeof description !== 'string' || description.length === 0)) {
+    return { ok: false, reason: `${at}.description must be a non-empty string when present (the market-card one-liner; omit the field instead of an empty value)` }
   }
   if (!isSafeBundlePatchPath(bundlePatch)) {
     return { ok: false, reason: `${at}.bundlePatch must be a relative path inside the package without dot segments, backslashes, or drive letters` }
@@ -366,6 +379,7 @@ export function validateAllowlistEntry(entry, at, options = {}) {
     value: {
       packageName,
       version,
+      ...(description === undefined ? {} : { description }),
       bundlePatch,
       ...(channel === 'stable' ? {} : { channel }),
       ...(repository === undefined ? {} : { repository }),

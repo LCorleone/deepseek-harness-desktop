@@ -1034,6 +1034,67 @@ describe('company catalog provider manifest verifier injection (field-aware host
     expect(provider.verification()).toMatchObject({ mode: 'content', sequence: 42, keyId })
   })
 
+  it('shows the signed description as the card summary and keeps the placeholder for entries without one', async () => {
+    // Two states of the entry-level `description` extension (2026-09-10): a
+    // description-carrying entry maps its one-liner onto the catalog card's
+    // summary (and the install candidate), while a description-free entry
+    // keeps the historical placeholder — the projection of every field-
+    // unaware verifier and of every old manifest.
+    const descriptionCarryingManifest = unsignedManifest({
+      packages: [
+        packageEntry({ description: '常驻侧边栏：上下文用量、会话与工具状态一目了然' }),
+        packageEntry({
+          packageName: '@deepseek-ai/cool-plugin',
+          version: '2.0.0',
+          repository: { url: 'https://github.com/DeepSeek-AI/Cool-Plugin' },
+        }),
+      ],
+    })
+    const describedVerifier: CompanyManifestVerifier = (raw, options) => {
+      const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+      const parsed = JSON.parse(text) as { packages?: Array<Record<string, unknown>>; signature?: unknown }
+      const packages = Array.isArray(parsed.packages) ? parsed.packages : []
+      const descriptions = packages.map(entry => entry.description)
+      const { signature: _wireSignature, ...document } = parsed
+      const projection = {
+        ...document,
+        packages: packages.map(({ description: _description, ...rest }) => rest),
+      }
+      const signature = createCompanyManifestSignature(asUnsigned(projection), privateKey, keyId)
+      const market = verifyCompanyManifest(canonicalJsonText({ ...projection, signature }), options)
+      if (!market.ok) return market
+      const extended = market.manifest.packages.map((entry, index) => (
+        descriptions[index] === undefined ? entry : { ...entry, description: descriptions[index] } as CompanyManifestPackage
+      ))
+      return { ...market, manifest: { ...market.manifest, packages: extended } }
+    }
+    const { provider, context } = contentProviderScan(
+      () => signedText(descriptionCarryingManifest),
+      memorySequenceStore(),
+      undefined,
+      describedVerifier,
+    )
+
+    const snapshots = await provider.scanCatalog!({}, context)
+
+    const summaries = snapshots.flatMap(snapshot => snapshot.items.map(item => item.summary))
+    expect(summaries).toEqual([
+      '常驻侧边栏：上下文用量、会话与工具状态一目了然',
+      'Company signed catalog entry @deepseek-ai/cool-plugin@2.0.0',
+    ])
+    expect(provider.verifiedPackages()).toEqual([
+      expect.objectContaining({
+        packageName: 'dsh-plugin-safe',
+        description: '常驻侧边栏：上下文用量、会话与工具状态一目了然',
+      }),
+      expect.objectContaining({ packageName: '@deepseek-ai/cool-plugin' }),
+    ])
+    expect('description' in (provider.verifiedPackages()[1] ?? {})).toBe(false)
+    // The extension rides through the signed-package query untouched.
+    expect((provider.findSignedPackage('dsh-plugin-safe', '1.2.3') as { readonly description?: unknown }).description)
+      .toBe('常驻侧边栏：上下文用量、会话与工具状态一目了然')
+  })
+
   it('forwards the exact bytes, trust roots, and clock to the injected verifier', async () => {
     const text = signedText()
     const manifestVerifier = vi.fn((raw: string | Uint8Array, options: Parameters<CompanyManifestVerifier>[1]) =>

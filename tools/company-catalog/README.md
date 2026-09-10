@@ -67,6 +67,7 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     },
     "treeDigest": "<64 lowercase hex>",   // optional: expected installed-tree root digest (see below)
     "approvedBuilds": ["sharp"],          // optional: signed build-script approval list (see below)
+    "description": "一句话中文描述",          // optional: market-card one-liner, signed verbatim (see below)
     "revoked": false,                     // revocation state, set by `revoke`
     "source": {                           // optional: install channel (P7 dual channel) — omit for npm
       "kind": "tarball",
@@ -116,6 +117,34 @@ judgment — that is the one supported migration path: `catalog revoke
 allowlist and in every reissued manifest), then land the new-channel entries.
 Two active channels for one name are refused whatever revoked history sits
 next to them.
+
+### Entry descriptions · 条目描述（2026-09-10）
+
+The optional `description` is the market card's one-liner: a single
+non-empty string (Chinese by convention, MR-reviewed right in the allowlist
+line) that the pipeline signs **verbatim** into the entry when present and
+omits **whole** when absent — entries without it keep their byte-exact
+signed shape, and the market card falls back to the `Company signed catalog
+entry <pkg>@<ver>` placeholder. The allowlist is its only source (no
+registry-metadata fallback: the npm and tarball channels have no common
+source of display text), the allowlist validator refuses an empty or
+non-string value at review time, and the verifier refuses it again at
+verification.
+
+It rides the same fleet gate as every entry extension: old clients verify
+with `additionalProperties: false`, so a description-carrying manifest is
+rejected **whole** on every build below the description-aware switch. The
+ordering rule is therefore fixed: **no seq26 may be published until the
+whole fleet runs b89** (the first description-aware build) — code lands
+first, the fleet upgrades, then the manifest.
+
+条目可选 `description` 是市场卡片的一句话描述：非空字符串（惯例中文，评审面即
+allowlist 行/MR 本身），管线在携带时**原样签名**进条目，不携带则**整个键不出现**
+（旧条目字节不变，市场卡片回退到 `Company signed catalog entry <pkg>@<ver>` 占位
+符）。allowlist 是其唯一来源（不做 registry 元数据回退：两通道无统一展示文本来
+源）；空串/非字符串在 allowlist 校验与验签两道门禁 fail-closed。它与其余条目扩展
+走同一条 fleet 门禁：旧客户端一个未知键拒收整份清单，**fleet 全员 b89 之前任何
+人不得发 seq26**——先落代码，再升舰队，最后才发清单。
 
 ### Beta publication channel · 预发通道（P9）
 
@@ -262,7 +291,8 @@ false` 把新字段当未知字段拒收），新验证器拒旧清单（字段�
 false` 对任何未知键一视同仁，与是否必填无关），渐进性只在「新客户端读旧清单」
 这一个方向成立。首次发布携带 `treeDigest`/`approvedBuilds` 的清单前，必须先把
 fleet 升级到认识这些字段的客户端（见下方「Optional authority fields」的顺序门禁）。
-`source`（P7 双通道的安装通道字段）遵守同一条规则。
+`source`（P7 双通道的安装通道字段）与 `description`（2026-09-10 市场卡片一句话
+描述）遵守同一条规则。
 
 `bundlePatch` **必填且非空**（schema `minLength: 1`）；`ms@2.1.3` 是真实
 registry 冒烟条目而非真实插件。可选 runtime 字段见 `allowlist.example.json`。

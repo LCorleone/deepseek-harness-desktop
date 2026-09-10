@@ -372,6 +372,15 @@ export const desktopMarketStateConstants = Object.freeze({
 // carrying manifest may be published before the whole fleet runs builds at
 // or beyond that switch.
 //
+// The entry-level `description` extension (2026-09-10) follows the same
+// one-key-at-a-time discipline the channel options already set (top-level
+// `testers` → the `channel` verifier option → entry `source` → now entry
+// `description`): an optional non-empty string, the reviewed allowlist
+// one-liner that flows verbatim into the market card's summary. It rides
+// the identical fleet gate — a description-carrying manifest is rejected
+// whole by every build below this switch, so it must not be published
+// before the whole fleet runs it.
+//
 // The beta publication channel (P9) adds the same one-extension discipline
 // as a verifier OPTION rather than a recognized key: `channel: 'beta'`
 // admits an optional top-level `testers` roster (lowercase SSO emails,
@@ -430,6 +439,15 @@ export interface DesktopCompanyManifestPackage {
   readonly treeDigest?: string
   readonly approvedBuilds?: readonly string[]
   readonly source?: DesktopCompanyEntrySource
+  /**
+   * Market-card one-liner (the reviewed allowlist `description`, signed
+   * verbatim): the market provider shows it as the card summary, falling
+   * back to the `Company signed catalog entry <pkg>@<ver>` placeholder on
+   * entries without it. Optional non-empty string; an empty or non-string
+   * value rejects the whole manifest, exactly like any other malformed
+   * entry field.
+   */
+  readonly description?: string
 }
 
 /** A company manifest whose entries may carry the signed `source` channel. */
@@ -501,7 +519,13 @@ const BETA_TESTER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u
 const MAX_BETA_TESTERS = 1_000
 const MAX_BETA_TESTER_EMAIL_LENGTH = 254
 const COMPANY_ENTRY_REQUIRED_KEYS = ['bundlePatch', 'integrity', 'packageName', 'repository', 'revoked', 'runtime', 'version'] as const
-const COMPANY_ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'source', 'treeDigest'] as const
+/**
+ * Entry-level recognized extensions, added one key at a time in the order
+ * they were fleet-gated: `source` (P7 install channel) → `description`
+ * (2026-09-10 market-card one-liner); `approvedBuilds`/`treeDigest` predate
+ * the extensions and come from the market schema itself.
+ */
+const COMPANY_ENTRY_OPTIONAL_KEYS = ['approvedBuilds', 'description', 'source', 'treeDigest'] as const
 const COMPANY_SIGNATURE_KEYS = ['keyId', 'publicKey', 'value'] as const
 const COMPANY_RUNTIME_KEYS = ['cordisRuntimeVersion', 'dshRuntimeVersion', 'nodeRuntimeVersion'] as const
 const COMPANY_REPOSITORY_KEYS = ['subdirectory', 'url'] as const
@@ -757,6 +781,13 @@ function parseDesktopCompanyManifestValue(
       throw new Error(`${at}.bundlePatch must be a safe relative path inside the package`)
     }
     if (typeof rawEntry.revoked !== 'boolean') throw new Error(`${at}.revoked must be a boolean`)
+    // The market-card one-liner: optional, non-empty when present — an empty
+    // string is a placeholder, not a description, and a non-string value is
+    // a malformed extension, so both reject the whole manifest.
+    if (rawEntry.description !== undefined
+      && (typeof rawEntry.description !== 'string' || rawEntry.description.length === 0)) {
+      throw new Error(`${at}.description must be a non-empty string when present`)
+    }
     if (!isPlainObject(rawEntry.repository)) throw new Error(`${at}.repository must be an object`)
     {
       const repositoryUnknown = unknownFields(rawEntry.repository, COMPANY_REPOSITORY_KEYS)
@@ -837,6 +868,7 @@ function parseDesktopCompanyManifestValue(
       ...(rawEntry.treeDigest === undefined ? {} : { treeDigest: rawEntry.treeDigest }),
       ...(rawEntry.approvedBuilds === undefined ? {} : { approvedBuilds: [...rawEntry.approvedBuilds as string[]] }),
       ...(rawEntry.source === undefined ? {} : { source }),
+      ...(rawEntry.description === undefined ? {} : { description: rawEntry.description }),
     })
   }
   return {
@@ -864,11 +896,12 @@ function ed25519PublicKeyFromRaw(raw: Buffer): ReturnType<typeof createPublicKey
 /**
  * Verify company manifest bytes end to end under the dual-channel schema:
  * canonical JSON byte equality, the strict shape above (every unknown key
- * rejects the whole manifest — `source` is the one recognized extension),
- * trust-root binding, the detached ed25519 signature over the canonical
- * unsigned window, the anti-rollback sequence floor, and expiry. For
- * manifests without `source` the decisions are byte-for-byte those of the
- * market library's verifier; `source`-carrying manifests verify only here.
+ * rejects the whole manifest — the entry-level `source`/`description`
+ * extensions are the recognized ones), trust-root binding, the detached
+ * ed25519 signature over the canonical unsigned window, the anti-rollback
+ * sequence floor, and expiry. For manifests without `source` or
+ * `description` the decisions are byte-for-byte those of the market
+ * library's verifier; extension-carrying manifests verify only here.
  */
 export function verifyDesktopCompanyManifest(
   raw: string | Uint8Array,
@@ -969,7 +1002,8 @@ export function verifyDesktopCompanyManifest(
  * same trust roots / anti-rollback floor / clock the provider passes, and a
  * verification result whose verified manifest carries the market-known
  * projection of every entry (plus the `source` channel, which the provider
- * transports untouched for `findSignedPackage`).
+ * transports untouched for `findSignedPackage`, and the `description`
+ * one-liner, which the provider reads for the market card's summary).
  */
 export type DesktopCompanyManifestVerifierForMarket = (
   raw: string | Uint8Array,

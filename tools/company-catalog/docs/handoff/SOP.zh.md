@@ -133,3 +133,6 @@ desktop 仓（你）
   真实性不索要证明（含理由：安全边界在所有者侧审计+安装链三验）
 - 2026-09-08：repository 惯例定案（无源码仓的本地构建件统一指 config 仓包页
   URL，见 ④）
+- 2026-09-10：allowlist 条目新增可选 `description`（一句话中文，市场卡片显示，
+  原样签名/无则键不出现）；顺序雷=fleet 全员 b89 前不得发 seq26（详见
+  MR-HANDLING §4 与 tools/company-catalog/README.md「Entry descriptions」）

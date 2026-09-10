@@ -2,6 +2,7 @@
   {
     "packageName": "dsh-better-sidebar",
     "version": "0.18.1",
+    "description": "常驻侧边栏：上下文用量、会话与工具状态一目了然",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://github.com/omdsh-dev/DSH-better-sidebar",
     "revoked": false,
@@ -23,6 +24,7 @@
   {
     "packageName": "dsh-free-search",
     "version": "0.4.184",
+    "description": "网页搜索（上游 0.4.18 公司加固构建）：统一密钥与内网代理",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://github.com/DDDMUC/dsh-free-search",
     "revoked": false,
@@ -38,6 +40,7 @@
   {
     "packageName": "dsh-dai-context",
     "version": "0.41.4",
+    "description": "上下文洞察与管理：仪表盘查看上下文占用，一键整理收纳",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-context-0.41.4.tgz",
     "revoked": false,
@@ -53,6 +56,7 @@
   {
     "packageName": "dsh-dai-agent-teams",
     "version": "0.1.16",
+    "description": "多智能体团队协作：队长/成员与依赖任务编排",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-agent-teams-0.1.16.tgz",
     "revoked": false,
@@ -69,6 +73,7 @@
   {
     "packageName": "dsh-dai-engramory",
     "version": "0.2.4",
+    "description": "文件式长期记忆：人类可读的 markdown 笔记，跨会话沉淀",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-engramory-0.2.4.tgz",
     "revoked": false,

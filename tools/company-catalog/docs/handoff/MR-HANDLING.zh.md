@@ -73,8 +73,18 @@ tools/company-catalog/allowlist.json，同版本字节闸自动核对）。
 repository 惯例：插件 package.json 自带则用其值；否则统一填 config 仓包页
 `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
 （2026-09-08 定，详见 SOP ④）。
+条目描述（2026-09-10）：allowlist 条目可加可选 `description`（一句话中文，非空），
+管线会原样签进条目、市场卡片直接显示；无则键不出现（卡片回退英文占位符）。
+同事 handoff.json v2 的 plugin.description 是现成素材——采纳时人工提炼一句贴进
+allowlist 条目（评审面=MR/allowlist 本身，不做本地化框架；5 条现有草稿见
+2026-09-10 brief，定稿人 July）。空串/非字符串会被 allowlist 校验拒绝。
 
 ## 4. 发布（细节全在 RELEASE.zh.md，此处索引）
+
+⚠ **顺序雷（2026-09-10 定）**：目录校验是严格形状——携带 `description` 的新清单
+在旧客户端（≤b88）上会**整单被拒**（一个未知键拒整份目录）。代码已进 b89；
+**fleet 四台全部升到 b89 之前，任何人不得发 seq26**（首个可携带描述的清单）。
+当前 allowlist 的描述为草稿，待 July 确认后才随 seq26 发出。
 
 ```
 beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state 棘轮推进）
