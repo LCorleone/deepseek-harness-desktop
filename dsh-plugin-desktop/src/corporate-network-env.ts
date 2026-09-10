@@ -12,6 +12,20 @@
  * `process.env` before any child spawns makes every descendant (pnpm, the
  * Host, sandboxed pwsh shells) inherit them. The runtime stays untouched;
  * `scrubbedParentEnv` in dsh-subprocess keeps proxy and CA variable names.
+ *
+ * Python/pip interplay (verified against requests 2.x, the stack pip vendors):
+ * every entry is favorable or neutral for the bundled CPython's pip and
+ * virtualenv, so the terminal environment is assembled without
+ * Python-specific exclusions. Proxy: requests reads HTTPS_PROXY/HTTP_PROXY/
+ * NO_PROXY through urllib's `getproxies()`, which prefers the environment and
+ * falls back to the WinINET registry only when the variables are absent — one
+ * upstream is ever chosen (never a double proxy), and it is the same
+ * system-resolved corporate proxy Chromium probed. Certificates: requests'
+ * environment merge honors CURL_CA_BUNDLE (REQUESTS_CA_BUNDLE is not set),
+ * pointing verification at this module's exported Windows roots — the same
+ * store pip's truststore path verifies through; SSL_CERT_FILE feeds Python's
+ * ssl default paths the identical roots; NODE_USE_ENV_PROXY and
+ * NODE_EXTRA_CA_CERTS are Node-only spellings Python ignores.
  */
 
 import { spawn } from 'node:child_process'

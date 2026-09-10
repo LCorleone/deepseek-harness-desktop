@@ -9,11 +9,23 @@
  * the archive bytes cross the network, the single supported target is pinned
  * to an exact CPython patch release and SHA-256 checksum from python.org.
  *
+ * The embeddable distribution ships without pip (and without the ensurepip
+ * machinery `python -m venv` needs), so staging bootstraps it in place: a
+ * sha256-pinned `get-pip.py` from bootstrap.pypa.io installs pip into the
+ * staged tree, and pip then installs a pinned `virtualenv` from PyPI — the
+ * interpreter replacement for `python -m venv`, which the workspace `.venv`
+ * convention builds on. Strict staging order: extract and checksum-verify
+ * the archive, unlock the `._pth` site machinery, bootstrap pip+virtualenv,
+ * and only then generate the digest manifest — the manifest must cover the
+ * final tree, bootstrap artifacts included.
+ *
  * Unlike the bundled Node runtime (one command file), Python is a directory
  * tree, so the digest manifest pins every staged file: staging walks the
  * extracted tree and writes `lib/python-runtime-sha256.json` as a relative
  * path → sha256 table the packaged runtime verifies fail-closed.
  */
+
+import { spawn } from 'node:child_process'
 
 import { createHash } from 'node:crypto'
 import {
@@ -45,6 +57,38 @@ export const BUNDLED_PYTHON_ARCHIVE = `python-${BUNDLED_PYTHON_VERSION}-embed-am
 /** SHA-256 of the pinned archive bytes, computed from the python.org download. */
 export const BUNDLED_PYTHON_ARCHIVE_SHA256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
 
+/** Trusted origin of the pinned pip bootstrap script. */
+export const BUNDLED_PYTHON_GETPIP_ORIGIN = 'https://bootstrap.pypa.io'
+
+/** URL of the pinned `get-pip.py`; the embeddable distribution ships no pip. */
+export const BUNDLED_PYTHON_GETPIP_URL = `${BUNDLED_PYTHON_GETPIP_ORIGIN}/get-pip.py`
+
+/**
+ * SHA-256 of the pinned `get-pip.py` bytes (an embedded pip 26.2.1 payload).
+ *
+ * bootstrap.pypa.io serves the current release at this URL, so the pin both
+ * freezes the bytes and fails loud the day upstream rotates the file: a
+ * cache-miss download that no longer matches aborts packaging until someone
+ * re-pins deliberately — the same trade the python.org archive pin makes.
+ */
+export const BUNDLED_PYTHON_GETPIP_SHA256 = 'fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6'
+
+/** Cache member name of the pinned bootstrap script below the archive cache. */
+export const BUNDLED_PYTHON_GETPIP_CACHE_NAME = 'get-pip.py'
+
+/**
+ * virtualenv version staged beside pip. `python -m venv` cannot replace it:
+ * the embeddable distribution has no ensurepip, so virtualenv creates the
+ * workspace `.venv` environments the agent preset prescribes.
+ */
+export const BUNDLED_PYTHON_VIRTUALENV_VERSION = '21.7.9'
+
+/** Marker file the pip bootstrap must leave in the staged tree. */
+export const BUNDLED_PYTHON_PIP_PACKAGE_FILE = 'Lib/site-packages/pip/__init__.py'
+
+/** Marker file the virtualenv install must leave in the staged tree. */
+export const BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE = 'Lib/site-packages/virtualenv/__init__.py'
+
 /** Command the staged distribution installs as. */
 export const BUNDLED_PYTHON_COMMAND_NAME = 'python.exe'
 
@@ -75,6 +119,12 @@ export const BUNDLED_PYTHON_DIGEST_MANIFEST_NAME = 'python-runtime-sha256.json'
 
 /** Largest archive accepted from the pinned origin, guarding decompression bombs. */
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+
+/** Hard deadline for one staged-python bootstrap command (get-pip or install). */
+const BOOTSTRAP_COMMAND_TIMEOUT_MS = 300_000
+
+/** Upper bound on bootstrap stderr retained for the failure message. */
+const MAX_BOOTSTRAP_STDERR_BYTES = 64 * 1024
 
 /** Absolute repository location of this script's package. */
 const DESKTOP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -171,6 +221,147 @@ export async function downloadBundledPythonArchive(
   verify(archivePath)
 }
 
+/** Verify bootstrap-script bytes against the pinned SHA-256 checksum. */
+export function verifyBundledPythonGetPip(
+  getpipPath: string,
+  readFile: (filename: string) => Buffer = readFileSync,
+): void {
+  const digest = createHash('sha256').update(readFile(getpipPath)).digest('hex')
+  if (digest !== BUNDLED_PYTHON_GETPIP_SHA256) {
+    throw new Error(
+      `dsh-plugin-desktop: bundled Python bootstrap script ${getpipPath} hashed to ${digest} instead of the pinned ${BUNDLED_PYTHON_GETPIP_SHA256}`,
+    )
+  }
+}
+
+/** Checksum verifier seam for the bootstrap script, mirroring the archive one. */
+export type BundledPythonGetPipVerifier = (getpipPath: string) => void
+
+/** Download the pinned bootstrap script unless the cache already holds its exact bytes. */
+export async function downloadBundledPythonGetPip(
+  getpipPath: string,
+  fetchGetPip: (url: string) => Promise<Response> = fetch,
+  verify: BundledPythonGetPipVerifier = path => verifyBundledPythonGetPip(path),
+): Promise<void> {
+  if (existsSync(getpipPath)) {
+    try {
+      verify(getpipPath)
+      return
+    } catch {
+      // A partial or tampered cache entry is replaced, never reused.
+    }
+  }
+  const response = await fetchGetPip(BUNDLED_PYTHON_GETPIP_URL)
+  if (!response.ok) {
+    throw new Error(`dsh-plugin-desktop: bundled Python bootstrap download ${BUNDLED_PYTHON_GETPIP_URL} failed with ${String(response.status)}`)
+  }
+  mkdirSync(dirname(getpipPath), { recursive: true })
+  await writeResponseToFile(response, getpipPath)
+  verify(getpipPath)
+}
+
+/** Staged-python command seam used by focused tests; production spawns the staged interpreter. */
+export type BundledPythonBootstrapRunner = (commandPath: string, args: readonly string[]) => Promise<void>
+
+/** Run one staged-python bootstrap command to success, or reject with its stderr tail. */
+function runStagedPythonCommand(commandPath: string, args: readonly string[]): Promise<void> {
+  return new Promise<void>((resolveCommand, rejectCommand) => {
+    const child = spawn(commandPath, [...args], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    })
+    let settled = false
+    let failure: Error | undefined
+    let exitCode: number | null = null
+    let stderrBytes = 0
+    let stderrTail = ''
+    const settle = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (failure !== undefined) rejectCommand(failure)
+      else if (exitCode === 0) resolveCommand()
+      else rejectCommand(new Error(
+        `exited with ${exitCode === null ? 'no exit code' : String(exitCode)}${stderrTail.length > 0 ? `: ${stderrTail}` : ''}`,
+      ))
+    }
+    const timer = setTimeout(() => {
+      // A hung bootstrap must not hold packaging hostage; the kill is best-effort.
+      failure = new Error(`timed out after ${String(BOOTSTRAP_COMMAND_TIMEOUT_MS)}ms`)
+      try {
+        child.kill()
+      } catch {
+        // An already-dead child needs no further cleanup.
+      }
+      settle()
+    }, BOOTSTRAP_COMMAND_TIMEOUT_MS)
+    if (child.stderr !== null) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes += chunk.byteLength
+        stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-MAX_BOOTSTRAP_STDERR_BYTES)
+        if (stderrBytes > MAX_BOOTSTRAP_STDERR_BYTES) child.stderr?.destroy()
+      })
+    }
+    child.once('error', cause => {
+      failure = cause
+      settle()
+    })
+    child.once('close', code => {
+      exitCode = code
+      settle()
+    })
+  })
+}
+
+/**
+ * Bootstrap pip and the pinned virtualenv into the staged tree.
+ *
+ * Both commands run with `--no-compile`: bytecode caches embed source mtimes,
+ * and the extracted tree's mtimes vary per machine, so skipping compilation
+ * keeps repeat digests reproducible. pip resolves virtualenv's dependencies
+ * from PyPI at packaging time (public-network Windows builders); the pinned
+ * top levels stay frozen while transitive dependencies float inside their
+ * allowed ranges, which is why the digest manifest is regenerated on every
+ * pack instead of diffed across packs.
+ */
+export async function bootstrapBundledPythonPackages(
+  commandPath: string,
+  getpipPath: string,
+  runCommand: BundledPythonBootstrapRunner = runStagedPythonCommand,
+): Promise<void> {
+  await runCommand(commandPath, [getpipPath, '--no-warn-script-location', '--no-compile'])
+  await runCommand(commandPath, [
+    '-m',
+    'pip',
+    'install',
+    `virtualenv==${BUNDLED_PYTHON_VIRTUALENV_VERSION}`,
+    '--no-warn-script-location',
+    '--no-compile',
+  ])
+}
+
+/**
+ * Confirm the bootstrap actually populated the staged tree and strip the
+ * generated `Scripts` launchers.
+ *
+ * The marker checks turn a silently no-op bootstrap (for example an executor
+ * that swallows failures) into a loud packaging failure. `pip install` also
+ * drops `pip.exe`-style launchers into `Scripts/`, and those embed the build
+ * host's absolute python path in their shebang — dead weight in the shipped
+ * tree, where users reach pip as `python -m pip`. The sweep removes them so
+ * the manifest pins only files that work everywhere.
+ */
+export function confirmBundledPythonBootstrap(stagingDirectory: string): void {
+  for (const marker of [BUNDLED_PYTHON_PIP_PACKAGE_FILE, BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE]) {
+    if (!isRegularStagedFile(join(stagingDirectory, marker))) {
+      throw new Error(
+        `dsh-plugin-desktop: the bundled Python bootstrap did not leave ${marker} in the staged tree ${stagingDirectory}`,
+      )
+    }
+  }
+  rmSync(join(stagingDirectory, 'Scripts'), { recursive: true, force: true })
+}
+
 /** Replace the shipped `#import site` comment with the live import line. */
 function unlockBundledPythonPathConfiguration(pthPath: string): void {
   const shipped = readFileSync(pthPath, 'utf8')
@@ -244,9 +435,10 @@ export function listBundledPythonFiles(directory: string): readonly string[] {
 /**
  * Collect the pinned sha256 digest of every staged file.
  *
- * The digests are computed from the staging tree immediately after the
- * archive checksum verified its bytes, so the manifest always pins exactly
- * what `extraResources` ships — including the path-configuration unlock.
+ * The digests are computed from the staging tree after the archive checksum
+ * verified its bytes and the pip+virtualenv bootstrap populated it, so the
+ * manifest always pins exactly what `extraResources` ships — including the
+ * path-configuration unlock and the bootstrap-installed packages.
  */
 export function collectBundledPythonFileDigests(
   stagingDirectory: string,
@@ -297,6 +489,12 @@ export interface BundledPythonPreparationOptions {
   readonly fetchArchive?: (url: string) => Promise<Response>
   /** Checksum verifier seam used by focused tests. */
   readonly verifyArchive?: BundledPythonArchiveVerifier
+  /** Fetch seam for the pinned get-pip.py, mirroring {@link fetchArchive}. */
+  readonly fetchGetPip?: (url: string) => Promise<Response>
+  /** Checksum verifier seam for the bootstrap script, mirroring {@link verifyArchive}. */
+  readonly verifyGetPip?: BundledPythonGetPipVerifier
+  /** Staged-python command seam used by focused tests. */
+  readonly runBootstrapCommand?: BundledPythonBootstrapRunner
   /** Whole-archive extraction seam used by focused tests. */
   readonly extractArchive?: BundledPythonArchiveExtractor
   /** Relative staged-file walker seam used by focused tests. */
@@ -308,13 +506,15 @@ export interface BundledPythonPreparationOptions {
 /**
  * Stage the pinned Python tree for the packaging target.
  *
- * `DSH_BUNDLED_PYTHON_ARCHIVE` may point at a pre-downloaded archive; its
- * bytes still have to match the pinned checksum.
+ * `DSH_BUNDLED_PYTHON_ARCHIVE` may point at a pre-downloaded archive and
+ * `DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE` at a pre-downloaded bootstrap script;
+ * their bytes still have to match the pinned checksums.
  *
- * Besides staging the tree `extraResources` copies, the run also (re)writes
- * `lib/${BUNDLED_PYTHON_DIGEST_MANIFEST_NAME}` with the sha256 digest of
- * every staged file — computed from bytes the pinned archive checksum
- * verified — so the packaged runtime can refuse a swapped tree.
+ * Staging runs in strict order — extract and checksum-verify the archive,
+ * unlock the `._pth` site machinery, bootstrap pip+virtualenv into the tree,
+ * then generate the digest manifest — so `lib/${BUNDLED_PYTHON_DIGEST_MANIFEST_NAME}`
+ * pins every staged file of the final tree, bootstrap artifacts included, and
+ * the packaged runtime can refuse a swapped tree.
  * @param options - target identity and injectable filesystem/network seams.
  * @returns the staged Python command path inside the staging directory.
  */
@@ -325,6 +525,7 @@ export async function prepareBundledPython(
   const cacheDirectory = options.cacheDirectory ?? join(options.desktopRoot, 'build', 'python-runtime-cache')
   const stagingDirectory = options.stagingDirectory ?? join(options.desktopRoot, 'build', 'python-runtime')
   const verify = options.verifyArchive ?? ((path: string) => verifyBundledPythonArchive(path))
+  const verifyGetPip = options.verifyGetPip ?? ((path: string) => verifyBundledPythonGetPip(path))
   const override = process.env.DSH_BUNDLED_PYTHON_ARCHIVE
   const archivePath = override !== undefined && override.length > 0
     ? override
@@ -347,9 +548,32 @@ export async function prepareBundledPython(
     stagingDirectory,
     options.extractArchive,
   )
+
+  // Bootstrap pip and the pinned virtualenv into the freshly extracted tree —
+  // before any digest is taken, so the manifest below covers the final tree.
+  const getpipOverride = process.env.DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE
+  const getpipPath = getpipOverride !== undefined && getpipOverride.length > 0
+    ? getpipOverride
+    : join(cacheDirectory, BUNDLED_PYTHON_GETPIP_CACHE_NAME)
+  if (getpipOverride === undefined || getpipOverride.length === 0) {
+    await downloadBundledPythonGetPip(getpipPath, options.fetchGetPip ?? fetch, verifyGetPip)
+  } else {
+    verifyGetPip(getpipPath)
+    // A verified override also seeds the shared bootstrap-script cache.
+    mkdirSync(cacheDirectory, { recursive: true })
+    copyFileSync(getpipPath, join(cacheDirectory, BUNDLED_PYTHON_GETPIP_CACHE_NAME))
+  }
+  options.log?.(`dsh-plugin-desktop: bootstrapping pip and virtualenv ${BUNDLED_PYTHON_VIRTUALENV_VERSION} into the staged bundled Python tree`)
+  await bootstrapBundledPythonPackages(
+    stagedCommandPath,
+    getpipPath,
+    options.runBootstrapCommand,
+  )
+  confirmBundledPythonBootstrap(stagingDirectory)
+
   const digests = collectBundledPythonFileDigests(stagingDirectory, options.listFiles)
   const manifestPath = writeBundledPythonDigestManifest(options.desktopRoot, options.platform, digests)
-  options.log?.(`dsh-plugin-desktop: pinned bundled Python digests at ${manifestPath}`)
+  options.log?.(`dsh-plugin-desktop: pinned bundled Python digests (${String(Object.keys(digests).length)} files) at ${manifestPath}`)
   return stagedCommandPath
 }
 

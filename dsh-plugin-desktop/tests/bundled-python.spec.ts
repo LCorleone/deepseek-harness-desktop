@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync as pathExistsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import AdmZip from 'adm-zip'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,16 +11,27 @@ import {
   BUNDLED_PYTHON_COMMAND_NAME,
   BUNDLED_PYTHON_DIGEST_MANIFEST_NAME,
   BUNDLED_PYTHON_DIST_ORIGIN,
+  BUNDLED_PYTHON_GETPIP_CACHE_NAME,
+  BUNDLED_PYTHON_GETPIP_SHA256,
+  BUNDLED_PYTHON_GETPIP_URL,
+  BUNDLED_PYTHON_PIP_PACKAGE_FILE,
   BUNDLED_PYTHON_PTH_MEMBER,
+  BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE,
+  BUNDLED_PYTHON_VIRTUALENV_VERSION,
   BUNDLED_PYTHON_VERSION,
   type BundledPythonArchiveVerifier,
   bundledPythonArchiveUrl,
   bundledPythonTarget,
+  bootstrapBundledPythonPackages,
   collectBundledPythonFileDigests,
+  confirmBundledPythonBootstrap,
   downloadBundledPythonArchive,
+  downloadBundledPythonGetPip,
   extractBundledPythonRuntime,
+  listBundledPythonFiles,
   prepareBundledPython,
   verifyBundledPythonArchive,
+  verifyBundledPythonGetPip,
 } from '../scripts/bundled-python.ts'
 import { beforePack } from '../scripts/prepare-bundled-python.ts'
 import {
@@ -30,6 +41,8 @@ import {
   clearBundledPythonRuntimeVerificationCache,
   packagedBundledPythonDirectory,
   parseBundledPythonDigestManifest,
+  pipAvailabilityFromBundledPythonManifest,
+  pythonPipAvailable,
   resolveDesktopPythonExecutable,
 } from '../src/desktop-python-runtime.ts'
 
@@ -43,6 +56,7 @@ function temporaryDirectory(): string {
 
 afterEach(() => {
   delete process.env.DSH_BUNDLED_PYTHON_ARCHIVE
+  delete process.env.DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE
   clearBundledPythonRuntimeVerificationCache()
   for (const dir of temporaryDirectories.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
@@ -85,6 +99,46 @@ function acceptOnly(expected: Buffer): BundledPythonArchiveVerifier {
 /** Extract a fake archive exactly like the production extractor. */
 function extractFakeArchive(archivePath: string, stagingDirectory: string): void {
   new AdmZip(archivePath).extractAllTo(stagingDirectory, false)
+}
+
+/** Marker files a faithful fake bootstrap leaves, mirroring the real pip layout. */
+function fakeBootstrapArtifacts(stagingDirectory: string): void {
+  const sitePackages = join(stagingDirectory, 'Lib', 'site-packages')
+  for (const [directory, file, contents] of [
+    ['pip', '__init__.py', 'pip package\n'],
+    ['pip-26.2.1.dist-info', 'METADATA', 'pip metadata\n'],
+    ['virtualenv', '__init__.py', 'virtualenv package\n'],
+    [`virtualenv-${BUNDLED_PYTHON_VIRTUALENV_VERSION}.dist-info`, 'METADATA', 'virtualenv metadata\n'],
+  ] as const) {
+    mkdirSync(join(sitePackages, directory), { recursive: true })
+    writeFileSync(join(sitePackages, directory, file), contents)
+  }
+  // The real bootstrap also drops a launcher whose shebang embeds the build
+  // host's python path; the post-bootstrap sweep must remove it.
+  mkdirSync(join(stagingDirectory, 'Scripts'), { recursive: true })
+  writeFileSync(join(stagingDirectory, 'Scripts', 'pip.exe'), 'fake launcher\n')
+}
+
+/** Fake bootstrap runner that records its calls and populates the staged tree. */
+function fakeBootstrapRunner(events?: string[]) {
+  return vi.fn(async (commandPath: string, args: readonly string[]) => {
+    events?.push(`bootstrap:${args[0] === '-m' ? 'pip-install' : 'get-pip'}`)
+    // The bootstrap depends on the unlocked site machinery: it must observe
+    // the live `import site` line, not the shipped comment.
+    expect(readFileSync(join(dirname(commandPath), BUNDLED_PYTHON_PTH_MEMBER), 'utf8')).toBe(UNLOCKED_PTH)
+    fakeBootstrapArtifacts(dirname(commandPath))
+  })
+}
+
+/** get-pip fetch and verifier seams primed with one payload's exact bytes. */
+function fakeGetPipSeams(payload: Buffer<ArrayBuffer>) {
+  return {
+    fetchGetPip: vi.fn(async (url: string): Promise<Response> => {
+      expect(url).toBe(BUNDLED_PYTHON_GETPIP_URL)
+      return new Response(payload)
+    }),
+    verifyGetPip: acceptOnly(payload),
+  }
 }
 
 describe('pinned bundled Python distribution', () => {
@@ -262,6 +316,8 @@ describe('bundled Python digest manifest', () => {
     const fetchArchive = vi.fn(async () => {
       throw new Error('staging with an archive override must not reach the network')
     })
+    const getPip = fakeGetPipSeams(Buffer.from('fake-get-pip-payload'))
+    const bootstrap = fakeBootstrapRunner()
 
     const staged = await prepareBundledPython({
       desktopRoot,
@@ -272,6 +328,8 @@ describe('bundled Python digest manifest', () => {
       fetchArchive: fetchArchive as unknown as typeof fetch,
       verifyArchive: acceptOnly(readFileSync(override)),
       extractArchive: extractFakeArchive,
+      ...getPip,
+      runBootstrapCommand: bootstrap,
     })
 
     expect(staged.endsWith(BUNDLED_PYTHON_COMMAND_NAME)).toBe(true)
@@ -285,6 +343,10 @@ describe('bundled Python digest manifest', () => {
     expect(manifest.platform).toBe('win32')
     expect(Object.keys(manifest.files)).toEqual([
       'LICENSE.txt',
+      `Lib/site-packages/pip-26.2.1.dist-info/METADATA`,
+      `Lib/site-packages/pip/__init__.py`,
+      `Lib/site-packages/virtualenv-${BUNDLED_PYTHON_VIRTUALENV_VERSION}.dist-info/METADATA`,
+      `Lib/site-packages/virtualenv/__init__.py`,
       'python.exe',
       'python312._pth',
       'python312.zip',
@@ -297,7 +359,18 @@ describe('bundled Python digest manifest', () => {
     expect(manifest.files['python.exe']).toBe(
       createHash('sha256').update('fake-python-exe\n').digest('hex'),
     )
+    // The bootstrap artifacts are pinned as part of the shipped tree, and the
+    // generated Scripts launchers are swept away before digesting.
+    expect(manifest.files[BUNDLED_PYTHON_PIP_PACKAGE_FILE]).toBe(
+      createHash('sha256').update('pip package\n').digest('hex'),
+    )
+    expect(manifest.files[BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE]).toBe(
+      createHash('sha256').update('virtualenv package\n').digest('hex'),
+    )
+    expect(pathExistsSync(join(root, 'staging', 'Scripts'))).toBe(false)
     expect(fetchArchive).not.toHaveBeenCalled()
+    expect(getPip.fetchGetPip).toHaveBeenCalledOnce()
+    expect(bootstrap).toHaveBeenCalledTimes(2)
 
     // Deterministic bytes: a second pass rewrites the identical manifest.
     const first = readFileSync(manifestPath, 'utf8')
@@ -312,8 +385,177 @@ describe('bundled Python digest manifest', () => {
       }) as unknown as typeof fetch,
       verifyArchive: acceptOnly(readFileSync(override)),
       extractArchive: extractFakeArchive,
+      fetchGetPip: vi.fn(async () => {
+        throw new Error('the verified bootstrap-script cache must serve the second pass')
+      }) as unknown as typeof fetch,
+      verifyGetPip: acceptOnly(Buffer.from('fake-get-pip-payload')),
+      runBootstrapCommand: fakeBootstrapRunner(),
     })
     expect(readFileSync(manifestPath, 'utf8')).toBe(first)
+  })
+})
+
+describe('bundled Python pip and virtualenv bootstrap', () => {
+  it('pins the bootstrap script URL and checksum, and the virtualenv version', () => {
+    expect(BUNDLED_PYTHON_GETPIP_URL).toBe('https://bootstrap.pypa.io/get-pip.py')
+    expect(BUNDLED_PYTHON_GETPIP_SHA256).toMatch(/^[0-9a-f]{64}$/u)
+    expect(BUNDLED_PYTHON_VIRTUALENV_VERSION).toMatch(/^\d+\.\d+\.\d+$/u)
+  })
+
+  it('rejects bootstrap bytes that do not match the pinned checksum', () => {
+    const root = temporaryDirectory()
+    const getpipPath = join(root, BUNDLED_PYTHON_GETPIP_CACHE_NAME)
+    writeFileSync(getpipPath, 'tampered bytes')
+
+    expect(() => verifyBundledPythonGetPip(getpipPath)).toThrow('instead of the pinned')
+    expect(createHash('sha256').update('tampered bytes').digest('hex')).not.toBe(BUNDLED_PYTHON_GETPIP_SHA256)
+  })
+
+  it('downloads the pinned bootstrap script once, reuses a verified cache entry, and replaces a tampered one', async () => {
+    const root = temporaryDirectory()
+    const getpipPath = join(root, BUNDLED_PYTHON_GETPIP_CACHE_NAME)
+    const payload = Buffer.from('fake-get-pip-payload')
+    const getPip = fakeGetPipSeams(payload)
+
+    await downloadBundledPythonGetPip(getpipPath, getPip.fetchGetPip, getPip.verifyGetPip)
+    expect(readFileSync(getpipPath)).toEqual(payload)
+
+    await downloadBundledPythonGetPip(getpipPath, getPip.fetchGetPip, getPip.verifyGetPip)
+    expect(getPip.fetchGetPip).toHaveBeenCalledOnce()
+
+    writeFileSync(getpipPath, 'tampered')
+    await downloadBundledPythonGetPip(getpipPath, getPip.fetchGetPip, getPip.verifyGetPip)
+    expect(getPip.fetchGetPip).toHaveBeenCalledTimes(2)
+    expect(readFileSync(getpipPath)).toEqual(payload)
+  })
+
+  it('rejects a non-OK bootstrap download response', async () => {
+    const root = temporaryDirectory()
+
+    await expect(downloadBundledPythonGetPip(
+      join(root, BUNDLED_PYTHON_GETPIP_CACHE_NAME),
+      async () => new Response('gone', { status: 503 }),
+    )).rejects.toThrow('failed with 503')
+  })
+
+  it('runs get-pip then the pinned virtualenv install with the staged command', async () => {
+    const root = temporaryDirectory()
+    const commandPath = join(root, 'python.exe')
+    const getpipPath = join(root, 'get-pip.py')
+    const calls: Array<readonly string[]> = []
+    await bootstrapBundledPythonPackages(commandPath, getpipPath, async (_command, args) => {
+      calls.push(args)
+    })
+
+    expect(calls).toEqual([
+      [getpipPath, '--no-warn-script-location', '--no-compile'],
+      ['-m', 'pip', 'install', `virtualenv==${BUNDLED_PYTHON_VIRTUALENV_VERSION}`, '--no-warn-script-location', '--no-compile'],
+    ])
+  })
+
+  it('propagates a failing bootstrap command out of staging', async () => {
+    await expect(bootstrapBundledPythonPackages(
+      join('staging', 'python.exe'),
+      join('staging', 'get-pip.py'),
+      async () => { throw new Error('exited with 1: no pip') },
+    )).rejects.toThrow('exited with 1: no pip')
+  })
+
+  it('fails loud when the bootstrap left no pip or virtualenv in the staged tree', () => {
+    const root = temporaryDirectory()
+    expect(() => confirmBundledPythonBootstrap(root)).toThrow(
+      `did not leave ${BUNDLED_PYTHON_PIP_PACKAGE_FILE}`,
+    )
+
+    const halfDone = join(root, 'half')
+    fakeBootstrapArtifacts(halfDone)
+    rmSync(join(halfDone, 'Lib', 'site-packages', 'virtualenv'), { recursive: true, force: true })
+    expect(() => confirmBundledPythonBootstrap(halfDone)).toThrow(
+      `did not leave ${BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE}`,
+    )
+  })
+
+  it('generates the digest manifest only after the bootstrap populated the tree', async () => {
+    const root = temporaryDirectory()
+    const override = fakeArchive(join(root, 'override-archive'))
+    process.env.DSH_BUNDLED_PYTHON_ARCHIVE = override
+    const events: string[] = []
+    const stagingDirectory = join(root, 'staging')
+    const listFiles = vi.fn((directory: string) => {
+      events.push('collect-digests')
+      return listBundledPythonFiles(directory)
+    })
+
+    await prepareBundledPython({
+      desktopRoot: join(root, 'app'),
+      platform: 'win32',
+      arch: 'x64',
+      stagingDirectory,
+      cacheDirectory: join(root, 'cache'),
+      fetchArchive: vi.fn(async () => { throw new Error('the archive override must not reach the network') }) as unknown as typeof fetch,
+      verifyArchive: acceptOnly(readFileSync(override)),
+      extractArchive: extractFakeArchive,
+      ...fakeGetPipSeams(Buffer.from('fake-get-pip-payload')),
+      runBootstrapCommand: fakeBootstrapRunner(events),
+      listFiles,
+    })
+
+    // A manifest generated before the bootstrap would flip this order — and
+    // its file table would miss every site-packages entry.
+    expect(events).toEqual(['bootstrap:get-pip', 'bootstrap:pip-install', 'collect-digests'])
+    const manifest = JSON.parse(readFileSync(
+      join(root, 'app', 'lib', BUNDLED_PYTHON_DIGEST_MANIFEST_NAME),
+      'utf8',
+    )) as { files: Record<string, string> }
+    expect(Object.keys(manifest.files)).toContain(BUNDLED_PYTHON_PIP_PACKAGE_FILE)
+    expect(Object.keys(manifest.files)).toContain(BUNDLED_PYTHON_VIRTUALENV_PACKAGE_FILE)
+  })
+
+  it('bootstraps through the get-pip override without any network access, seeding the cache', async () => {
+    const root = temporaryDirectory()
+    const override = fakeArchive(join(root, 'override-archive'))
+    process.env.DSH_BUNDLED_PYTHON_ARCHIVE = override
+    const getpipOverride = join(root, 'override-get-pip')
+    const payload = Buffer.from('fake-get-pip-payload')
+    writeFileSync(getpipOverride, payload)
+    process.env.DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE = getpipOverride
+    const cacheDirectory = join(root, 'cache')
+
+    await prepareBundledPython({
+      desktopRoot: join(root, 'app'),
+      platform: 'win32',
+      arch: 'x64',
+      stagingDirectory: join(root, 'staging'),
+      cacheDirectory,
+      fetchArchive: vi.fn(async () => { throw new Error('overrides must not reach the network') }) as unknown as typeof fetch,
+      fetchGetPip: vi.fn(async () => { throw new Error('overrides must not reach the network') }) as unknown as typeof fetch,
+      verifyArchive: acceptOnly(readFileSync(override)),
+      verifyGetPip: acceptOnly(payload),
+      extractArchive: extractFakeArchive,
+      runBootstrapCommand: fakeBootstrapRunner(),
+    })
+
+    expect(readFileSync(join(cacheDirectory, BUNDLED_PYTHON_GETPIP_CACHE_NAME))).toEqual(payload)
+  })
+
+  it('rejects a get-pip override whose bytes do not match the pinned checksum', async () => {
+    const root = temporaryDirectory()
+    const override = fakeArchive(join(root, 'override-archive'))
+    process.env.DSH_BUNDLED_PYTHON_ARCHIVE = override
+    process.env.DSH_BUNDLED_PYTHON_GETPIP_ARCHIVE = join(root, 'tampered-get-pip')
+    writeFileSync(join(root, 'tampered-get-pip'), 'tampered bytes')
+
+    await expect(prepareBundledPython({
+      desktopRoot: join(root, 'app'),
+      platform: 'win32',
+      arch: 'x64',
+      stagingDirectory: join(root, 'staging'),
+      cacheDirectory: join(root, 'cache'),
+      fetchArchive: vi.fn(async () => { throw new Error('must not reach the network') }) as unknown as typeof fetch,
+      verifyArchive: acceptOnly(readFileSync(override)),
+      extractArchive: extractFakeArchive,
+      runBootstrapCommand: fakeBootstrapRunner(),
+    })).rejects.toThrow('instead of the pinned')
   })
 })
 
@@ -333,6 +575,89 @@ function windowsManifestText(files: Record<string, string> = {
 }): string {
   return `${JSON.stringify({ version: BUNDLED_PYTHON_VERSION, platform: 'win32', files }, undefined, 2)}\n`
 }
+
+/** Manifest file table of a tree whose bootstrap populated pip and virtualenv. */
+const BOOTSTRAPPED_MANIFEST_FILES: Record<string, string> = {
+  'LICENSE.txt': 'b'.repeat(64),
+  'Lib/site-packages/pip-26.2.1.dist-info/METADATA': 'e'.repeat(64),
+  'Lib/site-packages/pip/__init__.py': PINNED_DIGEST,
+  'Lib/site-packages/virtualenv-21.7.9.dist-info/METADATA': 'f'.repeat(64),
+  'Lib/site-packages/virtualenv/__init__.py': '0'.repeat(64),
+  'python.exe': '1'.repeat(64),
+  'python312._pth': 'c'.repeat(64),
+  'python312.zip': 'd'.repeat(64),
+}
+
+describe('bundled Python pip availability probe', () => {
+  it('derives availability and versions from a manifest with bootstrap artifacts', () => {
+    const manifest = parseBundledPythonDigestManifest(JSON.parse(windowsManifestText(BOOTSTRAPPED_MANIFEST_FILES)))
+
+    expect(pipAvailabilityFromBundledPythonManifest(manifest)).toEqual({
+      pipAvailable: true,
+      virtualenvAvailable: true,
+      pipVersion: '26.2.1',
+      virtualenvVersion: BUNDLED_PYTHON_VIRTUALENV_VERSION,
+    })
+  })
+
+  it('reports a bare interpreter tree as carrying neither pip nor virtualenv', () => {
+    const manifest = parseBundledPythonDigestManifest(JSON.parse(windowsManifestText()))
+
+    expect(pipAvailabilityFromBundledPythonManifest(manifest)).toEqual({
+      pipAvailable: false,
+      virtualenvAvailable: false,
+      pipVersion: undefined,
+      virtualenvVersion: undefined,
+    })
+  })
+
+  it('answers the packaged probe from the archive-side manifest without spawning python', () => {
+    const readDigestManifest = vi.fn(() => windowsManifestText(BOOTSTRAPPED_MANIFEST_FILES))
+
+    expect(pythonPipAvailable(WINDOWS_PACKAGED_MODULE_URL, {
+      platform: 'win32',
+      environment: { PATH: 'C:\\Windows' },
+      readDigestManifest,
+    })).toEqual({
+      pipAvailable: true,
+      virtualenvAvailable: true,
+      pipVersion: '26.2.1',
+      virtualenvVersion: BUNDLED_PYTHON_VIRTUALENV_VERSION,
+    })
+    expect(readDigestManifest).toHaveBeenCalledOnce()
+  })
+
+  it('answers unavailable for an unreadable manifest instead of throwing', () => {
+    expect(pythonPipAvailable(WINDOWS_PACKAGED_MODULE_URL, {
+      platform: 'win32',
+      environment: { PATH: 'C:\\Windows' },
+      readDigestManifest: () => { throw new Error('ENOENT') },
+    })).toEqual({
+      pipAvailable: false,
+      virtualenvAvailable: false,
+      pipVersion: undefined,
+      virtualenvVersion: undefined,
+    })
+  })
+
+  it('never consults the bundled manifest outside a packaged application', () => {
+    const readDigestManifest = vi.fn(() => windowsManifestText(BOOTSTRAPPED_MANIFEST_FILES))
+
+    expect(pythonPipAvailable(new URL(
+      'file:///workspace/dsh-plugin-desktop/lib/desktop-python-runtime.js',
+    ).href, {
+      platform: 'win32',
+      environment: { PATH: 'C:\\Python312' },
+      readDigestManifest,
+    })).toEqual({
+      pipAvailable: false,
+      virtualenvAvailable: false,
+      pipVersion: undefined,
+      virtualenvVersion: undefined,
+    })
+    expect(readDigestManifest).not.toHaveBeenCalled()
+  })
+})
 
 /** Resolution seams for one packaged-layout Python resolution. */
 function packagedSeams(overrides: Partial<{
