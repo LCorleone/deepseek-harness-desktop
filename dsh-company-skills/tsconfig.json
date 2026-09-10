@@ -4,6 +4,12 @@
     "lib": ["ES2024"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    // This plugin consumes the host's `@deepseek-ai/dsh-tools` and
+    // `@deepseek-ai/dsh-subprocess` declarations, whose graph references host
+    // packages the plugin deliberately does not depend on (agent, session,
+    // code-runtime). Skipping declaration-file checking keeps the published
+    // peer surface small; our own sources are still fully checked.
+    "skipLibCheck": true,
     "rootDir": "src",
     "outDir": "lib",
     "declaration": true,

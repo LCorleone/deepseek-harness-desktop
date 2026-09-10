@@ -8840,6 +8840,8 @@ __metadata:
     "@deepseek-ai/dsh-llm": "npm:0.1.2-rc.1"
     "@deepseek-ai/dsh-scope": "npm:0.1.2-rc.1"
     "@deepseek-ai/dsh-skill": "npm:0.1.2-rc.1"
+    "@deepseek-ai/dsh-subprocess": "npm:0.1.2-rc.1"
+    "@deepseek-ai/dsh-tools": "npm:0.1.2-rc.1"
     "@types/node": "npm:^22.20.0"
     tsdown: "npm:0.22.2"
     typescript: "npm:6.0.3"
@@ -8847,6 +8849,8 @@ __metadata:
   peerDependencies:
     "@deepseek-ai/cordis": 4.0.2
     "@deepseek-ai/dsh-skill": 0.1.2-rc.1
+    "@deepseek-ai/dsh-subprocess": 0.1.2-rc.1
+    "@deepseek-ai/dsh-tools": 0.1.2-rc.1
   languageName: unknown
   linkType: soft
 

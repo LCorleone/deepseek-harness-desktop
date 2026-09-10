@@ -2,13 +2,17 @@
 
 [中文说明](README.zh.md)
 
-DSH Company Skills is the container plugin that ships a set of curated company skills as **one obfuscated bundle** and publishes them through the DeepSeek Harness skill registry. It is the P6 batch-2 deliverable: batch 1 defines and writes the bundle format (`tools/company-skills`), this package reads it, batch 3 adds the script-execution channel, and batch 4 lands the first real skill set.
+DSH Company Skills is the container plugin that ships a set of curated company skills as **one obfuscated bundle** and publishes them through the DeepSeek Harness skill registry. It is the P6 batch-2/3 deliverable: batch 1 defines and writes the bundle format (`tools/company-skills`), this package reads it, batch 3 adds the zero-plaintext script-execution channel, and batch 4 lands the first real skill set.
 
 > **Current status: shipped as a placeholder container.** The asset carries two fixture skills (`fixture-hello`, `fixture-notes`) so the package builds, typechecks, and tests without any key material. The real container is repacked in batch 4; nothing else in the package changes.
 
 ## What it is
 
-One Cordis plugin, one provider:
+One Cordis plugin, one provider, and one model-facing tool:
+
+- **Plugin** `company-skills` — reads and decodes `assets/skills.bundle` once at module initialization and registers one provider through the skill registry seam.
+- **Provider** `company-skills` — `list()` returns the decrypted index (name, description, rank, opaque locator) and never a body; `get()` validates and materializes exactly the skill that locator names.
+- **Tool** `company_skill_run` — runs one declared `scripts/…` entry with the script source on the interpreter's stdin, so the bytes are executed without ever being written to disk (see [Script execution](#script-execution-the-zero-plaintext-channel)).
 
 - **Plugin** `company-skills` — reads and decodes `assets/skills.bundle` once at module initialization and registers one provider through the skill registry seam.
 - **Provider** `company-skills` — `list()` returns the decrypted index (name, description, rank, opaque locator) and never a body; `get()` validates and materializes exactly the skill that locator names.
@@ -25,12 +29,30 @@ export function apply(ctx: Context): void {
   ctx.inject(['skills'], (inner) => {
     inner.effect(() => inner.skills.registerProvider(() => provider))
   })
+  ctx.inject(['tools', 'subprocess'], (inner) => {
+    const executor = createScriptExecutor({ catalog, spawn: (spec) => inner.subprocess.spawn(spec) })
+    inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
+  })
 }
 ```
 
 A bare `ctx.skills` read inside a plugin fiber throws (`cannot get property "skills" without inject` under Cordis reflective contexts) — the failure mode a real third-party plugin hit, documented in `tools/company-catalog/plugin-sources/dsh-dai-engramory-0.2.4/README.md`. Registering straight from `apply()` would work, but it binds the registration to this plugin's own fiber instead of a disposable child; the child fiber's `effect()` owns the lifecycle, so unmounting the plugin unregisters the provider and invalidates the catalog caches.
 
-`tests/provider.spec.ts` pins both halves: the bare read really does throw, and the plugin's source contains the `ctx.inject(['skills'], …)` form with no direct `ctx.skills.` use.
+`tests/provider.spec.ts` pins both halves: the bare read really does throw, and the plugin's source contains the `ctx.inject(['skills'], …)` form with no direct `ctx.skills.` use. The tool rides the same reactive form on `['tools', 'subprocess']`, so a profile without those services still gets the provider and gets the tool as soon as they mount later.
+
+## Script execution: the zero-plaintext channel
+
+`company_skill_run` is the only way to execute a bundle's `scripts/…` entries. The engine (`src/execute.ts`) is deliberately independent of the desktop: it resolves `node`/`python` from the child's `PATH` (where the desktop injects its bundled runtime commands) and spawns through the host's `ctx.subprocess.spawn` seam.
+
+- **Parameters** — `skill` (a company skill name), `script` (a bundle-relative path that must equal one of *that skill's own* `scripts[]` paths, e.g. `scripts/report.mjs`), and optional `args` (extra argv, appended verbatim after the interpreter's `-` script marker).
+- **Delivery** — the decoded script text is written to the child's **stdin** (`node -` / `python -`); it is never written to a file and never appears in a log, a telemetry event, or an error message. Node's stdin module detection means both `require`-style and `import`-style scripts work.
+- **Interpreter** — extension-selected: `.mjs` / `.js` → `node`, `.py` → `python`. Any other extension is rejected before anything spawns.
+- **Addressing** — `script` is compared for exact equality against the validated bundle entries, never joined into a filesystem path, so `../`, absolute paths, and undeclared names all reject without spawning.
+- **Assets** — when the skill carries assets they are materialized under one private `mkdtemp` directory (`$TMPDIR/dsh-skill-assets-*`) that stands in for the bundle root (`assets/notes.md` → `<dir>/assets/notes.md`), published to the child as `DSH_SKILL_ASSETS`, and deleted in a `finally` block as soon as the run settles — including on timeout, cancellation, and failure. A skill with no assets stages nothing and the variable is never set.
+- **Bounds** — each stream is retained as a bounded tail (64 KiB by default, overflow reported as `truncated`), the run has its own 120 s deadline fused with the caller's signal, and at most one run per session may be in flight. Every rejection is a `SkillRunError` naming the skill and script path only.
+- **Return** — `{ skill, script, exitCode, stdout, stderr, stdoutTruncated, stderrTruncated }`; a non-zero exit code is data, not a thrown error.
+
+The zero-disk guarantee is asserted by the script itself in `tests/execute.spec.ts`: the test script walks the temp root while it runs and reports the number of files containing its own source canary, which must be `0`. `tests/tool.spec.ts` then runs the shipped `fixture-hello/scripts/hello.mjs` end to end through the real plugin wiring.
 
 ## Bundle formats
 
@@ -78,7 +100,7 @@ Two residual disclosures already signed off for P6 apply here unchanged: a skill
 ```bash
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc declarations
 corepack yarn workspace dsh-company-skills typecheck
-corepack yarn workspace dsh-company-skills test           # vitest, 22 cases
+corepack yarn workspace dsh-company-skills test           # vitest, 41 cases
 corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle matches fixtures/
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
@@ -94,6 +116,8 @@ The generator is a thin wrapper over the batch-1 packer (`tools/company-skills/p
 | --- | --- | --- |
 | `tests/container.spec.ts` | 11 | codec constants shared with the packer; shipped asset decodes to one entry per fixture; packer→decoder cross-consistency (canonical document and source tree, byte for byte); raw blob and generated module; determinism; no plaintext in the artifact (with a decoded positive control) and none in any shipped plugin file; malformed frame and element rejection parity with the packer; release-surface whitelist |
 | `tests/provider.spec.ts` | 11 | reactive `inject(['skills'])` registration plus disposal; late-mounted registry; bare `ctx.skills` throws; source-shape pin; `list()` index-only (no body, no `content`); `get()` materializes exactly one body; unknown name and unusable locator; a broken payload lists but refuses; missing/corrupt asset degrades without throwing; degraded catalog on a live host; module exports |
+| `tests/execute.spec.ts` | 14 | interpreter selection; real `node -` runs over stdin (output, args passthrough, non-zero exit as data); zero plaintext on disk (the script's own temp-root walk finds no copy of its source, staged assets are removed, the result carries no canary); unknown skill / undeclared script / traversal / missing interpreter all reject before spawning; deadline, output-tail truncation, caller cancellation; per-session concurrency bound and slot release; seam passthrough (argv, stdin body, cwd, grace, signal) |
+| `tests/tool.spec.ts` | 5 | tool schema, output shape, budget, and `presentCall`; cwd/session/signal resolution from the execution context; render/`toRunValue`; reactive registration on the tools seam and disposal; a shipped fixture script run end to end through the real plugin with staged-asset cleanup |
 
 Red-green evidence (measured in this batch):
 
@@ -101,27 +125,31 @@ Red-green evidence (measured in this batch):
 - Write the container document itself to `assets/skills.bundle` (i.e. ship plaintext) → **red**: `expected false, received true` on `artifact.includes('# Fixture hello')`.
 - Drop the `try/catch` around the asset read → **red**: the degrade test fails with `ENOENT` instead of an empty catalog.
 - Change the decoder's key string → **red**: the packer→decoder cross-consistency test fails immediately.
+- Write the script body to a file and spawn the file (instead of piping it to stdin) → **red**: the zero-disk test's own scan reports `SCRIPT-SOURCE-HITS=1` instead of `0`, and the temp root is not left empty.
+- Resolve `script` by taking the first bundle entry instead of matching the declared path → **red**: every traversal/undeclared-name case starts spawning and the `carries no script` assertions fail.
+- Drop the `AbortSignal`/deadline fusion and rely on the host timeout only → **red**: the executor's `timed out after … ms` and `was cancelled` classifications never fire.
 
 ## Layout
 
 ```
 dsh-company-skills/
-  src/index.ts          plugin: module-init catalog load + inject-child registration
+  src/index.ts          plugin: module-init catalog load + inject-child registrations
   src/provider.ts       provider: index-only list(), on-demand get()
   src/catalog.ts        load policy, index, per-skill materialization
   src/container.ts      container frame decode (independent of tools/)
   src/bundle.ts         one skill bundle's field rules (independent of tools/)
   src/codec.ts          XOR+base64 decoder, key constants
+  src/execute.ts        stdin-piped script executor: addressing, assets, bounds
+  src/tool.ts           company_skill_run definition, render, presentCall
   assets/skills.bundle  the shipped container block (in files)
   cordis.patch.yml      the composition row (in files)
   scripts/              asset generator + clean (never published)
   fixtures/             plaintext fixture skills (never published)
-  tests/                vitest (never published)
+  tests/                vitest + the local spawn seam (never published)
 ```
 
 ## What comes next
 
-- **Batch 3** adds the script-execution channel: `ctx.tools.register` plus `ctx.subprocess.spawn` with the script body on stdin, so `scripts/…` entries run without ever touching disk. This package already carries the script bytes in the bundle but does not execute them.
 - **Batch 4** replaces the fixture container with the first real skill set, lands it in the market handoff (`type: 'skill'`), and verifies a real installation end to end.
 
 ## License
