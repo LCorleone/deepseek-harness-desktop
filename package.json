@@ -11,7 +11,8 @@
   "workspaces": [
     "dsh-plugin-desktop",
     "dsh-community-fabric",
-    "dsh-community-market"
+    "dsh-community-market",
+    "dsh-company-skills"
   ],
   "resolutions": {
     "@deepseek-ai/dsh-agent-loop@npm:0.1.2-rc.1": "patch:@deepseek-ai/dsh-agent-loop@npm%3A0.1.2-rc.1#./patches/dsh-agent-loop@0.1.2-rc.1.patch",
@@ -84,7 +85,7 @@
     "test:company-catalog": "node --test tools/company-catalog/tests/accept-handoff.test.mjs tools/company-catalog/tests/allowlist-tarball.test.mjs tools/company-catalog/tests/beta-channel.test.mjs tools/company-catalog/tests/dsh-free-search.test.mjs tools/company-catalog/tests/manifest-tarball.test.mjs tools/company-catalog/tests/pack-surface.test.mjs tools/company-catalog/tests/publish-removal-guard.test.mjs tools/company-catalog/tests/tarball-publish.test.mjs tools/company-catalog/tests/tarball.test.mjs tools/company-catalog/tests/verify-handoff.test.mjs",
     "check:company-catalog": "yarn test:company-catalog && node tools/company-catalog/e2e-tarball.mjs",
     "test:company-skills": "node --test tools/company-skills/tests/bundle-format.test.mjs tools/company-skills/tests/pack-roundtrip.test.mjs tools/company-skills/tests/unpack-release-guard.test.mjs",
-    "check": "yarn check:layout && yarn workspace dsh-community-fabric check && yarn workspace dsh-community-market check && yarn workspace dsh-plugin-desktop check && yarn check:company-catalog && yarn test:company-skills",
+    "check": "yarn check:layout && yarn workspace dsh-community-fabric check && yarn workspace dsh-community-market check && yarn workspace dsh-company-skills check && yarn workspace dsh-plugin-desktop check && yarn check:company-catalog && yarn test:company-skills",
     "catalog": "node tools/company-catalog/cli.mjs",
     "catalog:measure": "node tools/company-catalog/measure.mjs",
     "dev": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop dev",

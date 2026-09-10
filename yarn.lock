@@ -8832,6 +8832,24 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"dsh-company-skills@workspace:dsh-company-skills":
+  version: 0.0.0-use.local
+  resolution: "dsh-company-skills@workspace:dsh-company-skills"
+  dependencies:
+    "@deepseek-ai/cordis": "npm:4.0.2"
+    "@deepseek-ai/dsh-llm": "npm:0.1.2-rc.1"
+    "@deepseek-ai/dsh-scope": "npm:0.1.2-rc.1"
+    "@deepseek-ai/dsh-skill": "npm:0.1.2-rc.1"
+    "@types/node": "npm:^22.20.0"
+    tsdown: "npm:0.22.2"
+    typescript: "npm:6.0.3"
+    vitest: "npm:4.1.8"
+  peerDependencies:
+    "@deepseek-ai/cordis": 4.0.2
+    "@deepseek-ai/dsh-skill": 0.1.2-rc.1
+  languageName: unknown
+  linkType: soft
+
 "dsh-plugin-desktop@workspace:dsh-plugin-desktop":
   version: 0.0.0-use.local
   resolution: "dsh-plugin-desktop@workspace:dsh-plugin-desktop"
