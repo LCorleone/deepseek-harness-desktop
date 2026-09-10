@@ -198,6 +198,11 @@ verify-handoff options:
                          both treeDigests equal (re-verification; default off —
                          the desktop e2e install smoke is a separate drill:
                          yarn e2e:install-smoke)
+  --description <text>   REQUIRED market-card one-liner for the new allowlist
+                         entry: a single non-blank Chinese sentence, trimmed
+                         into the paste-ready entry verbatim (distill it from
+                         the submission's handoff.plugin.description or the MR
+                         description; missing/blank fails at accept-prep)
   --json                 Print the machine-readable result document as JSON
   --catalog-origin <o>   Origin of the snippet's source.url (default: the
                          COMPANY_CATALOG_ORIGIN env value, else the origin of
@@ -233,7 +238,7 @@ const fail = (message) => {
 function parseArgs(argv) {
   const positionals = []
   const flags = {}
-  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project', 'channel', 'entry', 'add', 'remove', 'repository'])
+  const valueFlags = new Set(['allowlist', 'out', 'state-dir', 'sequence', 'sequence-from', 'digest-file', 'meta-out', 'expires-days', 'catalog-origin', 'source-dir', 'npm', 'patch', 'sources-root', 'pack-out', 'url', 'project', 'channel', 'entry', 'add', 'remove', 'repository', 'description'])
   for (let index = 0; index < argv.length; index += 1) {
     let argument = argv[index]
     if (argument.startsWith('--')) {
@@ -1163,6 +1168,7 @@ async function commandVerifyHandoff(positionals, flags) {
     smoke: flags.smoke === true,
     catalogOrigin: resolveCatalogOrigin(flags),
     ...(flags.project === undefined ? {} : { project: flags.project }),
+    ...(flags.description === undefined ? {} : { description: flags.description }),
     log: json ? undefined : console.log,
   })
   if (json) {

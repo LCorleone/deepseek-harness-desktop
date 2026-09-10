@@ -28,6 +28,8 @@ const OTHER_DIGEST = 'b'.repeat(64)
 const PINNED_DSH_COMMIT = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
 const PINNED_DESKTOP = '2.0.4'
 const PINNED_RUNTIME_RANGE = '^0.1.2-rc.1'
+/** The market-card one-liner every new entry must carry (2026-09-10). */
+const FIXTURE_DESCRIPTION = '一句话中文：fixture 插件的市场卡片描述'
 
 // The allowlist under test lives in a throwaway git repository, committed
 // under a nested path (proving the repo-relative pathspec handling).
@@ -92,7 +94,7 @@ const handoffSheet = (bytes) => ({
 })
 
 /** A submission workspace whose verify run PASSes (offline stubbed measurement). */
-async function verifiedSubmission({ tarball = pluginTarball(), allowlist, packagesDir, now, receiptsDir } = {}) {
+async function verifiedSubmission({ tarball = pluginTarball(), allowlist, packagesDir, now, receiptsDir, description = FIXTURE_DESCRIPTION } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'accept-handoff-sub-'))
   const submissionDir = join(root, 'submissions', 'fixture-hello-1.0.0')
   mkdirSync(submissionDir, { recursive: true })
@@ -110,6 +112,7 @@ async function verifiedSubmission({ tarball = pluginTarball(), allowlist, packag
     packagesDir: resolvedPackagesDir,
     receiptsDir: resolvedReceiptsDir,
     ...(now === undefined ? {} : { now }),
+    description,
     measureTarball: () => ({ packageName: 'fixture-hello', version: '1.0.0', treeDigest: FIXED_DIGEST }),
   })
   return { root, submissionDir, verdict, packagesDir: resolvedPackagesDir, compatPath, receiptsDir: resolvedReceiptsDir }
@@ -535,6 +538,7 @@ test('red: a verdict.json swapped for another run\'s after the local verify refu
       packagesDir: submission.packagesDir,
       receiptsDir: submission.receiptsDir,
       now: new Date('2026-09-06T09:00:00.000Z'),
+      description: FIXTURE_DESCRIPTION,
       measureTarball: () => ({ packageName: 'fixture-hello', version: '1.0.0', treeDigest: FIXED_DIGEST }),
     })
     assert.equal(runB.ok, true)
@@ -570,6 +574,7 @@ test('red: verdict.md from one run stitched with verdict.json from another refus
       packagesDir: submission.packagesDir,
       receiptsDir: submission.receiptsDir,
       now: new Date('2026-09-06T10:00:00.000Z'),
+      description: FIXTURE_DESCRIPTION,
       measureTarball: () => ({ packageName: 'fixture-hello', version: '1.0.0', treeDigest: FIXED_DIGEST }),
     })
     assert.equal(runB.ok, true)
@@ -634,6 +639,59 @@ test('red: a missing repository pin without --repository refuses, naming the fla
   }
 })
 
+// ---------------------------------------------------------------------------
+// The required market-card description (2026-09-10): the normal chain
+// carries it end to end, and a pre-flag receipt cannot ride in
+// ---------------------------------------------------------------------------
+
+test('green: the accepted entry carries the market-card description from the verified receipt', async () => {
+  const allowlist = gitAllowlistRepo([OLD_ACTIVE_ENTRY])
+  const submission = await verifiedSubmission({ allowlist })
+  try {
+    assert.equal(submission.verdict.ok, true)
+    assert.equal(submission.verdict.allowlistEntry.description, FIXTURE_DESCRIPTION)
+    const result = accept({ submissionDir: submission.submissionDir, allowlistPath: allowlist.path, receiptsDir: submission.receiptsDir, gitEnv: GIT_IDENTITY })
+    assert.equal(result.ok, true)
+    const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
+    const accepted = entries.find((entry) => entry.version === '1.0.0')
+    assert.equal(accepted.description, FIXTURE_DESCRIPTION)
+    // The kept old pin is untouched by the description rule (pre-existing
+    // entries keep their reviewed spelling; the gate binds receipts only).
+    const kept = entries.find((entry) => entry.version === '0.9.0')
+    assert.equal(kept.description, undefined)
+    assert.deepEqual(kept, OLD_ACTIVE_ENTRY)
+  } finally {
+    rmSync(submission.root, { recursive: true, force: true })
+    rmSync(allowlist.root, { recursive: true, force: true })
+  }
+})
+
+test('red: a description-less receipt (an older verify run, record re-fingerprinted) refuses with the re-run pointer', async () => {
+  const allowlist = gitAllowlistRepo([OLD_ACTIVE_ENTRY])
+  const submission = await verifiedSubmission({ allowlist })
+  try {
+    // Pre-flag receipt simulation: strip the entry's description from an
+    // otherwise genuine local run, then re-fingerprint the local record so
+    // every earlier gate (record, pair agreement, freshness, identity,
+    // digest) passes — only the description gate can refuse the bypass.
+    const receiptPath = join(submission.submissionDir, 'verdict.json')
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'))
+    delete receipt.allowlistEntry.description
+    const receiptText = `${JSON.stringify(receipt, null, 2)}\n`
+    writeFileSync(receiptPath, receiptText, 'utf8')
+    const record = JSON.parse(readFileSync(join(submission.receiptsDir, 'fixture-hello-1.0.0.json'), 'utf8'))
+    record.fingerprint = createHash('sha256').update(receiptText, 'utf8').digest('hex')
+    writeFileSync(join(submission.receiptsDir, 'fixture-hello-1.0.0.json'), `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+    const error = await refusalOf(() => accept({ submissionDir: submission.submissionDir, allowlistPath: allowlist.path, receiptsDir: submission.receiptsDir, gitEnv: GIT_IDENTITY }))
+    assert.match(error.message, /carries no market-card description/u)
+    assert.match(error.message, /re-run verify-handoff with --description/u)
+    assert.equal(gitIn(allowlist.root, ['status', '--porcelain']), '')
+  } finally {
+    rmSync(submission.root, { recursive: true, force: true })
+    rmSync(allowlist.root, { recursive: true, force: true })
+  }
+})
+
 test('red: same name@version already listed with a different treeDigest refuses (immutability)', async () => {
   const allowlist = gitAllowlistRepo([{ ...OLD_ACTIVE_ENTRY, version: '1.0.0', treeDigest: OTHER_DIGEST }])
   const submission = await verifiedSubmission({ allowlist })
@@ -675,6 +733,7 @@ test('red: re-accepting the reviewed entry spelled in another key order is a can
   const reviewedEntry = {
     packageName: 'fixture-hello',
     version: '1.0.0',
+    description: FIXTURE_DESCRIPTION,
     bundlePatch: './cordis.patch.yml',
     repository: 'https://github.com/example/fixture-hello',
     revoked: false,
@@ -740,10 +799,10 @@ test('green: a real write keeps the reviewed key order (untouched entries verbat
     const keptOld = entries.find((entry) => entry.version === '0.9.0')
     assert.deepEqual(keptOld, oldActive)
     // The applied entry inherits the package's first active entry's field
-    // order (revoked after runtime), with its new fields (treeDigest,
-    // source) appended.
+    // order (revoked after runtime), with its new fields (description,
+    // treeDigest, source) appended.
     const applied = entries.find((entry) => entry.version === '1.0.0')
-    assert.deepEqual(Object.keys(applied), [...Object.keys(oldActive), 'treeDigest', 'source'])
+    assert.deepEqual(Object.keys(applied), [...Object.keys(oldActive), 'description', 'treeDigest', 'source'])
     assert.equal(applied.treeDigest, FIXED_DIGEST)
     assert.equal(applied.source.kind, 'tarball')
     // And the commit is exactly the one file.

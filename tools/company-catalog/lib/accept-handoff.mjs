@@ -29,7 +29,11 @@
  *                  validateAllowlistEntry and cross-checked against the
  *                  receipt's own identity/digest; a missing repository pin
  *                  must come from --repository (fail-closed when neither
- *                  the package nor the flag provides one)
+ *                  the package nor the flag provides one); and a missing or
+ *                  blank description is refused outright (2026-09-10: every
+ *                  new entry carries the market-card one-liner, so a PASS
+ *                  receipt issued by a pre-flag verify-handoff run cannot
+ *                  ride in — re-run verify-handoff with --description)
  *   4 merge        multi-version pins (P15 Phase 0): the entry JOINS the
  *                  package's existing ACTIVE entries — promote adds a pin
  *                  and keeps the old ones, because every client boots by
@@ -343,6 +347,16 @@ function resolveVerifiedEntry({ receipt, repositoryOverride, companyCatalogOrigi
   }
   if (entry.treeDigest !== receipt.treeDigest) {
     refuse(`the receipt is inconsistent — the allowlist entry's treeDigest does not equal the verdict's measured treeDigest; re-run verify-handoff`)
+  }
+  // The market-card one-liner is part of every new entry (2026-09-10): a
+  // PASS receipt whose entry carries no non-blank description was issued
+  // by a verify-handoff run from before the mandatory flag — refuse it
+  // here rather than let a description-less entry ride in through an old
+  // receipt. Pre-existing allowlist entries are untouched by this gate:
+  // they never pass through accept-handoff (revoked pins and retire copies
+  // keep their reviewed spelling by hand).
+  if (typeof entry.description !== 'string' || entry.description.trim().length === 0) {
+    refuse(`the verified entry carries no market-card description (required for every new entry since 2026-09-10 — the receipt predates the mandatory flag) — re-run verify-handoff with --description "一句话中文" (distill it from handoff.plugin.description or the MR description), then accept the fresh verdict`)
   }
   if (repositoryOverride !== undefined) {
     const normalized = normalizeRepositoryUrl(repositoryOverride)

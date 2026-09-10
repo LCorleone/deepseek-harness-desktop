@@ -35,7 +35,10 @@
  *  10 accept-prep         on pass: stage the tgz into out/packages/ in the
  *                         exact filename the publishing flow's fill step
  *                         consumes, plus a paste-ready allowlist entry
- *                         carrying the MEASURED treeDigest — zero pipeline
+ *                         carrying the MEASURED treeDigest and the REQUIRED
+ *                         --description one-liner (2026-09-10: every new
+ *                         entry ships a market-card description; a missing
+ *                         or blank flag fails here) — zero pipeline
  *                         change downstream (measure-and-publish /
  *                         publish-local keep working untouched)
  *
@@ -192,7 +195,7 @@ const RETEST_GUIDANCE = {
   'tree-digest': '参考安装实测失败——按错误信息修复环境（构建桌面 lib、安装钉版 pnpm、registry 可达）后原样重跑 verify-handoff（内容未变不需换版本号）。',
   'smoke-remeasure': '两次实测 treeDigest 不一致——检查安装环境稳定性（网络/缓存）后原样重跑。',
   verdict: 'verdict.md 写入失败——确认提交目录可写后重跑。',
-  'accept-prep': 'allowlist 条目片段未通过管线自身校验，或同版本号已在 out/packages 备了不同字节的料——前者按错误信息修正（通常随包声明 dsh.bundle.patch 或补 repository），后者升版本号重新提交（同一版本号内容不可变）。',
+  'accept-prep': 'allowlist 条目片段未通过管线自身校验，或同版本号已在 out/packages 备了不同字节的料——前者按错误信息修正（通常随包声明 dsh.bundle.patch、补 repository，或带上必填的 --description 一句话中文），后者升版本号重新提交（同一版本号内容不可变）。',
 }
 
 // ---------------------------------------------------------------------------
@@ -588,9 +591,18 @@ function resolveCatalogOriginForSnippet({ explicit, compat }) {
  * snippet must pass the pipeline's own validateAllowlistEntry — a submission
  * whose entry could never load is refused here, not at the next build.
  */
-function buildAllowlistSnippet({ handoff, manifest, artifactFilename, packagesDir, catalogOrigin, project }) {
+function buildAllowlistSnippet({ handoff, manifest, artifactFilename, packagesDir, catalogOrigin, project, description }) {
   if (catalogOrigin === undefined) {
     failCheck('accept-prep', 'no company catalog origin available for the source.url — pass --catalog-origin, set COMPANY_CATALOG_ORIGIN, or give compat.json a catalog.manifestUrl')
+  }
+  // 2026-09-10: every NEW entry ships a market-card one-liner. The flag is
+  // the description's only source (no registry-metadata fallback — the two
+  // install channels have none in common); the value is trimmed before it
+  // is written into the entry, and a missing or blank flag fails the run
+  // instead of staging an entry accept-handoff would refuse anyway.
+  const descriptionText = typeof description === 'string' ? description.trim() : ''
+  if (descriptionText === '') {
+    failCheck('accept-prep', 'no market-card description for the allowlist entry — pass --description "一句话中文" (a single non-blank sentence; distill it from the submission\'s handoff.plugin.description or the MR description; 新条目必填一句话中文描述——从 handoff.plugin.description 或 MR 描述提炼)')
   }
   const destinationPath = join(packagesDir, artifactFilename)
   const repoRelative = posixRepoRelative(destinationPath)
@@ -609,6 +621,11 @@ function buildAllowlistSnippet({ handoff, manifest, artifactFilename, packagesDi
   const entry = {
     packageName: handoff.plugin.packageName,
     version: handoff.plugin.version,
+    // The reviewed one-liner, spelled where the allowlist's existing
+    // description-carrying entries spell it (right after version — the
+    // normalizer's own field order), so the pasted entry reads like its
+    // neighbors.
+    description: descriptionText,
     bundlePatch: declaredPatch,
     ...(repository === undefined ? {} : { repository: repository.url }),
     revoked: false,
@@ -749,9 +766,10 @@ function renderVerdictReceipt({ failure, generatedAt, state, snippet }) {
  *
  * Options (all paths absolute or cwd-relative): submissionDir (required),
  * schemaPath/compatPath/allowlistPath/packagesDir/receiptsDir (the contract
- * defaults), catalogOrigin, project, smoke, measureTarball (injectable
- * measurement), maxUnpackedBytes, maxEntries, now (clock injection for
- * tests), log.
+ * defaults), catalogOrigin, project, description (the REQUIRED market-card
+ * one-liner for the new entry; missing/blank fails accept-prep), smoke,
+ * measureTarball (injectable measurement), maxUnpackedBytes, maxEntries,
+ * now (clock injection for tests), log.
  */
 export async function verifyHandoffSubmission(options) {
   const submissionDir = resolve(options.submissionDir)
@@ -891,6 +909,7 @@ export async function verifyHandoffSubmission(options) {
           packagesDir,
           catalogOrigin,
           project,
+          description: options.description,
         })
         snippet.entry.treeDigest = state.treeDigest
         const validation = validateAllowlistEntry(snippet.entry, `the generated allowlist entry for ${snippet.entry.packageName}@${snippet.entry.version}`, { companyCatalogOrigin: catalogOrigin })

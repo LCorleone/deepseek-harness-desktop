@@ -131,7 +131,7 @@ const stubMeasure = (calls = [], digest = FIXED_DIGEST) => (tarballPath) => {
 }
 
 /** Run the verification against a workspace with the stubbed measurement. */
-async function verifyWorkspace(workspace, { measure, ...rest } = {}) {
+async function verifyWorkspace(workspace, { measure, description = '一句话中文：fixture 插件的市场卡片描述', ...rest } = {}) {
   const calls = []
   return verifyHandoffSubmission({
     submissionDir: workspace.submissionDir,
@@ -141,6 +141,7 @@ async function verifyWorkspace(workspace, { measure, ...rest } = {}) {
     packagesDir: workspace.packagesDir,
     receiptsDir: RECEIPTS_ROOT,
     measureTarball: measure ?? stubMeasure(calls),
+    description,
     ...rest,
   })
 }
@@ -901,6 +902,74 @@ test('red: a tarball without a dsh.bundle.patch declaration fails accept-prep (t
     assert.match(result.failedStep.reason, /dsh\.bundle\.patch/u)
     // The verdict was still written (step 9 ran before the staging).
     assert.match(readFileSync(join(workspace.submissionDir, 'verdict.md'), 'utf8'), /10\/10 accept-prep/u)
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The required --description (2026-09-10: every new entry ships a
+// market-card one-liner — mechanically enforced at accept-prep)
+// ---------------------------------------------------------------------------
+
+test('green: --description rides into the snippet and the receipt (trimmed, allowlist key order)', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({ tarball: pluginTarball() }))
+  try {
+    const result = await verifyWorkspace(workspace, { description: '  一句话中文：常驻侧边栏，状态一目了然\n' })
+    assert.equal(result.ok, true, JSON.stringify(result.steps, null, 2))
+    // The trimmed one-liner lands in the paste-ready entry — spelled where
+    // the allowlist's existing description-carrying entries spell it
+    // (right after version, before bundlePatch).
+    assert.equal(result.allowlistEntry.description, '一句话中文：常驻侧边栏，状态一目了然')
+    assert.deepEqual(Object.keys(result.allowlistEntry).slice(0, 4), ['packageName', 'version', 'description', 'bundlePatch'])
+    const validation = validateAllowlistEntry(result.allowlistEntry, 'the snippet', { companyCatalogOrigin: CATALOG_ORIGIN })
+    assert.equal(validation.ok, true, JSON.stringify(validation))
+    // The receipt carries the identical entry (accept-handoff's channel)…
+    const receipt = JSON.parse(readFileSync(result.verdictJsonPath, 'utf8'))
+    assert.equal(receipt.allowlistEntry.description, '一句话中文：常驻侧边栏，状态一目了然')
+    // …and the human-facing verdict shows it.
+    assert.match(readFileSync(join(workspace.submissionDir, 'verdict.md'), 'utf8'), /常驻侧边栏，状态一目了然/u)
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('red: a missing --description fails accept-prep with the distill-it pointer (nothing staged, no record issued)', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({ tarball: pluginTarball() }))
+  try {
+    // The option absent entirely — the CLI's forgotten-flag shape.
+    const calls = []
+    const result = await verifyHandoffSubmission({
+      submissionDir: workspace.submissionDir,
+      schemaPath: SCHEMA_PATH,
+      compatPath: workspace.compatPath,
+      packagesDir: workspace.packagesDir,
+      receiptsDir: RECEIPTS_ROOT,
+      measureTarball: stubMeasure(calls),
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStep.step, 'accept-prep')
+    assert.equal(result.failedStep.index, 10)
+    assert.match(result.failedStep.reason, /--description/u)
+    assert.match(result.failedStep.reason, /handoff\.plugin\.description/u)
+    // Refused before staging and before any PASS receipt exists.
+    assert.equal(existsSync(join(workspace.packagesDir, 'fixture-hello-1.0.0.tgz')), false)
+    assert.equal(result.receiptRecordPath, undefined)
+    assert.match(readFileSync(join(workspace.submissionDir, 'verdict.md'), 'utf8'), /10\/10 accept-prep/u)
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('red: a blank --description (whitespace only) fails accept-prep the same way', async () => {
+  const workspace = withPackagesDir(submissionWorkspace({ tarball: pluginTarball() }))
+  try {
+    const result = await verifyWorkspace(workspace, { description: '  \n\t ' })
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStep.step, 'accept-prep')
+    assert.equal(result.failedStep.index, 10)
+    assert.match(result.failedStep.reason, /--description/u)
+    assert.equal(existsSync(join(workspace.packagesDir, 'fixture-hello-1.0.0.tgz')), false)
   } finally {
     rmSync(workspace.root, { recursive: true, force: true })
   }

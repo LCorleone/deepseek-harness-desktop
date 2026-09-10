@@ -37,7 +37,10 @@ cd /tmp && rm -rf mr-review && git clone \
   "http://oauth2:$TOK@10.173.59.30:9080/pluginpuller/dsh-desktop-plugins.git" mr-review
 cd mr-review && git checkout <source_branch>
 cd /opt/july/pi_tasks/deepseek-harness-desktop
-node tools/company-catalog/cli.mjs verify-handoff /tmp/mr-review/submissions/<名>-<版本>
+node tools/company-catalog/cli.mjs verify-handoff /tmp/mr-review/submissions/<名>-<版本> \
+  --description "一句话中文"   # 必填：新条目市场卡片描述（2026-09-10 起；
+                              # 素材取 handoff.json 的 plugin.description 或 MR 描述，提炼一句；
+                              # 缺失/空白在 accept-prep 步 failCheck）
 ```
 
 **FAIL** → verdict.md 已在提交目录里；把要点贴 MR 评论让同事改（参考 MR !1
@@ -73,11 +76,15 @@ tools/company-catalog/allowlist.json，同版本字节闸自动核对）。
 repository 惯例：插件 package.json 自带则用其值；否则统一填 config 仓包页
 `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
 （2026-09-08 定，详见 SOP ④）。
-条目描述（2026-09-10）：allowlist 条目可加可选 `description`（一句话中文，非空），
-管线会原样签进条目、市场卡片直接显示；无则键不出现（卡片回退英文占位符）。
-同事 handoff.json v2 的 plugin.description 是现成素材——采纳时人工提炼一句贴进
-allowlist 条目（评审面=MR/allowlist 本身，不做本地化框架；5 条现有草稿见
-2026-09-10 brief，定稿人 July）。空串/非字符串会被 allowlist 校验拒绝。
+条目描述（2026-09-10 18:26 起必填，机械强制）：新条目必须带一句话中文
+`description`——verify-handoff 必带 `--description "一句话中文"`（非空，trim 后
+不得为空白），片段原样带进 allowlist 条目，管线签进目录、市场卡片直接显示；
+素材从 handoff.json v2 的 plugin.description 或 MR 描述提炼一句（评审面
+=MR/allowlist 本身，不做本地化框架）。漏带/空白 → verify 在 accept-prep 步
+failCheck；accept-handoff 对缺非空 description 的回执一律 refuse（防旧版回执
+绕过——重跑 verify-handoff 补 --description 后再 accept）。豁免：存量旧条目与
+revoked 保留钉/retire 拷贝不走 verify/accept，键不出现即合法（卡片回退英文
+占位符）。空串/非字符串仍被 allowlist 校验拒绝。
 
 ## 4. 发布（细节全在 RELEASE.zh.md，此处索引）
 
