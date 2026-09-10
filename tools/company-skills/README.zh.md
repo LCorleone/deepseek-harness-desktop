@@ -1,26 +1,49 @@
-# tools/company-skills —— 公司 skill 打包/校验（P6 批①，2026-09-10）
+# tools/company-skills —— 公司 skill 打包/校验（P6 批① + 容器升级，2026-09-10）
 
 把一批常用 skill 做成「市场可分发的插件」的**纯工具层**：作者机器上读 skill 目录 → 校验 →
-加密 → 写 blob 产物。批①**零客户端改动**：这里没有任何插件、没有 `package.json`、没有 cordis
+加密 → 写 blob 产物。**一个插件装很多 skill**，所以发布的 artifact 是 §2.0 的**容器**。
+批①**零客户端改动**：这里没有任何插件、没有 `package.json`、没有 cordis
 补丁，只有格式定义、打包器、自查器和守卫。容器插件在批②，脚本执行通道在批③，首批 skill 收编在批④。
 
 任务书：`dev-log/briefs/2026-09-10-p6-company-skills.md`。
 
 ## 1. 产物形态
 
-一个 skill 一个 artifact，形态由 `--out` 扩展名决定：
+一个插件装很多 skill，所以发布的 artifact 是**容器**（一个 blob 装 N 个 skill）。产物形态由
+`--out` 扩展名决定：
 
 | 扩展名 | 形态 | 用途 |
 | --- | --- | --- |
 | `.js` / `.mjs` / `.ts` / `.mts` | 生成模块，单个 ESM 导出 `COMPANY_SKILL_BUNDLE_BLOB` | 进插件 `files` 白名单 |
 | 其他 | 裸 base64 文本（一行，尾随换行） | 自查、离线比对、CI 校验 |
 
-默认输出 `tools/company-skills/out/<name>.bundle.js`（该目录已 gitignore，只用于本地 scratch）。
+默认输出 `tools/company-skills/out/<name>.bundle.js`（该目录已 gitignore，只用于本地 scratch；
+`<name>` 在容器模式下是 skills 根目录的名字）。
 
 生成模块没有时间戳、没有随机数、没有源文件 mtime；**同输入两次打包逐字节相同**，所以「未改动的
 skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更新。
 
-## 2. bundle 格式（最小设计）
+## 2. 格式
+
+### 2.0 容器（发布形态）
+
+```jsonc
+{
+  "version": 1,                    // 容器格式版本；本工具只写 1、只读 1
+  "skills":  [ /* N 个 §2.1 的单 skill 文档，元素形态完全不变 */ ]
+}
+```
+
+- 顶层字段**恰好** `version` + `skills` 两个（多一个少一个都拒）。
+- `skills` 至少一个；**skill `name` 必须全局唯一**（批② provider 按 name 建表）。空容器拒：
+  0 个 skill 只可能是根目录指错，不是一个能装的 artifact（选型见 §6 测试说明）。
+- 每个元素逐条跑 § 2.2 的全部既有校验（kebab-case / description 上限 / 引用闭包 / 单文件 1 MiB）。
+- 容器自身另有一条总体积上限：规范化 JSON ≤ **16 MiB**（= 4 × 单 skill 上限）。
+- `skills` 按 `name` 码点排序后才编码，所以 artifact 与目录读取顺序无关。
+- 单 skill 文档（批①形态）仍然可读：`unpack` 按顶层字段自动判别；`pack --skill` 保留为兼容入口，
+  但插件应发**容器**。批②解码器同样按顶层 `version`+`skills` 判别两种形态。
+
+### 2.1 单 skill 文档（容器元素 / `--skill` 兼容形态）
 
 ```jsonc
 {
@@ -39,22 +62,31 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
 - `body` 与每个 `content` 解码后都 ≤ 1 MiB；整个规范化 JSON ≤ 4 MiB。
 - 整个文档 UTF-8 JSON → 固定 key 循环 XOR → 标准 base64 → 单块 blob。
 
-### 2.1 作者侧目录布局（只接受这一种）
+### 2.2 作者侧目录布局（只接受这两种）
 
 ```
-<skill-dir>/
-  SKILL.md        # YAML frontmatter: name, description（其他 frontmatter 键解析后忽略）
-  scripts/**      # 可选
-  assets/**       # 可选
+<skills-root>/            # --skills：一个容器（N 个 skill）
+  <skill-dir>/            # 每个子目录 = 一个 skill，名字与 frontmatter name 无关
+    SKILL.md
+    scripts/**            # 可选
+    assets/**             # 可选
+
+<skill-dir>/              # --skill：单 skill 兼容入口
+  SKILL.md
+  scripts/**              # 可选
+  assets/**               # 可选
 ```
+
+- skills 根**只允许目录**，且每个目录必须是一个合法 skill（子目录缺 `SKILL.md` 就拒）；
+  根下的散文件（`README.md` 也不行）、symlink 一律拒。
 
 - 顶层除 `SKILL.md` 外只能有 `scripts/` 和 `assets/` 两个目录，多一个文件就拒（`README.md` 也不行）。
 - 只读普通文件：symlink、目录套目录、空文件一律拒。
 - `SKILL.md` 必须 LF 行尾，frontmatter 必须闭合，`name`/`description` 必须存在。
 - `body` = 闭合 `---` 那一行的换行之后的**全部字节**，所以 `unpack --out` 重建出的 `SKILL.md`
-  与源文件逐字节一致（frontmatter 是重新规范化生成的）。
+  与源文件逐字节一致（frontmatter 是重新规范化生成的）。限定：规范化后的 frontmatter 一定不带引号——`description: "…"` 这种写法里引号是 YAML 语法而非内容，解析时剥掉（`parseFrontmatter`），重建时也不再补回，所以只有未加引号的规范化源文件才逐字节一致。
 
-### 2.2 校验规则
+### 2.3 校验规则（单 skill 元素）
 
 | 规则 | 口径 |
 | --- | --- |
@@ -63,7 +95,7 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
 | `body` | 非空、≤ 1 MiB |
 | `path` | 相对、POSIX、已规范化（无 `.`/`..`/空段）、≤ 200 字符、前缀分别为 `scripts/` 与 `assets/`、全局唯一、字符集 `[A-Za-z0-9._@%+~/-]` |
 | `content` | 规范标准 base64（可往返）、解码后非空且 ≤ 1 MiB |
-| 引用闭包 | `body` 与每个脚本正文里出现的 `scripts/…`、`assets/…` 字面路径**必须**真的在 bundle 里；否则拒（批② `resourceBase: opaque` 只按需解析，引用落空就是运行期报错） |
+| 引用闭包 | `body` 与每个脚本正文里出现的 `scripts/…`、`assets/…` 字面路径**必须**真的在 bundle 里；否则拒（批② `resourceBase: opaque` 只按需解析，引用落空就是运行期报错）。`assets` 正文**不**参与扫描——资产是数据，不是引用源（`referenceScanTargets` 只取 `body` + `scripts[]`） |
 | 体积 | 规范化 JSON ≤ 4 MiB |
 
 `description` 的 500 对齐上游 catalog 截断口径：`catalogDescriptionMaxLength` 默认 500
@@ -72,19 +104,23 @@ skill 重新打包」是空 diff，可以直接据此判断 blob 是否需要更
 ## 3. 命令
 
 ```bash
-# 打包（作者机器；默认输出 tools/company-skills/out/<name>.bundle.js）
+# 打包容器（作者机器；skills 根下 N 个 skill 目录）
+node tools/company-skills/pack.mjs --skills <skills-root> [--out <file>]
+# 打包单个 skill（兼容入口；产出的仍是单 skill 文档，插件应发上面的容器）
 node tools/company-skills/pack.mjs --skill <skill-dir> [--out <file>]
 
-# 自查/校验（默认只打元信息摘要，正文不落屏；--out 才会写回目录）
+# 自查/校验（默认只打元信息摘要：容器列 N 个 skill 的 name/description/脚本数；
+# 正文不落屏，只有显式 --out 才写回目录，容器写 <out>/<name>/）
 node tools/company-skills/unpack.mjs --in <blob> [--out <dir>] [--expect-sha256 <hex>]
 ```
 
-- `pack` 的 stdout 只有三行：目标路径、计数与 key id、明文字节数 + `plaintextSha256`。
-  这个 digest 是后续 handoff / allowlist 记录的输入（批④）。
+- `pack` 的 stdout 只有三行：目标路径、计数与 key id、明文字节数 + `plaintextSha256`（容器模式计数
+  聚合成 `skills N  scripts N  assets N`）。这个 digest 是后续 handoff / allowlist 记录的输入（批④）。
 - `pack` 失败一律 exit 1，**不创建输出目录**（测试断言「拒绝即无产物」）。
-- `unpack` 的摘要包含 `name`、`description`、各文件路径与字节数；`--out` 用于和源目录 diff；
+- `unpack` 的摘要：单 skill 文档列 `name`、`description`、各文件路径与字节数；容器列 N 个 skill 的
+  `name` / `scripts` / `assets` 计数与 `description`（**从不打印正文**）；`--out` 用于和源目录 diff；
   `--expect-sha256` 用于 CI 侧断言「这个 blob 解出来的就是评审过的那份明文」。
-- 两个 CLI 都拒绝未知参数，绝不猜测目标路径。
+- 两个 CLI 都拒绝未知参数，绝不猜测目标路径；`pack` 要求 `--skill`/`--skills` 恰好一个。
 
 ## 4. 密钥策略与已知缺口（**必读**）
 
@@ -121,9 +157,12 @@ node tools/company-skills/unpack.mjs --in <blob> [--out <dir>] [--expect-sha256 
 
 `unpack.mjs` 是这里唯一会把 blob 变回明文的工具。**它禁止进任何发布产物**，两道守卫：
 
-1. `lib/release-surface.mjs` 审计仓库里**每一个** `package.json` 的 `files` / `bin` 白名单，
+1. `lib/release-surface.mjs` 审计仓库里**每一个** `package.json` 的 `files` / `bin` / `main`
+   条目（`main` 即使不在 `files` 里 npm 也会发，且可以是任意路径），
    用 npm 的 glob 语义算出「会不会把某个 `unpack.mjs` 发布出去」，命中即红
-   （`tests/unpack-release-guard.test.mjs`，含 `*.mjs` / `**/*.mjs` / 目录前缀 / `bin` 四种扫入方式）。
+   （`tests/unpack-release-guard.test.mjs`，含 `*.mjs` / `**/*.mjs` / 目录前缀 / `bin` / `main` 五种扫入方式）。
+   遍历**不**剪掉 `lib` / `dist` / `out` / `.build`——本仓真实发布包恰恰发 `lib/**`，
+   所以 `pkg/lib/unpack.mjs` 这类最可能的泄漏点必须可见（只剪 `node_modules`/`.git`/`.yarn`/`deepseek-harness`）。
    第二条规则更粗但更根本：**放着 `unpack.mjs` 的目录不允许有 `package.json`** ——
    这正是 `tools/company-skills/`（与 `tools/company-catalog/` 一样）不是 workspace、没有 manifest 的原因。
 2. `unpack.mjs` 启动时自检同目录有没有 `package.json`，有就拒绝运行。
@@ -133,21 +172,24 @@ node tools/company-skills/unpack.mjs --in <blob> [--out <dir>] [--expect-sha256 
 ## 6. 测试
 
 ```bash
-node --test tools/company-skills/tests/                # 29 个用例
+node --test tools/company-skills/tests/                # 39 个用例
 yarn test:company-skills                               # 同一组，已挂进 yarn check
 ```
 
 | 文件 | 覆盖 |
 | --- | --- |
-| `tests/bundle-format.test.mjs`（15） | 字段/名称/描述/体积/路径/base64/引用闭包全部拒绝路径；codec 往返；`SKILL.md` 解析与目录读取的布局拒绝 |
-| `tests/pack-roundtrip.test.mjs`（6） | ① pack→unpack→re-pack 逐字节一致且重建目录与源逐字节一致；② 缺资源/非法名/超长描述/杂散文件拒且无产物；③ artifact 不含源文件任一特征行（含 canary，附「blob 内确实能解出 canary」的反向对照）；④ 同输入两次打包逐字节相同、且与源 mtime 无关；digest 校验与篡改拒绝 |
-| `tests/unpack-release-guard.test.mjs`（8） | ⑤ 真仓库无违规 + 四种 `files`/`bin` 扫入方式与目录规则的红用例（fixture 仓，常驻回归） |
+| `tests/bundle-format.test.mjs`（19） | 单 skill 字段/名称/描述/体积/路径/base64/引用闭包全部拒绝路径；容器字段/版本/非空/重名/总体积与按名规范化；codec 往返；frontmatter 引号规范化；`SKILL.md` 解析与单 skill/skills 根两种目录读取的布局拒绝 |
+| `tests/pack-roundtrip.test.mjs`（10） | ① pack→unpack→re-pack 逐字节一致且重建目录与源逐字节一致；② 缺资源/非法名/超长描述/杂散文件拒且无产物；③ artifact 不含源文件任一特征行（含 canary，附「blob 内确实能解出 canary」的反向对照）；④ 同输入两次打包逐字节相同、且与源 mtime 无关；digest 校验与篡改拒绝；⑥ N=3 容器往返逐字节一致 + 重建目录重打同字节 + 确定性；⑦ 容器产物不含任一 skill 的明文行；⑧ 容器重名/空根/根下散文件/单个非法成员均拒且无产物；⑨ 容器摘要列全 N 个 skill 且不打印正文 |
+| `tests/unpack-release-guard.test.mjs`（10） | ⑤ 真仓库无违规 + `files`/`bin`/`main` 与目录规则的红用例，含「发布面覆盖 `lib/**`」与「`lib`/`dist`/`out`/`.build` 不剪枝」两条回归 |
 
 红绿证（本批实测）：
 
 - 把 `packBundle` 里 `encodeBundleBlob(json)` 改回 `json`（即明文落盘）→
   ③ 红：`the artifact leaked the source line "This fixture exists only so the packer tests have a real skill directory: one"`。
 - 加 `tools/company-skills/package.json` 且 `files: ["unpack.mjs"]` → ⑤ 红：`the real repository publishes no unpack.mjs`。
+- 把 `unpack.mjs` 放进某个 `files` 覆盖 `lib/**` 的包里 → ⑤ 红：`"lib/**" would ship lib/unpack.mjs`
+  （修复前剪枝掉 `lib`，此用例绿=漏报，即 P1）。
+- 把包的 `main` 指向 `tools/unpack.mjs` → ⑤ 红：`"tools/unpack.mjs" would ship tools/unpack.mjs`。
 
 ## 7. 文件清单
 
@@ -156,7 +198,7 @@ tools/company-skills/
   pack.mjs                      打包器（作者机器，不进 CI 链）
   unpack.mjs                    自查/校验器（禁止进产物，见 §5）
   lib/codec.mjs                 XOR+base64 编解码、模块渲染/解析、key 常量
-  lib/bundle.mjs                格式定义：校验、规范化、目录读取、重建
+  lib/bundle.mjs                格式定义：单 skill 校验、容器校验、规范化、目录读取、重建
   lib/release-surface.mjs       unpack 发布面守卫
   fixtures/fixture-hello/       绿用例的源 skill（含一条明文 canary）
   tests/*.test.mjs              node --test（对齐 tools/company-catalog/tests/）
@@ -166,7 +208,8 @@ tools/company-skills/
 ## 8. 交给批②的接口契约
 
 - 解码：XOR 循环 key `dsh-company-skill-bundle-obfuscation-key-v1`（三钥之一），
-  `base64 → XOR → UTF-8 → JSON.parse`，然后按 §2.2 复刻字段校验（解码器不能 import 本工具）。
-- `list()` 只吐 `name` + `description`；`get()` 才解码 `body`；`resourceBase` 用
-  `{ kind: 'opaque', description }`；相对路径按 §2 的 bundle 根相对语义解析。
+  `base64 → XOR → UTF-8 → JSON.parse`。顶层含 `version` + `skills` → 容器（本批主路径）；否则按单 skill
+  文档处理（批①兼容）。然后按 §2.0 容器规则 + §2.3 元素字段规则复刻校验（解码器不能 import 本工具）。
+- `list()` 遍历容器 `skills`，只吐 `name` + `description`；`get()` 才解码 `body`；`resourceBase` 用
+  `{ kind: 'opaque', description }`；相对路径按 §2 的 bundle 根相对语义解析。name 已保证唯一，直接建表。
 - blob 产物的文件名与导出一致：`COMPANY_SKILL_BUNDLE_BLOB`。

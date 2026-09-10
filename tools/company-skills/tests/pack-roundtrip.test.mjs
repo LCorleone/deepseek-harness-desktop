@@ -59,6 +59,9 @@ function writeSkillTree(root, files) {
 
 const CLEAN_MANIFEST = '---\nname: demo-skill\ndescription: A demo skill for the packer tests.\n---\n\n# Demo\n\nNo sibling references here.\n'
 
+/** A well-formed SKILL.md for one container member. */
+const containerManifest = (name) => `---\nname: ${name}\ndescription: The ${name} fixture.\n---\n\n# ${name}\n\nNo sibling references here.\n`
+
 /** Every plaintext line long enough that finding it in an artifact would be meaningful. */
 function plaintextLines(root) {
   const lines = new Set()
@@ -199,11 +202,159 @@ test('unpack verifies the digest and refuses a tampered blob', () => {
   })
 })
 
+test('a three-skill container round-trips byte-identically and rebuilds every skill', () => {
+  workspace((root) => {
+    const skillsRoot = join(root, 'skills')
+    const names = ['alpha-skill', 'beta-skill', 'gamma-skill']
+    for (const name of names) {
+      writeSkillTree(join(skillsRoot, name), {
+        'SKILL.md': containerManifest(name),
+        'assets/notes.md': `# ${name} notes\n`,
+        'scripts/run.mjs': `// ${name}\n`,
+      })
+    }
+    const artifact = join(root, 'out', 'company.bundle.js')
+    const packed = run(PACK, ['--skills', skillsRoot, '--out', artifact])
+    assert.equal(packed.status, 0, packed.stderr)
+    assert.match(packed.stdout, /^packed container 3 skills → /u)
+    assert.match(packed.stdout, /  skills 3  scripts 3  assets 3\n/u)
+    const digest = packed.stdout.match(/plaintextSha256 ([0-9a-f]{64})/u)[1]
+
+    const unpacked = join(root, 'tree')
+    const verify = run(UNPACK, ['--in', artifact, '--out', unpacked, '--expect-sha256', digest])
+    assert.equal(verify.status, 0, verify.stderr)
+    assert.match(verify.stdout, /^unpacked container 3 skills → /mu)
+    for (const name of names) {
+      for (const relativePath of ['SKILL.md', 'assets/notes.md', 'scripts/run.mjs']) {
+        assert.deepEqual(
+          readFileSync(join(unpacked, name, relativePath)),
+          readFileSync(join(skillsRoot, name, relativePath)),
+          `${name}/${relativePath} must survive the round trip byte-for-byte`,
+        )
+      }
+    }
+
+    const repacked = join(root, 'out', 'repacked.bundle.js')
+    assert.equal(run(PACK, ['--skills', unpacked, '--out', repacked]).status, 0)
+    assert.deepEqual(readFileSync(repacked), readFileSync(artifact), 'a rebuilt tree must re-pack to the same bytes')
+    const again = join(root, 'out', 'again.bundle.js')
+    assert.equal(run(PACK, ['--skills', skillsRoot, '--out', again]).status, 0)
+    assert.deepEqual(readFileSync(again), readFileSync(artifact), 're-packing unchanged sources must be identical')
+  })
+})
+
+test('a container artifact carries no plaintext line from any skill', () => {
+  workspace((root) => {
+    const skillsRoot = join(root, 'skills')
+    const names = ['alpha-skill', 'beta-skill', 'gamma-skill']
+    for (const name of names) {
+      writeSkillTree(join(skillsRoot, name), {
+        'SKILL.md': `${containerManifest(name)}\n${name.toUpperCase()}-CONTAINER-CANARY\n`,
+        'assets/notes.md': `${name.toUpperCase()}-CONTAINER-CANARY\n`,
+      })
+    }
+    const artifact = join(root, 'out', 'company.bundle.js')
+    assert.equal(run(PACK, ['--skills', skillsRoot, '--out', artifact]).status, 0)
+    assert.deepEqual(readdirSync(join(root, 'out')), ['company.bundle.js'], 'packing must produce exactly one file')
+
+    const bytes = readFileSync(artifact, 'utf8')
+    for (const line of plaintextLines(skillsRoot)) {
+      assert.equal(bytes.includes(line), false, `the artifact leaked ${JSON.stringify(line)}`)
+    }
+    for (const name of names) assert.equal(bytes.includes(`${name.toUpperCase()}-CONTAINER-CANARY`), false)
+
+    // Control: every canary really is inside the blob, so the assertions above
+    // test the encoding rather than an empty artifact.
+    const document = JSON.parse(decodeBundleBlob(extractBundleBlob(bytes)))
+    assert.deepEqual(Object.keys(document), ['version', 'skills'])
+    for (const name of names) {
+      const skill = document.skills.find((entry) => entry.name === name)
+      const notes = skill.assets.find((entry) => entry.path === 'assets/notes.md')
+      assert.ok(Buffer.from(notes.content, 'base64').toString('utf8').includes(`${name.toUpperCase()}-CONTAINER-CANARY`))
+    }
+  })
+})
+
+test('container packing rejects duplicate names, an empty root, a root file, and one bad member', () => {
+  workspace((root) => {
+    const duplicate = join(root, 'duplicate')
+    writeSkillTree(join(duplicate, 'one'), { 'SKILL.md': containerManifest('same-skill') })
+    writeSkillTree(join(duplicate, 'two'), { 'SKILL.md': containerManifest('same-skill') })
+    const duplicateOut = join(root, 'duplicate-out')
+    const duplicateRun = run(PACK, ['--skills', duplicate, '--out', join(duplicateOut, 'x.bundle.js')])
+    assert.equal(duplicateRun.status, 1)
+    assert.match(duplicateRun.stderr, /skill name "same-skill" is duplicated/u)
+    assert.equal(existsSync(duplicateOut), false)
+
+    const empty = join(root, 'empty')
+    mkdirSync(empty, { recursive: true })
+    const emptyOut = join(root, 'empty-out')
+    const emptyRun = run(PACK, ['--skills', empty, '--out', join(emptyOut, 'x.bundle.js')])
+    assert.equal(emptyRun.status, 1)
+    assert.match(emptyRun.stderr, /carries no skill directories/u)
+    assert.equal(existsSync(emptyOut), false)
+
+    writeSkillTree(empty, { 'README.md': 'stray\n' })
+    assert.equal(run(PACK, ['--skills', empty, '--out', join(root, 'stray-out', 'x.bundle.js')]).status, 1)
+    assert.equal(existsSync(join(root, 'stray-out')), false)
+
+    const mixed = join(root, 'mixed')
+    writeSkillTree(join(mixed, 'good'), { 'SKILL.md': containerManifest('good-skill') })
+    writeSkillTree(join(mixed, 'bad'), { 'SKILL.md': containerManifest('bad-skill').replace('bad-skill', 'Bad_Skill') })
+    const mixedRun = run(PACK, ['--skills', mixed, '--out', join(root, 'mixed-out', 'x.bundle.js')])
+    assert.equal(mixedRun.status, 1)
+    assert.match(mixedRun.stderr, /name must be kebab-case/u)
+    assert.equal(existsSync(join(root, 'mixed-out')), false)
+
+    // The per-skill reference closure still runs inside a container.
+    const dangling = join(root, 'dangling')
+    writeSkillTree(join(dangling, 'good-skill'), { 'SKILL.md': containerManifest('good-skill') })
+    writeSkillTree(join(dangling, 'needy-skill'), {
+      'SKILL.md': containerManifest('needy-skill').replace('No sibling references here.', 'Read `assets/gone.json`.'),
+    })
+    const danglingRun = run(PACK, ['--skills', dangling, '--out', join(root, 'dangling-out', 'x.bundle.js')])
+    assert.equal(danglingRun.status, 1)
+    assert.match(danglingRun.stderr, /references "assets\/gone\.json"/u)
+    assert.equal(existsSync(join(root, 'dangling-out')), false)
+  })
+})
+
+test('the container summary lists every skill and never prints a body line', () => {
+  workspace((root) => {
+    const skillsRoot = join(root, 'skills')
+    writeSkillTree(join(skillsRoot, 'alpha-skill'), {
+      'SKILL.md': `${containerManifest('alpha-skill')}\nBODY-SUMMARY-CANARY-ALPHA\n`,
+      'assets/notes.md': '{}\n',
+    })
+    writeSkillTree(join(skillsRoot, 'beta-skill'), {
+      'SKILL.md': containerManifest('beta-skill'),
+      'scripts/run.mjs': 'run\n',
+    })
+    const artifact = join(root, 'out', 'company.bundle.js')
+    const packed = run(PACK, ['--skills', skillsRoot, '--out', artifact])
+    assert.equal(packed.status, 0, packed.stderr)
+    const digest = packed.stdout.match(/plaintextSha256 ([0-9a-f]{64})/u)[1]
+
+    const summary = run(UNPACK, ['--in', artifact])
+    assert.equal(summary.status, 0, summary.stderr)
+    assert.match(summary.stdout, /^container 2 skills$/mu)
+    assert.match(summary.stdout, /^skill alpha-skill  scripts 0  assets 1  description The alpha-skill fixture\.$/mu)
+    assert.match(summary.stdout, /^skill beta-skill  scripts 1  assets 0  description The beta-skill fixture\.$/mu)
+    assert.match(summary.stdout, new RegExp(`plaintextSha256 ${digest}`, 'u'))
+    assert.equal(summary.stdout.includes('BODY-SUMMARY-CANARY-ALPHA'), false, 'the summary must not print a body')
+    assert.equal(summary.stdout.includes('# alpha-skill'), false)
+
+    assert.equal(run(UNPACK, ['--in', artifact, '--expect-sha256', digest]).status, 0)
+    assert.equal(run(UNPACK, ['--in', artifact, '--expect-sha256', 'a'.repeat(64)]).status, 1)
+  })
+})
+
 test('unknown arguments abort instead of guessing a destination', () => {
   const unknown = run(PACK, ['--skill', FIXTURE, '--output', '/tmp/nope.bundle.js'])
   assert.equal(unknown.status, 1)
   assert.match(unknown.stderr, /unknown argument "--output"/u)
   assert.equal(run(PACK, []).status, 1)
+  assert.match(run(PACK, ['--skill', FIXTURE, '--skills', FIXTURE]).stderr, /exactly one of --skill or --skills/u)
   assert.match(run(UNPACK, []).stderr, /--in is required/u)
   assert.equal(run(UNPACK, ['--in']).status, 1)
   assert.equal(run(PACK, ['--skill', FIXTURE, '--help']).stdout.includes('--skill <dir>'), true)

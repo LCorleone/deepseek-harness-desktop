@@ -16,14 +16,19 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
   BUNDLE_MAX_BYTES,
+  CONTAINER_MAX_BYTES,
+  CONTAINER_VERSION,
   DESCRIPTION_MAX_LENGTH,
   FILE_MAX_BYTES,
   bundlePlaintextJson,
   collectReferences,
+  containerPlaintextJson,
   parseSkillManifest,
   readSkillDirectory,
+  readSkillsDirectory,
   renderSkillManifest,
   validateBundle,
+  validateContainer,
 } from '../lib/bundle.mjs'
 import { decodeBundleBlob, encodeBundleBlob, extractBundleBlob, renderBundleModule } from '../lib/codec.mjs'
 
@@ -62,6 +67,16 @@ const withSkillTree = (files, body) => {
 }
 
 const MINIMAL_MANIFEST = '---\nname: demo-skill\ndescription: A demo skill.\n---\n\n# Demo\n'
+
+/** A container holding two valid bundles with distinct names. */
+const containerFixture = (overrides = {}) => ({
+  version: CONTAINER_VERSION,
+  skills: [
+    validateBundle(bundleFixture({ name: 'alpha-skill', description: 'The alpha fixture.' })),
+    validateBundle(bundleFixture({ name: 'beta-skill', description: 'The beta fixture.' })),
+  ],
+  ...overrides,
+})
 
 test('the fixture skill directory reads into the canonical bundle shape', () => {
   const bundle = readSkillDirectory(FIXTURE)
@@ -222,6 +237,97 @@ test('the manifest parser keeps the body byte-exact and rejects malformed frontm
   assert.throws(() => parseSkillManifest('---\nname: a\nname: b\n---\n'), /repeats the frontmatter key/u)
   assert.throws(() => parseSkillManifest('---\ndescription: d\n---\n'), /requires a name/u)
   assert.throws(() => parseSkillManifest('---\nname: a\n---\n'), /requires a description/u)
+})
+
+test('frontmatter quotes are syntax, so rendering never re-adds them', () => {
+  // A quoted source description parses to the unquoted value and the
+  // regenerated manifest is the normalized (unquoted) form.
+  assert.equal(parseSkillManifest('---\nname: demo-skill\ndescription: "A demo skill."\n---\nbody').description, 'A demo skill.')
+  assert.equal(
+    renderSkillManifest({ name: 'demo-skill', description: 'A demo skill.', body: 'body' }),
+    '---\nname: demo-skill\ndescription: A demo skill.\n---\nbody',
+  )
+  // Known, accepted edge (only reachable from a hand-written bundle): a
+  // description whose *content* starts and ends with quotes is normalized away
+  // by the same YAML-quoting rule when the manifest is regenerated.
+  const quoted = renderSkillManifest({ name: 'demo-skill', description: '"A demo skill."', body: 'body' })
+  assert.equal(quoted, '---\nname: demo-skill\ndescription: "A demo skill."\n---\nbody')
+  assert.equal(parseSkillManifest(quoted).description, 'A demo skill.')
+})
+
+test('a container carries exactly version and skills, one validated bundle each', () => {
+  const container = validateContainer(containerFixture())
+  assert.deepEqual(Object.keys(container), ['version', 'skills'])
+  assert.equal(container.version, CONTAINER_VERSION)
+  assert.deepEqual(container.skills.map((skill) => skill.name), ['alpha-skill', 'beta-skill'])
+  assert.equal(containerPlaintextJson(container), JSON.stringify(container))
+  // A single-element container is legitimate: a one-skill plugin still ships
+  // the container shape, so batch 2 never has to branch on array length.
+  assert.equal(validateContainer({ version: CONTAINER_VERSION, skills: [bundleFixture({ name: 'only-skill' })] }).skills.length, 1)
+
+  assert.throws(() => validateContainer([]), /must be an object/u)
+  assert.throws(() => validateContainer({ version: CONTAINER_VERSION }), /must carry exactly version, skills/u)
+  assert.throws(() => validateContainer({ ...containerFixture(), extra: 1 }), /must carry exactly/u)
+  assert.throws(() => validateContainer(containerFixture({ version: 2 })), /version must be 1/u)
+  assert.throws(() => validateContainer(containerFixture({ skills: 'nope' })), /must be an array/u)
+  // Empty is rejected: a container that carries nothing is a mis-pointed root,
+  // not a shippable artifact.
+  assert.throws(() => validateContainer(containerFixture({ skills: [] })), /at least one skill/u)
+  // Every per-skill rule still applies, and the message names the element.
+  assert.throws(
+    () => validateContainer({ version: CONTAINER_VERSION, skills: [{ ...bundleFixture(), extra: 1 }] }),
+    /skills\[0\]: .*must carry exactly name, description, body, scripts, assets/u,
+  )
+  assert.throws(
+    () => validateContainer({ version: CONTAINER_VERSION, skills: [bundleFixture({ name: 'Bad' })] }),
+    /skills\[0\]: .*name must be kebab-case/u,
+  )
+  assert.throws(() => validateContainer({ version: CONTAINER_VERSION, skills: [bundleFixture(), bundleFixture()] }), /"demo-skill" is duplicated/u)
+})
+
+test('the container is canonical by name and bounded as a whole', () => {
+  const shuffled = validateContainer({
+    version: CONTAINER_VERSION,
+    skills: [bundleFixture({ name: 'zeta-skill' }), bundleFixture({ name: 'alpha-skill' })],
+  })
+  assert.deepEqual(shuffled.skills.map((skill) => skill.name), ['alpha-skill', 'zeta-skill'])
+  assert.equal(
+    containerPlaintextJson(shuffled),
+    containerPlaintextJson({ ...shuffled, skills: [...shuffled.skills].reverse() }),
+  )
+
+  // Five skills, each inside its own 4 MiB bound, together exceed the
+  // container bound — the container bound is a real extra gate.
+  const chunk = Buffer.alloc(900 * 1024, 0x61).toString('base64')
+  const bulk = Array.from({ length: 5 }, (_, index) => validateBundle(bundleFixture({
+    name: `bulk-${String(index)}-skill`,
+    assets: [0, 1, 2].map((slot) => ({ path: `assets/blob-${String(slot)}.bin`, content: chunk })),
+  })))
+  assert.throws(
+    () => validateContainer({ version: CONTAINER_VERSION, skills: bulk }),
+    new RegExp(`the bound is ${String(CONTAINER_MAX_BYTES)}`, 'u'),
+  )
+})
+
+test('the skills root reader takes one directory per skill and rejects anything else', () => {
+  const alpha = MINIMAL_MANIFEST.replace('demo-skill', 'alpha-skill')
+  const beta = MINIMAL_MANIFEST.replace('demo-skill', 'beta-skill').replace('A demo skill.', 'Beta.')
+  withSkillTree({ 'alpha-skill/SKILL.md': alpha, 'beta-skill/SKILL.md': beta }, (root) => {
+    assert.deepEqual(readSkillsDirectory(root).skills.map((skill) => skill.name), ['alpha-skill', 'beta-skill'])
+  })
+  withSkillTree({ 'README.md': 'nope\n' }, (root) => {
+    assert.throws(() => readSkillsDirectory(root), /may only contain skill directories/u)
+  })
+  withSkillTree({}, (root) => {
+    assert.throws(() => readSkillsDirectory(root), /carries no skill directories/u)
+  })
+  withSkillTree({ 'real-skill/SKILL.md': alpha }, (root) => {
+    symlinkSync(join(root, 'real-skill'), join(root, 'linked-skill'))
+    assert.throws(() => readSkillsDirectory(root), /symlink/u)
+  })
+  withSkillTree({ 'alpha-skill/assets/data.json': '{}\n' }, (root) => {
+    assert.throws(() => readSkillsDirectory(root), /carries no SKILL\.md/u)
+  })
 })
 
 test('the directory reader rejects every layout the format does not declare', () => {

@@ -4,10 +4,12 @@
  * `unpack.mjs` is the only tool here that turns a blob back into plaintext,
  * so it is the one file that must never reach a shipped artifact. The guard
  * under test walks every `package.json` in the repository, resolves what its
- * `files`/`bin` whitelist would publish, and fails when any `unpack.mjs`
+ * `files`/`bin`/`main` entries would publish, and fails when any `unpack.mjs`
  * would ride along; a second rule rejects the layout mistake that makes the
  * first rule possible (an `unpack.mjs` sharing a directory with a
- * `package.json`).
+ * `package.json`). The walk deliberately descends into build-output directory
+ * names (`lib`, `dist`, `out`, `.build`), because this repository's real
+ * plugin tarballs publish `lib/**`.
  *
  * The red cases run against throwaway fixture repositories, so the mutation
  * this test exists to catch — adding `unpack.mjs` to a plugin `files`
@@ -19,7 +21,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import {
@@ -72,6 +74,39 @@ test('a files whitelist that names unpack.mjs is a violation', () => {
     assert.equal(violations.length, 1)
     assert.equal(violations[0].file, 'pkg/package.json')
     assert.match(violations[0].detail, /would ship unpack\.mjs/u)
+  })
+})
+
+test('build-output directory names are walked, so a package lib/unpack.mjs is visible', () => {
+  // The real plugin tarballs publish `lib/**`; pruning that directory name
+  // made the guard blind to the most plausible leak site.
+  fixtureRepo(
+    {
+      'lib/unpack.mjs': '',
+      'dist/unpack.mjs': '',
+      'out/unpack.mjs': '',
+      '.build/unpack.mjs': '',
+      'node_modules/unpack.mjs': '',
+    },
+    (root) => {
+      const seen = walkFiles(root).map((path) => relative(root, path).split('\\').join('/')).sort()
+      assert.deepEqual(seen, ['.build/unpack.mjs', 'dist/unpack.mjs', 'lib/unpack.mjs', 'out/unpack.mjs'])
+    },
+  )
+  fixtureRepo({ 'pkg/package.json': manifest({ files: ['lib/**'] }), 'pkg/lib/index.js': '', 'pkg/lib/unpack.mjs': '' }, (root) => {
+    const violations = byKind(findUnpackPublishViolations(root), 'files')
+    assert.equal(violations.length, 1)
+    assert.equal(violations[0].file, 'pkg/package.json')
+    assert.match(violations[0].detail, /"lib\/\*\*" would ship lib\/unpack\.mjs/u)
+  })
+})
+
+test('a main entry that points at unpack.mjs is a violation', () => {
+  fixtureRepo({ 'pkg/package.json': manifest({ main: 'tools/unpack.mjs' }), 'pkg/tools/unpack.mjs': '' }, (root) => {
+    const violations = byKind(findUnpackPublishViolations(root), 'files')
+    assert.equal(violations.length, 1)
+    assert.equal(violations[0].file, 'pkg/package.json')
+    assert.match(violations[0].detail, /"tools\/unpack\.mjs" would ship tools\/unpack\.mjs/u)
   })
 })
 

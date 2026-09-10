@@ -21,6 +21,12 @@
  * the batch-2 provider resolves them through an `opaque` resourceBase, so a
  * script that wants its data file writes `assets/data.json`, not
  * `../assets/data.json`.
+ *
+ * A plugin ships many skills, so the shipped document is a *container*:
+ * `{version: 1, skills: [<bundle>, …]}`. Each element keeps exactly the field
+ * rules above; the container adds unique skill names and one total-size bound.
+ * The single-skill document remains readable for the batch-1 compatibility
+ * entry point on `pack.mjs`.
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -60,6 +66,20 @@ export const FILE_MAX_BYTES = 1024 * 1024
 
 /** Largest canonical bundle JSON document — the unit the blob carries. */
 export const BUNDLE_MAX_BYTES = 4 * 1024 * 1024
+
+/** Container format version this tool writes and the only one it reads. */
+export const CONTAINER_VERSION = 1
+
+/** Canonical field order of the container document; the exact set, no more, no less. */
+export const CONTAINER_FIELDS = Object.freeze(['version', 'skills'])
+
+/**
+ * Largest canonical container JSON document. A container is one plugin's
+ * whole skill set, and each skill is already bounded by `BUNDLE_MAX_BYTES`;
+ * four times that leaves room for a handful of skills while keeping the
+ * shipped blob addressable.
+ */
+export const CONTAINER_MAX_BYTES = 4 * BUNDLE_MAX_BYTES
 
 /** Longest accepted relative path, keeping the resource table addressable. */
 export const PATH_MAX_LENGTH = 200
@@ -391,6 +411,121 @@ export function bundleSourceFiles(bundle) {
   const files = [{ path: SKILL_MANIFEST_NAME, bytes: Buffer.from(renderSkillManifest(bundle), 'utf8') }]
   for (const entry of sortEntries([...bundle.scripts, ...bundle.assets])) {
     files.push({ path: entry.path, bytes: decodeCanonicalBase64(entry.content, entry.path) })
+  }
+  return files
+}
+
+/* -------------------------------------------------------------------------- *\
+ * Container format (P6 batch 1.5): one plugin ships N skills in one blob.    *
+\* -------------------------------------------------------------------------- */
+
+const invalidContainer = (message) => new Error(`invalid skill container: ${message}`)
+
+/** Sort skills by name so the canonical container never depends on read order. */
+function sortSkills(skills) {
+  return [...skills]
+    .sort((left, right) => compareCodePoints(left.name, right.name))
+    .map((skill) => canonicalBundle(skill))
+}
+
+/**
+ * Rebuild a container in canonical order: skills sorted by name, each in its
+ * own canonical field and entry order. Encoding this object is what makes the
+ * container artifact deterministic.
+ * @param {object} container - a container-shaped object.
+ * @returns {object} the canonical container.
+ */
+export function canonicalContainer(container) {
+  return { version: CONTAINER_VERSION, skills: sortSkills(container.skills) }
+}
+
+/** The exact JSON document a container blob carries — also the digest subject. */
+export function containerPlaintextJson(container) {
+  return JSON.stringify(canonicalContainer(container))
+}
+
+/**
+ * Validate a decoded container document and return it in canonical order.
+ * Each element is validated exactly like a single-skill bundle, names must be
+ * unique (the batch-2 provider keys skills by name), and the whole document
+ * must fit `CONTAINER_MAX_BYTES`.
+ * @param {unknown} container - the candidate document.
+ * @returns {object} the canonical container.
+ */
+export function validateContainer(container) {
+  if (!isPlainObject(container)) throw invalidContainer('the document must be an object')
+  if (!sameKeySet(Object.keys(container), CONTAINER_FIELDS)) {
+    throw invalidContainer(`the document must carry exactly ${CONTAINER_FIELDS.join(', ')}`)
+  }
+  if (container.version !== CONTAINER_VERSION) {
+    throw invalidContainer(`version must be ${String(CONTAINER_VERSION)} (got ${JSON.stringify(container.version)})`)
+  }
+  if (!Array.isArray(container.skills)) throw invalidContainer('skills must be an array of skill bundles')
+  if (container.skills.length === 0) {
+    throw invalidContainer('skills must carry at least one skill; an empty container ships nothing')
+  }
+  const skills = []
+  const names = new Set()
+  for (const [index, skill] of container.skills.entries()) {
+    let validated
+    try {
+      validated = validateBundle(skill)
+    } catch (error) {
+      throw invalidContainer(`skills[${String(index)}]: ${error.message}`)
+    }
+    if (names.has(validated.name)) {
+      throw invalidContainer(`skills[${String(index)}]: skill name "${validated.name}" is duplicated`)
+    }
+    names.add(validated.name)
+    skills.push(validated)
+  }
+  const canonical = canonicalContainer({ version: CONTAINER_VERSION, skills })
+  const bytes = Buffer.byteLength(JSON.stringify(canonical), 'utf8')
+  if (bytes > CONTAINER_MAX_BYTES) {
+    throw invalidContainer(`the container is ${String(bytes)} bytes; the bound is ${String(CONTAINER_MAX_BYTES)}`)
+  }
+  return canonical
+}
+
+/**
+ * Read one skills root directory — N skill directories, each in the layout
+ * `readSkillDirectory` accepts — into a validated canonical container. Stray
+ * files and symlinks at the root, an empty root, and duplicate skill names
+ * all reject here.
+ * @param {string} rootDir - the skills root directory.
+ * @returns {object} the canonical container.
+ */
+export function readSkillsDirectory(rootDir) {
+  if (typeof rootDir !== 'string' || rootDir.length === 0) {
+    throw new TypeError('readSkillsDirectory expects a skills root directory path')
+  }
+  const skills = []
+  for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      throw invalidContainer(`skills root entry "${entry.name}" is a symlink; only real skill directories are packed`)
+    }
+    if (!entry.isDirectory()) {
+      throw invalidContainer(`skills root entry "${entry.name}" is a file; a skills root may only contain skill directories`)
+    }
+    skills.push(readSkillDirectory(join(rootDir, entry.name)))
+  }
+  if (skills.length === 0) throw invalidContainer(`skills root ${rootDir} carries no skill directories`)
+  return validateContainer({ version: CONTAINER_VERSION, skills })
+}
+
+/**
+ * Expand a container into the files `unpack.mjs --out` writes: one directory
+ * per skill (named by the skill's `name`), each holding its `SKILL.md` plus
+ * every carried entry.
+ * @param {object} container - a validated container.
+ * @returns {{ path: string, bytes: Buffer }[]} the materialized files.
+ */
+export function containerSourceFiles(container) {
+  const files = []
+  for (const skill of sortSkills(container.skills)) {
+    for (const file of bundleSourceFiles(skill)) {
+      files.push({ path: `${skill.name}/${file.path}`, bytes: file.bytes })
+    }
   }
   return files
 }
