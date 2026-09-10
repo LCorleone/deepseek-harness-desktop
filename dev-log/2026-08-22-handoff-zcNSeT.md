@@ -228,6 +228,10 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 第四单：engramory 0.2.4 上 beta（2026-09-10 14:10，seq24）
+dsh-dai-engramory@0.2.4（记忆类，策展式长期记忆 Markdown 文件）一次过闸 PASS 10/10：compat 直接读翻新后钉死值（a66e4702/2.0.4）、模板齐全、注入面最克制（react+locale+ui-settings）、无运行时依赖/无脚本、fetch 仅自家路由 /engramory/*。merge 9a912ef442 → accept 12487fcbab → plugin-sources 545b2f3129 → CI 34444093929 → beta **seq24**（五件纯新增，守卫视角干净）→ 棘轮 c2c23d4860。浸泡开始。
+**环境注意**：本 checkout 与另一 session **共用工作树/同一 clone**（他们在同仓并行 commit）——我的所有提交都严格路径限定（allowlist.json / plugin-sources / state / dev-log），push 前不 pull 也能 fast-forward（同一份本地历史）。
+
 ### 第三单：agent-teams 0.1.16 上 beta（2026-09-10 12:55，seq23，0.1.2 线）
 sebtang 适配版三轮落地（!20 -rc 版本号被拒→!21 改 0.1.16 新 MR 一次过闸：compat 新钉死值 a66e4702/2.0.4、注入面 5→7 faces 对应新功能、scripts/运行时依赖均为无；registerContinuableSetup 死分支仍在但特性探测）。**当日大背景：另一 session 完成 runtime 换代手术**（0.1.1→0.1.2-rc.1：e4f3aa26 升 submodule、65838c6f89 显式下窗 beta 旧线件、dai-context 重发 0.41.4、sidebar 换 0.18.1、P15 多版本钉扎+市场按本机 runtime 选钉落地）；插件仓 compat 副本同步滞后一天坑了同事两单（!19/!20 声明旧值全拦），我补推同步（72a1fa0）。merge 6e0ad080 → accept 5b2409de86 → plugin-sources cb24b1049e → CI 34439260762 → beta **seq23**（四件 0.1.2 线纯新增无移除，P15 守卫视角干净）→ 棘轮 0d8d4008fe。
 
