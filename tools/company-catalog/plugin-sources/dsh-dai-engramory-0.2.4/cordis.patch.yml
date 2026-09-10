@@ -1,0 +1,21 @@
+# The dsh-dai-engramory bundle patch: one row, inserted over whatever layers came before
+# it. A patch replaces the targeted row's whole `config`, so a profile overriding this
+# row must restate every key it means to keep.
+#
+# The numbers below are the protocol's own caps, not this port's opinion: 200 lines /
+# 25 KB is what keeps MEMORY.md cheap enough to load at the start of every session, and
+# it is the same limit hooks/engramory_index_guard.py enforces on Claude Code. They live
+# here, beside the row, so a deployment can raise or lower them without touching code.
+
+- insert:
+    - id: engramory
+      name: dsh-dai-engramory
+      config:
+        indexName: MEMORY.md
+        maxLines: 200
+        maxBytes: 25600
+        # Recall mode: `global` (default) auto-recalls memory each task; `explicit`
+        # recalls only via /engramory; `off` never recalls. By default no mode is
+        # pinned here, so the choice lives in Settings and persists in the store.
+        # Only pin a value here to HARD-LOCK a deployment (an explicit config value
+        # wins over the stored/Settings choice).
