@@ -75,8 +75,8 @@
   },
   "scripts": {
     "build": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop build",
-    "typecheck": "yarn workspace dsh-plugin-desktop typecheck && yarn workspace dsh-community-market typecheck",
-    "test": "yarn workspace dsh-plugin-desktop test && yarn workspace dsh-community-market test",
+    "typecheck": "yarn workspace dsh-plugin-desktop typecheck && yarn workspace dsh-community-market typecheck && yarn workspace dsh-company-skills typecheck",
+    "test": "yarn workspace dsh-plugin-desktop test && yarn workspace dsh-community-market test && yarn workspace dsh-company-skills test",
     "test:bilingual-docs": "node --test scripts/bilingual-docs.test.mjs",
     "check:bilingual-docs": "yarn test:bilingual-docs && node scripts/verify-bilingual-docs.mjs",
     "test:architecture-gates": "node --test scripts/market-dependency-direction.test.mjs scripts/dsh-runtime-version-parity.test.mjs",
