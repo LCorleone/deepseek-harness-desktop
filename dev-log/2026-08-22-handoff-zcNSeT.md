@@ -498,6 +498,13 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **拍板落点**：engramory 反馈稿=推荐插件侧写盘（credentials-local 范式背书）；PYTHONDONTWRITEBYTECODE **不做**（上游靠 CPython 静默容忍）；includeDefaultRoots **不动**（保持用户逃生口；上游测试钉死 shell/fs 同根 parity）。
 **对 P6 的启示（批④方案定型）**：ppt-designer 两大死结用 code-runtime-python 范式解——脚本物化进已有 0600 临时目录再跑（`__file__`/兄弟 import 天然工作，**无需改动源 skill**）+ `OPEN_KIMI_PPT_EDITOR` env 指到 staged 目录；agent-browser/Chrome 降级可选（pptx 导出本体走本地 WASM 不依赖）。**红线放宽（July 20:19 批准）**：「明文不落盘」→「明文不留驻」：脚本/资源允许瞬时落盘于 0600 mkdtemp、finally 即删，与 stdin 管道实质同等暴露面。
 
+### 当前 TODO 快照（2026-09-10 21:40，收工）
+**今晚已完成**：① beta **seq26 上线**（run 34482556545 → publish-local exit 0 → 棘轮 `e93e8d9530` 24→25→26；门禁把 `0.15.2 (+treeDigest)` 列为保守误报——已实证 stable seq25 早已带同值、旧客户端本就接受，唯一真·新键=`description`）；② July 装 b89 并验收市场描述 ✓，遥测实证 `catalog_refresh applied sequence 26 entries 6 beta-overlay`（stable 仍 25，按计划）；③ 批④ skill 插件（skill-creator + ppt-designer）实现+两轮评审闭环，HEAD `ad9af69fab`，测试 70 绿。
+**明早第一件事**：sebtang/lizywu/webhu 升 b89 → 确认（遥测或侬 July 报告）→ 发 **stable seq26**（描述对全员上线；注意仍有 `--confirm-fleet-upgraded` 门禁）。
+**第二件**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → July/他们从市场装验（PPT 生成含 Deloitte 模板 + skill-creator 跑通）。
+**其它待拍板**：engramory 走插件侧写盘（上游 credentials-local 范式已备份）；PYTHONDONTWRITEBYTECODE 不做；includeDefaultRoots 不动；sandbox_escalation 遥测接不接；P14「无记录+已 materialized」倾向不改。
+**基线**：desktop **2339+8skip** · market 467 · company-skills **70** · catalog 186 · HEAD `ad9af69fab` · 安装包 b89 `97647dd75b…7266b3` · 目录 beta seq26 / stable seq25。
+
 ### 当前 TODO 快照（2026-09-10 20:00，夜）
 **主链（等 fleet）**：① 4 台升 b89（July 先装自验）→ 我盯 DSH_LOG 确认 → ② 发 seq26（beta+stable 双发）→ 市场描述上线 → ③ 首个走必填闸的新插件验证 verify --description 流程。
 **阻塞在 July**：批④ skill 清单（已指示暂缓）；engramory 反馈稿要不要起草（建议①插件侧写入）。
