@@ -158,14 +158,6 @@ test('pack rejects invalid skill sources and writes nothing', () => {
         { 'SKILL.md': CLEAN_MANIFEST.replace('A demo skill for the packer tests.', 'x'.repeat(501)) },
         /description is 501 characters/u,
       ],
-      [
-        'missing-asset',
-        {
-          'SKILL.md': CLEAN_MANIFEST.replace('No sibling references here.', 'Read `assets/gone.json`.'),
-          'scripts/run.mjs': "readFileSync('assets/gone.json')\n",
-        },
-        /references "assets\/gone.json"/u,
-      ],
       ['stray-file', { 'SKILL.md': CLEAN_MANIFEST, 'README.md': 'stray\n' }, /unexpected file "README.md"/u],
       ['no-manifest', { 'assets/data.json': '{}\n' }, /unexpected file "assets\/data.json"|carries no SKILL.md/u],
     ]
@@ -179,6 +171,28 @@ test('pack rejects invalid skill sources and writes nothing', () => {
       assert.match(result.stderr, pattern, name)
       assert.equal(existsSync(outDir), false, `${name} must not create an output directory`)
     }
+  })
+})
+
+test('an un-carried reference is a pack-time warning, not a rejection', () => {
+  // Collected third-party skills mention example paths in prose
+  // (skill-creator's guide is full of them), so a dangling `scripts/…`/
+  // `assets/…` mention packs successfully and is reported on stderr.
+  workspace((root) => {
+    const skillDir = join(root, 'needy-skill')
+    writeSkillTree(skillDir, {
+      'SKILL.md': CLEAN_MANIFEST.replace('No sibling references here.', 'Read `assets/gone.json`.'),
+      'scripts/run.mjs': "readFileSync('assets/gone.json')\n",
+    })
+    const outDir = join(root, 'out')
+    const artifact = join(outDir, 'x.bundle.js')
+    const result = run(PACK, ['--skill', skillDir, '--out', artifact])
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stderr, /references "assets\/gone.json", which the bundle does not carry/u)
+    assert.equal(existsSync(artifact), true, 'the artifact is written despite the lint')
+    const verify = run(UNPACK, ['--in', artifact])
+    assert.equal(verify.status, 0, verify.stderr)
+    assert.match(verify.stdout, /^skill demo-skill$/mu)
   })
 })
 
@@ -325,17 +339,21 @@ test('container packing rejects duplicate names, an empty root, a root file, and
     assert.equal(mixedRun.status, 1)
     assert.match(mixedRun.stderr, /name must be kebab-case/u)
     assert.equal(existsSync(join(root, 'mixed-out')), false)
+  })
+})
 
-    // The per-skill reference closure still runs inside a container.
+test('a container member with un-carried references packs with warnings', () => {
+  workspace((root) => {
     const dangling = join(root, 'dangling')
     writeSkillTree(join(dangling, 'good-skill'), { 'SKILL.md': containerManifest('good-skill') })
     writeSkillTree(join(dangling, 'needy-skill'), {
       'SKILL.md': containerManifest('needy-skill').replace('No sibling references here.', 'Read `assets/gone.json`.'),
     })
-    const danglingRun = run(PACK, ['--skills', dangling, '--out', join(root, 'dangling-out', 'x.bundle.js')])
-    assert.equal(danglingRun.status, 1)
-    assert.match(danglingRun.stderr, /references "assets\/gone\.json"/u)
-    assert.equal(existsSync(join(root, 'dangling-out')), false)
+    const artifact = join(root, 'dangling-out', 'x.bundle.js')
+    const danglingRun = run(PACK, ['--skills', dangling, '--out', artifact])
+    assert.equal(danglingRun.status, 0, danglingRun.stderr)
+    assert.match(danglingRun.stderr, /needy-skill: body references "assets\/gone.json", which the bundle does not carry/u)
+    assert.equal(existsSync(artifact), true)
   })
 })
 

@@ -1,0 +1,140 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: image
+    bounds: [1568, 32, 85, 75]
+    src: media/image2.png
+    fit: {mode: fill}
+  - elementId: el2
+    elementType: image
+    bounds: [956, 768, 751, 192]
+    src: media/image6.png
+    fit: {mode: fill}
+  - elementId: el3
+    elementType: text
+    bounds: [64, 64, 1581, 67]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#000000"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: D.Nova 功能全景图
+  - elementId: el4
+    elementType: text
+    bounds: [64, 141, 1581, 40]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#4B5563"
+      fontFamily: Arial
+      wrap: false
+      text: 一站式智能生产力平台
+  - elementId: el5
+    elementType: text
+    bounds: [32, 907, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: Noto Sans SC
+      wrap: false
+      text: © 2026。欲了解更多信息，请联系德勤中国。
+  - elementId: el6
+    elementType: image
+    bounds: [263, 267, 85, 85]
+    src: media/image7.png
+    fit: {mode: fill}
+  - elementId: el7
+    elementType: image
+    bounds: [273, 277, 64, 64]
+    src: media/image8.png
+    fit: {mode: fill}
+  - elementId: el8
+    elementType: text
+    bounds: [92, 384, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>智能问答：支持通用任务处理与多轮对话，</p><p>提升人机交互效率和协作体验</p>
+  - elementId: el9
+    elementType: text
+    bounds: [92, 540, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>知识管理：构建企业专属知识库，</p><p>实现知识沉淀与高效智能检索</p>
+  - elementId: el10
+    elementType: image
+    bounds: [811, 267, 85, 85]
+    src: media/image7.png
+    fit: {mode: fill}
+  - elementId: el11
+    elementType: image
+    bounds: [821, 277, 64, 64]
+    src: media/image8.png
+    fit: {mode: fill}
+  - elementId: el12
+    elementType: text
+    bounds: [640, 384, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>共创智能集市：</p><p>一站式访问AI工具与智能体，</p><p>促进生态协作与创新落地</p>
+  - elementId: el13
+    elementType: text
+    bounds: [640, 540, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>工作助手：</p><p>覆盖文档处理、翻译、语音、编程等</p><p>高频办公场景，提升日常效率</p>
+  - elementId: el14
+    elementType: image
+    bounds: [1359, 267, 85, 85]
+    src: media/image7.png
+    fit: {mode: fill}
+  - elementId: el15
+    elementType: image
+    bounds: [1369, 277, 64, 64]
+    src: media/image8.png
+    fit: {mode: fill}
+  - elementId: el16
+    elementType: text
+    bounds: [1188, 384, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>应用中心：</p><p>提供面向行业与业务场景的定制化</p><p>GenAI应用集合，加速价值实现</p>
+  - elementId: el17
+    elementType: text
+    bounds: [1188, 540, 429, 135]
+    content:
+      align: [center, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.1
+      wrap: false
+      text: <p>权限管理与API服务：</p><p>支持安全可控的资源访问和系统集成，</p><p>保障企业级合规需求</p>

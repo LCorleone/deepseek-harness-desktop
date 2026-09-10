@@ -34,6 +34,7 @@ export interface ToolsBundleModule {
   containerPlaintextJson(container: { version: number; skills: readonly ToolsSkillBundle[] }): string
   bundleSourceFiles(bundle: ToolsSkillBundle): { path: string; bytes: Buffer }[]
   validateContainer(container: unknown): unknown
+  parseSkillManifest(text: string, site?: string): { name: string; description: string; body: string }
 }
 
 /** The slice of `tools/company-skills/lib/codec.mjs` these tests read. */
@@ -65,3 +66,12 @@ export const PACKAGE_ROOT = new URL('..', import.meta.url)
 
 /** The two fixture skills, sorted by name. */
 export const FIXTURE_NAMES = ['fixture-hello', 'fixture-notes']
+
+/** The collected real skills, sorted by name — batch 4's shipped set. */
+export const SHIPPED_SKILL_NAMES = ['ppt-designer', 'skill-creator']
+
+/** The packable plaintext root holding the collected real skills. */
+export const SKILLS_DIR = new URL('../skills', import.meta.url)
+
+/** The packable plaintext root holding the test fixtures. */
+export const FIXTURES_DIR = new URL('../fixtures', import.meta.url)

@@ -1,0 +1,188 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el17
+    elementType: image
+    bounds: [0, 0, 1707, 960]
+    src: media/image10.png
+    fit:
+      mode: fill
+  - elementId: el1
+    elementType: text
+    bounds: [96, 64, 1517, 53]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#000000"
+      bold: true
+      fontFamily: Arial
+      lineHeight: 0.7
+      wrap: false
+      text: 智能问答核心特性
+  - elementId: el2
+    elementType: text
+    bounds: [96, 243, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#26890D"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "01"
+  - elementId: el3
+    elementType: text
+    bounds: [207, 207, 623, 33]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#26890D"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: 多轮对话与上下文记忆
+  - elementId: el4
+    elementType: text
+    bounds: [207, 251, 623, 117]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Calibri
+      lineHeight: 1.33
+      wrap: false
+      text: <p>支持长期任务分阶段推进，保持对话连贯性，</p><p>精准理解用户意图演变。在复杂任务中持续追踪上下文，</p><p>确保每一步决策有据可依。</p>
+  - elementId: el5
+    elementType: text
+    bounds: [880, 243, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#43B02A"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "02"
+  - elementId: el6
+    elementType: text
+    bounds: [991, 225, 623, 33]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#43B02A"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: 会话状态自动保存
+  - elementId: el7
+    elementType: text
+    bounds: [991, 269, 623, 79]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Calibri
+      lineHeight: 1.33
+      wrap: false
+      text: <p>未完成任务可随时中断并恢复，无需重复输入，</p><p>提升操作连续性。系统自动记录进度，保障任务不丢失。</p>
+  - elementId: el8
+    elementType: text
+    bounds: [96, 509, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "03"
+  - elementId: el9
+    elementType: text
+    bounds: [207, 492, 623, 33]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: 历史会话可追溯
+  - elementId: el10
+    elementType: text
+    bounds: [207, 536, 623, 79]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Calibri
+      lineHeight: 1.33
+      wrap: false
+      text: <p>所有对话记录可查可复用，便于复盘分析与团队协作，</p><p>支持知识沉淀，提升工作透明度与协同效率。</p>
+  - elementId: el11
+    elementType: text
+    bounds: [880, 509, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#53565A"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "04"
+  - elementId: el12
+    elementType: text
+    bounds: [991, 492, 623, 33]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#53565A"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: 双模式界面切换
+  - elementId: el13
+    elementType: text
+    bounds: [991, 536, 623, 79]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Calibri
+      lineHeight: 1.33
+      wrap: false
+      text: <p>简洁模式满足快速操作，高级模式支持深度定制与复杂功能，</p><p>灵活适配不同用户需求与使用场景。</p>
+  - elementId: el14
+    elementType: text
+    bounds: [96, 756, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#0D8390"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "05"
+  - elementId: el15
+    elementType: text
+    bounds: [207, 739, 623, 33]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#0D8390"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: 任务导向设计
+  - elementId: el16
+    elementType: text
+    bounds: [207, 783, 623, 79]
+    content:
+      align:
+        - left
+        - top
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Calibri
+      lineHeight: 1.33
+      wrap: false
+      text: <p>聚焦具体工作目标，引导用户高效完成任务，</p><p>减少无效交互，显著提升执行效率与结果达成率。</p>

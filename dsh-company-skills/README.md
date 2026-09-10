@@ -4,7 +4,7 @@
 
 DSH Company Skills is the container plugin that ships a set of curated company skills as **one obfuscated bundle** and publishes them through the DeepSeek Harness skill registry. It is the P6 batch-2/3 deliverable: batch 1 defines and writes the bundle format (`tools/company-skills`), this package reads it, batch 3 adds the staged per-run script-execution channel, and batch 4 lands the first real skill set.
 
-> **Current status: shipped as a placeholder container.** The asset carries two fixture skills (`fixture-hello`, `fixture-notes`) so the package builds, typechecks, and tests without any key material. The real container is repacked in batch 4; nothing else in the package changes.
+> **Current status: shipped with the first real collected skill set (batch 4).** The asset carries `ppt-designer` and `skill-creator` — collected read-only from the skills hub into `skills/` (see `scripts/collect-skills.mjs`) and repacked into `assets/skills.bundle`. The fixture skills stay under `fixtures/` as a test-only surface and are no longer shipped.
 
 ## What it is
 
@@ -67,8 +67,8 @@ The nothing-persists guarantee is asserted in `tests/execute.spec.ts`: the scrip
 ```
 
 - Each element is exactly one batch-1 skill bundle.
-- Frame rules mirror the writer's `validateContainer`: version 1 only, exactly `version` and `skills`, at least one skill, unique skill names, ≤ 16 MiB of canonical JSON.
-- Element payload rules mirror `validateBundle`: exact field sets, kebab-case names, a ≤ 500-character single-line description (the catalog truncation bound), a non-empty body, and entries that are bundle-root-relative POSIX paths under `scripts/` or `assets/` with canonical base64 content.
+- Frame rules mirror the writer's `validateContainer`: version 1 only, exactly `version` and `skills`, at least one skill, unique skill names, ≤ 128 MiB of canonical JSON (2 × the 64 MiB per-skill bound; the shipped container measures ≈ 43 MiB).
+- Element payload rules mirror `validateBundle`: exact field sets, kebab-case names, a ≤ 500-character single-line description (the catalog truncation bound), a non-empty body, and entries that are bundle-root-relative POSIX paths under `scripts/` or `assets/` (nested directories allowed) with canonical base64 content, each ≤ 8 MiB.
 - The decoder accepts both shipped forms: a raw base64 asset or a generated `pack.mjs` module.
 - Deliberately not re-checked at runtime: the packed-reference closure. That is an authoring invariant the packer enforces before the blob is written; re-deriving it here would only create a second place for the two implementations to disagree.
 
@@ -98,20 +98,22 @@ Two residual disclosures already signed off for P6 apply here unchanged: a skill
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc declarations
 corepack yarn workspace dsh-company-skills typecheck
 corepack yarn workspace dsh-company-skills test           # vitest, 56 cases
-corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle matches fixtures/
+corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle matches skills/
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
-# regenerate the shipped asset after editing fixtures/ (or, in batch 4, the real skills)
+# refresh the collected copies (READ-ONLY on the skills hub), then re-apply the
+# ppt-designer description trim by hand if SKILL.md changed, then regenerate:
+node dsh-company-skills/scripts/collect-skills.mjs
 node dsh-company-skills/scripts/build-bundle-asset.mjs
 ```
 
-The generator is a thin wrapper over the batch-1 packer (`tools/company-skills/pack.mjs --skills dsh-company-skills/fixtures --out assets/skills.bundle`), so the writer stays in one place and this package owns only the reader. It is deterministic: no timestamps, name-sorted container, so `--check` is a pure byte comparison that runs in CI with no key material.
+The generator is a thin wrapper over the batch-1 packer (`tools/company-skills/pack.mjs --skills dsh-company-skills/skills --out assets/skills.bundle`), so the writer stays in one place and this package owns only the reader. It is deterministic: no timestamps, name-sorted container, so `--check` is a pure byte comparison that runs in CI with no key material. The packer's dangling-reference lint (collected skills mention example paths in prose) warns on stderr and never blocks the artifact.
 
 ## Tests
 
 | File | Cases | Coverage |
 | --- | --- | --- |
-| `tests/container.spec.ts` | 11 | codec constants shared with the packer; shipped asset decodes to one entry per fixture; packer→decoder cross-consistency (canonical document and source tree, byte for byte); raw blob and generated module; determinism; no plaintext in the artifact (with a decoded positive control) and none in any shipped plugin file; malformed frame and element rejection parity with the packer; release-surface whitelist |
+| `tests/container.spec.ts` | 11 | codec constants shared with the packer; shipped asset decodes to one entry per collected skill (descriptions equal to the plaintext sources); packer→decoder cross-consistency (canonical document and source tree, byte for byte); raw blob and generated module; determinism (including shipped asset = a fresh pack of `skills/`); no plaintext in the artifact (with a decoded positive control and the 4.9 MiB font table's byte size) and none in any shipped plugin file; malformed frame and element rejection parity with the packer; release-surface whitelist covering `skills/` |
 | `tests/provider.spec.ts` | 11 | reactive `inject(['skills'])` registration plus disposal; late-mounted registry; bare `ctx.skills` throws; source-shape pin; `list()` index-only (no body, no `content`); `get()` materializes exactly one body; unknown name and unusable locator; a broken payload lists but refuses; missing/corrupt asset degrades without throwing; degraded catalog on a live host; module exports |
 | `tests/execute.spec.ts` | 29 | interpreter selection and resolution (injected command → PATH → host executable); real materialized `node` runs (output, args passthrough, non-zero exit as data, the script reads its own staged source); the code-runtime-python paradigm for real (`__file__`-based root discovery equals the staged root and `DSH_SKILL_ASSETS`, a Python sibling import through `sys.path[0]`, cwd-relative asset reads); nothing persists (staged root gone once settled, temp root empty, no body canary in the result, a failing cleanup only warns); unknown skill / undeclared script / traversal / missing interpreter / invalid UTF-8 all reject before spawning with no residue; deadline, output-tail truncation, caller cancellation, launch failure — each removing the staged root; per-session concurrency bound and slot release; seam passthrough (materialized argv, staged cwd, env, grace, signal) |
 | `tests/tool.spec.ts` | 5 | tool schema, output shape, budget, and `presentCall`; session/signal resolution from the execution context; render/`toRunValue`; reactive registration on the tools seam and disposal; a shipped fixture script run end to end through the real plugin with staged-root cleanup |
@@ -143,15 +145,40 @@ dsh-company-skills/
   src/tool.ts           company_skill_run definition, render, presentCall
   assets/skills.bundle  the shipped container block (in files)
   cordis.patch.yml      the composition row (in files)
-  scripts/              asset generator + clean (never published)
-  fixtures/             plaintext fixture skills (never published)
+  scripts/              asset generator, skill collector, clean (never published)
+  skills/               collected plaintext company skills (never published)
+  fixtures/             plaintext fixture skills, test-only (never published)
   tests/                vitest + the local spawn seam (never published)
 ```
 
+## Collected skills
+
+`skills/` holds this package's shipped set, collected **read-only** from the
+skills hub (`/opt/july/skills-hub/skills` — never written to):
+
+- **ppt-designer** — 33 MiB of resources ride along (the offline neo-ppt editor
+  mirror, the Deloitte PPTD template, design references, and the export
+  scripts). Its frontmatter description is trimmed to the 500-character
+  catalog bound in this copy; everything else is byte-identical to the source.
+- **skill-creator** — shipped verbatim except for layout adaptation
+  (`references/` and `LICENSE.txt` ride under `assets/`, keeping their
+  skill-relative names when staged).
+
+Layout adaptation maps `scripts/` as-is and every other top-level entry under
+`assets/` (so the staged root reconstructs the original skill directory:
+`__file__`-based root discovery, sibling imports, and `reference/pptd.md`-style
+reads all work unmodified). `__pycache__` directories are pruned. The upstream
+`resourceBase: { kind: 'opaque' }` hint still renders: consumers address these
+skills through the catalog and `company_skill_run`, never as local paths.
+
 ## What comes next
 
-- **Batch 4** replaces the fixture container with the first real skill set, lands it in the market handoff (`type: 'skill'`), and verifies a real installation end to end.
+- Market handoff (`type: 'skill'`), MR, and a real-machine install
+  verification: market install → the two skills appear in the catalog →
+  `company_skill_run` executes a collected script → the staged root is gone
+  afterwards and no plaintext persists on disk.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The collected `skill-creator` carries its
+upstream Apache-2.0 license as `assets/LICENSE.txt` inside its bundle.

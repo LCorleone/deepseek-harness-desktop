@@ -35,11 +35,19 @@ export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 /** Description bound: the catalog's `catalogDescriptionMaxLength` default. */
 export const DESCRIPTION_MAX_LENGTH = 500
 
-/** Largest single carried file (body, one script, or one asset). */
-export const FILE_MAX_BYTES = 1024 * 1024
+/**
+ * Largest single carried file (body, one script, or one asset). Sized for
+ * the first real collected skill set: ppt-designer ships a 4.7 MiB font
+ * table and a 2.4 MiB WASM binary inside its editor mirror.
+ */
+export const FILE_MAX_BYTES = 8 * 1024 * 1024
 
-/** Largest canonical bundle JSON document — the unit a container element carries. */
-export const BUNDLE_MAX_BYTES = 4 * 1024 * 1024
+/**
+ * Largest canonical bundle JSON document — the unit a container element
+ * carries. ppt-designer's canonical document measures ≈ 43 MiB (33 MiB of
+ * sources base64-encoded), so the bound is set above it with headroom.
+ */
+export const BUNDLE_MAX_BYTES = 64 * 1024 * 1024
 
 /** Longest accepted relative entry path. */
 export const PATH_MAX_LENGTH = 200

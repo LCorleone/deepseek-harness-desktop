@@ -12,7 +12,9 @@
  * `bundle.ts`), so authoring stays per-skill and this file only adds the outer
  * frame. The frame rules mirror the writer's `validateContainer` exactly:
  * version 1, exactly `version` and `skills`, at least one skill, names unique
- * across the container, and a 16 MiB (4 × the per-skill 4 MiB) document bound.
+ * across the container, and a 128 MiB (2 × the per-skill 64 MiB) document
+ * bound — the first real container (ppt-designer + skill-creator) measures
+ * ≈ 43 MiB.
  *
  * The split with the writer is deliberate: the tool validates every element
  * eagerly because it is checking an artifact before it ships, while this
@@ -44,8 +46,8 @@ export const CONTAINER_VERSION = 1
 /** Canonical fields of the container document, in order. */
 export const CONTAINER_FIELDS = Object.freeze(['version', 'skills'])
 
-/** Largest accepted container document, bytes of canonical JSON; 4 × the per-skill bound. */
-export const CONTAINER_MAX_BYTES = 4 * BUNDLE_MAX_BYTES
+/** Largest accepted container document, bytes of canonical JSON; 2 × the per-skill bound. */
+export const CONTAINER_MAX_BYTES = 2 * BUNDLE_MAX_BYTES
 
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u
 

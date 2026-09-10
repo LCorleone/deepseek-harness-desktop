@@ -1,0 +1,188 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: text
+    bounds: [64, 64, 1581, 60]
+    content:
+      align: [left, top]
+      fontSize: 36
+      color: "#111827"
+      bold: true
+      fontFamily: Arial
+      wrap: false
+      text: "应用中心定位与价值"
+  - elementId: el2
+    elementType: text
+    bounds: [64, 129, 1581, 40]
+    content:
+      align: [left, top]
+      fontSize: 22
+      color: "#6B7280"
+      fontFamily: Arial
+      wrap: true
+      text: "聚焦行业场景，驱动AI专业化落地"
+  - elementId: el3
+    elementType: image
+    bounds: [956, 0, 751, 192]
+    src: media/image5.png
+    fit: {mode: fill}
+  - elementId: el4
+    elementType: text
+    bounds: [32, 907, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: "Noto Sans SC"
+      wrap: true
+      text: "© 2026。欲了解更多信息，请联系德勤中国。"
+  - elementId: el5
+    elementType: image
+    bounds: [1525, 779, 149, 149]
+    src: media/image15.png
+    fit: {mode: fill}
+  - elementId: el6
+    elementType: image
+    bounds: [64, 255, 453, 72]
+    src: media/image19.png
+    fit: {mode: fill}
+  - elementId: el7
+    elementType: text
+    bounds: [109, 256, 365, 69]
+    content:
+      align: [center, top]
+      fontSize: 21
+      color: "#333333"
+      fontFamily: Arial
+      wrap: true
+      text: "汇聚GenAI算法与算力驱动的独立应用系统"
+  - elementId: el8
+    elementType: text
+    bounds: [581, 280, 13, 48]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "•"
+  - elementId: el9
+    elementType: text
+    bounds: [603, 260, 1043, 87]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.05
+      wrap: true
+      text: "推动AI能力从通用向专业纵深演进，释放行业价值潜力。提供100%定制化支持，提升30%部署效率"
+  - elementId: el10
+    elementType: image
+    bounds: [64, 379, 453, 72]
+    src: media/image20.png
+    fit: {mode: fill}
+  - elementId: el11
+    elementType: text
+    bounds: [109, 380, 365, 69]
+    content:
+      align: [center, top]
+      fontSize: 21
+      color: "#FFFFFF"
+      fontFamily: Arial
+      wrap: true
+      text: "面向金融、医疗等垂直行业提供定制化解决方案"
+  - elementId: el12
+    elementType: text
+    bounds: [581, 403, 13, 48]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "•"
+  - elementId: el13
+    elementType: text
+    bounds: [603, 384, 1043, 87]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.05
+      wrap: true
+      text: "支持跨行业复用，降低开发成本，加速AI产品化落地。内置50+行业模板和200+预置模块"
+  - elementId: el14
+    elementType: image
+    bounds: [64, 503, 453, 72]
+    src: media/image21.png
+    fit: {mode: fill}
+  - elementId: el15
+    elementType: text
+    bounds: [109, 504, 365, 69]
+    content:
+      align: [center, top]
+      fontSize: 21
+      color: "#FFFFFF"
+      fontFamily: Arial
+      wrap: true
+      text: "支持独立访问控制，保障数据隔离与权限安全"
+  - elementId: el16
+    elementType: text
+    bounds: [581, 527, 13, 48]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "•"
+  - elementId: el17
+    elementType: text
+    bounds: [603, 508, 1043, 87]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.05
+      wrap: true
+      text: "统一管理入口，实现应用全生命周期可视化管控，支持实时监控与自动扩缩容"
+  - elementId: el18
+    elementType: image
+    bounds: [64, 627, 453, 72]
+    src: media/image22.png
+    fit: {mode: fill}
+  - elementId: el19
+    elementType: text
+    bounds: [109, 627, 365, 69]
+    content:
+      align: [center, top]
+      fontSize: 21
+      color: "#FFFFFF"
+      fontFamily: Arial
+      wrap: true
+      text: "支持快速部署与按需调用，满足项目级AI应用需求"
+  - elementId: el20
+    elementType: text
+    bounds: [581, 651, 13, 48]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      wrap: false
+      text: "•"
+  - elementId: el21
+    elementType: text
+    bounds: [603, 632, 1043, 87]
+    content:
+      align: [left, top]
+      fontSize: 24
+      color: "#111827"
+      fontFamily: Arial
+      lineHeight: 1.05
+      wrap: true
+      text: "兼容主流AI框架，灵活对接企业现有IT体系，支持PyTorch、TensorFlow、ONNX等"

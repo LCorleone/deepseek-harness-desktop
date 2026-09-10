@@ -1,2 +1,7 @@
 * text=auto eol=lf
 patches/*.patch text eol=lf whitespace=-space-before-tab
+# Collected company-skill payloads pack into dsh-company-skills/assets/skills.bundle
+# byte-for-byte, and `verify:bundle` re-packs the tree expecting identical bytes
+# (the Deloitte PPTD template ships CRLF .pptd/.page files verbatim), so git
+# must never renormalize anything under that tree.
+dsh-company-skills/skills/** -text

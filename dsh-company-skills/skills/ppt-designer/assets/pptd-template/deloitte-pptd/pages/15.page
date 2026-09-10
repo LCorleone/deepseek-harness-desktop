@@ -1,0 +1,45 @@
+pageType: final
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: text
+    bounds: [96, 392, 803, 96]
+    content:
+      align: [left, top]
+      fontSize: 60
+      color: "#111827"
+      bold: true
+      fontFamily: "Noto Sans SC"
+      lineHeight: 0.9
+      wrap: false
+      text: "总结与展望"
+  - elementId: el2
+    elementType: text
+    bounds: [96, 525, 803, 64]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#6B7280"
+      fontFamily: Calibri
+      wrap: true
+      text: "D.Nova：赋能组织智能化转型"
+  - elementId: el3
+    elementType: text
+    bounds: [96, 984, 300, 23]
+    content:
+      align: [left, top]
+      fontSize: 13
+      color: "#09090B"
+      fontFamily: "Noto Sans SC"
+      wrap: true
+      text: "© 2026。欲了解更多信息，请联系德勤中国。"
+  - elementId: el4
+    elementType: image
+    bounds: [939, 0, 768, 960]
+    src: media/image25.png
+    fit: {mode: fill}
+  - elementId: el5
+    elementType: image
+    bounds: [53, 32, 149, 75]
+    src: media/image26.png
+    fit: {mode: fill}

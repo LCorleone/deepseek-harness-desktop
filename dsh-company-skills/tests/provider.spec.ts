@@ -18,16 +18,27 @@ import { describe, expect, it } from 'vitest'
 import { emptyCatalog, loadCatalogFromFile, loadCatalogFromText } from '../src/catalog.js'
 import * as CompanySkills from '../src/index.js'
 import { createProvider } from '../src/provider.js'
-import { FIXTURE_NAMES, PACKAGE_ROOT, toolsBundle, toolsCodec } from './tools.js'
+import { PACKAGE_ROOT, SHIPPED_SKILL_NAMES, SKILLS_DIR, toolsBundle, toolsCodec } from './tools.js'
 
 const PACKAGE_ROOT_PATH = fileURLToPath(PACKAGE_ROOT)
-const FIXTURES_DIR = join(PACKAGE_ROOT_PATH, 'fixtures')
+const SKILLS_ROOT_PATH = fileURLToPath(SKILLS_DIR)
+const FIXTURES_ROOT_PATH = join(PACKAGE_ROOT_PATH, 'fixtures')
 const ASSET = new URL('../assets/skills.bundle', import.meta.url)
 
 /** Canary lines that must never reach a candidate, a definition, or a log. */
-const CANARIES = ['FIXTURE-HELLO-PLAINTEXT-CANARY', 'FIXTURE-NOTES-PLAINTEXT-CANARY']
+const CANARIES = [
+  'FIXTURE-HELLO-PLAINTEXT-CANARY',
+  'FIXTURE-NOTES-PLAINTEXT-CANARY',
+  // One distinctive body line from each collected real skill.
+  'Strictly follow the Deloitte template. The deliverable must look like the template',
+  'The context window is a public good',
+]
 
-const packed = (name: string) => toolsBundle.readSkillDirectory(join(FIXTURES_DIR, name))
+const packed = (name: string) => toolsBundle.readSkillDirectory(join(FIXTURES_ROOT_PATH, name))
+
+/** The canonical manifest of one shipped skill, read from its plaintext source. */
+const manifestOf = (name: string): { name: string; description: string; body: string } =>
+  toolsBundle.parseSkillManifest(readFileSync(join(SKILLS_ROOT_PATH, name, 'SKILL.md'), 'utf8'))
 const encode = (document: unknown): string => toolsCodec.encodeBundleBlob(JSON.stringify(document))
 
 function providerFor(assetText: string, warnings: string[] = []): SkillProvider {
@@ -54,9 +65,9 @@ describe('company-skills provider', () => {
     await ctx.plugin(SkillRegistry)
 
     const summaries = await ctx.skills.list()
-    expect(summaries.map((summary) => summary.name)).toEqual(FIXTURE_NAMES)
+    expect(summaries.map((summary) => summary.name)).toEqual(SHIPPED_SKILL_NAMES)
     expect(summaries[0]).toMatchObject({
-      description: packed('fixture-hello').description,
+      description: manifestOf('ppt-designer').description,
       invocation: { modelInvocable: true, userInvocable: true },
       provider: 'company-skills',
       source: 'bundled',
@@ -74,7 +85,7 @@ describe('company-skills provider', () => {
 
     await ctx.plugin(SkillRegistry)
     await pending
-    expect((await ctx.skills.list()).map((summary) => summary.name)).toEqual(FIXTURE_NAMES)
+    expect((await ctx.skills.list()).map((summary) => summary.name)).toEqual(SHIPPED_SKILL_NAMES)
   })
 
   it('a bare ctx.skills read inside a plugin fiber throws', async () => {
@@ -106,10 +117,10 @@ describe('company-skills provider', () => {
   it('list() exposes the index and never a body', async () => {
     const provider = providerFor(readFileSync(ASSET, 'utf8'))
     const candidates = await candidatesOf(provider)
-    expect(candidates.map((candidate) => candidate.name)).toEqual(FIXTURE_NAMES)
+    expect(candidates.map((candidate) => candidate.name)).toEqual(SHIPPED_SKILL_NAMES)
     for (const candidate of candidates) {
       expect(candidate).toMatchObject({
-        description: packed(candidate.name).description,
+        description: manifestOf(candidate.name).description,
         invocation: { modelInvocable: true, userInvocable: true },
         provider: 'company-skills',
         source: 'bundled',
@@ -125,14 +136,14 @@ describe('company-skills provider', () => {
 
   it('get() materializes exactly the requested body', async () => {
     const provider = providerFor(readFileSync(ASSET, 'utf8'))
-    const hello = await provider.get(await candidateNamed(provider, 'fixture-hello'), {})
-    expect(hello?.content).toBe(packed('fixture-hello').body)
-    expect(hello?.resourceBase).toEqual({ kind: 'opaque', description: expect.any(String) })
-    expect(JSON.stringify(hello)).not.toContain(CANARIES[1] as string)
+    const designer = await ctxGet(provider, 'ppt-designer')
+    expect(designer?.content).toBe(manifestOf('ppt-designer').body)
+    expect(designer?.resourceBase).toEqual({ kind: 'opaque', description: expect.any(String) })
+    expect(JSON.stringify(designer)).not.toContain(CANARIES[2] as string)
 
-    const notes = await ctxGet(provider, 'fixture-notes')
-    expect(notes?.content).toBe(packed('fixture-notes').body)
-    expect(JSON.stringify(notes)).not.toContain(CANARIES[0] as string)
+    const creator = await ctxGet(provider, 'skill-creator')
+    expect(creator?.content).toBe(manifestOf('skill-creator').body)
+    expect(JSON.stringify(creator)).not.toContain(CANARIES[0] as string)
   })
 
   it('returns undefined for an unknown name and for an unusable locator', async () => {
@@ -211,7 +222,7 @@ describe('company-skills provider', () => {
     expect(CompanySkills.name).toBe('company-skills')
     expect(CompanySkills.inject).toEqual(['skills'])
     expect(CompanySkills.catalog.reason).toBeUndefined()
-    expect(CompanySkills.catalog.entries.map((entry) => entry.name)).toEqual(FIXTURE_NAMES)
+    expect(CompanySkills.catalog.entries.map((entry) => entry.name)).toEqual(SHIPPED_SKILL_NAMES)
   })
 })
 

@@ -70,11 +70,19 @@ export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
  */
 export const DESCRIPTION_MAX_LENGTH = 500
 
-/** Largest single carried file (body, one script, or one asset). */
-export const FILE_MAX_BYTES = 1024 * 1024
+/**
+ * Largest single carried file (body, one script, or one asset). Sized for the
+ * first real collected skill set: ppt-designer ships a 4.7 MiB font table and
+ * a 2.4 MiB WASM binary inside its editor mirror.
+ */
+export const FILE_MAX_BYTES = 8 * 1024 * 1024
 
-/** Largest canonical bundle JSON document — the unit the blob carries. */
-export const BUNDLE_MAX_BYTES = 4 * 1024 * 1024
+/**
+ * Largest canonical bundle JSON document — the unit a container element
+ * carries. ppt-designer's canonical document measures ≈ 43 MiB (33 MiB of
+ * sources base64-encoded), so the bound is set above it with headroom.
+ */
+export const BUNDLE_MAX_BYTES = 64 * 1024 * 1024
 
 /** Container format version this tool writes and the only one it reads. */
 export const CONTAINER_VERSION = 1
@@ -84,11 +92,11 @@ export const CONTAINER_FIELDS = Object.freeze(['version', 'skills'])
 
 /**
  * Largest canonical container JSON document. A container is one plugin's
- * whole skill set, and each skill is already bounded by `BUNDLE_MAX_BYTES`;
- * four times that leaves room for a handful of skills while keeping the
- * shipped blob addressable.
+ * whole skill set; the first real container (ppt-designer + skill-creator)
+ * measures ≈ 43 MiB, so twice the per-skill bound leaves room for a few more
+ * collected skills while keeping the shipped blob addressable.
  */
-export const CONTAINER_MAX_BYTES = 4 * BUNDLE_MAX_BYTES
+export const CONTAINER_MAX_BYTES = 2 * BUNDLE_MAX_BYTES
 
 /** Longest accepted relative path, keeping the resource table addressable. */
 export const PATH_MAX_LENGTH = 200
@@ -258,15 +266,7 @@ export function validateBundle(bundle) {
   const scripts = validateEntryArray(bundle.scripts, 'scripts', SCRIPTS_DIR)
   const assets = validateEntryArray(bundle.assets, 'assets', ASSETS_DIR)
 
-  const carried = new Set([...scripts, ...assets].map((entry) => entry.path))
   const canonical = canonicalBundle({ name, description, body, scripts, assets })
-  for (const [site, text] of referenceScanTargets(canonical)) {
-    for (const reference of collectReferences(text)) {
-      if (!carried.has(reference)) {
-        throw invalid(`${name}: ${site} references "${reference}", which the bundle does not carry`)
-      }
-    }
-  }
 
   const json = JSON.stringify(canonical)
   const bytes = Buffer.byteLength(json, 'utf8')
@@ -274,6 +274,33 @@ export function validateBundle(bundle) {
     throw invalid(`${name}: the bundle is ${String(bytes)} bytes; the bound is ${String(BUNDLE_MAX_BYTES)}`)
   }
   return canonical
+}
+
+/**
+ * Every `scripts/…`/`assets/…` literal the body or a script mentions that the
+ * bundle does not carry, as `{site, reference}` records for the packer's
+ * authoring lint.
+ *
+ * This used to be a hard validation, but a *collected* third-party skill
+ * legitimately mentions example paths in its prose (skill-creator's guide
+ * talks about `assets/logo.png` and `scripts/rotate_pdf.py` as anatomy
+ * examples, and the bundled editor's chunk names are directory-relative), so
+ * a miss is reported as a pack-time warning instead of a rejection. It stays
+ * an authoring aid only: the runtime never re-derives the closure, and the
+ * security-relevant rules (frame, fields, paths, base64, bounds) remain hard.
+ *
+ * @param {object} bundle - a canonical bundle.
+ * @returns {{ site: string, reference: string }[]} the misses, possibly empty.
+ */
+export function danglingReferences(bundle) {
+  const carried = new Set([...bundle.scripts, ...bundle.assets].map((entry) => entry.path))
+  const misses = []
+  for (const [site, text] of referenceScanTargets(bundle)) {
+    for (const reference of collectReferences(text)) {
+      if (!carried.has(reference)) misses.push({ site, reference })
+    }
+  }
+  return misses
 }
 
 /** Split `key: value` frontmatter lines into a map; unknown keys are ignored. */
@@ -343,7 +370,15 @@ function walkSkillDirectory(rootDir, relativeDir, collect) {
     }
     if (entry.isDirectory()) {
       if (PRUNED_DIRECTORY_NAMES.includes(entry.name)) continue
-      if (relativeDir !== '' || (entry.name !== SCRIPTS_DIR && entry.name !== ASSETS_DIR)) {
+      // Directories are allowed exactly inside the two carried roots, at any
+      // depth: a collected skill ships deep trees (`assets/editor/neo-ppt/…`,
+      // `scripts/local-export/…`), and the format's path rules already accept
+      // multi-segment relative paths. Anything else is an unexpected layout.
+      const insideCarriedRoot = relativeDir === ''
+        ? entry.name === SCRIPTS_DIR || entry.name === ASSETS_DIR
+        : relativeDir === SCRIPTS_DIR || relativeDir.startsWith(`${SCRIPTS_DIR}/`)
+          || relativeDir === ASSETS_DIR || relativeDir.startsWith(`${ASSETS_DIR}/`)
+      if (!insideCarriedRoot) {
         throw invalid(
           `unexpected directory "${relative}" in the skill directory `
           + `(only ${SKILL_MANIFEST_NAME}, ${SCRIPTS_DIR}/, and ${ASSETS_DIR}/ are allowed)`,

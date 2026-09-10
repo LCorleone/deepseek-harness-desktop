@@ -12,7 +12,9 @@
  * @module dsh-company-skills/tests/tool
  */
 
-import { stat } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
@@ -175,7 +177,7 @@ describe('registration wiring', () => {
     expect(tools.registered).toEqual([])
   })
 
-  it('runs a bundled fixture script end to end and removes the staged skill root', async () => {
+  it('runs a shipped company skill script end to end and removes the staged skill root', async () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
     await ctx.plugin(RecordingTools)
@@ -184,19 +186,32 @@ describe('registration wiring', () => {
 
     const tool = recordingTools(ctx).registered[0] as ToolDefinition
     const exec = { signal: new AbortController().signal } as unknown as ToolRunContext
-    const value = await tool.execute({ skill: 'fixture-hello', script: 'scripts/hello.mjs' }, exec) as {
-      exitCode: number
-      stdout: string
-    }
+    // A real collected script, run for real: skill-creator's initializer writes
+    // its template skill into an absolute workspace directory (the skill's own
+    // documented usage), proving addressing, staging, args, the Python
+    // interpreter, and cleanup all work on shipped content.
+    const workspace = await mkdtemp(join(tmpdir(), 'company-skills-e2e-'))
+    try {
+      const value = await tool.execute({
+        skill: 'skill-creator',
+        script: 'scripts/init_skill.py',
+        args: ['collected-e2e-skill', '--path', workspace],
+      }, exec) as { exitCode: number; stdout: string }
 
-    expect(value.exitCode).toBe(0)
-    expect(value.stdout).toContain('fixture-hello would read assets/notes.md')
+      expect(value.exitCode).toBe(0)
+      expect(value.stdout).toContain('Created SKILL.md')
+      const created = join(workspace, 'collected-e2e-skill', 'SKILL.md')
+      expect(existsSync(created)).toBe(true)
+      expect(readFileSync(created, 'utf8')).toContain('name: collected-e2e-skill')
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
 
     const spec = recordingSubprocess(ctx).specs[0]
     // The interpreter was pointed at the materialized script file — never a
     // stdin pipe — with the staged root as cwd and stdin closed.
-    expect(spec?.argv[0]).toBe('node')
-    expect((spec?.argv[1] as string).endsWith(join('scripts', 'hello.mjs'))).toBe(true)
+    expect(spec?.argv[0]).toBe('python')
+    expect((spec?.argv[1] as string).endsWith(join('scripts', 'init_skill.py'))).toBe(true)
     expect(spec?.stdio.stdin).toBe('ignore')
 
     const stagedRoot = spec?.env?.[ASSETS_ENV_VAR]

@@ -23,6 +23,7 @@ import {
   bundlePlaintextJson,
   collectReferences,
   containerPlaintextJson,
+  danglingReferences,
   parseSkillManifest,
   readSkillDirectory,
   readSkillsDirectory,
@@ -192,36 +193,39 @@ test('entry content must be canonical non-empty base64 inside the per-file bound
   assert.throws(() => validateBundle(bundleFixture({ assets: [{ path: 'assets/a.json', content: oversized }] })), /per-file bound/u)
 })
 
-test('references from the body and from scripts must resolve inside the bundle', () => {
+test('references from the body and from scripts are linted, not rejected', () => {
   assert.deepEqual(collectReferences('run scripts/run.mjs then read assets/a.json.'), ['assets/a.json', 'scripts/run.mjs'])
   assert.deepEqual(collectReferences('put things in scripts/ or assets/'), [])
 
-  assert.throws(
-    () => validateBundle(bundleFixture({ scripts: [entry('scripts/run.mjs', "readFile('assets/missing.json')\n")] })),
-    /script "scripts\/run.mjs" references "assets\/missing.json"/u,
+  // An un-carried mention is reported by the authoring lint (pack.mjs prints
+  // it as a warning): collected third-party skills legitimately mention
+  // example paths in prose, so this is not a hard validation anymore.
+  assert.deepEqual(
+    danglingReferences(validateBundle(bundleFixture({ scripts: [entry('scripts/run.mjs', "readFile('assets/missing.json')\n")] }))),
+    [{ site: 'script "scripts/run.mjs"', reference: 'assets/missing.json' }],
   )
-  assert.throws(
-    () => validateBundle(bundleFixture({ body: '\nSee `assets/gone.json`.\n' })),
-    /body references "assets\/gone.json"/u,
+  assert.deepEqual(
+    danglingReferences(validateBundle(bundleFixture({ body: '\nSee `assets/gone.json`.\n' }))),
+    [{ site: 'body', reference: 'assets/gone.json' }],
   )
-  // The asset exists → accepted.
-  assert.equal(
-    validateBundle(bundleFixture({ scripts: [entry('scripts/run.mjs', "readFile('assets/data.json')\n")] })).scripts.length,
-    1,
-  )
+  // The asset exists → no miss, and the bundle still validates.
+  const carried = validateBundle(bundleFixture({ scripts: [entry('scripts/run.mjs', "readFile('assets/data.json')\n")] }))
+  assert.equal(carried.scripts.length, 1)
+  assert.deepEqual(danglingReferences(carried), [])
 })
 
 test('a bundle larger than the document bound is rejected', () => {
+  // One shared max-size chunk (a single 8 MiB buffer, base64 once) repeated
+  // until the canonical JSON crosses the 64 MiB bundle bound.
   const chunk = Buffer.alloc(FILE_MAX_BYTES, 0x61).toString('base64')
-  const assets = Array.from({ length: 4 }, (_, index) => ({ path: `assets/blob-${String(index)}.bin`, content: chunk }))
-  let tiny = 0
-  try {
-    validateBundle(bundleFixture({ assets }))
-  } catch (error) {
-    tiny = 1
-    assert.match(error.message, new RegExp(`the bound is ${String(BUNDLE_MAX_BYTES)}`, 'u'))
-  }
-  assert.equal(tiny, 1, 'a four-megabyte payload must exceed the bundle bound')
+  const assets = Array.from(
+    { length: Math.ceil((BUNDLE_MAX_BYTES * 1.05) / chunk.length) },
+    (_, index) => ({ path: `assets/blob-${String(index)}.bin`, content: chunk }),
+  )
+  assert.throws(
+    () => validateBundle(bundleFixture({ assets })),
+    new RegExp(`the bound is ${String(BUNDLE_MAX_BYTES)}`, 'u'),
+  )
 })
 
 test('the manifest parser keeps the body byte-exact and rejects malformed frontmatter', () => {
@@ -296,13 +300,16 @@ test('the container is canonical by name and bounded as a whole', () => {
     containerPlaintextJson({ ...shuffled, skills: [...shuffled.skills].reverse() }),
   )
 
-  // Five skills, each inside its own 4 MiB bound, together exceed the
-  // container bound — the container bound is a real extra gate.
-  const chunk = Buffer.alloc(900 * 1024, 0x61).toString('base64')
-  const bulk = Array.from({ length: 5 }, (_, index) => validateBundle(bundleFixture({
-    name: `bulk-${String(index)}-skill`,
-    assets: [0, 1, 2].map((slot) => ({ path: `assets/blob-${String(slot)}.bin`, content: chunk })),
-  })))
+  // Enough max-size skills to cross the container bound — each stays inside
+  // its own bundle bound, so the container bound is a real extra gate.
+  const chunk = Buffer.alloc(FILE_MAX_BYTES, 0x61).toString('base64')
+  const bulk = Array.from(
+    { length: Math.ceil((CONTAINER_MAX_BYTES * 1.05) / (chunk.length + 4096)) },
+    (_, index) => bundleFixture({
+      name: `bulk-${String(index)}-skill`,
+      assets: [{ path: 'assets/blob.bin', content: chunk }],
+    }),
+  )
   assert.throws(
     () => validateContainer({ version: CONTAINER_VERSION, skills: bulk }),
     new RegExp(`the bound is ${String(CONTAINER_MAX_BYTES)}`, 'u'),
@@ -339,8 +346,20 @@ test('the directory reader rejects every layout the format does not declare', ()
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'README.md': 'nope\n' }, (root) => {
     assert.throws(() => readSkillDirectory(root), /unexpected file "README.md"/u)
   })
-  withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'scripts/nested/deep.mjs': 'x\n' }, (root) => {
-    assert.throws(() => readSkillDirectory(root), /unexpected directory "scripts\/nested"/u)
+  // Nested trees inside the carried roots are accepted — collected skills
+  // ship `scripts/local-export/…` and `assets/editor/neo-ppt/…` — while any
+  // directory outside the two roots still rejects.
+  withSkillTree({
+    'SKILL.md': MINIMAL_MANIFEST,
+    'scripts/local-export/run.mjs': 'x\n',
+    'assets/editor/neo-ppt/index.html': '<p>x</p>\n',
+  }, (root) => {
+    const bundle = readSkillDirectory(root)
+    assert.deepEqual(bundle.scripts.map((entry) => entry.path), ['scripts/local-export/run.mjs'])
+    assert.deepEqual(bundle.assets.map((entry) => entry.path), ['assets/editor/neo-ppt/index.html'])
+  })
+  withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'editor/index.html': '<p>x</p>\n' }, (root) => {
+    assert.throws(() => readSkillDirectory(root), /unexpected directory "editor"/u)
   })
   withSkillTree({ 'SKILL.md': MINIMAL_MANIFEST, 'scripts/.gitkeep': '' }, (root) => {
     assert.throws(() => readSkillDirectory(root), /"scripts\/.gitkeep" is empty/u)

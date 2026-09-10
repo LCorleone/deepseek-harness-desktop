@@ -38,6 +38,7 @@ import { OBFUSCATION_KEY_ID, encodeBundleBlob, renderBundleModule } from './lib/
 import {
   bundlePlaintextJson,
   containerPlaintextJson,
+  danglingReferences,
   readSkillDirectory,
   readSkillsDirectory,
 } from './lib/bundle.mjs'
@@ -89,6 +90,26 @@ export function parseArgs(argv) {
 /** The gitignored scratch path a source packs to when `--out` is omitted. */
 export function defaultDestination(name) {
   return join(TOOL_DIR, 'out', `${name}.bundle.js`)
+}
+
+/**
+ * Print the authoring lint for un-carried `scripts/…`/`assets/…` mentions.
+ * A miss is a warning, not a rejection: collected third-party skills
+ * legitimately mention example paths in prose. See `danglingReferences`.
+ * @param {object[]} skills - the packed canonical skills.
+ * @returns {number} how many misses were reported.
+ */
+export function reportDanglingReferences(skills) {
+  let misses = 0
+  for (const skill of skills) {
+    for (const miss of danglingReferences(skill)) {
+      misses += 1
+      process.stderr.write(
+        `pack: warning: ${skill.name}: ${miss.site} references "${miss.reference}", which the bundle does not carry\n`,
+      )
+    }
+  }
+  return misses
 }
 
 /**
@@ -163,6 +184,8 @@ function main() {
 
   mkdirSync(dirname(destination), { recursive: true })
   writeFileSync(destination, result.artifact, 'utf8')
+  const linted = containerMode ? result.container.skills : [result.bundle]
+  reportDanglingReferences(linted)
   const plaintext = `  plaintextBytes ${String(Buffer.byteLength(result.json, 'utf8'))}  plaintextSha256 ${result.sha256}\n`
   if (containerMode) {
     const skills = result.container.skills

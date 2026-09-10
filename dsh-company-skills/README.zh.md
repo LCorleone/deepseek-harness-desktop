@@ -6,8 +6,9 @@ DSH Company Skills 是把一批公司常用 skill 作为**一个混淆 bundle** 
 skill registry 接缝发布出去的容器插件。它是 P6 批②/③的交付物：批①定义并写出 bundle 格式
 （`tools/company-skills`），本包负责读，批③加零明文脚本执行通道，批④收编首批真实 skill。
 
-> **当前状态：以占位容器形态落地。** asset 里装的是两个 fixture skill（`fixture-hello`、
-> `fixture-notes`），所以本包无密钥也能构建、typecheck、测试。真实容器在批④重新打包，包内其余部分不变。
+> **当前状态：已装载首批真实收编 skill（批④）。** asset 里装的是 `ppt-designer` 与 `skill-creator` ——从
+> skills hub **只读**收编到 `skills/`（见 `scripts/collect-skills.mjs`）后重新打包进 `assets/skills.bundle`。
+> 两个 fixture skill 退回 `fixtures/` 作为纯测试面，不再随包发布。
 
 ## 它是什么
 
@@ -107,10 +108,10 @@ Windows 机器即使 `PATH` 上只有 shell-less spawn 跑不了的 `.cmd` 垫�
 
 - 每个元素恰好是一个批① skill bundle。
 - 外层规则对齐写侧 `validateContainer`：只接受 version 1、顶层恰好 `version` 与 `skills`、
-  至少一个 skill、skill 名唯一、规范化 JSON ≤ 16 MiB。
+  至少一个 skill、skill 名唯一、规范化 JSON ≤ 128 MiB（= 2 × 单 skill 64 MiB；本制品实测 ≈ 43 MiB）。
 - 元素规则对齐 `validateBundle`：字段集合精确、kebab-case 名称、单行且 ≤ 500 字符的 description
   （catalog 截断口径）、非空 body、条目为 bundle 根相对的 POSIX 路径且分别位于 `scripts/`、`assets/`
-  之下、content 为规范 base64。
+  之下（允许嵌套目录）、content 为规范 base64 且单文件 ≤ 8 MiB。
 - 解码器同时接受两种产物形态：裸 base64 asset 或 `pack.mjs` 生成的模块。
 - 运行期**故意不**复查引用闭包：那是打包器在写 blob 前强制的作者侧不变式，在这里重推只会多一处
   两套实现可以互相分歧的地方。
@@ -158,22 +159,24 @@ script、asset 被解析、校验或交给 registry。
 corepack yarn workspace dsh-company-skills build          # tsdown bundle + tsc 声明
 corepack yarn workspace dsh-company-skills typecheck
 corepack yarn workspace dsh-company-skills test           # vitest，56 个用例
-corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle 与 fixtures/ 一致
+corepack yarn workspace dsh-company-skills verify:bundle  # assets/skills.bundle 与 skills/ 一致
 corepack yarn workspace dsh-company-skills check          # build + verify + typecheck + test
 
-# 改完 fixtures/（批④换成真实 skill）后重新生成制品 asset
+# 刷新收编副本（对 skills hub 只读），若 SKILL.md 有变需手工重加 ppt-designer 的 description 裁剪，再重新生成：
+node dsh-company-skills/scripts/collect-skills.mjs
 node dsh-company-skills/scripts/build-bundle-asset.mjs
 ```
 
-生成器是批①打包器的一层薄包装（`tools/company-skills/pack.mjs --skills dsh-company-skills/fixtures
+生成器是批①打包器的一层薄包装（`tools/company-skills/pack.mjs --skills dsh-company-skills/skills
 --out assets/skills.bundle`），所以写侧仍只有一处实现，本包只拥有读侧。它确定性：无时间戳、容器按名排序，
-因此 `--check` 就是纯字节比较，CI 无密钥也能跑。
+因此 `--check` 就是纯字节比较，CI 无密钥也能跑。打包器的悬空引用 lint（收编 skill 的散文会提到示例路径）
+在 stderr 报警告，绝不阻断产物。
 
 ## 测试
 
 | 文件 | 用例 | 覆盖 |
 | --- | --- | --- |
-| `tests/container.spec.ts` | 11 | codec 常量与打包器一致；制品 asset 解出每个 fixture 一条索引；打包器→解码器交叉一致（规范化文档与源码树均逐字节）；裸 blob 与生成模块两种形态；确定性；制品无明文（附解码反向对照）且发布的插件文件也无明文；坏 frame / 坏元素与打包器同拒；发布面白名单 |
+| `tests/container.spec.ts` | 11 | codec 常量与打包器一致；制品 asset 解出每个收编 skill 一条索引（含 description 与明文源一致）；打包器→解码器交叉一致（规范化文档与源码树均逐字节）；裸 blob 与生成模块两种形态；确定性（含制品 = skills/ 根重打包逐字节）；制品无明文（附解码反向对照 + 4.9 MiB 字体表字节数对照）且发布的插件文件也无明文；坏 frame / 坏元素与打包器同拒；发布面白名单（含 skills/） |
 | `tests/provider.spec.ts` | 11 | `inject(['skills'])` 反应式注册与随插件卸载；注册表后挂载；裸 `ctx.skills` 抛；源码形态钉测；`list()` 仅索引（无正文、无 `content`）；`get()` 只物化一个正文；未知名与不可用 locator；payload 损坏仍可列但拒载；asset 缺失/损坏退化不抛；退化目录在活宿主上；模块导出 |
 | `tests/execute.spec.ts` | 29 | 解释器选择与解析（注入命令 → PATH → 宿主可执行文件）；真实物化 `node` 运行（输出、args 透传、非零退出当数据、脚本从磁盘读到自身源码）；code-runtime-python 范式真跑（`__file__` 定位根等于 staged 根与 `DSH_SKILL_ASSETS`、Python 兄弟 import 走 `sys.path[0]`、cwd 相对资产读取）；不留驻（结算后 staged 根消失、临时根为空、结果不含正文 canary、清理失败只记 warning）；未知 skill / 未声明脚本 / 路径穿越 / 无解释器 / 非法 UTF-8 均在 spawn 前拒绝且无残留；死线、输出尾部截断、调用方取消、启动抛错均清理 staged 根；会话并发上限与槽位释放；接缝透传（物化 argv、staged cwd、env、grace、signal） |
 | `tests/tool.spec.ts` | 5 | 工具 schema、输出形状、预算与 `presentCall`；从执行上下文解析 session/signal；render 与 `toRunValue`；在 tools 接缝上的反应式注册与卸载；制品 fixture 脚本经真实插件端到端运行并清理 staged 根 |
@@ -212,15 +215,32 @@ dsh-company-skills/
   src/tool.ts           company_skill_run 定义、render、presentCall
   assets/skills.bundle  随包发布的容器块（在 files 里）
   cordis.patch.yml      组合行（在 files 里）
-  scripts/              asset 生成器与 clean（永不发布）
-  fixtures/             明文 fixture skill（永不发布）
+  scripts/              asset 生成器、skill 收编器、clean（永不发布）
+  skills/               收编的公司 skill 明文源（永不发布）
+  fixtures/             明文 fixture skill，纯测试面（永不发布）
   tests/                vitest 与本地 spawn 接缝（永不发布）
 ```
 
+## 收编 skill
+
+`skills/` 是本包的发布集，从 skills hub（`/opt/july/skills-hub/skills`，**只读、绝不写入**）收编：
+
+- **ppt-designer**：33 MiB 资源全部随包（离线 neo-ppt 编辑器镜像、Deloitte PPTD 模板、设计参考、
+  导出脚本）。其 frontmatter description 在本副本里裁剪到 500 字符 catalog 上限，其余与源逐字节一致。
+- **skill-creator**：除布局适配（`references/` 与 `LICENSE.txt` 归入 `assets/`，staged 后保持 skill
+  相对名）外原样发布。
+
+布局适配规则：`scripts/` 原位保留，其它顶层条目一律归入 `assets/`（因此 staged 根重建出原 skill 目录：
+`__file__` 定位根、兄弟 import、`reference/pptd.md` 式相对读取全部免改动可用）；`__pycache__` 剪枝。
+上游 `resourceBase: { kind: 'opaque' }` 提示照旧渲染：消费方经 catalog 与 `company_skill_run` 寻址这些
+skill，而不是当本地路径读。
+
 ## 后续
 
-- **批④**把 fixture 容器换成首批真实 skill，走市场 handoff（`type: 'skill'`），并做一次真机安装验收。
+- 市场链路：handoff（`type: 'skill'`）→ MR → 真机安装验收（市场装 → 两个 skill 出现在 catalog →
+  `company_skill_run` 跑通一个收编脚本 → 事后 staged 根消失、磁盘无明文留驻）。
 
 ## 许可证
 
-MIT —— 见 [LICENSE](LICENSE)。
+MIT —— 见 [LICENSE](LICENSE)。收编的 `skill-creator` 在其 bundle 内以 `assets/LICENSE.txt`
+携带上游 Apache-2.0 许可证。

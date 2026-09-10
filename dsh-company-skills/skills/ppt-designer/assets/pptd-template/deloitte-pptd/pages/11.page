@@ -1,0 +1,130 @@
+pageType: content
+background: {type: solid, color: "#FFFFFF"}
+elements:
+  - elementId: el1
+    elementType: text
+    bounds: [96, 64, 1517, 53]
+    content:
+      align: [left, top]
+      fontSize: 40
+      color: "#000000"
+      bold: true
+      fontFamily: Arial
+      lineHeight: 0.7
+      wrap: false
+      text: "工作助手模块组成"
+  - elementId: el2
+    elementType: text
+    bounds: [96, 193, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "01"
+  - elementId: el3
+    elementType: text
+    bounds: [196, 219, 749, 37]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#111827"
+      fontFamily: Calibri
+      wrap: true
+      text: "文档助手：上传文档后实现智能总结、对比分析、改写与问答。"
+  - elementId: el4
+    elementType: text
+    bounds: [96, 336, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "02"
+  - elementId: el5
+    elementType: text
+    bounds: [196, 361, 696, 37]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#111827"
+      fontFamily: Calibri
+      wrap: true
+      text: "翻译助手：支持多语言句段与文档级翻译，保留原始格式。"
+  - elementId: el6
+    elementType: text
+    bounds: [96, 479, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "03"
+  - elementId: el7
+    elementType: text
+    bounds: [196, 504, 669, 37]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#111827"
+      fontFamily: Calibri
+      wrap: true
+      text: "语音助手：语音转文字、要点提取、自动生成会议纪要。"
+  - elementId: el8
+    elementType: text
+    bounds: [96, 621, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "04"
+  - elementId: el9
+    elementType: text
+    bounds: [196, 647, 669, 37]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#111827"
+      fontFamily: Calibri
+      wrap: true
+      text: "编程助手：代码生成、函数改写、注释补充、自动补全。"
+  - elementId: el10
+    elementType: text
+    bounds: [96, 764, 92, 88]
+    content:
+      align: [left, top]
+      fontSize: 66
+      color: "#86BC25"
+      bold: true
+      fontFamily: Calibri
+      wrap: false
+      text: "05"
+  - elementId: el11
+    elementType: text
+    bounds: [196, 789, 669, 37]
+    content:
+      align: [left, top]
+      fontSize: 26
+      color: "#111827"
+      fontFamily: Calibri
+      wrap: true
+      text: "各模块均支持与主平台无缝集成，操作便捷，多端同步。"
+  - elementId: el12
+    elementType: image
+    bounds: [999, 193, 612, 703]
+    src: media/image18.png
+    fit: {mode: fill}
+  - elementId: el13
+    elementType: image
+    bounds: [0, 0, 1707, 960]
+    src: media/image10.png
+    fit: {mode: fill}
