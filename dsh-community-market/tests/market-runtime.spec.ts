@@ -1506,12 +1506,17 @@ describe('source mutation boundary', () => {
       headers: { host: '127.0.0.1:43120', origin: 'http://127.0.0.1:43120' },
       socket: { remoteAddress: '127.0.0.1' },
     })
+    let bodyText = ''
     const response = Object.assign(new EventEmitter(), {
       destroyed: false,
       writableEnded: false,
+      statusCode: 0,
       setHeader: vi.fn(),
       removeHeader: vi.fn(),
-      end: vi.fn(),
+      end: vi.fn((body?: string) => {
+        bodyText = body ?? ''
+        response.writableEnded = true
+      }),
     })
     const pending = handlers.get(marketRoutes.sources)!(request, response)
 
@@ -1519,11 +1524,250 @@ describe('source mutation boundary', () => {
     dispose()
     await pending
 
+    // The generation ended before the mutation committed: the still-connected
+    // Client hears an explicit cancellation instead of silence.
     expect(update).not.toHaveBeenCalled()
-    expect(response.end).not.toHaveBeenCalled()
+    expect(response.statusCode).toBe(502)
+    expect(JSON.parse(bodyText)).toMatchObject({ code: 'operation-failed' })
+    expect(JSON.parse(bodyText).error).toContain('cancelled')
     for (const event of ['data', 'end', 'error', 'aborted']) expect(request.listenerCount(event)).toBe(0)
     expect(routeDisposers).toHaveLength(4)
     for (const routeDispose of routeDisposers) expect(routeDispose).toHaveBeenCalledOnce()
+  })
+
+  it('answers a committed source mutation even when the plugin generation is disposed mid-write', async () => {
+    type RouteHandler = (req: EventEmitter & Record<string, any>, res: EventEmitter & Record<string, any>) => Promise<void>
+    const handlers = new Map<string, RouteHandler>()
+    const ctx = {
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: RouteHandler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    let finishWrite!: () => void
+    let document: MarketSettingsDocument = { sources: [] }
+    const scope = {
+      get: () => document,
+      update: vi.fn(async (patch: { sources: readonly LocalSourceRecord[] }) => {
+        await new Promise<void>(resolve => { finishWrite = resolve })
+        document = { sources: patch.sources }
+      }),
+    } as unknown as SettingsScope<MarketSettingsDocument>
+    const dispose = registerMarketRoutes(ctx as never, scope)
+    const request = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.sources,
+      headers: { host: '127.0.0.1:43120', origin: 'http://127.0.0.1:43120' },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let bodyText = ''
+    const response = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((body?: string) => {
+        bodyText = body ?? ''
+        response.writableEnded = true
+      }),
+    })
+
+    const pending = handlers.get(marketRoutes.sources)!(request, response)
+    queueMicrotask(() => {
+      request.emit('data', Buffer.from(JSON.stringify({ action: 'add-builtin', key: 'dsh-1024store' })))
+      request.emit('end')
+    })
+    await vi.waitFor(() => expect(scope.update).toHaveBeenCalledOnce())
+
+    // The generation is replaced while the settings write is still in flight:
+    // the write finishes and commits, so the Client must still hear it.
+    dispose()
+    finishWrite()
+    await pending
+
+    expect(document.sources).toHaveLength(1)
+    expect(response.statusCode).toBe(200)
+    expect(JSON.parse(bodyText)).toMatchObject({ sources: [{ builtInProviderKey: 'dsh-1024store' }] })
+    dispose()
+  })
+
+  it('answers a completed state read even when the plugin generation is disposed mid-flight', async () => {
+    type RouteHandler = (req: EventEmitter & Record<string, any>, res: EventEmitter & Record<string, any>) => Promise<void>
+    const handlers = new Map<string, RouteHandler>()
+    const ctx = {
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: RouteHandler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const scope = {
+      get: () => ({ sources: [] }),
+      update: vi.fn(),
+    } as unknown as SettingsScope<MarketSettingsDocument>
+    let finishRead!: () => void
+    const listSources = vi.spyOn(DefaultCatalogService.prototype, 'listSources')
+      .mockImplementation(async () => {
+        await new Promise<void>(resolve => { finishRead = resolve })
+        return []
+      })
+    try {
+      const dispose = registerMarketRoutes(ctx as never, scope)
+      const request = Object.assign(new EventEmitter(), {
+        method: 'GET',
+        url: marketRoutes.state,
+        headers: { host: '127.0.0.1:43120' },
+        socket: { remoteAddress: '127.0.0.1' },
+      })
+      let bodyText = ''
+      const response = Object.assign(new EventEmitter(), {
+        destroyed: false,
+        writableEnded: false,
+        statusCode: 0,
+        setHeader: vi.fn(),
+        removeHeader: vi.fn(),
+        end: vi.fn((body?: string) => {
+          bodyText = body ?? ''
+          response.writableEnded = true
+        }),
+      })
+
+      const pending = handlers.get(marketRoutes.state)!(request, response)
+      await vi.waitFor(() => expect(listSources).toHaveBeenCalledOnce())
+
+      // The generation is replaced while the state read resolves: the answer
+      // must still reach the waiting Client instead of hanging (b91).
+      dispose()
+      finishRead()
+      await pending
+
+      expect(response.statusCode).toBe(200)
+      expect(JSON.parse(bodyText)).toMatchObject({ sources: [] })
+      dispose()
+    } finally {
+      listSources.mockRestore()
+    }
+  })
+
+  it('answers a cancellation when a state read fails after the plugin generation ends', async () => {
+    type RouteHandler = (req: EventEmitter & Record<string, any>, res: EventEmitter & Record<string, any>) => Promise<void>
+    const handlers = new Map<string, RouteHandler>()
+    const ctx = {
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: RouteHandler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const scope = {
+      get: () => ({ sources: [] }),
+      update: vi.fn(),
+    } as unknown as SettingsScope<MarketSettingsDocument>
+    let finishRead!: () => void
+    const listSources = vi.spyOn(DefaultCatalogService.prototype, 'listSources')
+      .mockImplementation(async () => {
+        await new Promise<void>(resolve => { finishRead = resolve })
+        throw new Error('state read failed after teardown began')
+      })
+    try {
+      const dispose = registerMarketRoutes(ctx as never, scope)
+      const request = Object.assign(new EventEmitter(), {
+        method: 'GET',
+        url: marketRoutes.state,
+        headers: { host: '127.0.0.1:43120' },
+        socket: { remoteAddress: '127.0.0.1' },
+      })
+      let bodyText = ''
+      const response = Object.assign(new EventEmitter(), {
+        destroyed: false,
+        writableEnded: false,
+        statusCode: 0,
+        setHeader: vi.fn(),
+        removeHeader: vi.fn(),
+        end: vi.fn((body?: string) => {
+          bodyText = body ?? ''
+          response.writableEnded = true
+        }),
+      })
+
+      const pending = handlers.get(marketRoutes.state)!(request, response)
+      await vi.waitFor(() => expect(listSources).toHaveBeenCalledOnce())
+
+      // The read really did fail after the generation ended: answer an
+      // explicit cancellation, never silence and never a false success.
+      dispose()
+      finishRead()
+      await pending
+
+      expect(response.statusCode).toBe(502)
+      expect(JSON.parse(bodyText)).toMatchObject({ code: 'operation-failed' })
+      expect(JSON.parse(bodyText).error).toContain('cancelled')
+      dispose()
+    } finally {
+      listSources.mockRestore()
+    }
+  })
+
+  it('answers a cancellation when the generation ends before the terminal opens', async () => {
+    type RouteHandler = (req: EventEmitter & Record<string, any>, res: EventEmitter & Record<string, any>) => Promise<void>
+    const handlers = new Map<string, RouteHandler>()
+    const ctx = {
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: RouteHandler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const scope = {
+      get: () => ({ sources: [] }),
+      update: vi.fn(),
+    } as unknown as SettingsScope<MarketSettingsDocument>
+    const openTerminal = vi.fn()
+    const actions = { openTerminal, requestRestart: vi.fn(async () => {}) }
+    const dispose = registerMarketRoutes(ctx as never, scope, undefined, { get: () => actions })
+    const request = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.openTerminal,
+      headers: { host: '127.0.0.1:43120', origin: 'http://127.0.0.1:43120' },
+      socket: { remoteAddress: '127.0.0.1' },
+    })
+    let bodyText = ''
+    const response = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((body?: string) => {
+        bodyText = body ?? ''
+        response.writableEnded = true
+      }),
+    })
+
+    const pending = handlers.get(marketRoutes.openTerminal)!(request, response)
+    await vi.waitFor(() => expect(request.listenerCount('data')).toBe(1))
+
+    // The generation ended before the request body (let alone the terminal)
+    // arrived: the still-connected Client hears the cancellation.
+    dispose()
+    await pending
+
+    expect(openTerminal).not.toHaveBeenCalled()
+    expect(response.statusCode).toBe(502)
+    expect(JSON.parse(bodyText)).toMatchObject({ code: 'operation-failed' })
+    expect(JSON.parse(bodyText).error).toContain('cancelled')
+    dispose()
   })
 
   it.each([

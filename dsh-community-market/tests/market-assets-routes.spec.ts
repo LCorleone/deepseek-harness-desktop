@@ -129,23 +129,53 @@ describe('community market asset routes', () => {
     }
   })
 
-  it('aborts an in-flight asset resolution when the market generation is disposed', async () => {
+  it('answers a cancellation when the market generation is disposed mid-resolution', async () => {
     let observedSignal: AbortSignal | undefined
     media.resolve.mockImplementation(async (_ref: string, signal: AbortSignal) => {
       observedSignal = signal
-      await new Promise<void>(resolve => signal.addEventListener('abort', () => { resolve() }, { once: true }))
-      throw signal.reason
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(signal.reason) }, { once: true })
+      })
     })
     const server = await startServer()
-    const controller = new AbortController()
-    const request = fetch(assetUrl(server), { signal: controller.signal }).catch(() => undefined)
     try {
+      const pending = fetch(assetUrl(server))
       await vi.waitFor(() => { expect(observedSignal).toBeDefined() })
       server.disposeRoutes()
       await vi.waitFor(() => { expect(observedSignal?.aborted).toBe(true) })
+
+      // The resolution was genuinely cancelled: the Client hears an explicit
+      // error instead of waiting forever for bytes that will never come.
+      const response = await pending
+      expect(response.status).toBe(502)
+      const body = await response.json() as { error?: string; code?: string }
+      expect(body).toMatchObject({ code: 'operation-failed' })
+      expect(body.error).toContain('cancelled')
     } finally {
-      controller.abort()
-      await request
+      await server.close()
+    }
+  })
+
+  it('answers a resolved asset even when the market generation is disposed mid-flight', async () => {
+    let finishResolve!: () => void
+    media.resolve.mockImplementation(async () => {
+      await new Promise<void>(resolve => { finishResolve = resolve })
+      return { body: assetBody, contentType: 'image/png', etag: '"asset-etag"' }
+    })
+    const server = await startServer()
+    try {
+      const pending = fetch(assetUrl(server))
+      await vi.waitFor(() => { expect(media.resolve).toHaveBeenCalledOnce() })
+
+      // The generation is replaced while the image normalizes: the completed
+      // resolution still delivers its bytes to the waiting Client.
+      server.disposeRoutes()
+      finishResolve()
+
+      const response = await pending
+      expect(response.status).toBe(200)
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array(assetBody))
+    } finally {
       await server.close()
     }
   })

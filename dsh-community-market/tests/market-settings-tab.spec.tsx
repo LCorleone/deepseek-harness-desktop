@@ -964,6 +964,62 @@ describe('MarketSettingsTab', () => {
     expect(screen.queryByText(en.restartError)).toBeNull()
   })
 
+  it('unlatches the restart button and surfaces the localized error when the restart request times out', async () => {
+    const receipt = makeReceipt()
+    vi.mocked(readMarketState).mockResolvedValue(emptyState)
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt }],
+    })
+    vi.mocked(previewMarketOperation).mockResolvedValue({
+      action: 'uninstall',
+      profileName: receipt.profileName,
+      packageName: receipt.packageName,
+      version: receipt.version,
+      displayName: receipt.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-uninstall-preview',
+    })
+    vi.mocked(executeMarketOperation).mockResolvedValue({
+      action: 'uninstall',
+      receiptId: receipt.receiptId,
+      packageName: receipt.packageName,
+      restartToken: 'opaque-uninstall-restart',
+    })
+    // The deadline elapsed before the Host answered: the pending restart must
+    // unlatch (never wedge) and explain itself with the localized error.
+    vi.mocked(requestMarketRestart).mockRejectedValue(
+      Object.assign(new Error('The market operation timed out before the Host answered.'), {
+        status: 408,
+        code: 'operation-timeout',
+      }),
+    )
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('heading', { name: en.emptyTitle })
+    fireEvent.click(screen.getByRole('button', { name: en.installed }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.uninstall}: ${receipt.displayName}` }))
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenCalledWith(
+        { action: 'uninstall', receiptId: receipt.receiptId },
+        expect.any(AbortSignal),
+      )
+    })
+    fireEvent.click(screen.getByRole('button', { name: en.confirmUninstall }))
+    const dialog = await screen.findByRole('dialog', { name: en.uninstallComplete })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: en.restartNow }))
+    await waitFor(() => {
+      expect(requestMarketRestart).toHaveBeenCalledWith('opaque-uninstall-restart', expect.any(AbortSignal))
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert').some(node => node.textContent === en.restartError)).toBe(true)
+    })
+    const retry = await within(dialog).findByRole('button', { name: en.restartNow }) as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    expect(within(dialog).queryByRole('button', { name: en.restarting })).toBeNull()
+  })
+
   it('disables an external bundle through an exact Host preview without offering uninstall', async () => {
     const external = {
       kind: 'external' as const,

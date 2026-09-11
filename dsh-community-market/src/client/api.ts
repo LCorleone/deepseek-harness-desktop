@@ -37,8 +37,8 @@ export class MarketApiError extends Error {
 }
 
 /**
- * Upper bound for one long Market operation the Host must answer (a confirmed
- * mutation and its preview).
+ * Upper bound for one long Market request the Host must answer (a confirmed
+ * mutation, its preview, a source change, or a desktop action).
  *
  * A completed Host operation answers immediately; this only bounds the case
  * where the answer never arrives. A Market generation disposed mid-operation
@@ -137,12 +137,12 @@ export async function readMoreMarketCatalog(
 }
 
 export async function mutateMarketSource(mutation: MarketSourceMutation, signal?: AbortSignal): Promise<MarketStateResponse['sources']> {
-  const response = await readJson<{ sources: MarketStateResponse['sources'] }>(await fetch('/api/community-market/sources', {
+  const response = await withMarketOperationDeadline(signal, async deadline => readJson<{ sources: MarketStateResponse['sources'] }>(await fetch('/api/community-market/sources', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(mutation),
-    ...(signal === undefined ? {} : { signal }),
-  }))
+    signal: deadline,
+  })))
   return response.sources
 }
 
@@ -192,22 +192,22 @@ export async function executeMarketOperation(
 }
 
 export async function openMarketTerminal(signal?: AbortSignal): Promise<MarketDesktopActionResponse> {
-  return await readJson(await fetch('/api/community-market/desktop/open-terminal', {
+  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/desktop/open-terminal', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
-    ...(signal === undefined ? {} : { signal }),
-  }))
+    signal: deadline,
+  })))
 }
 
 export async function requestMarketRestart(
   restartToken: string,
   signal?: AbortSignal,
 ): Promise<MarketDesktopActionResponse> {
-  return await readJson(await fetch('/api/community-market/desktop/request-restart', {
+  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/desktop/request-restart', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ restartToken }),
-    ...(signal === undefined ? {} : { signal }),
-  }))
+    signal: deadline,
+  })))
 }

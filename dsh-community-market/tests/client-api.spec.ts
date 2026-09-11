@@ -229,6 +229,40 @@ describe('community market client API', () => {
     }
   })
 
+  it('bounds source mutations and desktop actions with the same deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetch)
+
+      // A lost Host answer must never leave a source change, the terminal
+      // action, or the one-shot restart grant pending forever.
+      const outcomes = [
+        expect(mutateMarketSource({ action: 'add-builtin', key: 'dsh-1024store' })).rejects.toMatchObject({
+          name: 'MarketOperationTimeoutError',
+          status: 408,
+          code: 'operation-timeout',
+        }),
+        expect(openMarketTerminal()).rejects.toMatchObject({
+          name: 'MarketOperationTimeoutError',
+          status: 408,
+          code: 'operation-timeout',
+        }),
+        expect(requestMarketRestart('opaque-restart-token')).rejects.toMatchObject({
+          name: 'MarketOperationTimeoutError',
+          status: 408,
+          code: 'operation-timeout',
+        }),
+      ]
+      await vi.advanceTimersByTimeAsync(MARKET_OPERATION_TIMEOUT_MS)
+      await Promise.all(outcomes)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps a caller cancellation distinct from the preview deadline', async () => {
     vi.useFakeTimers()
     try {
@@ -347,7 +381,9 @@ describe('community market client API', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(mutation),
-      signal: controller.signal,
+      // The deadline helper forwards the caller's cancellation through its own
+      // signal, so the fetch always runs under a bounded abort signal.
+      signal: expect.any(AbortSignal),
     })
   })
 })

@@ -1031,9 +1031,15 @@ export function registerMarketRoutes(
               && (installProvider?.get() !== undefined || desktopPluginsProvider?.get() !== undefined),
           },
         }
-        if (!generationController.signal.aborted && !res.destroyed) sendJson(res, 200, response)
+        // A completed state read answers whenever the response is writable:
+        // suppressing it after a generation abort left the Client waiting.
+        sendJsonIfWritable(res, 200, response, ctx.logger)
       } catch {
-        if (!generationController.signal.aborted && !res.destroyed) sendJson(res, 500, { error: 'market state unavailable' })
+        if (generationController.signal.aborted) {
+          sendInstallErrorIfWritable(res, cancelledOperationError('market operation'), ctx.logger)
+        } else {
+          sendJsonIfWritable(res, 500, { error: 'market state unavailable' }, ctx.logger)
+        }
       }
     }}),
     ctx.webServer.register({ kind: 'exact', path: ROUTE_CATALOG, handler: async (req, res) => {
@@ -1165,7 +1171,13 @@ export function registerMarketRoutes(
       const stopWatching = abortOnDisconnect(req, res, controller)
       try {
         const asset = await media.resolve(assetRef, signal)
-        if (signal.aborted || res.destroyed) return
+        // A completed resolution answers whenever the response is writable:
+        // a generation disposed mid-resolution must not leave the Client
+        // waiting for bytes the Host already holds.
+        if (res.destroyed || res.writableEnded) {
+          logSkippedResponse(res, ctx.logger)
+          return
+        }
         if (asset === undefined) {
           sendJson(res, 404, { error: 'market media unavailable' })
           return
@@ -1188,7 +1200,13 @@ export function registerMarketRoutes(
         res.statusCode = 200
         res.end(asset.body)
       } catch {
-        if (!signal.aborted && !res.destroyed) sendJson(res, 404, { error: 'market media unavailable' })
+        // The signal aborting the fetch is the generation ending: answer an
+        // explicit cancellation instead of silence; anything else stays a 404.
+        if (generationController.signal.aborted) {
+          sendInstallErrorIfWritable(res, cancelledOperationError('market operation'), ctx.logger)
+        } else {
+          sendJsonIfWritable(res, 404, { error: 'market media unavailable' }, ctx.logger)
+        }
       } finally {
         stopWatching()
       }
@@ -1204,14 +1222,18 @@ export function registerMarketRoutes(
       try {
         const mutation = asMutation(await readJson(req, signal))
         await mutateSource(mutation, signal)
-        if (!signal.aborted && !res.destroyed) sendJson(res, 200, { sources: await service.listSources() })
+        // The settings write already committed: answer whenever the response
+        // is writable, even when the generation was disposed mid-write.
+        sendJsonIfWritable(res, 200, { sources: await service.listSources() }, ctx.logger)
       } catch (cause) {
-        if (!signal.aborted && !res.destroyed) {
-          if (cause instanceof MarketSourceLockError) {
-            sendJson(res, 403, { error: cause.message })
-          } else {
-            sendJson(res, 400, { error: cause instanceof Error ? cause.message : 'source change failed' })
-          }
+        if (generationController.signal.aborted && !(cause instanceof MarketSourceLockError)) {
+          // Work the generation actually cancelled answers an explicit error;
+          // a deliberate refusal (lock) keeps its own shape either way.
+          sendInstallErrorIfWritable(res, cancelledOperationError('market operation'), ctx.logger)
+        } else if (cause instanceof MarketSourceLockError) {
+          sendJsonIfWritable(res, 403, { error: cause.message }, ctx.logger)
+        } else {
+          sendJsonIfWritable(res, 400, { error: cause instanceof Error ? cause.message : 'source change failed' }, ctx.logger)
         }
       } finally {
         stopWatching()
@@ -1237,9 +1259,18 @@ export function registerMarketRoutes(
           asEmptyDesktopAction(await readOperationJson(req, signal))
           signal.throwIfAborted()
           actions.openTerminal()
-          if (!signal.aborted && !res.destroyed) sendJson(res, 200, { ok: true })
+          // The terminal already opened: answer whenever the response is
+          // writable so a disposed generation cannot leave the click silent.
+          sendJsonIfWritable(res, 200, { ok: true }, ctx.logger)
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+          // Only work the generation actually cancelled reports an error here,
+          // so a cancellation is never mistaken for a silent success.
+          const cancellation = generationController.signal.aborted && !(cause instanceof MarketInstallError)
+          sendInstallErrorIfWritable(
+            res,
+            cancellation ? cancelledOperationError('market operation') : cause,
+            ctx.logger,
+          )
         } finally {
           stopWatching()
         }
