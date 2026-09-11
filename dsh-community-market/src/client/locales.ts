@@ -276,7 +276,7 @@ export const en: Record<MarketLocaleKey, string> = {
   done: 'Done',
   builtIn: 'Built-in adapter',
   partner: 'Partner provider',
-  sourcePartnershipBefore: 'Besides adding a compatible custom source, see the',
+  sourcePartnershipBefore: 'Besides adding a compatible custom source, see the ',
   sourcePartnershipGuide: 'source integration guide',
   selectSource: 'Select this source',
   selectedSource: 'Current source',

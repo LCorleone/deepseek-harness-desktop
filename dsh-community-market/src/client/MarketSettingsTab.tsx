@@ -1798,7 +1798,7 @@ function SourcesView({ state, catalog, error, pending, adapterGuideHref, onMutat
       <div className="dshMarketBanner dshMarketSourceGuide">
         <IconGlobeOutline14 size={14} />
         <span>
-          {t('sourcePartnershipBefore')}{' '}
+          {t('sourcePartnershipBefore')}
           <a href={adapterGuideHref} target="_blank" rel="noopener noreferrer">{t('sourcePartnershipGuide')}</a>
         </span>
       </div>

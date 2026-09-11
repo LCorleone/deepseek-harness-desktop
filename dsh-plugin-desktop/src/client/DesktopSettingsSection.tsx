@@ -159,7 +159,6 @@ const MARKET_OPTIONS: readonly {
 }[] = [
   { id: 'disabled', title: 'marketDisabled', body: 'marketDisabledBody' },
   { id: 'community-market', title: 'communityMarket', body: 'communityMarketBody' },
-  { id: 'dsh-market', title: 'dshMarket', body: 'dshMarketBody' },
 ]
 
 /** Preference groups the settings page can render. */
@@ -193,30 +192,22 @@ export function desktopSettingsSectionVisibility(
   }
 }
 
-// Company lockdown: the three upstream community-repo links in the market
-// options list all point at the internal plugin-market portal (July, 2026-09-11).
+// Company lockdown: the upstream community-repo links in the market options
+// list point at the internal plugin-market portal, and the upstream
+// "dsh-market" provider option is removed from the UI altogether (its body
+// introduced the upstream marketplace). The host-side provider identity
+// stays in desktop-market.ts for unlocked/dev profiles (July, 2026-09-11).
 const COMMUNITY_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
-const DSH_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
-const AWESOME_DSH_PLUGIN_URL = 'https://plugin-market.s.dai.deloitte.cn/'
 
 function marketTitle(option: (typeof MARKET_OPTIONS)[number], t: Translate): ReactNode {
   if (option.id === 'community-market') {
     return <RepositoryLink href={COMMUNITY_MARKET_URL}>{t(option.title)}</RepositoryLink>
   }
-  if (option.id === 'dsh-market') {
-    return <RepositoryLink href={DSH_MARKET_URL}>{t(option.title)}</RepositoryLink>
-  }
   return t(option.title)
 }
 
 function marketBody(option: (typeof MARKET_OPTIONS)[number], t: Translate): ReactNode {
-  if (option.id !== 'dsh-market') return t(option.body)
-  return (
-    <>
-      {t(option.body)}{' '}
-      <RepositoryLink href={AWESOME_DSH_PLUGIN_URL}>awesome-dsh-plugin</RepositoryLink>
-    </>
-  )
+  return t(option.body)
 }
 
 /** Render the Desktop settings page. */
