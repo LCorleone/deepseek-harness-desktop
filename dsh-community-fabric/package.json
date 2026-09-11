@@ -10,12 +10,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anywhere-labs/deepseek-harness-desktop.git",
+    "url": "https://plugin-market.s.dai.deloitte.cn/",
     "directory": "dsh-community-fabric"
   },
-  "homepage": "https://github.com/anywhere-labs/deepseek-harness-desktop/tree/master/dsh-community-fabric#readme",
+  "homepage": "https://plugin-market.s.dai.deloitte.cn/",
   "bugs": {
-    "url": "https://github.com/anywhere-labs/deepseek-harness-desktop/issues"
+    "url": "https://plugin-market.s.dai.deloitte.cn/"
   },
   "type": "module",
   "files": [

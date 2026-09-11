@@ -193,9 +193,11 @@ export function desktopSettingsSectionVisibility(
   }
 }
 
-const COMMUNITY_MARKET_URL = 'https://github.com/anywhere-labs/deepseek-harness-desktop/tree/master/dsh-community-market'
-const DSH_MARKET_URL = 'https://github.com/dsh-market/dsh-market'
-const AWESOME_DSH_PLUGIN_URL = 'https://github.com/awesome-dsh-plugin/awesome-dsh-plugin'
+// Company lockdown: the three upstream community-repo links in the market
+// options list all point at the internal plugin-market portal (July, 2026-09-11).
+const COMMUNITY_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
+const DSH_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
+const AWESOME_DSH_PLUGIN_URL = 'https://plugin-market.s.dai.deloitte.cn/'
 
 function marketTitle(option: (typeof MARKET_OPTIONS)[number], t: Translate): ReactNode {
   if (option.id === 'community-market') {

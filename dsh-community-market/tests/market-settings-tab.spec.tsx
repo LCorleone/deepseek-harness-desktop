@@ -562,13 +562,10 @@ describe('MarketSettingsTab', () => {
     expect(screen.getByText(receipt.version)).toBeTruthy()
     expect(screen.getByText('web')).toBeTruthy()
     expect(screen.getByText(en.operationWarning)).toBeTruthy()
-    const support = screen.getByRole('link', { name: en.contactUs }) as HTMLAnchorElement
-    expect(support.parentElement?.textContent).toBe(
-      `${en.operationRiskBeforeContact}${en.contactUs}${en.operationRiskAfterContact}`,
-    )
-    expect(support.href).toBe('https://github.com/anywhere-labs/deepseek-harness-desktop/issues')
-    expect(support.target).toBe('_blank')
-    expect(support.rel).toContain('noopener')
+    // The upstream "contact us" issues link is removed in the company build:
+    // the risk line renders as plain text with no external link.
+    expect(screen.getByText(en.operationRisk)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /contact us/u })).toBeNull()
     expect(screen.getByText(en.restartAfterOperation)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: en.confirmInstall }))
@@ -704,9 +701,7 @@ describe('MarketSettingsTab', () => {
 
     expect(await screen.findByText('not a standard plugin')).toBeTruthy()
     const details = screen.getByRole('link', { name: en.verificationDetails }) as HTMLAnchorElement
-    expect(details.href).toBe(
-      'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/install-and-uninstall.md',
-    )
+    expect(details.href).toBe('https://plugin-market.s.dai.deloitte.cn/')
     expect(details.target).toBe('_blank')
     expect(details.rel).toContain('noopener')
   })

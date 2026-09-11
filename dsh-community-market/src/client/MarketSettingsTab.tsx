@@ -54,14 +54,11 @@ import {
 type MarketItem = CatalogSnapshot['items'][number]
 export type MarketView = 'discover' | 'installable' | 'installed' | 'sources'
 const INSTALLABLE_PAGE_SIZE = 50
-const INSTALL_REQUIREMENTS_DOCS = {
-  en: 'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/install-and-uninstall.md',
-  zh: 'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/install-and-uninstall.zh.md',
-} as const
-const DSH_DESKTOP_ISSUES_URL = 'https://github.com/anywhere-labs/deepseek-harness-desktop/issues'
 
-function installRequirementsUrl(locale: string): string {
-  return locale.toLowerCase().startsWith('zh') ? INSTALL_REQUIREMENTS_DOCS.zh : INSTALL_REQUIREMENTS_DOCS.en
+function installRequirementsUrl(): string {
+  // Company lockdown: the upstream install docs link is replaced by the
+  // internal plugin-market portal (July, 2026-09-11).
+  return 'https://plugin-market.s.dai.deloitte.cn/'
 }
 
 function catalogAdapterGuideUrl(): string {
@@ -1185,7 +1182,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           desktopActionError={desktopActionError}
           desktopActionPending={desktopActionPending}
           canOpenTerminal={state?.desktopActions.openTerminal === true}
-          verificationHelpHref={installRequirementsUrl(readLocale())}
+          verificationHelpHref={installRequirementsUrl()}
           onClose={closeItem}
           onConfirm={() => { void executePreview() }}
           onOpenTerminal={() => { void runDesktopAction('open-terminal') }}
@@ -2041,11 +2038,7 @@ function OperationConfirmModal({ preview, pending, error, onCancel, onConfirm, t
         {installing && (
           <div className="dshMarketOperationWarning">
             <StateDot state="warning" size={12} />
-            <span>
-              {t('operationRiskBeforeContact')}
-              <a href={DSH_DESKTOP_ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('contactUs')}</a>
-              {t('operationRiskAfterContact')}
-            </span>
+            <span>{t('operationRisk')}</span>
           </div>
         )}
         {disabling && <>
@@ -2196,11 +2189,7 @@ function ItemActionModal({
             <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('operationWarning')}</span></div>
             <div className="dshMarketOperationWarning">
               <StateDot state="warning" size={12} />
-              <span>
-                {t('operationRiskBeforeContact')}
-                <a href={DSH_DESKTOP_ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('contactUs')}</a>
-                {t('operationRiskAfterContact')}
-              </span>
+              <span>{t('operationRisk')}</span>
             </div>
             <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('restartAfterOperation')}</span></div>
             {pending && <div className="dshMarketOperationProgress" role="status"><StateDot state="ongoing" size={12} />{t('installing')}</div>}
@@ -2263,11 +2252,7 @@ function ItemActionModal({
                 <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('operationWarning')}</span></div>
                 <div className="dshMarketOperationWarning">
                   <StateDot state="warning" size={12} />
-                  <span>
-                    {t('operationRiskBeforeContact')}
-                    <a href={DSH_DESKTOP_ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('contactUs')}</a>
-                    {t('operationRiskAfterContact')}
-                  </span>
+                  <span>{t('operationRisk')}</span>
                 </div>
               </div>
             ) : installation === undefined
