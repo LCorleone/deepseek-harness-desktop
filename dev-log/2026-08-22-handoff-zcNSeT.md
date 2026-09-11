@@ -552,6 +552,23 @@ beta 侧不需修（`company-market-install.ts:285-300/355-370` 每次安装现�
 另一个 P3 已随手修（重试被拒时补引原快照的 seq 数字，便于诊断）。
 **发布流程开销记录**：本轮 CI 跑了 **3 次**（1 次 green）；前两次红分别是坑 1（plugin-sources 缺目录）与坑 3（身份契约）——都是「本地通过、CI 才暴露」的同一类问题（CI 用不同打包器/不同校验面）。
 
+### 2026-09-11 下午（15:05）真机反馈：ppt-designer 预设读不到 【已闭环】——打包无问题，缺的是发现能力
+**用户现象**：装上 0.1.0 后 agent 能读 `reference/pptd.md` 等，但 `reference/design_system/**` 全报
+`carries no resource`（试过 finance/investment、finance/equity、finance/deep-blue、consulting/analysis 等）。
+**诊断结论（不是打包 bug）**：bundle 完整——收集树 335 个资源文件 = bundle assets 335，`design_system` 60 个文件全在
+（finance 6 预设、consulting 6 预设）；失败的那几个路径**本来就不存在**（真实名 black-gold-ledger / prospect-annual /
+indigo-due-diligence / marine-blue-research …），`carries no resource` 对不存在路径是正确行为。
+真正缺口 = **可发现性**：SKILL.md 让模型「列出 `reference/design_system/<category>/` 下的预设」，
+原 skill 本地环境有文件系统可枚举，我们的插件只有 `company_skill_read`（精确路径）⇒ 模型只能盲猜。
+**修复（July 拍板「加一个 list 工具」）**：`company_skill_list(skill, path?)`——只返回名字（不解码/不物化/不落盘）、
+按根相对前缀收窄、无匹配前缀返回正常空清单（试探字面合法）、超 1000 条显式截断标注；read/list 描述互相引导
+「先 list 再 read」；版本 0.1.0 → **0.1.1**（0.1.0 已发布不可变）。提交 `8d1fbf0370`（评审 APPROVED；1 条可选 P3
+前导斜杠归一化已修）。brief：`dev-log/briefs/2026-09-11-company-skill-list-tool.md`。
+**发布**：staging 提交单 `submissions/dsh-company-skills-0.1.1` → CI run `34571253734` → **beta seq29**（8 条，
+sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；stable seq27 不含 skills（符合预期）。
+**真机验收（15:04）**：**ppt-designer 可正常使用了** ✓（list 工具解决了预设发现；用户确认）。
+**待办**：0.1.1 浸泡后 promote 至 stable；b91（UI 文案清理 + P1 安装修复）等口令。
+
 ### 当前 TODO 快照（2026-09-11 10:15，晨）
 **等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
 **今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
