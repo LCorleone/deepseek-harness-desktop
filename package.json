@@ -92,6 +92,7 @@
     "start": "yarn workspace dsh-plugin-desktop start",
     "package:dir": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop package:dir",
     "e2e:install-smoke": "node dsh-plugin-desktop/scripts/e2e-install-smoke.mjs",
+    "e2e:market-reliability": "node dsh-plugin-desktop/scripts/e2e-market-reliability.mjs",
     "dist:mac": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop dist:mac",
     "dist:mac-smoke": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop dist:mac-smoke",
     "dist:win": "yarn workspace dsh-community-market build && yarn workspace dsh-plugin-desktop dist:win",

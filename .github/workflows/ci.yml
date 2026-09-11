@@ -86,6 +86,14 @@ jobs:
         run: yarn install --immutable
       - if: needs.changes.outputs.product == 'true'
         run: yarn check
+      - name: E2E market reliability batch
+        # Headless, localhost-only regression batch for the b91 device
+        # classes: market responses surviving a generation abort (the
+        # uninstall-spinner class) and the locked plugin-add gate under the
+        # per-channel anti-rollback floors (the stale-floor class). Runs the
+        # workspace sources directly, so it needs no packaged artifact.
+        if: needs.changes.outputs.product == 'true'
+        run: yarn e2e:market-reliability
 
   # Windows-only logic and unsigned NSIS/portable builds on a real Windows runner:
   # updates, window options, pwsh sandbox, volume diagnostics, and packaging.

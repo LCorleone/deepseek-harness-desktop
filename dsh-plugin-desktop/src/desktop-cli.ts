@@ -277,13 +277,18 @@ function injectSaveExactFlag(argv: string[], addIndex: number): void {
  * same settings document (review P2 — a fresh-profile swap clears the
  * receipts but leaves the scan ratchet behind, and the add gate must not
  * forget what the market already verified). Undefined without either.
+ *
+ * Exported for the headless e2e reliability batch
+ * (`scripts/e2e-market-reliability.mjs`, scenario e3a), which drives exactly
+ * this derivation against a real settings document so a caller that
+ * recombines the channels back into one floor fails that batch loudly.
  */
 interface LockedPluginAddSequenceFloors {
   readonly stable: number | undefined
   readonly beta: number | undefined
 }
 
-async function lockedPluginAddSequenceFloors(
+export async function lockedPluginAddSequenceFloors(
   homeDir: string | undefined,
 ): Promise<LockedPluginAddSequenceFloors> {
   if (homeDir === undefined) return { stable: undefined, beta: undefined }
