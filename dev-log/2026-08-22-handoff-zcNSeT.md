@@ -569,6 +569,31 @@ sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；st
 **真机验收（15:04）**：**ppt-designer 可正常使用了** ✓（list 工具解决了预设发现；用户确认）。
 **待办**：0.1.1 浸泡后 promote 至 stable；b91（UI 文案清理 + P1 安装修复）等口令。
 
+### 2026-09-11 15:47 收工前：b91 构建 + 打 tag + TODO 快照
+**b91 构建完成**（run `34573249172`，HEAD `80c59b66ce`，`DSH_BUILD_SEQ=91`）：
+`DSH-Desktop-2.0.4-x64-Setup.exe` · SHA256 `650118dfc1acc8307bc73f7f8d5985690d2980bab6730214a9ce4a3cc5d6c318` ·
+169,718,978 B（= 161.9 **MiB**，与 b90 同体积）· 已下载至 `tmp_sessions/dsh-desktop-asserts/dsh-desktop-windows-x64/`。
+**tag `v2.0.4-b91`** 已打并双推（指向 HEAD `80c59b66ce`，说明含 SHA/体积/run 与自 b88 起三块内容）。
+**一个虚惊**：我一度以为比 b90 大了 7.8MB——实为 MiB/MB 换算误读（161.9 MiB = 169.72 MB）；
+并与 b90 日志逐条对比了运行时输入（bundled Node v22.23.2 / Python v3.12.10 与目1030 文件）均相同。
+**发版前门**：`corepack yarn check` 全绿（bilingual 50 记录、layout、market 468、skills 84、catalog 43、desktop 2365+8skip，exit 0）。
+
+### 当前 TODO 快照（2026-09-11 15:47，收工前）
+**等 fleet（分发后）**：b91 分发 → 用遥测确认全员升级 → 重点验「不重启也能装插件」（P1 修）。
+**目录/插件**：① `dsh-company-skills@0.1.1` 浸泡后 **promote 到 stable**（`cli.mjs promote` → publish stable → 棘轮 30，
+   让非 tester 也拿到 list 工具；0.1.0 旧钉保留在窗口内，待日后 revoke→publish→retire）；
+   ② 目录现状：**stable seq27**（5 条，含 4 条描述）/ **beta seq29**（8 条，含 skills 0.1.0+0.1.1）。
+**待拍板（不挡道）**：engramory 反馈稿（插件侧写盘，有上游范式背书）· `sandbox_escalation` 遥测接/裁 ·
+   残余风险表 R10（deferral 锚点收窄，arch P2）· 升级重放点清单 + runbook「diff 上游 defaults」（arch P2）·
+   **0.1.5 升级立卡**（已知三雷：modeSelectionEnabled 新默认、session v2/v3 不可回滚、默认模型 V41 Flash；等 rc.3 直升四波重放）。
+**技术债（已记，未做）**：① bundle 在仓库存两份（~60MB；可改成 CI 侧构建 bundle）；
+   ② launcher 「安装前重新 stage」（彻底解法；P2-1 真机若发现子进程连不上 origin，则升级为主修）；
+   ③ `marketOptionRows` 缺渲染级测试（现只钉纯函数 + URL）；④ 插件包体积（0.1.1 = 42.2 MB）。
+**排队**：free-search rebase 上游 v0.4.19+ · sso-gate 浏览器路径主动测 · ppt-designer 立项评估（包已发，可含）·
+   同事 MR 浸泡线（另一 session）。
+**暂缓**：main.ts 组合根拆分（等 0.1.5 波次）· 目录发布单点（协作扩张前）· C 类仓库门面文档（根 README/CONTRIBUTING/docs/faq 仍指上游）。
+**已闭环可移出挂账**：backup 远端落后（catalog-artifacts 分支）已推齐，fork/backup 现全同步。
+
 ### 当前 TODO 快照（2026-09-11 10:15，晨）
 **等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
 **今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
