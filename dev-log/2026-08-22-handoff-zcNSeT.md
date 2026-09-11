@@ -524,6 +524,25 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **待验（真机）**：市场刷新可见→安装→重启→skill-creator 建 skill / ppt-designer 出 PPT（含 Deloitte 模板）/ 首装授权链（PyYAML 等）。
 **留档**：提交单已推 staging 仓分支 `submissions/dsh-company-skills-0.1.0`（等价于 MR 合并）。
 
+#### 13:28 真机安装踩到 P1：CLI 反回滚地板 vs 陈旧 staged 清单（**b90 修复批引入的回归**）
+**现象**：julu 在 b90 上从市场装 `dsh-company-skills@0.1.0` 失败——
+`dsh-desktop: rejected the company catalog manifest (stale-sequence): manifest sequence 25 regressed below the last seen sequence 27`
+→ 包管理器 exit 1 → 安装恢复 WAL 已回滚 profile（没砖）。
+**根因链**：launcher 在**开机时**拉一次 stable 清单，把这份字节 stage 成文件、通过 `DSH_COMPANY_MANIFEST_FILE`
+交给 CLI 子进程（`company-manifest-origin.ts:145-205` `companyManifestFileRequest`，只在 staged 文件「不可用」时回落网络，
+**内容陈旧不在回落条件里**）。julu 11:xx 开机 → 那时 stable=`seq25` → stage 的是 25；
+12:43 我们发了 stable `seq27`（13:0x beta `seq28`）。CLI 验证 staged 25 字节时地板取
+`lockedPluginAddSequenceFloor()`（`desktop-cli.ts:277-291`）= max(开机回执, **市场棘轮**)=27
+——「市场棘轮并进 CLI 地板」是 b90 修复批 `3ce59e41c5` 按评审意见做的加固；在那之前地板只取开机回执(=25)，25 能过。
+⇒ **回归**：只要客户端运行期间目录发布了更高 sequence 且市场刷新过，任何插件安装都会被拒，直到重启客户端。
+**立即解锁**：重启客户端（重开重新抓取+重新 stage）后再装。
+**修复**（brief `dev-log/briefs/2026-09-11-cli-stale-staged-manifest-p1.md`，worker 进行中）：
+staged 字节验证报 `stale-sequence` 时**回退受限网络抓取一次并重新验证**（同一套签名/信任根/地板）；
+其余失败码（签名/过期/结构）一律硬拒、不静默换源；重试也失败 → fail-closed。
+beta 侧不需修（`company-market-install.ts:285-300/355-370` 每次安装现写 staging）；boot 侧不需修（开机现抓）。
+**后续项**：launcher 改成「安装前重新 stage」（更彻底，改动落在 main.ts 的 generation 生命周期 + 子进程 env，单独卡）。
+**发布流程开销记录**：本轮 CI 跑了 **3 次**（1 次 green）；前两次红分别是坑 1（plugin-sources 缺目录）与坑 3（身份契约）——都是「本地通过、CI 才暴露」的同一类问题（CI 用不同打包器/不同校验面）。
+
 ### 当前 TODO 快照（2026-09-11 10:15，晨）
 **等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
 **今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
