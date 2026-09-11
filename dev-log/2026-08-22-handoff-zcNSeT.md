@@ -578,6 +578,15 @@ sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；st
 并与 b90 日志逐条对比了运行时输入（bundled Node v22.23.2 / Python v3.12.10 与目1030 文件）均相同。
 **发版前门**：`corepack yarn check` 全绿（bilingual 50 记录、layout、market 468、skills 84、catalog 43、desktop 2365+8skip，exit 0）。
 
+### 2026-09-11 16:25 b91 真机验收通过 + 目录遥测
+**b91 真机验收（July 16:14 装、16:25 确认「正常」）**：①**P1 主验通过——不重启也能装插件**
+（开机 stage 的是 seq27、市场刷新后棘轮到 seq29，正是原来的失败条件；安装不再报 stale-sequence）；
+②上游链接/「联系我们」清理到位；③技能包 list→read 出 PPT 正常；④常规回归正常。
+**遥测（16:25）**：julu=`2.0.4+b91` ✓；其余全员 `b90`（webhu 15:49 已升 b90——b88 尾巴消失）；
+目录刷新：`stable seq27 applied ×6`、`beta-overlay seq29 ×2`、**全天零 untrusted/rejected**
+（先前担心的「b88 撞带 description 的 stable 清单」实际未发生：webhu 在 stable seq27 发布期间未拉取，升级后直接 b90 接受）。
+**fleet 已扩张**：julu/sebtang/lizywu/kwen/jackjuzhang/mzhuo/gaxie/webhu/luklu/lucylachen/tammtang（含非 tester）。
+
 ### 当前 TODO 快照（2026-09-11 15:47，收工前）
 **等 fleet（分发后）**：b91 分发 → 用遥测确认全员升级 → 重点验「不重启也能装插件」（P1 修）。
 **目录/插件**：① `dsh-company-skills@0.1.1` 浸泡后 **promote 到 stable**（`cli.mjs promote` → publish stable → 棘轮 30，
