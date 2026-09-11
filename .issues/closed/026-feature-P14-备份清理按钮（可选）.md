@@ -1,11 +1,12 @@
-# [Feature] #027 P4-3 签收单管理层签字（部署侧待办#1）
+# [Feature] #026 P14 备份清理按钮（可选）
 
-**Issue ID**: #027
-**Status**: Open
+**Issue ID**: #026
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: feature
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -118,3 +119,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+July 09-12 拍板：可选尾巴不做，关闭
