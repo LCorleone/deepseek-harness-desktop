@@ -87,5 +87,22 @@
       "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-engramory-0.2.4.tgz",
       "path": "tools/company-catalog/out/packages/dsh-dai-engramory-0.2.4.tgz"
     }
+  },
+  {
+    "packageName": "dsh-company-skills",
+    "version": "0.1.0",
+    "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://plugin-market.s.dai.deloitte.cn/",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.2-rc.1"
+    },
+    "treeDigest": "3bd2d9bf6edd278216c2cd94ec537a17fd34bc494e3da150a518d407231fddf1",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-company-skills-0.1.0.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-company-skills-0.1.0.tgz"
+    }
   }
 ]
