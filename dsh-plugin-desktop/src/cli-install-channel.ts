@@ -61,6 +61,19 @@
  * request bound (`company-manifest-origin.ts`). The verification chain after
  * acquisition is byte-identical for both modes.
  *
+ * Staged boot snapshots: origin-mode acquisition prefers the manifest bytes
+ * the launcher fetched once at boot (`DSH_COMPANY_MANIFEST_FILE`). Those
+ * bytes are a snapshot of a catalog that keeps advancing, so they age — the
+ * machine staged sequence N at boot while the market later published N+2 and
+ * raised this gate's floor, which made every install demand a client restart
+ * until the snapshot was refreshed. Aging is not rollback, so a
+ * `stale-sequence` verdict over the staged bytes earns exactly one retry
+ * through the restricted network fetch; the retried bytes face the identical
+ * signature, trust-root, origin, expiry, and floor checks, and the gate
+ * remains fail-closed. Every other failure (bad signature, expired,
+ * malformed, unknown key, origin mismatch) keeps its original denial and
+ * never swaps sources.
+ *
  * Anti-rollback: the sequence floor comes from the local receipts ratchet —
  * the caller derives `lastSeenSequence` from the highest manifest sequence
  * recorded in the market settings install receipts, and that floor is a
@@ -68,11 +81,13 @@
  * that already allowed an install on this machine, so a rolled-back
  * manifest (sequence below the floor) is denied, while the same sequence —
  * re-installing from, or installing a second plugin out of, the catalog that
- * is already deployed — is the normal steady state and is allowed. The
- * manifest asset ships inside the application bundle, but under a per-user
- * Windows install that bundle directory is user-writable, so the asset
- * alone is not a rollback boundary; closing that writable-asset window is
- * deferred to P3. Freshness is still enforced through the signed
+ * is already deployed — is the normal steady state and is allowed. The floor
+ * applies to whatever bytes the gate ends up verifying: a stale boot
+ * snapshot is retried once over the network (see above), never admitted on
+ * its own. The manifest asset ships inside the application bundle, but
+ * under a per-user Windows install that bundle directory is user-writable,
+ * so the asset alone is not a rollback boundary; closing that writable-asset
+ * window is deferred to P3. Freshness is still enforced through the signed
  * `expiresAt`. (The Market channel keeps its own settings-backed sequence
  * store; this terminal gate rides the receipts ratchet instead.)
  *
@@ -90,7 +105,12 @@
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fetchCompanyManifestText, readStagedCompanyManifestBytes, type CompanyManifestFetchOptions } from './company-manifest-origin.ts'
+import {
+  companyManifestFileRequest,
+  fetchCompanyManifestText,
+  readStagedCompanyManifestBytes,
+  type CompanyManifestFetchOptions,
+} from './company-manifest-origin.ts'
 import {
   desktopBetaManifestHandoffStagingPath,
   EXACT_VERSION_PATTERN,
@@ -142,9 +162,24 @@ export interface LockedPluginAddOptions {
   readonly assetPath?: string
   /**
    * Origin-mode manifest acquisition overrides (request boundary, timeout,
-   * body bound); defaults to the shared restricted policy-pinned fetch.
+   * body bound); defaults to the shared restricted policy-pinned fetch. The
+   * request boundary is the restricted *network* transport to the pinned
+   * origin: it serves the acquisition when no staged file is pinned, is the
+   * staged boundary's own unusable-file fallback, and is the transport of
+   * the one stale-staged retry below.
    */
   readonly fetch?: CompanyManifestFetchOptions
+  /**
+   * Absolute launcher-staged boot-time manifest path
+   * (`DSH_COMPANY_MANIFEST_FILE`), present only in origin mode. When pinned,
+   * acquisition prefers those bytes and falls back to the restricted network
+   * fetch for an unusable file exactly as before; additionally, a
+   * `stale-sequence` verdict over them retries once through that same
+   * restricted network fetch, under the same trust roots and sequence floor
+   * (a boot snapshot ages as the catalog advances — stale is not rollback).
+   * Without it this gate behaves byte-for-byte as before: no retry is armed.
+   */
+  readonly stagedManifestFile?: string
   /**
    * Highest manifest sequence this machine has already verified through an
    * install (the receipts ratchet); the manifest must not regress below it —
@@ -251,7 +286,7 @@ function isAcceptedRegistryFlag(argument: string): boolean {
  * plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
- * @param options - the manifest asset path, origin fetch overrides, the receipts sequence floor, the test clock, and — for a market-orchestrated install — the launcher's parsed tarball hand-off plus the profile directory confining its staged path.
+ * @param options - the manifest asset path, origin fetch overrides, the launcher-staged manifest file, the receipts sequence floor, the test clock, and — for a market-orchestrated install — the launcher's parsed tarball hand-off plus the profile directory confining its staged path.
  * @returns the allow decision with the resolved targets, or the denial reason.
  */
 export async function authorizeLockedPluginAdd(
@@ -332,6 +367,10 @@ export async function authorizeLockedPluginAdd(
     }
     target = parsed
   }
+  // Content-mode builds have no pinned origin to fetch from, so a staged
+  // file (an origin-mode-only hand-off) is ignored there — and its stale
+  // retry stays unarmed, leaving the embedded-asset path byte-identical.
+  const stagedManifestFile = policy.companyCatalogOrigin === null ? undefined : options.stagedManifestFile
   let raw: string
   if (policy.companyCatalogOrigin === null) {
     const assetPath = options.assetPath ?? companyManifestAssetPath(import.meta.url, policy.companyManifestUrl)
@@ -344,10 +383,15 @@ export async function authorizeLockedPluginAdd(
       return denied(`unreadable company catalog manifest asset ${assetPath}: ${messageOf(cause)}`)
     }
   } else {
-    // Origin mode: one restricted fetch of the pinned manifest URL; any
+    // Origin mode: one restricted fetch of the pinned manifest URL, served
+    // from the launcher-staged bytes when it pinned them (the staged
+    // boundary keeps the network fetch as its unusable-file fallback); any
     // transport failure denies the command without importing the CLI.
+    const acquisition: CompanyManifestFetchOptions = stagedManifestFile === undefined
+      ? options.fetch ?? {}
+      : { ...options.fetch, request: companyManifestFileRequest(stagedManifestFile, options.fetch?.request) }
     try {
-      raw = await fetchCompanyManifestText(policy, options.fetch)
+      raw = await fetchCompanyManifestText(policy, acquisition)
     } catch (cause) {
       return denied(`the company catalog manifest could not be fetched from ${policy.companyCatalogOrigin}: ${messageOf(cause)}. ${MARKET_GUIDANCE}`)
     }
@@ -363,12 +407,53 @@ export async function authorizeLockedPluginAdd(
   // field-unaware market verifier that ran here before the P7 wiring; it
   // additionally recognizes a signed `source` channel per entry, which is
   // what makes this build "field-aware" for the fleet publication gate.
-  const verification = verifyDesktopCompanyManifest(raw, {
+  const verifyManifest = (text: string) => verifyDesktopCompanyManifest(text, {
     trustRoots: policy.trustRoots,
     companyCatalogOrigin: policy.companyCatalogOrigin,
     ...(options.lastSeenSequence === undefined ? {} : { lastSeenSequence: options.lastSeenSequence }),
     ...(options.now === undefined ? {} : { now: options.now }),
   })
+  let verification = verifyManifest(raw)
+  if (!verification.ok && verification.code === 'stale-sequence' && stagedManifestFile !== undefined) {
+    // 开机快照会随目录推进而陈旧，陈旧 ≠ 回滚：只对 stale-sequence 走一次受限网络
+    // 重试（同一 origin、信任根与地板），其余失败一律原样拒绝，绝不换源。
+    //
+    // The staged file is a boot-time snapshot of a catalog that keeps moving:
+    // the machine staged sequence N at boot, the catalog later published N+2
+    // (and refreshed the market ratchet that raises this gate's floor), so the
+    // snapshot is now below the floor. A snapshot going stale says nothing
+    // about it being a rollback — the update channel's anti-rollback intent is
+    // served by re-reading the live manifest, not by refusing every install
+    // until the client restarts. Retry exactly once over the restricted
+    // network fetch: the retried bytes go through this same verifier with the
+    // same trust roots, origin binding, expiry, and floor, so a genuinely
+    // rolled-back catalog is still denied, and a network failure is a denial
+    // too (the retry's own reason is reported — the stale snapshot is never
+    // silently swapped for unverified bytes).
+    let retriedRaw: string
+    try {
+      retriedRaw = await fetchCompanyManifestText(policy, options.fetch ?? {})
+    } catch (cause) {
+      return denied(
+        `rejected the company catalog manifest (stale-sequence): ${verification.reason}.`
+        + ` The launcher-staged manifest is a boot-time snapshot that went stale as the catalog advanced,`
+        + ` and the restricted network retry failed: ${messageOf(cause)}. ${MARKET_GUIDANCE}`,
+      )
+    }
+    const retryVerification = verifyManifest(retriedRaw)
+    if (!retryVerification.ok) {
+      // Quote the snapshot's own numbers too (P3 from review): without them a
+      // retry that expired or failed the signature reads as if the staged
+      // snapshot had been fine.
+      return denied(
+        `rejected the company catalog manifest (${retryVerification.code}): ${retryVerification.reason}.`
+        + ` The launcher-staged manifest is a boot-time snapshot that went stale as the catalog advanced`
+        + ` (${verification.reason}), and the restricted network retry was rejected too`
+        + ` (${retryVerification.code}). ${MARKET_GUIDANCE}`,
+      )
+    }
+    verification = retryVerification
+  }
   if (!verification.ok) {
     return denied(`rejected the company catalog manifest (${verification.code}): ${verification.reason}`)
   }

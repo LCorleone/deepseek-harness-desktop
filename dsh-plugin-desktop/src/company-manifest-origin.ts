@@ -160,6 +160,14 @@ export async function fetchCompanyManifestText(
  * cancellation propagates, like every other abort on this boundary. Every
  * network failure keeps failing closed through the caller.
  *
+ * Content staleness is deliberately not a fallback condition here: this
+ * boundary cannot judge freshness, the verifier can. The locked plugin-add
+ * gate re-reads the pinned origin once through the restricted network fetch
+ * when — and only when — the verified staged bytes report `stale-sequence`
+ * (`LockedPluginAddOptions.stagedManifestFile`): the staged bytes are a
+ * boot-time snapshot, so they age as the catalog advances (陈旧 ≠ 回滚), and
+ * swapping sources on any other failure would soften the trust gate.
+ *
  * @param manifestFile - absolute launcher-staged manifest path, no NUL.
  * @param network - network fallback boundary; defaults to `globalThis.fetch`
  *   (injectable for focused tests).

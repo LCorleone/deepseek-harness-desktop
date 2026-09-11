@@ -10,7 +10,7 @@ import {
   desktopInstallRecoveryStatePath,
 } from './install-recovery.ts'
 import { authorizeLockedPluginAdd, SAVE_EXACT_FLAG } from './cli-install-channel.ts'
-import { companyManifestFileRequest, DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
+import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
 import {
   DESKTOP_COMPANY_TARBALL_HANDOFF_ENV,
   parseCompanyTarballHandoff,
@@ -388,8 +388,10 @@ export async function runDesktopDshCli(
   // Origin-mode byte hand-off: when the trusted Electron launcher staged the
   // manifest bytes (it can reach corporate-CA origins through the Chromium
   // network stack; this Node process cannot), prefer that file and keep the
-  // restricted network fetch only as the fallback. The bytes still pass the
-  // same signature gate below either way.
+  // restricted network fetch only as the fallback — plus the one stale
+  // retry the gate arms for a pinned file, since a boot-time snapshot ages as
+  // the catalog advances while a restart is not an acceptable price for an
+  // install. The bytes still pass the same signature gate below either way.
   const companyManifestFile = takeEnvironmentValue(
     environment,
     DESKTOP_COMPANY_MANIFEST_FILE_ENV,
@@ -481,9 +483,7 @@ export async function runDesktopDshCli(
         effectivePolicy,
         {
           ...(manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath }),
-          ...(companyManifestFile === undefined
-            ? {}
-            : { fetch: { request: companyManifestFileRequest(companyManifestFile) } }),
+          ...(companyManifestFile === undefined ? {} : { stagedManifestFile: companyManifestFile }),
           ...(lastSeenSequence === undefined ? {} : { lastSeenSequence }),
           ...(tarballHandoff === undefined ? {} : { tarballHandoff }),
           ...(homeDir === undefined

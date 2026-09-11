@@ -344,7 +344,7 @@ describe('locked plugin-add authorization', () => {
     const decision = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(stagedFile, network) } },
+      { stagedManifestFile: stagedFile, fetch: { request: network } },
     )
 
     expect(decision.allowed).toBe(true)
@@ -369,7 +369,7 @@ describe('locked plugin-add authorization', () => {
     const missing = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(join(roots, 'gone', 'company-manifest.json'), network) } },
+      { stagedManifestFile: join(roots, 'gone', 'company-manifest.json'), fetch: { request: network } },
     )
     expect(missing.allowed).toBe(true)
 
@@ -379,10 +379,163 @@ describe('locked plugin-add authorization', () => {
     const empty = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(emptyFile, network) } },
+      { stagedManifestFile: emptyFile, fetch: { request: network } },
     )
     expect(empty.allowed).toBe(true)
     expect(network).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries a stale launcher-staged manifest once over the restricted network fetch', async () => {
+    // The regression this fix closes: the launcher staged a boot-time
+    // snapshot (sequence N) and the catalog later advanced, raising the
+    // receipts/market floor to N+2. Aging is not rollback, so the gate must
+    // re-read the live manifest instead of demanding a client restart.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-stale'))
+    const networkText = readFileSync(writeCatalog(unsignedCatalog({ sequence: 27 })), 'utf8')
+    const network = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://market.company.example/catalog-manifest.json')
+      expect(init.redirect).toBe('error')
+      return new Response(networkText)
+    })
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { stagedManifestFile: stagedFile, fetch: { request: network }, lastSeenSequence: 27 },
+    )
+
+    expect(network).toHaveBeenCalledTimes(1)
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+  })
+
+  it('fails closed when the network retry is stale too', async () => {
+    // A rolled-back catalog stays denied: the retried bytes face the same
+    // verifier and the same floor, so an equally old network manifest is not
+    // an escape hatch out of the anti-rollback ratchet.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-stale-both'))
+    const staleText = readFileSync(writeCatalog(unsignedCatalog({ sequence: 25 })), 'utf8')
+    const network = vi.fn(async () => new Response(staleText))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { stagedManifestFile: stagedFile, fetch: { request: network }, lastSeenSequence: 27 },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('stale-sequence')
+      expect(decision.reason).toContain('restricted network retry was rejected too')
+      expect(decision.reason).toContain('company plugin market')
+    }
+    expect(network).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed and reports the network failure when the stale retry cannot be fetched', async () => {
+    // The retry is one shot over the same restricted transport: a failed or
+    // timed-out re-fetch denies the add (never the stale snapshot), and the
+    // reason keeps the retry's own failure text for diagnosis.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-stale-offline'))
+    const unavailable = vi.fn(async () => new Response('unavailable', { status: 503 }))
+
+    const deniedByStatus = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { stagedManifestFile: stagedFile, fetch: { request: unavailable }, lastSeenSequence: 27 },
+    )
+
+    expect(deniedByStatus.allowed).toBe(false)
+    if (!deniedByStatus.allowed) {
+      expect(deniedByStatus.reason).toContain('stale-sequence')
+      expect(deniedByStatus.reason).toContain('restricted network retry failed')
+      expect(deniedByStatus.reason).toContain('HTTP 503')
+    }
+    expect(unavailable).toHaveBeenCalledTimes(1)
+
+    const throwing = vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    const deniedByTransport = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { stagedManifestFile: stagedFile, fetch: { request: throwing }, lastSeenSequence: 27 },
+    )
+
+    expect(deniedByTransport.allowed).toBe(false)
+    if (!deniedByTransport.allowed) {
+      expect(deniedByTransport.reason).toContain('stale-sequence')
+      expect(deniedByTransport.reason).toContain('could not be downloaded')
+    }
+    expect(throwing).toHaveBeenCalledTimes(1)
+  })
+
+  it('never retries a staged manifest that fails anything other than the sequence floor', async () => {
+    // Only `stale-sequence` is an aging artifact. A staged manifest whose
+    // signature does not verify must not be quietly replaced by a valid
+    // network manifest: the retry is a freshness path, not a source swap.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-bad-signature'))
+    const staged = JSON.parse(readFileSync(stagedFile, 'utf8')) as { signature: { value: string } }
+    staged.signature.value = Buffer.alloc(64, 9).toString('base64')
+    writeFileSync(stagedFile, canonicalJsonText(staged))
+    const networkText = readFileSync(writeCatalog(unsignedCatalog({ sequence: 27 })), 'utf8')
+    const network = vi.fn(async () => new Response(networkText))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { stagedManifestFile: stagedFile, fetch: { request: network }, lastSeenSequence: 27 },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('bad-signature')
+      expect(decision.reason).toContain('rejected the company catalog manifest')
+    }
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a plain origin fetch that verifies as stale', async () => {
+    // Without a pinned staged file there is no boot snapshot to age: the
+    // network's own manifest is the catalog, and a stale one stays the
+    // fail-closed denial it was before this fix (one request, no retry).
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const staleText = readFileSync(writeCatalog(unsignedCatalog({ sequence: 25 })), 'utf8')
+    const network = vi.fn(async () => new Response(staleText))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      { fetch: { request: network }, lastSeenSequence: 27 },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('stale-sequence')
+      expect(decision.reason).not.toContain('retry')
+    }
+    expect(network).toHaveBeenCalledTimes(1)
   })
 
   it('denies staged bytes that fail the signature gate without any network fallback', async () => {
@@ -397,7 +550,7 @@ describe('locked plugin-add authorization', () => {
     const decision = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(tamperedFile, network) } },
+      { stagedManifestFile: tamperedFile, fetch: { request: network } },
     )
 
     expect(decision.allowed).toBe(false)
@@ -429,7 +582,7 @@ describe('locked plugin-add authorization', () => {
     const decision = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest('/dev/zero', network) } },
+      { stagedManifestFile: '/dev/zero', fetch: { request: network } },
     )
 
     expect(decision.allowed).toBe(true)
@@ -454,7 +607,7 @@ describe('locked plugin-add authorization', () => {
     const decision = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(oversized, network) } },
+      { stagedManifestFile: oversized, fetch: { request: network } },
     )
 
     expect(decision.allowed).toBe(true)
@@ -476,7 +629,7 @@ describe('locked plugin-add authorization', () => {
     const decision = await authorizeLockedPluginAdd(
       ['example-plugin@1.0.0'],
       policy,
-      { fetch: { request: companyManifestFileRequest(link, network) } },
+      { stagedManifestFile: link, fetch: { request: network } },
     )
 
     expect(decision.allowed).toBe(true)
