@@ -15,6 +15,15 @@
  * text channel. The read tool addresses one carried entry by exact path and
  * returns its UTF-8 text.
  *
+ * `company_skill_list` exists because exact-path addressing presumes the
+ * caller already knows the name — and a model without a filesystem has
+ * nothing to list (the real-device failure: preset names under
+ * `reference/design_system/**` were guessed and never matched).
+ * The list tool returns names only — every carried entry path, sorted,
+ * optionally narrowed by a directory prefix — so read and run can be
+ * addressed exactly instead of guessed. The two descriptions cross-reference
+ * each other on purpose.
+ *
  * `presentCall` renders a card from the arguments alone (skill + path/script),
  * so a replayed call never needs the body.
  *
@@ -22,7 +31,12 @@
  */
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { ReadResourceResult, RunScriptResult, ScriptExecutor } from './execute.js'
+import type {
+  ListEntriesResult,
+  ReadResourceResult,
+  RunScriptResult,
+  ScriptExecutor,
+} from './execute.js'
 
 /** Tool name the model sees. */
 export const COMPANY_SKILL_RUN_TOOL_NAME = 'company_skill_run'
@@ -123,7 +137,8 @@ export function createCompanySkillReadTool(executor: ScriptExecutor): ToolDefini
       + 'materialized into a private temp directory for the duration of the call and removed the moment it '
       + 'settles, so nothing persists. Only UTF-8 text can be read (a binary resource is refused), and an entry '
       + `larger than ${String(Math.round(executor.limits.maxReadBytes / 1024))} KiB is refused rather than truncated (maxBytes raises the bound for one call). `
-      + 'Returns the text and its byte length.',
+      + 'Returns the text and its byte length. Entry paths are exact and cannot be guessed: use '
+      + 'company_skill_list first to discover the paths a skill actually carries.',
     parameters: {
       skill: {
         type: 'string',
@@ -166,6 +181,122 @@ export function createCompanySkillReadTool(executor: ScriptExecutor): ToolDefini
       kind: 'read',
       title: `Read ${args.skill}/${args.path}`,
       rawInput: args.path,
+    }),
+  })
+}
+
+/** Tool name the model sees for entry listings. */
+export const COMPANY_SKILL_LIST_TOOL_NAME = 'company_skill_list'
+
+/** The canonical value one successful listing returns; also the model-facing shape. */
+export interface CompanySkillListValue {
+  readonly skill: string
+  readonly path: string
+  /** Sorted bundle-relative entry paths; a fresh list the value owns (the output schema's array is mutable). */
+  readonly entries: string[]
+  readonly total: number
+  readonly truncated: boolean
+}
+
+/**
+ * Project one listing onto the canonical tool value. The entries are copied
+ * so the value owns its list, decoupled from the executor's internal arrays.
+ * @param result - the executor's listing.
+ * @returns the lossless-JSON value declared by the tool's output schema.
+ */
+export function toListValue(result: ListEntriesResult): CompanySkillListValue {
+  return {
+    skill: result.skill,
+    path: result.path,
+    entries: [...result.entries],
+    total: result.total,
+    truncated: result.truncated,
+  }
+}
+
+/**
+ * Render the canonical listing for the model: one header line carrying the
+ * match count (and the prefix, when one narrowed it), then one path per line,
+ * and — only when the listing was capped — a final line naming how many
+ * entries remain past the cap, so a partial listing is never mistaken for a
+ * complete one.
+ * @param value - the canonical listing value.
+ * @returns the plain-text tool result.
+ */
+export function renderListValue(value: CompanySkillListValue): string {
+  const scope = value.path === '' ? '' : ` under "${value.path}"`
+  if (value.total === 0) {
+    return `company skill "${value.skill}" carries no entries${scope}`
+  }
+  const noun = value.total === 1 ? 'entry' : 'entries'
+  const shown = value.truncated ? ` (showing the first ${String(value.entries.length)})` : ''
+  const lines = [
+    `company skill "${value.skill}" carries ${String(value.total)} ${noun}${scope}${shown}:`,
+    ...value.entries,
+  ]
+  if (value.truncated) {
+    lines.push(`… truncated, ${String(value.total - value.entries.length)} more — narrow the path prefix`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Build the `company_skill_list` definition for one executor.
+ * @param executor - the catalog-backed script executor.
+ * @returns a registry-ready tool definition.
+ */
+export function createCompanySkillListTool(executor: ScriptExecutor): ToolDefinition {
+  return defineTool({
+    name: COMPANY_SKILL_LIST_TOOL_NAME,
+    description:
+      'List the entry paths one company skill carries inside its bundle — every script under `scripts/` and '
+      + 'every resource at its own bundle-relative path — as a sorted list of names, never content. Company-skill '
+      + 'bundles are opaque to the workspace, so `bash` or `read` cannot enumerate them and entry names must match '
+      + 'the skill\'s own names exactly (guessing fails: the design presets live under names like '
+      + '`reference/design_system/finance/black-gold-ledger/design.md`). Use company_skill_list to discover the '
+      + 'exact paths a company skill carries, then company_skill_read to load one (and company_skill_run to execute '
+      + 'a `scripts/…` entry). `path` optionally narrows the listing to a bundle-root-relative directory prefix '
+      + 'such as "reference/design_system/finance" (an exact entry path matches itself); omit it to list every '
+      + 'entry. A prefix that matches nothing returns a normal empty listing, not an error — discovery is probing. '
+      + `Listings longer than ${String(executor.limits.maxListEntries)} entries keep the head and end with an explicit `
+      + 'truncation marker; narrow the path prefix to page through the rest.',
+    parameters: {
+      skill: {
+        type: 'string',
+        required: true,
+        description: 'Company skill name exactly as the skill catalog lists it.',
+      },
+      path: {
+        type: 'string',
+        description: 'Bundle-root-relative directory prefix that narrows the listing, e.g. "reference/design_system/finance"; omit to list every entry.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          skill: { type: 'string', required: true },
+          path: { type: 'string', required: true },
+          entries: { type: 'array', items: { type: 'string' }, required: true },
+          total: { type: 'integer', required: true },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: renderListValue(value) }],
+    },
+    async execute(args) {
+      const result = await executor.list({
+        skill: args.skill,
+        ...(args.path === undefined ? {} : { path: args.path }),
+      })
+      return toListValue(result)
+    },
+    presentCall: (args) => ({
+      card: 'generic',
+      kind: 'search',
+      title: `List ${args.skill}${args.path === undefined ? '' : `/${args.path}`}`,
+      rawInput: args.path ?? args.skill,
     }),
   })
 }

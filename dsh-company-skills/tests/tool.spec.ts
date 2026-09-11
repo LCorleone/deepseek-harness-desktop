@@ -24,26 +24,36 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSETS_ENV_VAR,
   DESKTOP_PYTHON_EXECUTABLE_ENV,
+  type ListEntriesRequest,
   type ReadResourceRequest,
   type RunScriptRequest,
   type ScriptExecutor,
 } from '../src/execute.js'
 import * as CompanySkills from '../src/index.js'
 import {
+  COMPANY_SKILL_LIST_TOOL_NAME,
   COMPANY_SKILL_READ_TOOL_NAME,
   COMPANY_SKILL_RUN_TOOL_NAME,
+  createCompanySkillListTool,
   createCompanySkillReadTool,
   createCompanySkillRunTool,
+  renderListValue,
   renderRunValue,
   toRunValue,
 } from '../src/tool.js'
 import { localSpawn } from './local-spawn.js'
 import { pythonInterpreter } from './python.js'
 
-/** A stub executor that records the request and returns a fixed run/read. */
-function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[]; reads: ReadResourceRequest[] } {
+/** A stub executor that records the request and returns a fixed run/read/list. */
+function stubExecutor(): {
+  executor: ScriptExecutor
+  requests: RunScriptRequest[]
+  reads: ReadResourceRequest[]
+  lists: ListEntriesRequest[]
+} {
   const requests: RunScriptRequest[] = []
   const reads: ReadResourceRequest[] = []
+  const lists: ListEntriesRequest[] = []
   const executor: ScriptExecutor = {
     limits: {
       timeoutMs: 120_000,
@@ -51,6 +61,7 @@ function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[
       maxOutputBytes: 64 * 1024,
       maxConcurrentPerSession: 1,
       maxReadBytes: 256 * 1024,
+      maxListEntries: 1000,
     },
     run(request) {
       requests.push(request)
@@ -66,8 +77,18 @@ function stubExecutor(): { executor: ScriptExecutor; requests: RunScriptRequest[
       reads.push(request)
       return Promise.resolve({ skill: request.skill, path: request.path, text: 'READ-LINE\n', bytes: 10 })
     },
+    list(request) {
+      lists.push(request)
+      return Promise.resolve({
+        skill: request.skill,
+        path: request.path ?? '',
+        entries: ['scripts/demo.mjs'],
+        total: 1,
+        truncated: false,
+      })
+    },
   }
-  return { executor, requests, reads }
+  return { executor, requests, reads, lists }
 }
 
 /** A minimal `tools` service whose registrations are observable. */
@@ -218,6 +239,100 @@ describe('company_skill_read tool definition', () => {
   })
 })
 
+describe('company_skill_list tool definition', () => {
+  it('declares the addressing parameters and the output shape, and delegates the listing', async () => {
+    const { executor, lists } = stubExecutor()
+    const tool = createCompanySkillListTool(executor)
+    expect(tool.name).toBe(COMPANY_SKILL_LIST_TOOL_NAME)
+    expect(tool.name).toBe('company_skill_list')
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      required: ['skill'],
+      properties: {
+        skill: { type: 'string' },
+        path: { type: 'string' },
+      },
+    })
+    expect(tool.output.schema).toMatchObject({
+      type: 'object',
+      required: ['skill', 'path', 'entries', 'total', 'truncated'],
+    })
+    expect(tool.presentCall?.({ skill: 'ppt-designer', path: 'reference/design_system/finance' })).toEqual({
+      card: 'generic',
+      kind: 'search',
+      title: 'List ppt-designer/reference/design_system/finance',
+      rawInput: 'reference/design_system/finance',
+    })
+    expect(tool.presentCall?.({ skill: 'ppt-designer' })).toEqual({
+      card: 'generic',
+      kind: 'search',
+      title: 'List ppt-designer',
+      rawInput: 'ppt-designer',
+    })
+
+    const exec = { signal: new AbortController().signal } as unknown as ToolRunContext
+    const value = await tool.execute({ skill: 'ppt-designer', path: 'reference/design_system/finance' }, exec)
+    expect(lists).toEqual([{ skill: 'ppt-designer', path: 'reference/design_system/finance' }])
+    expect(value).toEqual({
+      skill: 'ppt-designer',
+      path: 'reference/design_system/finance',
+      entries: ['scripts/demo.mjs'],
+      total: 1,
+      truncated: false,
+    })
+  })
+
+  it('cross-references read and list so the model is taught list-then-read', () => {
+    const { executor } = stubExecutor()
+    const list = createCompanySkillListTool(executor)
+    const read = createCompanySkillReadTool(executor)
+    // The list description teaches the discovery flow by name…
+    expect(list.description).toContain(
+      'Use company_skill_list to discover the exact paths a company skill carries, then company_skill_read to load one',
+    )
+    expect(list.description).toContain('company_skill_run')
+    // …and the read description points back at list instead of letting the
+    // model guess exact paths (the real-device failure mode).
+    expect(read.description).toContain('company_skill_list')
+    expect(read.description).toContain('cannot be guessed')
+  })
+
+  it('renders the count header and one path per line, marking truncation explicitly', () => {
+    const text = renderListValue({
+      skill: 'ppt-designer',
+      path: 'reference/design_system/finance',
+      entries: ['reference/design_system/finance/black-gold-ledger/design.md'],
+      total: 6,
+      truncated: false,
+    })
+    expect(text).toBe([
+      'company skill "ppt-designer" carries 6 entries under "reference/design_system/finance":',
+      'reference/design_system/finance/black-gold-ledger/design.md',
+    ].join('\n'))
+
+    const truncated = renderListValue({
+      skill: 'ppt-designer',
+      path: '',
+      entries: ['editor/index.html', 'editor/app.js'],
+      total: 341,
+      truncated: true,
+    })
+    expect(truncated).toBe([
+      'company skill "ppt-designer" carries 341 entries (showing the first 2):',
+      'editor/index.html',
+      'editor/app.js',
+      '… truncated, 339 more — narrow the path prefix',
+    ].join('\n'))
+  })
+
+  it('renders an empty listing as a normal message naming the prefix, never an error', () => {
+    expect(renderListValue({ skill: 'ppt-designer', path: 'reference/nope', entries: [], total: 0, truncated: false }))
+      .toBe('company skill "ppt-designer" carries no entries under "reference/nope"')
+    expect(renderListValue({ skill: 'empty-demo', path: '', entries: [], total: 0, truncated: false }))
+      .toBe('company skill "empty-demo" carries no entries')
+  })
+})
+
 describe('registration wiring', () => {
   it('registers on the tools seam once tools and subprocess exist, and disposes with the plugin', async () => {
     const ctx = new Context()
@@ -230,6 +345,7 @@ describe('registration wiring', () => {
     expect(tools.registered.map((tool) => tool.name)).toEqual([
       COMPANY_SKILL_RUN_TOOL_NAME,
       COMPANY_SKILL_READ_TOOL_NAME,
+      COMPANY_SKILL_LIST_TOOL_NAME,
     ])
 
     await app.dispose()

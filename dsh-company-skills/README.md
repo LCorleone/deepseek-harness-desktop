@@ -8,14 +8,15 @@ DSH Company Skills is the container plugin that ships a set of curated company s
 
 ## What it is
 
-One Cordis plugin, one provider, and two model-facing tools:
+One Cordis plugin, one provider, and three model-facing tools:
 
 - **Plugin** `company-skills` — reads and decodes `assets/skills.bundle` once at module initialization and registers one provider through the skill registry seam.
 - **Provider** `company-skills` — `list()` returns the decrypted index (name, description, rank, opaque locator) and never a body; `get()` validates and materializes exactly the skill that locator names.
 - **Tool** `company_skill_run` — runs one declared `scripts/…` entry from a per-run staged copy of the skill: the whole bundle (scripts and assets) is materialized at each entry's own relative path into a private `mkdtemp` directory (0700 on POSIX; entry directories default to 0755, files are written 0600, and `mode` is a no-op on Windows), executed from there, and deleted in a `finally` block the moment the run settles, so plaintext never persists (see [Script execution](#script-execution-the-staged-per-run-channel)).
 - **Tool** `company_skill_read` — decodes one carried text resource (`reference/pptd.md`, `references/workflows.md`) by exact bundle path and returns it as text. This is the only text channel for those resources: the bundle is opaque, so a workspace `read` or `bash` sees nothing. The addressed entry is materialized for the duration of the call and removed in a `finally` block; binaries and entries over the read bound are refused (see [Reading resources](#reading-resources-the-opaque-text-channel)).
+- **Tool** `company_skill_list` — lists the carried entry paths of one skill, names only, optionally narrowed by a bundle-root-relative `path` prefix. Discovery is the gap this closes: the model cannot enumerate the opaque bundle, and a guessed path (`reference/design_system/finance/investment/design.md`) rejects in `company_skill_read` exactly like a typo. Listing never decodes, stages, or materializes anything; a prefix that matches nothing is a normal empty listing, because probing is how discovery works. Teach the flow as list-then-read (see [Discovering resources](#discovering-resources-the-names-only-listing)).
 - **Precedence** — every skill reports `source: 'bundled'` and `BUNDLED_SKILL_RANK` (600), the packaged-root rank. A project (`.dsh/skills`, `.agents/skills`) or a user (`$DSH_HOME/skills`, `~/.agents/skills`) skill of the same name keeps winning: the company catalog is always available but never silently overrides a skill a repository or a user deliberately wrote down.
-- **Resource base** — `{ kind: 'opaque', description: … }`. The referenced scripts and resources travel inside the plugin, not on local disk, so the upstream loader renders an opaque hint instead of a directory or URL and every existing consumer needs zero changes; the hint names the two company-skill tools, since they are the only way to reach those resources. Bodies are never truncated (only catalog descriptions are bounded, at the catalog's own 500 characters, which the packer already enforces).
+- **Resource base** — `{ kind: 'opaque', description: … }`. The referenced scripts and resources travel inside the plugin, not on local disk, so the upstream loader renders an opaque hint instead of a directory or URL and every existing consumer needs zero changes; the hint names the three company-skill tools, since they are the only way to reach those resources. Bodies are never truncated (only catalog descriptions are bounded, at the catalog's own 500 characters, which the packer already enforces).
 
 ## Registration seam
 
@@ -31,6 +32,7 @@ export function apply(ctx: Context): void {
     const executor = createScriptExecutor({ catalog, spawn: (spec) => inner.subprocess.spawn(spec) })
     inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
     inner.effect(() => inner.tools.register(createCompanySkillReadTool(executor)))
+    inner.effect(() => inner.tools.register(createCompanySkillListTool(executor)))
   })
 }
 ```
@@ -54,6 +56,10 @@ A bare `ctx.skills` read inside a plugin fiber throws (`cannot get property "ski
 ### Reading resources: the opaque text channel
 
 `company_skill_read` loads a resource the bundle carries, because the upstream consumer renders only the `resourceBase` hint — a workspace `read` or `bash` sees nothing. Its `path` must equal one carried entry exactly (`reference/pptd.md`, `references/workflows.md`, `editor/index.html`, or a `scripts/…` entry); it is compared for equality, never joined into a filesystem path, so `../`, absolute paths, and undeclared names reject. The addressed entry is materialized into a private directory under the same staging root, read back as UTF-8 text, and the directory is removed in a `finally` block, so the resource does not persist either.
+
+### Discovering resources: the names-only listing
+
+`company_skill_list` closes the discovery gap that `company_skill_read`'s exact-match rule leaves: skill prose points at directories (`list the presets under reference/design_system/<category>/`), and without a listing the model can only guess names. `path` is a bundle-root-relative prefix (`/reference/design_system` and `reference/design_system/` both address `reference/design_system`); the result is the sorted carried paths under it plus a count line, nothing else — no sizes, no bytes, no materialization. An empty result is a normal answer, not an error.
 
 - **Parameters** — `skill`, `path` (exact carried entry), and optional `maxBytes`.
 - **Bound** — an entry over the read bound (default 256 KiB, per-call `maxBytes`) is refused rather than truncated, and a binary entry (invalid UTF-8) is refused; both rejections name the skill and path only, never a byte of the body.
@@ -143,7 +149,7 @@ Red-green evidence (measured in this batch):
 - Ignore `DSH_DESKTOP_NODE_EXECUTABLE` and launch the bare PATH name → **red**: the injected-command test sees `node` instead of the published absolute path.
 - Let the cleanup `rm` reject out of the `finally` → **red**: a successful run whose removal hits EPERM is reported as a failure instead of returning its result.
 - Map every non-script entry back under `assets/` (the batch-4 remap) → **red**: `tests/collected-layout.spec.ts` reports `EDITOR-INDEX=<staged>/assets/editor/index.html` and the collected `resolve_editor_root()` raises `EDITOR_MISSING_HINT`, exactly the failure this batch fixed.
-- Drop the `company_skill_read` registration (or its tool builder) → **red**: the registration test expects `['company_skill_run', 'company_skill_read']`, and the read cases have no surface.
+- Drop the `company_skill_read` or `company_skill_list` registration (or its tool builder) → **red**: the registration test expects `['company_skill_run', 'company_skill_read', 'company_skill_list']`, and the read/list cases have no surface.
 
 ## Layout
 

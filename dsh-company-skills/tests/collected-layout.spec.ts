@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { describe, expect, it } from 'vitest'
 import type { SkillBundle, SkillBundleEntry } from '../src/bundle.js'
+import { compareCodePoints } from '../src/bundle.js'
 import { loadCatalogFromFile, loadCatalogFromText, type CompanySkillCatalog } from '../src/catalog.js'
 import { ASSETS_ENV_VAR, createScriptExecutor, type ScriptSpawn } from '../src/execute.js'
 import { localSpawn } from './local-spawn.js'
@@ -61,6 +62,45 @@ describe('the collected bundle keys entries by their source-relative path', () =
     expect(paths).toContain('references/output-patterns.md')
     expect(paths).toContain('LICENSE.txt')
     expect(bundle.scripts.map((entry) => entry.path)).toContain('scripts/init_skill.py')
+  }, 120_000)
+})
+
+describe('company_skill_list discovers the collected layout instead of guessing it', () => {
+  /** A listing never spawns and never stages; a throwing seam proves both. */
+  const noSpawn: ScriptSpawn = () => { throw new Error('a listing must never spawn') }
+  const executor = createScriptExecutor({ catalog: SHIPPED, spawn: noSpawn })
+
+  it('lists every carried ppt-designer path, sorted, including the real finance presets', async () => {
+    const result = await executor.list({ skill: 'ppt-designer' })
+    // The whole carried tree, in one code-point-sorted list: the oracle is
+    // the bundle's own entry index, reconstructed independently.
+    expect(result.entries).toEqual(carriedPaths(shippedBundle('ppt-designer')).sort(compareCodePoints))
+    expect(result.total).toBe(result.entries.length)
+    expect(result.truncated).toBe(false)
+    // The exact entries a real device blind-guessed wrong (investment/equity/
+    // deep-blue do not exist; these are the real names).
+    expect(result.entries).toContain('reference/design_system/finance/black-gold-ledger/design.md')
+    expect(result.entries).toContain('reference/pptd.md')
+    expect(result.entries).toContain('scripts/export_pptx.py')
+  }, 120_000)
+
+  it('narrows to the finance presets: exactly the six design.md files', async () => {
+    const result = await executor.list({ skill: 'ppt-designer', path: 'reference/design_system/finance' })
+    expect(result.entries).toEqual([
+      'reference/design_system/finance/black-gold-ledger/design.md',
+      'reference/design_system/finance/ebony-ledger/design.md',
+      'reference/design_system/finance/honey-orange-memo/design.md',
+      'reference/design_system/finance/lake-blue-memo/design.md',
+      'reference/design_system/finance/prospect-annual/design.md',
+      'reference/design_system/finance/rice-paper-annual/design.md',
+    ])
+    expect(result.total).toBe(6)
+    expect(result.truncated).toBe(false)
+  }, 120_000)
+
+  it('treats a matching-nothing prefix as a normal empty listing', async () => {
+    const result = await executor.list({ skill: 'ppt-designer', path: 'reference/nope' })
+    expect(result).toEqual({ skill: 'ppt-designer', path: 'reference/nope', entries: [], total: 0, truncated: false })
   }, 120_000)
 })
 

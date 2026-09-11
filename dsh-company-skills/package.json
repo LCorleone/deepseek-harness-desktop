@@ -1,6 +1,6 @@
 {
   "name": "dsh-company-skills",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Company-curated skills shipped as one obfuscated plugin bundle and published through the DeepSeek Harness skill registry seam",
   "license": "MIT",

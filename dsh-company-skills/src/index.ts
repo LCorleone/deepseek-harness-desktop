@@ -30,7 +30,11 @@
  * script runs from a per-run staged copy of the skill that is removed when the
  * run settles — see `execute.ts`. The read tool resolves the opaque bundle's
  * prose resources (which no workspace `read` can see) by materializing exactly
- * one entry for the duration of the call.
+ * one entry for the duration of the call. The listing tool
+ * (`company_skill_list`, added for 0.1.1) closes the discoverability gap
+ * those two leave: names only, never content, so a model without a filesystem
+ * — which had nothing to enumerate and could only guess entry paths, wrongly —
+ * can discover the exact paths before addressing read or run.
  *
  * @module dsh-company-skills
  */
@@ -39,7 +43,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createProvider } from './provider.js'
 import { loadCatalogFromFile } from './catalog.js'
 import { createScriptExecutor } from './execute.js'
-import { createCompanySkillReadTool, createCompanySkillRunTool } from './tool.js'
+import { createCompanySkillListTool, createCompanySkillReadTool, createCompanySkillRunTool } from './tool.js'
 
 /** Cordis plugin name. */
 export const name = 'company-skills'
@@ -71,5 +75,6 @@ export function apply(ctx: Context): void {
     })
     inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
     inner.effect(() => inner.tools.register(createCompanySkillReadTool(executor)))
+    inner.effect(() => inner.tools.register(createCompanySkillListTool(executor)))
   })
 }

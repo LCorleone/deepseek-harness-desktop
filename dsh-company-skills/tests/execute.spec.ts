@@ -782,6 +782,101 @@ describe('reading a carried resource', () => {
   })
 })
 
+describe('listing carried entries', () => {
+  /** A no-spawn seam: a listing must never launch a process or touch the disk. */
+  const noSpawn: ScriptSpawn = () => { throw new Error('a listing must never spawn') }
+
+  /** A listing fixture: two finance presets, one academic preset, one root resource. */
+  const listCatalog = () => catalogOf(bundleOf({
+    name: 'runner-demo',
+    scripts: [{ path: 'scripts/demo.mjs', text: 'process.exit(0)\n' }],
+    assets: [
+      { path: 'reference/design_system/academic/deep-blue-atlas/design.md', text: 'academic' },
+      { path: 'reference/design_system/finance/black-gold-ledger/design.md', text: 'finance' },
+      { path: 'reference/design_system/finance/ebony-ledger/design.md', text: 'finance' },
+      { path: 'reference/pptd.md', text: 'pptd' },
+    ],
+  }))
+
+  it('returns every scripts[] and assets[] path as one sorted list with the total', async () => {
+    const executor = createScriptExecutor({ catalog: listCatalog(), spawn: noSpawn, tempRoot })
+    const result = await executor.list({ skill: 'runner-demo' })
+    expect(result).toEqual({
+      skill: 'runner-demo',
+      path: '',
+      entries: [
+        'reference/design_system/academic/deep-blue-atlas/design.md',
+        'reference/design_system/finance/black-gold-ledger/design.md',
+        'reference/design_system/finance/ebony-ledger/design.md',
+        'reference/pptd.md',
+        'scripts/demo.mjs',
+      ],
+      total: 5,
+      truncated: false,
+    })
+    // Names only: nothing was staged into the temp root.
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('narrows by directory prefix (trailing slash ignored); an exact entry path matches itself', async () => {
+    const executor = createScriptExecutor({ catalog: listCatalog(), spawn: noSpawn, tempRoot })
+    const finance = await executor.list({ skill: 'runner-demo', path: 'reference/design_system/finance' })
+    expect(finance.path).toBe('reference/design_system/finance')
+    expect(finance.entries).toEqual([
+      'reference/design_system/finance/black-gold-ledger/design.md',
+      'reference/design_system/finance/ebony-ledger/design.md',
+    ])
+    expect(finance.total).toBe(2)
+
+    const slashed = await executor.list({ skill: 'runner-demo', path: 'reference/design_system/finance/' })
+    expect(slashed.entries).toEqual(finance.entries)
+
+    const exact = await executor.list({ skill: 'runner-demo', path: 'reference/pptd.md' })
+    expect(exact.entries).toEqual(['reference/pptd.md'])
+    expect(exact.total).toBe(1)
+  })
+
+  it('returns a normal empty listing for a prefix that matches nothing', async () => {
+    const executor = createScriptExecutor({ catalog: listCatalog(), spawn: noSpawn, tempRoot })
+    const result = await executor.list({ skill: 'runner-demo', path: 'reference/nope' })
+    expect(result).toEqual({ skill: 'runner-demo', path: 'reference/nope', entries: [], total: 0, truncated: false })
+    await expect(readdir(tempRoot)).resolves.toEqual([])
+  })
+
+  it('rejects an unknown skill with the same catalog reason read reports', async () => {
+    const executor = createScriptExecutor({ catalog: listCatalog(), spawn: noSpawn, tempRoot })
+    const failure = executor.list({ skill: 'nope' })
+    await expect(failure).rejects.toThrow(SkillRunError)
+    await expect(failure).rejects.toThrow(/cannot list company skill/)
+    await expect(failure).rejects.toThrow(/unknown company skill "nope"/)
+    // The catalog reason is byte-identical to the read channel's rejection.
+    await expect(executor.read({ skill: 'nope', path: 'reference/pptd.md' }))
+      .rejects.toThrow(/cannot read from company skill "nope": unknown company skill "nope"/)
+  })
+
+  it('truncates past the listing cap, keeping the head, the total, and the fact', async () => {
+    const executor = createScriptExecutor({
+      catalog: listCatalog(),
+      spawn: noSpawn,
+      tempRoot,
+      // An injected small cap stands in for the 1000-entry default: the
+      // behaviour under truncation is what matters, not the real bound.
+      maxListEntries: 2,
+    })
+    const result = await executor.list({ skill: 'runner-demo', path: 'reference/design_system' })
+    expect(result).toEqual({
+      skill: 'runner-demo',
+      path: 'reference/design_system',
+      entries: [
+        'reference/design_system/academic/deep-blue-atlas/design.md',
+        'reference/design_system/finance/black-gold-ledger/design.md',
+      ],
+      total: 3,
+      truncated: true,
+    })
+  })
+})
+
 describe('session concurrency bound', () => {
   /** Let staging (mkdtemp + writes) finish so the seam spawn callbacks land. */
   const waitForSpawns = async (pending: (() => void)[], count: number): Promise<void> => {

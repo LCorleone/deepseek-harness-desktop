@@ -41,6 +41,20 @@
  * Neither the directory nor the bytes survive the call. `company_skill_read`
  * in the tool layer is the model-facing surface of `read()`.
  *
+ * ## Listing entries
+ *
+ * `read()` addresses one carried entry by *exact* path, which presumes the
+ * caller already knows the name — a presumption the opaque bundle breaks: a
+ * model without a filesystem to list cannot discover that the finance
+ * presets are `black-gold-ledger`/`prospect-annual`/…, only guess them
+ * (the real-device failure this closes). `list()` returns names only: every
+ * `scripts[]` and `assets[]` path as one sorted list, optionally narrowed to
+ * a bundle-root-relative directory prefix. No entry is decoded, staged, or
+ * materialized, so the listing adds no plaintext-exposure surface; a prefix
+ * that matches nothing is a normal empty listing, not an error, because
+ * discovery is probing. Listings past `maxListEntries` (default 1000) keep
+ * the head and report the remainder as a truncation fact.
+ *
  * ## Interpreter selection
  *
  * The extension picks the interpreter *family*: `.mjs`/`.js` → Node, `.py` →
@@ -96,7 +110,7 @@ import type {
   SubprocessSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import type { CompanySkillCatalog } from './catalog.js'
-import type { SkillBundle } from './bundle.js'
+import { compareCodePoints, type SkillBundle } from './bundle.js'
 import { decodeCanonicalBase64 } from './codec.js'
 
 /** The subprocess seam the executor writes through; `ctx.subprocess.spawn` in the plugin. */
@@ -113,6 +127,9 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 
 /** Largest single resource `read()` will decode as text. */
 export const DEFAULT_MAX_READ_BYTES = 256 * 1024
+
+/** Most entry paths one `list()` returns; the remainder is an explicit truncation fact. */
+export const DEFAULT_MAX_LIST_ENTRIES = 1000
 
 /** Concurrent runs allowed per session; one keeps a stuck script from flooding the session. */
 export const DEFAULT_MAX_CONCURRENT_PER_SESSION = 1
@@ -153,6 +170,8 @@ export interface ScriptExecutorLimits {
   readonly maxConcurrentPerSession: number
   /** Largest resource {@link ScriptExecutor.read} returns as text. */
   readonly maxReadBytes: number
+  /** Most entry paths {@link ScriptExecutor.list} returns; the rest is a truncation fact. */
+  readonly maxListEntries: number
 }
 
 /** One run request: the addressed script plus the caller-owned execution context. */
@@ -204,6 +223,31 @@ export interface ReadResourceResult {
   readonly bytes: number
 }
 
+/** One listing request: discover carried entry names, never their content. */
+export interface ListEntriesRequest {
+  /** Skill name exactly as the catalog lists it. */
+  readonly skill: string
+  /**
+   * Bundle-root-relative directory prefix that narrows the listing (for
+   * example `reference/design_system/finance`); the default root lists every
+   * carried entry. A trailing slash is ignored.
+   */
+  readonly path?: string
+}
+
+/** One entry listing: sorted names plus how complete they are. */
+export interface ListEntriesResult {
+  readonly skill: string
+  /** The prefix the listing was narrowed by; `''` is the bundle root. */
+  readonly path: string
+  /** Sorted bundle-relative entry paths, at most `limits.maxListEntries` of them. */
+  readonly entries: readonly string[]
+  /** Every entry matching the prefix, including the ones past the cap. */
+  readonly total: number
+  /** Whether `entries` was capped below `total`. */
+  readonly truncated: boolean
+}
+
 /** The execution surface the tool layer consumes. */
 export interface ScriptExecutor {
   readonly limits: ScriptExecutorLimits
@@ -224,6 +268,15 @@ export interface ScriptExecutor {
    * entry over the read bound — never for a body byte.
    */
   read(request: ReadResourceRequest): Promise<ReadResourceResult>
+  /**
+   * List the carried entry paths of one skill — `scripts[]` and `assets[]`
+   * together, sorted — optionally narrowed to a bundle-root-relative prefix.
+   * Names only: no entry is decoded, staged, or materialized.
+   * @param request - the skill and an optional narrowing prefix.
+   * @returns the sorted paths, the match total, and the truncation fact.
+   * @throws {SkillRunError} for an unknown skill — never for an empty match.
+   */
+  list(request: ListEntriesRequest): Promise<ListEntriesResult>
 }
 
 /** Construction options; every bound and the spawn seam are explicit for testability. */
@@ -238,6 +291,8 @@ export interface ScriptExecutorOptions {
   readonly maxConcurrentPerSession?: number
   /** Largest resource a read returns as text; defaults to 256 KiB. */
   readonly maxReadBytes?: number
+  /** Most entry paths one listing returns; defaults to 1000. */
+  readonly maxListEntries?: number
   /** Temp root for the staged-skill directory; defaults to `os.tmpdir()`. */
   readonly tempRoot?: string
   /**
@@ -364,12 +419,14 @@ function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
     maxOutputBytes: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     maxConcurrentPerSession: options.maxConcurrentPerSession ?? DEFAULT_MAX_CONCURRENT_PER_SESSION,
     maxReadBytes: options.maxReadBytes ?? DEFAULT_MAX_READ_BYTES,
+    maxListEntries: options.maxListEntries ?? DEFAULT_MAX_LIST_ENTRIES,
   }
   assertPositiveInteger('timeoutMs', limits.timeoutMs)
   assertPositiveInteger('graceMs', limits.graceMs)
   assertPositiveInteger('maxOutputBytes', limits.maxOutputBytes)
   assertPositiveInteger('maxConcurrentPerSession', limits.maxConcurrentPerSession)
   assertPositiveInteger('maxReadBytes', limits.maxReadBytes)
+  assertPositiveInteger('maxListEntries', limits.maxListEntries)
   if (limits.timeoutMs > MAX_TIMER_DELAY_MS || limits.graceMs > MAX_TIMER_DELAY_MS) {
     throw new Error(`dsh-company-skills: timeoutMs and graceMs must be no greater than ${String(MAX_TIMER_DELAY_MS)}`)
   }
@@ -386,6 +443,18 @@ function findScript(bundle: SkillBundle, script: string): { path: string; conten
 function findEntry(bundle: SkillBundle, path: string): { path: string; content: string } | undefined {
   const entry = [...bundle.scripts, ...bundle.assets].find((candidate) => candidate.path === path)
   return entry === undefined ? undefined : { path: entry.path, content: entry.content }
+}
+
+/**
+ * Normalize a listing prefix: drop leading and trailing slashes so `/a/b` and
+ * `a/b/` address the same directory as `a/b` (models habitually spell
+ * root-relative paths with a leading slash), and treat an absent path (or
+ * `/`) as the root `''`. A prefix that cannot match (`../`, misspelled) is
+ * left verbatim — it yields the normal empty listing, because discovery is
+ * probing.
+ */
+function normalizeListPrefix(path: string | undefined): string {
+  return (path ?? '').replace(/^\/+/u, '').replace(/\/+$/u, '')
 }
 
 /** Render the declared script paths for a rejection message (paths are catalog metadata). */
@@ -710,5 +779,35 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     }
   }
 
-  return { limits, run, read }
+  /**
+   * List the carried entry paths of one skill. Every path comes straight from
+   * the validated index — nothing is decoded, staged, or materialized — so a
+   * listing can never leak content or leave residue, and the throwing spawn
+   * seam a test passes is proof it never launches anything either.
+   */
+  async function list(request: ListEntriesRequest): Promise<ListEntriesResult> {
+    const loaded = options.catalog.skill(request.skill)
+    if (!loaded.ok) {
+      throw new SkillRunError(`cannot list company skill "${request.skill}": ${loaded.reason}`)
+    }
+    const bundle = loaded.bundle
+    const prefix = normalizeListPrefix(request.path)
+    // A prefix narrows by directory (`reference/x` matches `reference/x/…`)
+    // and by exact entry (`reference/x.md` matches itself); anything else
+    // simply matches nothing.
+    const matches = [...bundle.scripts, ...bundle.assets]
+      .map((entry) => entry.path)
+      .filter((path) => prefix === '' || path === prefix || path.startsWith(`${prefix}/`))
+      .sort(compareCodePoints)
+    const truncated = matches.length > limits.maxListEntries
+    return {
+      skill: bundle.name,
+      path: prefix,
+      entries: truncated ? matches.slice(0, limits.maxListEntries) : matches,
+      total: matches.length,
+      truncated,
+    }
+  }
+
+  return { limits, run, read, list }
 }

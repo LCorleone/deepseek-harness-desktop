@@ -14,7 +14,7 @@ skill registry 接缝发布出去的容器插件。它是 P6 批②/③的交付
 
 ## 它是什么
 
-一个 Cordis 插件、一个 provider、两个面向模型的工具：
+一个 Cordis 插件、一个 provider、三个面向模型的工具：
 
 - **插件** `company-skills`：模块初始化时读取并解密 `assets/skills.bundle` 一次，然后通过 skill registry
   接缝注册一个 provider。
@@ -24,11 +24,12 @@ skill registry 接缝发布出去的容器插件。它是 P6 批②/③的交付
   `mkdtemp` 目录（POSIX 上根目录 0700、条目目录默认 0755、文件 0600；Windows 上 `mode` 基本无效）、从那里执行、结算即在 `finally` 里删除，明文**不留驻**
   （见[脚本执行通道](#脚本执行通道staged按运行物化通道)）。
 - **工具** `company_skill_read`：按精确 bundle 路径解码一个随包文本资源（`reference/pptd.md`、`references/workflows.md`）并以文本返回。这是这些资源唯一的文本通道：bundle 对工作区不透明，`read`/`bash` 看不到任何东西。被寻址条目只在调用期间物化，`finally` 即删；二进制与超限条目直接拒绝（见[读取资源](#读取资源不透明文本通道)）。
+- **工具** `company_skill_list`：列出一个 skill 携带的条目路径，只含名字，可用 bundle 根相对的 `path` 前缀收窄。它补的是发现缺口：模型无法枚举不透明的 bundle，猜出来的路径（如 `reference/design_system/finance/investment/design.md`）在 `company_skill_read` 里和拼写错误一样拒绝。列目录永不解码、不物化任何条目；无匹配前缀返回正常的空清单——试探本就是发现的方式。用法教成先 list 再 read（见[发现资源](#发现资源只含名字的清单)）。
 - **优先级**：每个 skill 都报 `source: 'bundled'` 与 `BUNDLED_SKILL_RANK`（600），即打包根 rank。
   同名时项目级（`.dsh/skills`、`.agents/skills`）与用户级（`$DSH_HOME/skills`、`~/.agents/skills`）
   skill 依然胜出：公司目录始终可用，但绝不会悄悄覆盖仓库或用户明确写下的 skill。
 - **resourceBase**：`{ kind: 'opaque', description: … }`。引用的脚本与资源随插件走，不在本地磁盘上，
-  所以上游 loader 渲染的是 opaque 提示而不是目录或 URL，现有消费方零改动；提示里点名了两个公司-skill 工具，
+  所以上游 loader 渲染的是 opaque 提示而不是目录或 URL，现有消费方零改动；提示里点名了三个公司-skill 工具，
   因为它们是够到这些资源的唯一途径。正文永不截断
   （只有 catalog description 受 catalog 自己的 500 字符上限约束，打包器已前置强制）。
 
@@ -46,6 +47,7 @@ export function apply(ctx: Context): void {
     const executor = createScriptExecutor({ catalog, spawn: (spec) => inner.subprocess.spawn(spec) })
     inner.effect(() => inner.tools.register(createCompanySkillRunTool(executor)))
     inner.effect(() => inner.tools.register(createCompanySkillReadTool(executor)))
+    inner.effect(() => inner.tools.register(createCompanySkillListTool(executor)))
   })
 }
 ```
@@ -99,6 +101,10 @@ Windows 机器即使 `PATH` 上只有 shell-less spawn 跑不了的 `.cmd` 垫�
 `bash` 一概看不到。它的 `path` 必须精确等于某个携带条目（`reference/pptd.md`、`references/workflows.md`、
 `editor/index.html`，或某个 `scripts/…` 条目）；比较是精确相等而非路径拼接，所以 `../`、绝对路径、未声明名字
 都会拒绝。被寻址条目物化到同一 staging 根下的私有目录，读回 UTF-8 文本，`finally` 里删除该目录，资源同样不留驻。
+
+### 发现资源：只含名字的清单
+
+`company_skill_list` 补上 `company_skill_read` 精确匹配规则留下的发现缺口：skill 正文常常指向目录（「列出 `reference/design_system/<category>/` 下的预设」），没有清单时模型只能猜名字。`path` 是 bundle 根相对前缀（`/reference/design_system` 与 `reference/design_system/` 都指向 `reference/design_system`）；返回该前缀下排序后的携带路径加一行计数，仅此而已——没有大小、没有字节、不物化任何东西。空结果是正常答案，不是错误。
 
 - **参数**：`skill`、`path`（精确携带条目）、可选 `maxBytes`。
 - **边界**：超过读取上限的条目（默认 256 KiB，单次可用 `maxBytes` 上调）直接拒绝而不截断；二进制条目（非法
@@ -224,7 +230,7 @@ node dsh-company-skills/scripts/build-bundle-asset.mjs
 - 让清理 `rm` 的失败逃出 `finally` → **红**：一次清理遇 EPERM 的成功运行被报成失败，而不是返回结果。
 - 把非 scripts 条目重新归入 `assets/`（批④的旧做法）→ **红**：`tests/collected-layout.spec.ts` 报
   `EDITOR-INDEX=<staged>/assets/editor/index.html`，收编的 `resolve_editor_root()` 抛 `EDITOR_MISSING_HINT`，正是本批修掉的故障。
-- 去掉 `company_skill_read` 注册（或它的工具构造器）→ **红**：注册用例期望 `['company_skill_run', 'company_skill_read']`，读取用例失去表面。
+- 去掉 `company_skill_read` 或 `company_skill_list` 注册（或它的工具构造器）→ **红**：注册用例期望 `['company_skill_run', 'company_skill_read', 'company_skill_list']`，读取/列运用例失去表面。
 
 ## 目录
 
