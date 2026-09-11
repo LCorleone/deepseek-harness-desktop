@@ -76,7 +76,7 @@
     "description": "文件式长期记忆：人类可读的 markdown 笔记，跨会话沉淀",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-engramory-0.2.4.tgz",
-    "revoked": false,
+    "revoked": true,
     "channel": "beta",
     "runtime": {
       "dshRuntimeVersion": "0.1.2-rc.1"
