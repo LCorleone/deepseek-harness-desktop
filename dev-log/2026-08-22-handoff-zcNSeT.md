@@ -513,6 +513,17 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **残留（已记录，按 July 决定先不动）**：C 类仓库门面文档（根 README.md/.en badges与链接、CONTRIBUTING.md、docs/faq*.md）仍指上游；`update-checker.ts`/`update-download.ts` 的 dshdesktop.cn 更新端点属内部 fetch（锁死构建被 `adapter.locked` 门禁，不可达）；tests/dev-log/tools 属内部面；第三方 provider 署名（imsai-sh）保留。
 **待发**：以上全部进 **b91**（July 11:54 指示：先记录+commit，暂不构建）。
 
+### 2026-09-11 下午（13:05）P6 批④上线 beta —— dsh-company-skills@0.1.0（seq28）
+**结果**：`dsh-company-skills@0.1.0` 已发 **beta seq28**（7 条：stable 5 + engramory + 本包）；回读 sha256 `728aae2610e47dd2…` 与签名产物一致；stable seq27 不受影响（本条目带 `"channel":"beta"`）。tester（julu/sebtang/lizywu，均 b90）可装。
+**发布链路上撞了三个坑（均已修/绕）**：
+1. **tarball 漏明文**：npm 的「README/LICENSE 永远包含」规则绕过 `files` 白名单，`skills/**/README.md` 两個明文文件被装进包（`yarn pack` 也含）。修：`files` 加 `"!skills/**"` + 新增 `tests/package-surface.spec.ts` 钉子（72 测试）。
+2. **打包器不一致**：`yarn pack`（0/0 + 1984 时间戳）与 CI 的 `pack-tarball`（root/root + epoch）字节不同 ⇒ 安装树 digest 不同（94bd967a… vs 3bd2d9bf…），allowlist 的 treeDigest 必须来自 CI 同款打包器。修：提交件一律用 `cli.mjs pack-tarball --source-dir tools/company-catalog/plugin-sources/dsh-company-skills-0.1.0` 产出（插件源码树按现有 4 个条目的约定入 `plugin-sources/`）；**代价：bundle 在仓库里存了两份（约 60MB），待优化（可改成 CI 侧构建 bundle）。**
+3. **身份契约**：A/B 类清理把 `package.json` repository 改成裸门户 URL，被市场身份契约拒（`/repository/url must identify a repository path`）。修：包页路径 `https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills`（回读 200，同时满足契约与「全指门户」），allowlist 条目同值。
+4. 过程中的两次「已受理→重做」：因 1/3 导致 tarball 字节变化（尚未签名发布，无不可变红线影响），最终 treeDigest `26fd3c70c02dd989…`、sha256 `cb923fc09fe774a4…`、42,231,618 B。
+**gate 记录**：publish-local fleet-upgrade gate 对「新条目首推」保守报红；beta 只被 tester 读且三人都 b90（field-aware）⇒ `--confirm-fleet-upgraded` 合法。
+**待验（真机）**：市场刷新可见→安装→重启→skill-creator 建 skill / ppt-designer 出 PPT（含 Deloitte 模板）/ 首装授权链（PyYAML 等）。
+**留档**：提交单已推 staging 仓分支 `submissions/dsh-company-skills-0.1.0`（等价于 MR 合并）。
+
 ### 当前 TODO 快照（2026-09-11 10:15，晨）
 **等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
 **今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
