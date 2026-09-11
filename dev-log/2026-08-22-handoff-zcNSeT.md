@@ -587,6 +587,20 @@ sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；st
 （先前担心的「b88 撞带 description 的 stable 清单」实际未发生：webhu 在 stable seq27 发布期间未拉取，升级后直接 b90 接受）。
 **fleet 已扩张**：julu/sebtang/lizywu/kwen/jackjuzhang/mzhuo/gaxie/webhu/luklu/lucylachen/tammtang（含非 tester）。
 
+### 2026-09-11 16:33 【待修】卸载插件后「立即重启」失效（b91 真机）
+**现象（July）**：从市场卸载 beta 插件 `dsh-dai-engramory` → 成功弹窗里点「立即重启」无效，UI 报
+`DSH Desktop could not be restarted. Restart it manually when convenient.`（`restartError`）；**手动重启正常**。
+**日志证据**：b91 的 `logs/main.log` 里点到重启前后**零错误行**，只有 `plugin_install written=6` 等正常事件
+⇒ 失败落在**不打日志的分支**：要么客户端本地抛 `restart token missing`
+（`MarketSettingsTab.tsx:991` 的 else 分支），要么服务端 `sendJson` 直回非 200（`intent-expired` 4xx 或 `mutationAllowed` 405）。
+**主导假设**：卸载改变 profile 插件集 → 市场宿主 generation 换代 → 一次性重启 token 随旧代被清
+（`dsh-community-market/src/host/routes.ts:1461` 在 dispose 时 `desktopPluginRestartTokens.clear()`）
+→ 新代不认识旧 token → `consumeRestartToken` 报 `intent-expired`（`install/service.ts:1458-1467`）；
+token 的两个存放位置（路由 `desktopPluginRestartTokens`、服务 `restartIntents`）**都只活在单代进程内存里**。
+**拟定修法**：把一次性重启授权（含 TTL、一次性语义）挪到**跨代存活**的存储（模块级按 profile 键控的内存表，
+不随 generation dispose 清），使卸载/安装后点「立即重启」稳定可用；应用真重启后 token 自然失效仍报 intent-expired。
+**状态**：scout 正在核实「卸载是否真触发换代」与 token 存活范围；修复设计方案定稿后先过评审再动手。
+
 ### 当前 TODO 快照（2026-09-11 15:47，收工前）
 **等 fleet（分发后）**：b91 分发 → 用遥测确认全员升级 → 重点验「不重启也能装插件」（P1 修）。
 **目录/插件**：① `dsh-company-skills@0.1.1` 浸泡后 **promote 到 stable**（`cli.mjs promote` → publish stable → 棘轮 30，
