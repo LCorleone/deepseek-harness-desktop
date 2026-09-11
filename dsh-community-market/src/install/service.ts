@@ -1615,17 +1615,57 @@ export class MarketInstallService {
     return decision.replaces
   }
 
+  /**
+   * Read the receipt ledger isolating damaged lines (review P3): one
+   * hand-edited or partially written line used to fail EVERY read and write
+   * surface with `persistence-failed` and no self-heal — the same class of
+   * hand-edit accident as the user-deleted `profiles\\desktop` — while the
+   * established posture for unreadable state is "missing ≠ error" (see
+   * listVerifiedReceipts). Invalid lines and later duplicates of an id or an
+   * owned profile/package slot are skipped with one warn; the first write
+   * that round-trips the ledger then persists the cleaned list, so the warn
+   * stops after one write cycle instead of repeating forever.
+   *
+   * What still fails loudly: a non-array ledger cannot be isolated line-wise
+   * (it is not a damaged "line" but a broken document shape — the desktop's
+   * own clear drops the whole key in that shape), and a ledger whose VALID
+   * lines exceed MAX_RECEIPTS is a runaway no line isolation can heal and
+   * the write path would refuse anyway.
+   */
   private receipts(): readonly MarketInstallReceipt[] {
-    const value = this.scope.get().installReceipts ?? []
-    if (!Array.isArray(value) || value.length > MAX_RECEIPTS || !value.every(validReceipt)) {
+    const value = this.scope.get().installReceipts
+    if (value === undefined || value === null) return []
+    if (!Array.isArray(value)) {
       throw new MarketInstallError('persistence-failed', 'The market install receipt store is invalid.')
     }
-    const ids = new Set(value.map(receipt => receipt.receiptId))
-    const ownedPackages = new Set(value.map(receipt => `${receipt.profileName}\0${receipt.packageName}`))
-    if (ids.size !== value.length || ownedPackages.size !== value.length) {
+    const kept: MarketInstallReceipt[] = []
+    let damaged = 0
+    const ids = new Set<string>()
+    const ownedPackages = new Set<string>()
+    for (const line of value) {
+      if (!validReceipt(line)) {
+        damaged += 1
+        continue
+      }
+      if (ids.has(line.receiptId) || ownedPackages.has(`${line.profileName}\0${line.packageName}`)) {
+        damaged += 1
+        continue
+      }
+      ids.add(line.receiptId)
+      ownedPackages.add(`${line.profileName}\0${line.packageName}`)
+      kept.push(line)
+    }
+    if (damaged > 0) {
+      this.logger.warn(
+        `dsh-community-market: skipped ${String(damaged)} damaged market install receipt line(s)`
+          + ' (invalid shape or duplicate id/slot) and kept '
+          + `${String(kept.length)}; the next receipt write removes them`,
+      )
+    }
+    if (kept.length > MAX_RECEIPTS) {
       throw new MarketInstallError('persistence-failed', 'The market install receipt store is invalid.')
     }
-    return value
+    return kept
   }
 
   private disabledPackages(): ReadonlySet<string> {

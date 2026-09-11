@@ -110,6 +110,14 @@ function pnpmTlsEnvironmentEntries(source: NodeJS.ProcessEnv): Record<string, st
 }
 const TERMINATION_GRACE_MS = 3_000
 
+/**
+ * Default bound for reaping a tree the settle grace had to terminate: the
+ * escalation itself takes up to {@link TERMINATION_GRACE_MS} (SIGTERM →
+ * grace → SIGKILL), so the reap wait adds a margin for the exit to propagate
+ * before the gate gives up and releases anyway. Test harnesses shrink it.
+ */
+const DEFAULT_PNPM_TREE_REAP_GRACE_MS = TERMINATION_GRACE_MS + 2_000
+
 /** Default wait before the operation gate releases while pnpm's tree still has live descendants. */
 const DEFAULT_PNPM_TREE_SETTLE_GRACE_MS = 15_000
 
@@ -158,6 +166,13 @@ export interface DesktopPnpmBootstrap {
    * gate open forever. Test harnesses shrink it to keep the suite fast.
    */
   readonly pnpmTreeSettleGraceMs?: number
+  /**
+   * Bounded grace the gate waits for the terminated tree to be reaped before
+   * releasing after the settle grace expired (review P3: the gate used to
+   * release the moment `terminate()` was called, racing the next install
+   * against a dying tree's file handles). Test harnesses shrink it.
+   */
+  readonly pnpmTreeReapGraceMs?: number
   /**
    * Launcher-injected policy environment hand-off for spawned desktop-cli
    * children (installs): the packaged CLI cannot read the in-archive policy
@@ -418,6 +433,10 @@ function validateBootstrap(bootstrap: DesktopPnpmBootstrap): void {
   if (treeSettleGraceMs !== undefined && (!Number.isInteger(treeSettleGraceMs) || treeSettleGraceMs <= 0)) {
     throw new Error(`${BIN_NAME}: desktop pnpm tree settle grace must be a positive integer of milliseconds`)
   }
+  const treeReapGraceMs = bootstrap.pnpmTreeReapGraceMs
+  if (treeReapGraceMs !== undefined && (!Number.isInteger(treeReapGraceMs) || treeReapGraceMs <= 0)) {
+    throw new Error(`${BIN_NAME}: desktop pnpm tree reap grace must be a positive integer of milliseconds`)
+  }
 }
 
 /** Cordis adapter implementing the public Desktop package-operation interface. */
@@ -427,6 +446,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
   private closed = false
   private readonly installRecovery: DesktopInstallRecoveryStore
   private readonly treeSettleGraceMs: number
+  private readonly treeReapGraceMs: number
 
   /**
    * Register the service for one immutable desktop profile generation.
@@ -444,6 +464,7 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
     validateBootstrap(bootstrap)
     super(ctx, 'desktopPnpm')
     this.treeSettleGraceMs = bootstrap.pnpmTreeSettleGraceMs ?? DEFAULT_PNPM_TREE_SETTLE_GRACE_MS
+    this.treeReapGraceMs = bootstrap.pnpmTreeReapGraceMs ?? DEFAULT_PNPM_TREE_REAP_GRACE_MS
     this.installRecovery = new DesktopInstallRecoveryStore({
       statePath: bootstrap.installRecoveryStatePath,
       profileName: bootstrap.activeProfileName,
@@ -867,6 +888,9 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
    * bounded by {@link DesktopPnpmService.treeSettleGraceMs}, because a
    * daemonized pnpm descendant otherwise holds `waitForExit` (whole-tree
    * liveness) open forever and wedges every later install behind the gate.
+   * A tree that outlives the grace is terminated and then reaped within
+   * {@link DesktopPnpmService.treeReapGraceMs} before the gate releases, so
+   * the next install never races a dying orphan tree's file handles.
    */
   private async settle(active: ActiveOperation): Promise<DesktopPnpmOutcome> {
     let outcome: SubprocessOutcome | undefined
@@ -888,6 +912,21 @@ class DesktopPnpmService extends Service implements DesktopPnpm {
               + 'terminating it and releasing the package-manager gate'
               + `${active.recoveryTransactionId === undefined ? '' : ` (recovery transaction ${active.recoveryTransactionId})`}`,
           )
+          // terminate() only STARTS the SIGTERM → grace → SIGKILL escalation;
+          // releasing the gate the instant it is called would still race the
+          // next install against a dying tree's file handles (the Windows
+          // EBUSY/EPERM class). Wait, bounded again, for the escalation to
+          // actually reap the tree — and if even that bound expires, release
+          // with one more warn rather than wedging every later operation
+          // behind a pathological tree: the gate must not wait forever.
+          const reaped = await active.child.waitForExit(AbortSignal.timeout(this.treeReapGraceMs))
+          if (!reaped) {
+            this.ctx.logger.warn(
+              `dsh-plugin-desktop: pnpm process tree did not exit within ${this.treeReapGraceMs} ms of termination; `
+                + 'releasing the package-manager gate anyway'
+                + `${active.recoveryTransactionId === undefined ? '' : ` (recovery transaction ${active.recoveryTransactionId})`}`,
+            )
+          }
         }
         if (active.recoveryTransactionId !== undefined) {
           if (outcome?.exitCode === 0 && outcome.signal === null) {

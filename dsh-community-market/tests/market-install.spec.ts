@@ -1445,6 +1445,64 @@ describe('market install service', () => {
     service.dispose()
   })
 
+  it('isolates damaged receipt lines on every read surface and self-heals on the next write (review P3)', async () => {
+    const profileDir = await createProfile()
+    await writeInstalledPlugin(profileDir)
+    const installedReceipt: MarketInstallReceipt = {
+      receiptId: 'receipt:damaged-ledger-0001',
+      profileName: 'web',
+      packageName,
+      version,
+      integrity,
+      bundlePatch: './cordis.patch.yml',
+      sourceRecordId: 'source-1',
+      providerId: DSH_1024STORE_PROVIDER_ID,
+      itemId: 'example/dsh-plugin-safe',
+      displayName: 'Safe Plugin',
+      installedAt: '2026-08-18T00:00:00.000Z',
+    }
+    // One hand-edited line (a v2 record missing its signed evidence) and one
+    // pasted duplicate used to fail EVERY read and write surface with
+    // persistence-failed; the valid peers must keep reading and writing.
+    const damagedLedger = [
+      installedReceipt,
+      { ...installedReceipt, receiptVersion: 2, manifestSequence: 42, keyId: 'k' },
+      'not even an object',
+      { ...installedReceipt, receiptId: 'receipt:damaged-ledger-dupe' },
+    ] as unknown as readonly MarketInstallReceipt[]
+    let document: MarketSettingsDocument = { sources: [], installReceipts: [...damagedLedger] }
+    const scope: SettingsScope<MarketSettingsDocument> = {
+      get: () => document,
+      watch: () => () => {},
+      update: vi.fn(async patch => { document = { ...document, ...patch } as MarketSettingsDocument }),
+      replace: vi.fn(async section => { document = section as MarketSettingsDocument }),
+    }
+    const warn = vi.fn()
+    const service = new MarketInstallService(
+      scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, []),
+      { verify: vi.fn(async () => verification) },
+      { logger: { warn } },
+    )
+
+    await expect(service.listVerifiedReceipts()).resolves.toEqual([installedReceipt])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('damaged market install receipt line'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('3'))
+
+    // The uninstall round-trips the ledger: the damaged lines leave it for
+    // good, and later reads stop warning.
+    const preview = await service.previewUninstall(installedReceipt.receiptId, new AbortController().signal)
+    expect(preview).toMatchObject({ action: 'uninstall', packageName })
+    const removed = await service.executePreview(preview.intent, new AbortController().signal)
+    expect(removed).toMatchObject({ action: 'uninstall', packageName })
+    expect(document.installReceipts).toEqual([])
+    warn.mockClear()
+    await expect(service.listReceipts()).resolves.toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
   it('returns early with an empty ledger without reading a profile at all', async () => {
     const profileDir = await createProfile()
     // No manifest, lockfile, or node_modules: an empty ledger must never

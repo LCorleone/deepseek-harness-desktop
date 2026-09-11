@@ -721,7 +721,7 @@ describe('desktop pnpm Host service', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-'))
     const first = controlledSubprocess()
     const second = controlledSubprocess()
-    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 })
+    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20, pnpmTreeReapGraceMs: 20 })
     try {
       const firstOperation = harness.service.run(['install'])
 
@@ -745,18 +745,50 @@ describe('desktop pnpm Host service', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-terminate-'))
     const first = controlledSubprocess()
     const second = controlledSubprocess()
-    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 })
+    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20, pnpmTreeReapGraceMs: 20 })
     try {
       const firstOperation = harness.service.run(['install'])
 
       // The tree never exits on its own: releasing the gate alone would
       // leave the orphaned pnpm descendants running against the profile, so
-      // the grace branch must also terminate the tree.
+      // the grace branch must also terminate the tree. It also never gets
+      // reaped — the bounded reap wait must expire and release the gate
+      // anyway (one more warn) instead of wedging every later operation.
       first.resolveDone({ exitCode: 0, signal: null })
       await firstOperation.done
       expect(first.terminate).toHaveBeenCalledOnce()
+      expect(first.waitForExit).toHaveBeenCalledTimes(2)
 
-      // The reaped tree still lets the gate serve the next operation.
+      // The gate still serves the next operation after the bounded release.
+      const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
+      finish(second)
+      await secondOperation.done
+      await harness.dispose()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('holds the gate until the terminated tree is actually reaped before releasing it (review P3-b)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-reap-'))
+    const first = controlledSubprocess()
+    const second = controlledSubprocess()
+    const harness = await createHarness([first, second], { ...bootstrap(root), pnpmTreeSettleGraceMs: 20, pnpmTreeReapGraceMs: 10_000 })
+    try {
+      const firstOperation = harness.service.run(['install'])
+
+      first.resolveDone({ exitCode: 0, signal: null })
+      await vi.waitFor(() => { expect(first.terminate).toHaveBeenCalledOnce() })
+      // terminate() only STARTS the SIGTERM → grace → SIGKILL escalation; the
+      // tree is still dying and holds profile file handles, so the gate must
+      // stay held — the next install may not race it (Windows EBUSY/EPERM).
+      expect(() => harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')).toThrow(
+        'another desktop pnpm operation is already running',
+      )
+
+      // The reap completes: only now does the gate release.
+      first.resolveTree()
+      await firstOperation.done
       const secondOperation = harness.service.runPlugin(['remove', 'dshmarket'], '/workspace')
       finish(second)
       await secondOperation.done
@@ -768,7 +800,7 @@ describe('desktop pnpm Host service', () => {
 
   it('still seals a recoverable install whose process tree outlives the settle grace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-seal-'))
-    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 }
+    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20, pnpmTreeReapGraceMs: 20 }
     const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
     const child = controlledSubprocess()
     try {
@@ -804,7 +836,7 @@ describe('desktop pnpm Host service', () => {
 
   it('still rolls back a failed recoverable install whose process tree outlives the settle grace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-pnpm-grace-rollback-'))
-    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20 }
+    const selectedBootstrap = { ...bootstrap(root), pnpmTreeSettleGraceMs: 20, pnpmTreeReapGraceMs: 20 }
     const manifestPath = join(selectedBootstrap.activeProfileDir, 'package.json')
     const child = controlledSubprocess()
     const originalManifest = JSON.stringify({ dependencies: {} })

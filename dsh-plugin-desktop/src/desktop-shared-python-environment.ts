@@ -2,7 +2,9 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
+import { stat, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 
 /** Directory name of the shared environment below its parent. */
 export const DESKTOP_SHARED_PYTHON_DIRECTORY_NAME = 'pyenv'
@@ -18,6 +20,25 @@ const SHARED_PYTHON_PROBE_TIMEOUT_MS = 30_000
 
 /** Longest failure diagnostic kept for the degradation log line. */
 const SHARED_PYTHON_DIAGNOSTIC_LIMIT = 160
+
+/**
+ * How long a second desktop instance waits for the provisioning mutex before
+ * degrading to the bundled aliases: the worst live holder runs both base
+ * tiers under their spawn timeouts plus one probe — two provisions plus one
+ * probe — so waiting that long is productive (the winner finishes and the
+ * waiter reuses the result), while anything longer can only be a stuck or
+ * crashed holder.
+ */
+const SHARED_PYTHON_PROVISION_LOCK_WAIT_MS
+  = 2 * SHARED_PYTHON_PROVISION_TIMEOUT_MS + SHARED_PYTHON_PROBE_TIMEOUT_MS
+
+/**
+ * A lock file older than this can no longer belong to a live holder (the
+ * worst case above is ~6.5 minutes) — a crash between acquiring and
+ * releasing left it behind, and the next boot breaks it by mtime instead of
+ * waiting the full bounded turn for an owner that will never return.
+ */
+const SHARED_PYTHON_PROVISION_LOCK_STALE_MS = 10 * 60 * 1000
 
 /** Absolute locations inside the shared Python environment. */
 export interface DesktopSharedPythonEnvironmentPaths {
@@ -55,6 +76,16 @@ export interface DesktopSharedPythonEnvironmentInputs {
   readonly removeAll?: (directory: string) => void
   /** Provisioning runner; production spawns the base interpreter (stdlib `venv` for a local base, bundled `virtualenv` otherwise). */
   readonly provision?: DesktopSharedPythonProvision
+  /**
+   * Cross-process provisioning mutex (review P3): production serializes the
+   * whole decide/probe/provision cycle through an exclusive lock file beside
+   * the shared root, so two desktop instances never write the same `pyenv`
+   * tree concurrently (the loser used to silently corrupt or overwrite the
+   * winner's half-written environment). Tests inject a recording seam.
+   */
+  readonly provisionLock?: DesktopSharedPythonProvisionLock
+  /** Clock for the default lock's stale-lock age gate; defaults to `Date.now`. */
+  readonly now?: () => number
   /** Degradation sink; defaults to a no-op (the launcher wires its logger). */
   readonly log?: (message: string) => void
 }
@@ -78,6 +109,18 @@ export type DesktopSharedPythonProvision = (
   args: readonly string[],
   options: { readonly environment?: NodeJS.ProcessEnv },
 ) => Promise<{ readonly exitCode: number | null, readonly diagnostic: string }>
+
+/**
+ * Cross-process provisioning mutex over the shared environment: the lock
+ * file lives beside the shared root (the one location every desktop build
+ * agrees on — `%LOCALAPPDATA%\\DSH Desktop` — which is exactly the resource
+ * the two racing instances fight over), so the winner provisions while the
+ * loser waits its bounded turn and then reuses (or rebuilds) the result.
+ */
+export type DesktopSharedPythonProvisionLock = <T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+) => Promise<T>
 
 /**
  * One interpreter liveness probe: resolves whether the executable at the
@@ -195,62 +238,51 @@ function sharedEnvironment(
   }
 }
 
-/**
- * Resolve the shared environment without provisioning it: the terminal and
- * any later surface only publish what an earlier boot already created.
- *
- * @returns the shared command surface, or `undefined` when the shared
- * environment's interpreter is not present (fall back to the bundled one).
- */
-export function resolveDesktopSharedPythonEnvironment(inputs: {
-  readonly platform: NodeJS.Platform
-  readonly rootDirectory: string
-  readonly exists?: (filename: string) => boolean
-}): DesktopSharedPythonEnvironment | undefined {
-  if (inputs.platform !== 'win32') return undefined
-  const exists = inputs.exists ?? existsSync
-  const paths = desktopSharedPythonEnvironmentPaths(inputs.rootDirectory)
-  return exists(paths.pythonExecutable) ? sharedEnvironment(paths, exists) : undefined
+/** The lock-file name of the shared environment's provisioning mutex. */
+function sharedPythonProvisionLockPath(rootDirectory: string): string {
+  return join(rootDirectory, `${DESKTOP_SHARED_PYTHON_DIRECTORY_NAME}.provision`)
 }
 
 /**
- * Ensure the shared Python environment exists, creating it once from the
- * preferred base interpreter (a real local Python, else the bundled one).
- *
- * The provisioning command writes ONLY below the shared root — and every
- * python this module spawns runs with `PYTHONDONTWRITEBYTECODE=1`, so
- * importing the bundled tree never writes `__pycache__` into it and its
- * packaged digest keeps verifying against the exact file set.
- *
- * The base is chosen in two tiers: a local base is seeded through the
- * standard library (`venv --copies` — `virtualenv` is a third-party package
- * a stock local Python does not install), and any local failure (or no
- * local Python at all) retries with the bundled base, whose tree ships
- * `virtualenv` (`--always-copy`). Only when both tiers fail does the
- * environment degrade to today's behavior.
- *
- * Creation is idempotent and self-healing: an existing environment is
- * reused only when its interpreter both exists and actually runs (probed
- * with `--version`); a present-but-broken interpreter means a corrupt
- * environment, which is removed once — logging the repair — and rebuilt
- * through the same two tiers. Every failure degrades to the bundled
- * aliases and unpublished `pip` with one log line per degradation stage — the shared
- * environment is an enhancement, not a boot dependency.
+ * Default cross-process provisioning mutex: an exclusive `<pyenv.provision>.lock`
+ * beside the shared root, waited for at most
+ * {@link SHARED_PYTHON_PROVISION_LOCK_WAIT_MS} (a productive wait — the holder
+ * is provisioning the very tree the waiter wants) and broken by mtime once
+ * older than {@link SHARED_PYTHON_PROVISION_LOCK_STALE_MS}, because a crashed
+ * holder will never release and the shared surface must not degrade forever
+ * after one crash.
  */
-export async function ensureDesktopSharedPythonEnvironment(
+async function withSharedPythonProvisionLock<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+  now: () => number,
+): Promise<T> {
+  try {
+    const info = await stat(`${lockPath}.lock`)
+    if (now() - info.mtimeMs > SHARED_PYTHON_PROVISION_LOCK_STALE_MS) {
+      await rm(`${lockPath}.lock`, { force: true })
+    }
+  } catch {
+    // No lock file (the common case) or an unreadable one: the bounded
+    // acquisition below decides — an unremovable stale lock surfaces as the
+    // bounded wait, never as an unhandled failure here.
+  }
+  return await withFileLock(lockPath, operation, { waitMs: SHARED_PYTHON_PROVISION_LOCK_WAIT_MS })
+}
+
+/** Decide, probe, and provision the shared tree; never throws (every tier degrades internally). */
+async function provisionSharedPythonEnvironment(
   inputs: DesktopSharedPythonEnvironmentInputs,
+  paths: DesktopSharedPythonEnvironmentPaths,
 ): Promise<DesktopSharedPythonEnvironment> {
+  const exists = inputs.exists ?? existsSync
+  const log = inputs.log ?? (() => {})
+  const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
   const fallback: DesktopSharedPythonEnvironment = {
     pythonExecutable: inputs.bundledPythonExecutable,
     pipExecutable: undefined,
     shared: false,
   }
-  if (inputs.platform !== 'win32') return fallback
-  const exists = inputs.exists ?? existsSync
-  const paths = desktopSharedPythonEnvironmentPaths(inputs.rootDirectory)
-  const log = inputs.log ?? (() => {})
-  const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
-
   if (exists(paths.pythonExecutable)) {
     const probe = inputs.probe ?? spawnSharedPythonProbe
     let runnable = false
@@ -324,4 +356,89 @@ export async function ensureDesktopSharedPythonEnvironment(
       + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
   )
   return fallback
+}
+
+/**
+ * Resolve the shared environment without provisioning it: the terminal and
+ * any later surface only publish what an earlier boot already created.
+ *
+ * @returns the shared command surface, or `undefined` when the shared
+ * environment's interpreter is not present (fall back to the bundled one).
+ */
+export function resolveDesktopSharedPythonEnvironment(inputs: {
+  readonly platform: NodeJS.Platform
+  readonly rootDirectory: string
+  readonly exists?: (filename: string) => boolean
+}): DesktopSharedPythonEnvironment | undefined {
+  if (inputs.platform !== 'win32') return undefined
+  const exists = inputs.exists ?? existsSync
+  const paths = desktopSharedPythonEnvironmentPaths(inputs.rootDirectory)
+  return exists(paths.pythonExecutable) ? sharedEnvironment(paths, exists) : undefined
+}
+
+/**
+ * Ensure the shared Python environment exists, creating it once from the
+ * preferred base interpreter (a real local Python, else the bundled one).
+ *
+ * The provisioning command writes ONLY below the shared root — and every
+ * python this module spawns runs with `PYTHONDONTWRITEBYTECODE=1`, so
+ * importing the bundled tree never writes `__pycache__` into it and its
+ * packaged digest keeps verifying against the exact file set.
+ *
+ * The base is chosen in two tiers: a local base is seeded through the
+ * standard library (`venv --copies` — `virtualenv` is a third-party package
+ * a stock local Python does not install), and any local failure (or no
+ * local Python at all) retries with the bundled base, whose tree ships
+ * `virtualenv` (`--always-copy`). Only when both tiers fail does the
+ * environment degrade to today's behavior.
+ *
+ * Creation is idempotent and self-healing: an existing environment is
+ * reused only when its interpreter both exists and actually runs (probed
+ * with `--version`); a present-but-broken interpreter means a corrupt
+ * environment, which is removed once — logging the repair — and rebuilt
+ * through the same two tiers. Every failure degrades to the bundled
+ * aliases and unpublished `pip` with one log line per degradation stage — the shared
+ * environment is an enhancement, not a boot dependency.
+ *
+ * Concurrency (review P3): the whole decide/probe/provision cycle runs under
+ * a cross-process mutex beside the shared root, so two desktop instances
+ * sharing `%LOCALAPPDATA%\\DSH Desktop` never write the same tree at once —
+ * the second instance waits its bounded turn and then reuses the winner's
+ * result (or rebuilds when the winner failed). A wait that outlasts the
+ * bound degrades to the bundled aliases with one log line instead of
+ * blocking the boot behind a stuck holder.
+ */
+export async function ensureDesktopSharedPythonEnvironment(
+  inputs: DesktopSharedPythonEnvironmentInputs,
+): Promise<DesktopSharedPythonEnvironment> {
+  if (inputs.platform !== 'win32') {
+    return {
+      pythonExecutable: inputs.bundledPythonExecutable,
+      pipExecutable: undefined,
+      shared: false,
+    }
+  }
+  const paths = desktopSharedPythonEnvironmentPaths(inputs.rootDirectory)
+  const log = inputs.log ?? (() => {})
+  const lockPath = sharedPythonProvisionLockPath(inputs.rootDirectory)
+  const runLocked: DesktopSharedPythonProvisionLock = inputs.provisionLock
+    ?? ((lockMarkerPath, operation) =>
+      withSharedPythonProvisionLock(lockMarkerPath, operation, inputs.now ?? Date.now))
+  try {
+    return await runLocked(lockPath, () => provisionSharedPythonEnvironment(inputs, paths))
+  } catch (cause) {
+    // Only the mutex reaches here — the operation itself never throws. A
+    // refused or expired wait is the defined loser path: degrade exactly
+    // like a failed provisioning tier, never block the boot.
+    log(
+      `dsh-plugin-desktop: could not serialize the shared python environment provisioning at ${lockPath}`
+        + ` (${cause instanceof Error ? cause.message : String(cause)}); `
+        + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
+    )
+    return {
+      pythonExecutable: inputs.bundledPythonExecutable,
+      pipExecutable: undefined,
+      shared: false,
+    }
+  }
 }

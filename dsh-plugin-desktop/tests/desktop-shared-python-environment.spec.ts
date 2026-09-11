@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_SHARED_PYTHON_DIRECTORY_NAME,
   desktopSharedPythonEnvironmentPaths,
@@ -10,6 +10,7 @@ import {
   resolveDesktopSharedPythonEnvironment,
   type DesktopSharedPythonProbe,
   type DesktopSharedPythonProvision,
+  type DesktopSharedPythonProvisionLock,
 } from '../src/desktop-shared-python-environment.ts'
 import { resolveDesktopLocalPythonExecutable } from '../src/desktop-python-runtime.ts'
 
@@ -416,6 +417,174 @@ describe('resolveDesktopSharedPythonEnvironment', () => {
         rootDirectory: root,
         exists: () => true,
       })).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('shared python environment provisioning mutex (review P3)', () => {
+  /** A truly serializing lock seam that records entry/exit order. */
+  function serializingLock(): {
+    readonly lock: DesktopSharedPythonProvisionLock
+    readonly events: string[]
+  } {
+    const events: string[] = []
+    let tail: Promise<unknown> = Promise.resolve()
+    const lock: DesktopSharedPythonProvisionLock = (lockPath, operation) => {
+      // The chain covers the WHOLE locked section, not just the acquisition:
+      // a contender's turn starts only after its predecessor's operation
+      // settled — exactly the ordering the real lock file provides.
+      const run = tail.then(() => {
+        events.push(`enter ${lockPath}`)
+        return operation()
+      })
+      tail = run.then(() => undefined, () => undefined)
+      return run.finally(() => { events.push('exit') })
+    }
+    return { lock, events }
+  }
+
+  function deferredGate(): { promise: Promise<void>, open(): void } {
+    let open!: () => void
+    const promise = new Promise<void>(resolve => { open = resolve })
+    return { promise, open }
+  }
+
+  it('serializes two concurrent instances: the loser waits and reuses the winner\u2019s environment', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      const existing = new Set<string>()
+      const gate = deferredGate()
+      let released = false
+      let inFlight = 0
+      let maxInFlight = 0
+      const provision: DesktopSharedPythonProvision = async (_command, args) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        try {
+          // The winner's provisioning takes a while; the loser must not be
+          // able to start its own while it runs.
+          if (!released) await gate.promise
+          existing.add(join(args[3] ?? '', 'Scripts', 'python.exe'))
+          existing.add(join(args[3] ?? '', 'Scripts', 'pip.exe'))
+          return { exitCode: 0, diagnostic: '' }
+        } finally {
+          inFlight -= 1
+        }
+      }
+      const { lock, events } = serializingLock()
+      const options = () => ({
+        platform: 'win32' as const,
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        provisionLock: lock,
+        // Both instances accept the winner's interpreter as runnable, so the
+        // loser's decision is made purely on existence inside its own turn.
+        probe: async () => true,
+        exists: (filename: string) => existing.has(filename),
+      })
+
+      const first = ensureDesktopSharedPythonEnvironment(options())
+      // Let the winner reach its provisioning before the loser starts.
+      await new Promise(resolve => { setImmediate(resolve) })
+      const second = ensureDesktopSharedPythonEnvironment(options())
+      await new Promise(resolve => { setImmediate(resolve) })
+      released = true
+      gate.open()
+
+      const [firstEnvironment, secondEnvironment] = await Promise.all([first, second])
+      // Exactly one provisioning run, never two in flight at once.
+      expect(maxInFlight).toBe(1)
+      // The loser found the winner's interpreter on its locked turn and
+      // reused it instead of rebuilding (or corrupting) the same tree.
+      expect(firstEnvironment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(secondEnvironment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(secondEnvironment.shared).toBe(true)
+      expect(events.filter(event => event.startsWith('enter'))).toHaveLength(2)
+      expect(events).toEqual(['enter ' + join(root, 'pyenv.provision'), 'exit', 'enter ' + join(root, 'pyenv.provision'), 'exit'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('degrades to the bundled aliases when the mutex wait expires instead of blocking the boot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-timeout-'))
+    try {
+      const logs: string[] = []
+      const provision = vi.fn(async () => ({ exitCode: 0, diagnostic: '' }))
+      const refused: DesktopSharedPythonProvisionLock = async () => {
+        throw new Error('atomic-write: timed out waiting for the writer lock')
+      }
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        provisionLock: refused,
+        exists: () => false,
+        log: message => { logs.push(message) },
+      })
+
+      expect(environment).toEqual({
+        pythonExecutable: BUNDLED_PYTHON,
+        pipExecutable: undefined,
+        shared: false,
+      })
+      expect(provision).not.toHaveBeenCalled()
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('could not serialize the shared python environment provisioning')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('breaks a crash-left default lock by age instead of waiting the whole bounded turn', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-stale-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      // A lock file 11 minutes old: no live holder can still own it (the
+      // worst legitimate hold is ~6.5 minutes), so the next boot must break
+      // it and provision rather than degrade behind a ghost.
+      const lockPath = join(root, 'pyenv.provision.lock')
+      writeFileSync(lockPath, '1234\n')
+      const now = Date.parse('2026-09-11T01:00:00.000Z')
+      const stale = new Date(now - 11 * 60 * 1000)
+      utimesSync(lockPath, stale, stale)
+      const existing = new Set<string>()
+      const { calls, provision } = provisionRecorder(existing)
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        now: () => now,
+        exists: filename => existing.has(filename),
+      })
+
+      expect(calls).toHaveLength(1)
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      // The broken ghost lock itself is gone after the cycle.
+      expect(existsSync(lockPath)).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

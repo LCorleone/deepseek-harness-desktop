@@ -540,19 +540,20 @@ describe('market install service behind the signed manifest', () => {
   async function signedService(packages: readonly Record<string, unknown>[], options: {
     readonly profileDir: string
     readonly settings: ReturnType<typeof memoryScope>
-    readonly calls: string[][]
+    readonly calls?: string[][]
     readonly installRequests?: { approvedBuildDependencies?: readonly string[] }[]
     readonly verifyIntegrity?: string
     readonly authority?: (provider: Awaited<ReturnType<typeof scannedCompanySource>>['provider']) => SignedManifestInstallTargetAuthority
+    readonly logger?: { warn: (message: string) => void }
   }) {
     const { provider } = await scannedCompanySource(packages)
     const authority = options.authority?.(provider) ?? createSignedManifestInstallTargetAuthority(provider)
     const service = new MarketInstallService(
       options.settings.scope,
       () => ({ name: 'web', dir: options.profileDir }),
-      runner(options.profileDir, options.calls, options.installRequests),
+      runner(options.profileDir, options.calls ?? [], options.installRequests),
       { verify: vi.fn(async () => ({ ...verification, integrity: options.verifyIntegrity ?? verification.integrity })) },
-      { installTargetAuthority: authority },
+      { installTargetAuthority: authority, ...(options.logger === undefined ? {} : { logger: options.logger }) },
     )
     service.observeCatalog(snapshot())
     return { service, authority, provider }
@@ -833,7 +834,7 @@ describe('market install service behind the signed manifest', () => {
     expect(settings.receipts()).toEqual([])
   })
 
-  it('treats a malformed v2 receipt as an invalid store while v1 stays valid', async () => {
+  it('isolates a malformed v2 receipt line while v1 stays valid (review P3)', async () => {
     const profileDir = await createProfile()
     const malformed = {
       ...legacyReceipt,
@@ -841,18 +842,28 @@ describe('market install service behind the signed manifest', () => {
       manifestSequence: 42,
       keyId,
     }
-    const settings = memoryScope([malformed as unknown as MarketInstallReceipt])
-    const calls: string[][] = []
-    const { service } = await signedService([packageEntry()], { profileDir, settings, calls })
+    const warn = vi.fn()
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // A hand-edited line no longer bricks every read and write surface:
+      // the damaged line is skipped with one warn, the valid peers survive.
+      const settings = memoryScope([
+        malformed as unknown as MarketInstallReceipt,
+        { ...legacyReceipt, receiptId: 'receipt:legacy-v1-survivor-0001', receiptVersion: 1 },
+      ])
+      const { service } = await signedService([packageEntry()], { profileDir, settings, logger: { warn } })
+      await expect(service.listReceipts()).resolves.toHaveLength(1)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('damaged market install receipt line'))
+      expect(consoleWarn).not.toHaveBeenCalled()
 
-    await expect(service.listReceipts()).rejects.toMatchObject({
-      code: 'persistence-failed',
-      message: expect.stringContaining('receipt store is invalid'),
-    })
-
-    const valid = memoryScope([{ ...legacyReceipt, receiptVersion: 1 }])
-    const validService = await signedService([packageEntry()], { profileDir, settings: valid, calls })
-    await expect(validService.service.listReceipts()).resolves.toHaveLength(1)
+      // The whole malformed ledger alone degrades to empty the same way
+      // instead of refusing the surface.
+      const lone = memoryScope([malformed as unknown as MarketInstallReceipt])
+      const { service: loneService } = await signedService([packageEntry()], { profileDir, settings: lone, logger: { warn } })
+      await expect(loneService.listReceipts()).resolves.toEqual([])
+    } finally {
+      consoleWarn.mockRestore()
+    }
   })
 
   // End-to-end back-link proof (repo-identity fix): the signed manifest entry

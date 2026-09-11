@@ -181,6 +181,15 @@ interface ReadFileImage {
   readonly bytes?: Buffer
 }
 
+/**
+ * Minimum age before a no-state orphan sweep may remove a backup directory:
+ * a `begin` writes its preimages BEFORE publishing the WAL, and that window
+ * is one bounded file-copy cycle — many orders of magnitude below this. The
+ * gate keeps a concurrent begin's fresh preimages untouchable while its WAL
+ * does not exist yet.
+ */
+const ORPHAN_SWEEP_MIN_AGE_MS = 10 * 60 * 1000
+
 function isENOENT(cause: unknown): boolean {
   return (cause as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
@@ -414,7 +423,16 @@ export class DesktopInstallRecoveryStore {
     let info
     try { info = await lstat(this.statePath) }
     catch (cause) {
-      if (isENOENT(cause)) return undefined
+      if (isENOENT(cause)) {
+        // No WAL at all, yet preimages may remain: a crash between a state
+        // retirement (clearLocked's unlink, a rebuild retire, or a supersede)
+        // and its backup removal leaves exactly that shape, and with no state
+        // the sweep below never runs on any later read. One bounded,
+        // age-gated scan (see sweepUnreferencedBackups) — failures only log
+        // so reads never fail because of it.
+        await this.sweepUnreferencedBackups()
+        return undefined
+      }
       throw cause
     }
     if (info.isSymbolicLink() || !info.isFile()) {
@@ -438,7 +456,6 @@ export class DesktopInstallRecoveryStore {
     if (this.matchesCurrentProfile(state)) await this.sweepOrphanBackups(state)
     return state
   }
-
   /** Publish a pre-install WAL only after all allowlisted preimages are private and complete. */
   async begin(input: BeginDesktopInstallRecoveryInput): Promise<DesktopInstallRecoveryTransaction> {
     return await this.withMutationLock(async () => await this.beginLocked(input))
@@ -991,18 +1008,33 @@ export class DesktopInstallRecoveryStore {
 
   /**
    * Lazily remove backup directories no WAL state references anymore. A crash
-   * between retiring a state file and removing its preimages — in clearLocked
-   * or while superseding — leaves exactly such an orphan behind. One scan of
-   * this profile's private backups directory removes only transaction-shaped
-   * directories that predate the current transaction's creation, so a
-   * concurrent begin's fresh preimage directory is never touched. Every
-   * failure is logged and swallowed: sweeping is housekeeping, never a
-   * recovery decision.
+   * between retiring a state file and removing its preimages — in clearLocked,
+   * a rebuild retire, or while superseding — leaves exactly such an orphan
+   * behind. One scan of this profile's private backups directory removes only
+   * transaction-shaped directories that predate the current transaction's
+   * creation, so a concurrent begin's fresh preimage directory is never
+   * touched. Every failure is logged and swallowed: sweeping is housekeeping,
+   * never a recovery decision.
    */
   private async sweepOrphanBackups(state: DesktopInstallRecoveryTransaction): Promise<void> {
+    await this.sweepUnreferencedBackups(state.transactionId, Date.parse(state.createdAt))
+  }
+
+  /**
+   * The no-state variant (review P3): with no WAL at all, every backup
+   * directory is unreferenced, but there is no creation timestamp to cut on —
+   * and a concurrent begin's preimages exist precisely while its WAL does
+   * not. The age gate stands in: only directories older than
+   * {@link ORPHAN_SWEEP_MIN_AGE_MS} go, which no in-flight begin (a bounded
+   * file-copy window) can ever exceed.
+   */
+  private async sweepUnreferencedBackups(
+    retainedTransactionId?: string,
+    cutoff?: number,
+  ): Promise<void> {
     try {
-      const cutoff = Date.parse(state.createdAt)
-      if (Number.isNaN(cutoff)) return
+      const limit = cutoff ?? this.now() - ORPHAN_SWEEP_MIN_AGE_MS
+      if (!Number.isFinite(limit)) return
       const backups = join(dirname(this.statePath), BACKUP_DIRECTORY_NAME)
       let entries: readonly Dirent[]
       try {
@@ -1012,12 +1044,12 @@ export class DesktopInstallRecoveryStore {
         return
       }
       for (const entry of entries) {
-        if (entry.name === state.transactionId
+        if (entry.name === retainedTransactionId
           || entry.isSymbolicLink()
           || !entry.isDirectory()
           || !OPAQUE_ID_PATTERN.test(entry.name)) continue
         const orphan = join(backups, entry.name)
-        if ((await lstat(orphan)).mtimeMs >= cutoff) continue
+        if ((await lstat(orphan)).mtimeMs >= limit) continue
         await rm(orphan, { recursive: true, force: true })
       }
     } catch (cause) {

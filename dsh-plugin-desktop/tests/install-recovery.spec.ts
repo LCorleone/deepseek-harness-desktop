@@ -810,6 +810,35 @@ describe('Desktop plugin install recovery fresh-profile rebuild retirement (revi
     return transaction
   }
 
+  it('sweeps age-old orphan backups on a read with no state at all (review P3)', async () => {
+    const target = fixture()
+    const backups = join(dirname(target.statePath), 'backups')
+    mkdirSync(backups, { recursive: true })
+    // clearLocked crashed between unlinking the state and removing its
+    // preimages: no state file remains, and no later read ever had a WAL to
+    // sweep against — the directory leaked until the next install.
+    const stale = join(backups, 'orphaned-no-state-stale')
+    mkdirSync(stale, { recursive: true })
+    writeFileSync(join(stale, 'package.json.before'), PREINSTALL['package.json'])
+    const staleTime = new Date(1_700_000_000_000)
+    utimesSync(stale, staleTime, staleTime)
+    // A recent directory may be a concurrent begin's preimages — its WAL does
+    // not exist yet, so only the age gate protects it.
+    const fresh = join(backups, 'orphaned-no-state-fresh')
+    mkdirSync(fresh, { recursive: true })
+    const freshTime = new Date(1_800_000_100_000)
+    utimesSync(fresh, freshTime, freshTime)
+    // Not transaction-shaped: never touched.
+    const short = join(backups, 'shorty')
+    mkdirSync(short, { recursive: true })
+
+    expect(await store(target).read()).toBeUndefined()
+
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    expect(existsSync(short)).toBe(true)
+  })
+
   it('retires a sealed awaiting-restart WAL so the next claim never opens a recovery window', async () => {
     const target = fixture()
     const transaction = await sealedAwaitingRestart(target)
