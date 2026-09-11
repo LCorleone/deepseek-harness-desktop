@@ -505,6 +505,14 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **CI 连红 8 次破案**：dsh-company-skills README 改过但 README.i18n.yaml 哈希没刷（bilingual 门只在 CI 跑）→ `8a8c613283` 刷新记录后 CI 绿；b90 产物不受影响（纯文档哈希差异）。
 **教训台账（新增）**：⑩发版前本地必须跑 `corepack yarn check`（含 bilingual/architecture/layout 门），不能只三包 test+typecheck；⑪worker 尾声 503 断线时 commit 可能已落——先核实 git log/status 再重跑，勿盲目重发。
 
+### 2026-09-11 中午（11:55）上游链接/介绍清理（公司版零上游跳转）
+**背景**：July 发现 Sources tab 提示与多处 UI 仍跳上游 GitHub 并向同事介绍上游项目/市场。
+**A 类（用户可见 UI，已清）**：① Sources tab「联系我们」链接删除（3 处 operationRisk 块合并为单句、保留「联系插件开发者」，删 `contactUs`/`operationRiskBefore|After`/`sourcePartnershipContact|After` 四组 key，中英对齐）；② 「来源接入指南」→ https://plugin-market.s.dai.deloitte.cn/（两个 guide 函数简化为返回同一门户常量，删「…查看指南」尾空格问题）；③ Settings 市场选项 3 个链接（社区市场/dsh-market/awesome-dsh-plugin）全部门户化，随后**直接移除 dsh-market 选项**（其正文介绍上游社区市场）；④ 4 个 package.json 的 repository/homepage/bugs → 门户。
+**自查发现并修正**：dsh-market 选项正文仍写「数据来自 awesome-dsh-plugin」而链接已指门户 ⇒ 语义错位；中文渲染 `{' '}` 产生半角空格。已修。
+**评审（reviw-upstream-links）APPROVED + 2×P2，两条均已修**：①未锁/dev 下若存档 requested==='dsh-market' 会出现「两项都未选中」的空 radiogroup（锁死构建不可达）→ 修：`marketOptionRows()` 仅在旧选择存在时追加一行遗留说明（不可选、正文告知公司版不再提供）；②该改动无测试覆盖（组件从未被渲染测过）→ 新增三条钉子（公司两行/遗留行/门户 URL 常量）。终态 desktop **2360+8skip** · market 468 · skills 70 · typecheck 0。
+**残留（已记录，按 July 决定先不动）**：C 类仓库门面文档（根 README.md/.en badges与链接、CONTRIBUTING.md、docs/faq*.md）仍指上游；`update-checker.ts`/`update-download.ts` 的 dshdesktop.cn 更新端点属内部 fetch（锁死构建被 `adapter.locked` 门禁，不可达）；tests/dev-log/tools 属内部面；第三方 provider 署名（imsai-sh）保留。
+**待发**：以上全部进 **b91**（July 11:54 指示：先记录+commit，暂不构建）。
+
 ### 当前 TODO 快照（2026-09-11 10:15，晨）
 **等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
 **今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
