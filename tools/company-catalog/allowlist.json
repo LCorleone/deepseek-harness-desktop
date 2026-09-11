@@ -90,6 +90,23 @@
   },
   {
     "packageName": "dsh-company-skills",
+    "version": "0.1.1",
+    "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.2-rc.1"
+    },
+    "treeDigest": "d75edc350ec7695498de59061f04c7c0cf43581c4de883f8308c8ccba01e8a6d",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-company-skills-0.1.1.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-company-skills-0.1.1.tgz"
+    }
+  },
+  {
+    "packageName": "dsh-company-skills",
     "version": "0.1.0",
     "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
     "bundlePatch": "./cordis.patch.yml",
