@@ -27,6 +27,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDesktopProfile } from '../src/profile.ts'
 import { readProfileManifest } from '@deepseek-ai/dsh-app-boot'
 import {
+  DesktopInstallRecoveryStore,
+  desktopInstallRecoveryStatePath,
+} from '../src/install-recovery.ts'
+import {
   FRESH_PROFILE_PENDING_FILENAME,
   buildVersionProductBase,
   clearFreshProfilePending,
@@ -1009,5 +1013,90 @@ describe('deferred marker across Profiles (review a963dced P2-1)', () => {
     clearFreshProfilePending(statePath)
     expect(readFreshProfilePending(statePath)).toBeUndefined()
     expect(bundlesOf(betaDir)).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+  })
+})
+
+describe('fresh profile swap × install recovery WAL (review P1)', () => {
+  /**
+   * Reproduce the launcher's exact composition: a sealed install-recovery WAL
+   * for the active profile, then the rebuild primitive, then the launcher's
+   * retire step, then the NEXT boot's claim. `main.ts` boots Electron at
+   * import time so the composition is pinned here against the real
+   * filesystem, exactly like the swap itself above.
+   */
+  function installRecoveryStore(home: string, generationId: string) {
+    return new DesktopInstallRecoveryStore({
+      statePath: desktopInstallRecoveryStatePath(join(home, 'user-data')),
+      profileName: 'desktop',
+      profileDir: join(home, 'profiles', 'desktop'),
+      generationId,
+    })
+  }
+
+  async function sealAwaitingRestartWAL(home: string): Promise<string> {
+    const origin = installRecoveryStore(home, 'generation-0001')
+    const transaction = await origin.begin({
+      packageName: 'dsh-better-sidebar',
+      packageVersion: '0.15.2',
+      receiptId: 'receipt:swap-wal-0001',
+    })
+    // The sealed post-install state the WAL awaits a restart to verify.
+    const profileDir = join(home, 'profiles', 'desktop')
+    writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-desktop',
+      private: true,
+      dependencies: { 'dsh-better-sidebar': '0.15.2' },
+    }, undefined, 2)}\n`)
+    await origin.seal(transaction.transactionId)
+    return transaction.transactionId
+  }
+
+  it('retires the sealed WAL on rebuild, so the post-swap claim finds no recovery window', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    const transactionId = await sealAwaitingRestartWAL(home)
+
+    const swapped = await freshProfileSwap(swapOptions(home))
+    expect(swapped.deferred).toBeUndefined()
+    // The swap rebuilt the profile at the same path, so the WAL still matches
+    // by profileIdentity — and its sealed images can never match the fresh
+    // tree. The launcher retire step (wired in runFreshProfileSwap) declares
+    // it satisfied:
+    const retirement = await installRecoveryStore(home, 'generation-0002')
+      .retireForProfileRebuild({ userConfirmedRebuild: false })
+    expect(retirement).toMatchObject({ status: 'retired', transaction: { transactionId } })
+
+    // The next boot's claim must not enter the recovery window (the P1
+    // acceptance): without the retire it would verify the sealed images
+    // against the fresh tree and dead-end the boot in a mismatch loop.
+    expect(await installRecoveryStore(home, 'generation-0003').claim()).toEqual({ action: 'none' })
+  })
+
+  it('keeps a genuinely pending recovery choice through the automatic rebuild (negative case)', async () => {
+    const home = temporaryHome()
+    seededProfile(home)
+    await sealAwaitingRestartWAL(home)
+    // The previous boot claimed verification and failed: the WAL now holds a
+    // pending USER recovery decision — the phases an automatic version-change
+    // rebuild must never spend.
+    const failedBoot = installRecoveryStore(home, 'generation-0002')
+    const claimed = await failedBoot.claim()
+    expect(claimed).toMatchObject({ action: 'verify' })
+    if (claimed.action !== 'verify') throw new Error('expected a verify claim')
+    await failedBoot.recordFailure(claimed.transaction.transactionId, 'startup-unconfirmed')
+
+    await freshProfileSwap(swapOptions(home))
+    expect(await installRecoveryStore(home, 'generation-0002')
+      .retireForProfileRebuild({ userConfirmedRebuild: false }))
+      .toMatchObject({ status: 'kept', reason: 'protected-phase' })
+
+    // The post-swap boot is sent into the recovery window instead of silently
+    // losing the pending choice; the recovery window's manual rebuild is the
+    // action that may retire it:
+    const nextBoot = await installRecoveryStore(home, 'generation-0003').claim()
+    expect(nextBoot).toMatchObject({ action: 'prompt', reason: 'startup-unconfirmed' })
+    await installRecoveryStore(home, 'generation-0003')
+      .retireForProfileRebuild({ userConfirmedRebuild: true })
+    expect(await installRecoveryStore(home, 'generation-0004').claim()).toEqual({ action: 'none' })
   })
 })

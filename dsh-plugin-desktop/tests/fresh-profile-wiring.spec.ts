@@ -24,6 +24,35 @@ describe('fresh Profile swap wiring (P14)', () => {
   const prepareAt = source.indexOf('const prepared = prepareDesktopProfile(')
   const bootAt = source.indexOf('const ctx = await boot(')
 
+  it('retires the profile-bound install recovery WAL on every swap that lands (review P1)', () => {
+    const helper = source.slice(swapHelperAt, autoLayerAt)
+    const retireAt = helper.indexOf('.retireForProfileRebuild({ userConfirmedRebuild: trigger === \'recovery-window\' })')
+    const swappedReturnAt = helper.indexOf("return 'swapped'", retireAt)
+
+    // The retire rides the one shared rebuild primitive, so the deferred
+    // retry, the automatic version-change layer, and the recovery window's
+    // manual action all get it; a sealed WAL left behind by any of them can
+    // only ever mismatch the rebuilt tree and dead-end the next boot in
+    // manual-recovery-required.
+    expect(retireAt).toBeGreaterThan(helper.indexOf('const result = await freshProfileSwap({'))
+    expect(retireAt).toBeGreaterThan(helper.indexOf('if (result.deferred === true) {'))
+    expect(swappedReturnAt).toBeGreaterThan(retireAt)
+    // The store is bound to the boot's fixed WAL path and the ACTIVE profile
+    // path (the rebuild keeps the path, so profileIdentity still matches),
+    // and it runs before the caller records the build identity.
+    const storeAt = helper.indexOf('new DesktopInstallRecoveryStore({', 0)
+    expect(storeAt).toBeGreaterThan(-1)
+    expect(helper.slice(storeAt, retireAt)).toContain('statePath: installRecoveryStatePath,')
+    expect(helper.slice(storeAt, retireAt)).toContain('profileName: activeProfileName,')
+    expect(helper.slice(storeAt, retireAt)).toContain('profileDir: resolveProfileDir(activeProfileName, homeDir),')
+    // Only the recovery window's manual action may spend the user-decision
+    // phases; an automatic version rebuild never does.
+    expect(helper).toContain("userConfirmedRebuild: trigger === 'recovery-window'")
+    // A retire failure logs and continues — the rebuilt profile is still the
+    // better state to boot on (the swap's own degrade posture).
+    expect(helper.slice(retireAt, swappedReturnAt)).toContain("installRecoveryRetirement = 'failed'")
+  })
+
   it('runs the automatic reset early: after profile selection, before boot verification and profile preparation', () => {
     const selectionAt = source.indexOf('profileStartup = beginDesktopProfileStartup(')
 

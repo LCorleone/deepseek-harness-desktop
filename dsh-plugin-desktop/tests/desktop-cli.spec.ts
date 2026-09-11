@@ -846,6 +846,47 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
+  it('keeps the receipts-cleared ratchet floor through the market scan record (review P2)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-scan-ratchet-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // A fresh-profile swap clears every receipt of the rebuilt profile but
+    // leaves the market's persisted scan ratchet in the same document; the
+    // catalog fixture sits at sequence 42 while the machine already verified
+    // 43, so the rolled-back catalog must stay denied even with an empty
+    // ledger — the add floor may not reset to zero with the receipts.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': {
+        companyManifest: {
+          sequence: 43,
+          keyId: catalogKeyId,
+          verifiedAt: '2026-09-10T00:00:00.000Z',
+          bytesSha256: 'cd'.repeat(32),
+        },
+      },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('stale-sequence')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('allows a locked terminal add replaying the receipts ratchet sequence', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-replay-'))
     const homeDir = join(root, 'home')

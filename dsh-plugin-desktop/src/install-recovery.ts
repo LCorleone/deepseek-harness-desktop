@@ -119,6 +119,29 @@ export interface BeginDesktopInstallRecoveryInput {
   readonly receiptId: string
 }
 
+/** Options for {@link DesktopInstallRecoveryStore.retireForProfileRebuild}. */
+export interface DesktopInstallRecoveryRebuildOptions {
+  /**
+   * Set only by the recovery window's manual rebuild: the user just went
+   * through an explicit confirmation whose copy states that every third-party
+   * plugin in the Profile is removed. That confirmation IS the recovery
+   * choice the WAL's user-decision phases were waiting for (see the
+   * phase-whitelist argument on
+   * {@link DesktopInstallRecoveryStore.retireForProfileRebuild}).
+   */
+  readonly userConfirmedRebuild: boolean
+}
+
+/** What one profile rebuild did to the WAL bound to the rebuilt profile. */
+export type DesktopInstallRecoveryRebuildRetirement =
+  | { readonly status: 'absent' }
+  | { readonly status: 'retired'; readonly transaction: DesktopInstallRecoveryTransaction }
+  | {
+      readonly status: 'kept'
+      readonly reason: 'foreign-profile' | 'protected-phase'
+      readonly transaction: DesktopInstallRecoveryTransaction
+    }
+
 export interface DesktopInstallRecoveryStoreOptions {
   /** Absolute Desktop-private WAL path, normally returned by {@link desktopInstallRecoveryStatePath}. */
   readonly statePath: string
@@ -173,6 +196,31 @@ function sha256(bytes: Uint8Array | string): string {
 function profileIdentity(profileDir: string): string {
   return sha256(resolve(profileDir))
 }
+
+/**
+ * Phases any successful profile rebuild may retire (see
+ * {@link DesktopInstallRecoveryStore.retireForProfileRebuild} for the full
+ * argument): `beginLocked`'s supersede set — nothing owed about the current
+ * tree — plus `verifying`, which at a rebuild is provably owned by a dead
+ * generation.
+ */
+const REBUILD_RETIREABLE_PHASES: ReadonlySet<DesktopInstallRecoveryPhase> = new Set([
+  'awaiting-restart',
+  'verifying',
+  'verified',
+  'rolled-back',
+])
+
+/**
+ * Phases only the recovery window's user-confirmed rebuild may retire: each
+ * exists to obtain a user recovery choice, which the explicit fresh-Profile
+ * confirmation just made.
+ */
+const USER_CONFIRMED_REBUILD_PHASES: ReadonlySet<DesktopInstallRecoveryPhase> = new Set([
+  'recovery-pending',
+  'retry-requested',
+  'manual-recovery-required',
+])
 
 function assertAbsoluteFile(label: string, value: string): string {
   if (!isAbsolute(value) || value.includes('\0')) {
@@ -777,6 +825,68 @@ export class DesktopInstallRecoveryStore {
   /** Remove terminal WAL metadata and private preimages after its external obligations are complete. */
   async clear(transactionId: string): Promise<void> {
     await this.withMutationLock(async () => await this.clearLocked(transactionId))
+  }
+
+  /**
+   * Retire the WAL bound to this profile after a fresh-profile rebuild
+   * landed (review P1: the swap used to leave a sealed WAL behind, and its
+   * before/after images can never match the rebuilt tree — the next claim
+   * would open a recovery window whose only exits are a permanent mismatch
+   * loop or `manual-recovery-required`, which refuses every later boot).
+   *
+   * Phase whitelist, and why it cannot clear a transaction that is genuinely
+   * awaiting recovery:
+   *
+   * - `awaiting-restart`, `verified`, `rolled-back` are exactly the phases
+   *   `beginLocked` lets a new install supersede: none of them owes a
+   *   recovery decision about the CURRENT tree. `verified`/`rolled-back` are
+   *   terminal (only an ack/notice is outstanding — moot for a tree that no
+   *   longer exists); `awaiting-restart` means the install SUCCEEDED and only
+   *   awaited next-boot verification of files the rebuild just discarded.
+   * - `verifying` is additionally retireable because at a swap it is provably
+   *   owned by a dead generation: this method runs before the boot's `claim`
+   *   on the automatic path, and the manual path first quiesces the Host. No
+   *   live writer can still transition it — unlike `beginLocked`, which must
+   *   protect an in-flight verification of a tree that still exists, a
+   *   rebuild has already discarded that tree, so the obligation is
+   *   unmeetable either way.
+   * - With `userConfirmedRebuild` (the recovery window's manual action), the
+   *   user-decision phases (`recovery-pending`, `retry-requested`,
+   *   `manual-recovery-required`) retire too: those phases exist to obtain a
+   *   user recovery choice, and an explicit "start with a fresh Profile"
+   *   confirmation — whose copy names the removal of every third-party
+   *   plugin — IS that choice. The automatic path never clears them: a
+   *   machine-initiated version rebuild must not silently spend a pending
+   *   user recovery decision.
+   * - `prepared` NEVER retires here: a live install command (a built-in
+   *   terminal or CLI child in another window) can still own it and must
+   *   find its transaction when it seals or restores — its contract fails
+   *   loudly on a missing WAL, never by silent disappearance.
+   * - A transaction bound to another profile (`profileIdentity` mismatch) is
+   *   never this rebuild's to spend, exactly like `beginLocked`'s exclusivity.
+   *
+   * Removal mirrors `clearLocked` (state file first, preimages best-effort
+   * last); a crash between the two leaves an orphan the lazy sweep in
+   * `read()` removes.
+   */
+  async retireForProfileRebuild(
+    options: DesktopInstallRecoveryRebuildOptions,
+  ): Promise<DesktopInstallRecoveryRebuildRetirement> {
+    return await this.withMutationLock(async () => {
+      const state = await this.read()
+      if (state === undefined) return { status: 'absent' }
+      if (!this.matchesCurrentProfile(state)) {
+        return { status: 'kept', reason: 'foreign-profile', transaction: state }
+      }
+      const retireable = REBUILD_RETIREABLE_PHASES.has(state.phase)
+        || (options.userConfirmedRebuild && USER_CONFIRMED_REBUILD_PHASES.has(state.phase))
+      if (!retireable) {
+        return { status: 'kept', reason: 'protected-phase', transaction: state }
+      }
+      await unlink(this.statePath)
+      await rm(this.backupDirectory(state.transactionId), { recursive: true, force: true })
+      return { status: 'retired', transaction: state }
+    })
   }
 
   private async clearLocked(transactionId: string): Promise<void> {

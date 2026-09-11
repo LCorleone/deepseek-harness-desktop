@@ -267,16 +267,26 @@ function injectSaveExactFlag(argv: string[], addIndex: number): void {
   argv.splice(index, 0, SAVE_EXACT_FLAG)
 }
 
-/** Highest market receipt manifest sequence in the shared settings document, or undefined without receipts. */
+/**
+ * Highest anti-rollback sequence floor for a locked plugin add: the highest
+ * market receipt sequence joined with the market's persisted scan ratchet
+ * from the same settings document (review P2 — a fresh-profile swap clears
+ * the receipts but leaves the scan ratchet behind, and the add gate must not
+ * forget what the market already verified). Undefined without either.
+ */
 async function lockedPluginAddSequenceFloor(homeDir: string | undefined): Promise<number | undefined> {
   if (homeDir === undefined) return undefined
   // Lazy like the channel's market import: ordinary CLI startups stay free of
   // the market bundle that boot-verification transitively pulls in.
-  const { readDesktopBootReceiptsFromSettings } = await import('./boot-verification.ts')
+  const { marketManifestSequenceRatchetFromSettings, readDesktopBootReceiptsFromSettings } =
+    await import('./boot-verification.ts')
+  const settingsPath = join(homeDir, 'settings.yaml')
   let highest: number | undefined
-  for (const receipt of readDesktopBootReceiptsFromSettings(join(homeDir, 'settings.yaml'))) {
+  for (const receipt of readDesktopBootReceiptsFromSettings(settingsPath)) {
     if (highest === undefined || receipt.manifestSequence > highest) highest = receipt.manifestSequence
   }
+  const ratchet = marketManifestSequenceRatchetFromSettings(settingsPath)
+  if (ratchet !== undefined && (highest === undefined || ratchet > highest)) highest = ratchet
   return highest
 }
 
@@ -446,8 +456,9 @@ export async function runDesktopDshCli(
     if (effectivePolicy.locked) {
       // Signed-catalog channel (P2-5): only a verified, unrevoked, exact
       // `<package>@<version>` entry may proceed; every denial stays here.
-      // The sequence floor rides the receipts ratchet boot verification also
-      // reconciles against (see cli-install-channel.ts for the rationale).
+      // The sequence floor rides the receipts-plus-scan-ratchet floor boot
+      // verification also reconciles against (see cli-install-channel.ts for
+      // the rationale).
       //
       // A launcher hand-off, when present, is strictly parsed first: the
       // launcher only ever injects a canonical document in one of the three

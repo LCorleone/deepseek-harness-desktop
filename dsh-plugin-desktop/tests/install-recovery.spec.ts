@@ -795,3 +795,155 @@ describe('Desktop plugin install recovery filesystem boundaries', () => {
     expect((await restarted.read())?.phase).toBe('recovery-pending')
   })
 })
+
+describe('Desktop plugin install recovery fresh-profile rebuild retirement (review P1)', () => {
+  /** Seal a WAL to `awaiting-restart` against the fixture profile. */
+  async function sealedAwaitingRestart(target: Fixture, generationId = 'generation-0001') {
+    const origin = store(target, generationId)
+    const transaction = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writePostinstall(target)
+    await origin.seal(transaction.transactionId)
+    return transaction
+  }
+
+  it('retires a sealed awaiting-restart WAL so the next claim never opens a recovery window', async () => {
+    const target = fixture()
+    const transaction = await sealedAwaitingRestart(target)
+
+    // The launcher's swap step: a fresh store bound to the SAME profile
+    // path (the rebuild keeps the path, so profileIdentity still matches).
+    const rebuilt = store(target, 'generation-0002')
+    const retirement = await rebuilt.retireForProfileRebuild({ userConfirmedRebuild: false })
+
+    expect(retirement).toMatchObject({ status: 'retired', transaction: { transactionId: transaction.transactionId } })
+    expect(existsSync(target.statePath)).toBe(false)
+    expect(existsSync(join(dirname(target.statePath), 'backups', transaction.transactionId))).toBe(false)
+    // The acceptance face of the P1 fix: the post-swap boot's claim finds no
+    // WAL, instead of verifying sealed images that can never match again.
+    expect(await store(target, 'generation-0003').claim()).toEqual({ action: 'none' })
+  })
+
+  it('retires terminal leftovers and a dead generation\u2019s verifying WAL on the automatic path', async () => {
+    const verifiedTarget = fixture()
+    const verified = await sealedAwaitingRestart(verifiedTarget)
+    const verifier = store(verifiedTarget, 'generation-0002')
+    await verifier.claim()
+    await verifier.markHealthy(verified.transactionId)
+    expect(await verifier.retireForProfileRebuild({ userConfirmedRebuild: false })).toMatchObject({ status: 'retired' })
+
+    const rolledBackTarget = fixture()
+    const rolledBackOrigin = store(rolledBackTarget)
+    const prepared = await rolledBackOrigin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    await rolledBackOrigin.restoreCurrentInstall(prepared.transactionId, 'install-failed')
+    expect(await rolledBackOrigin.read()).toMatchObject({ phase: 'rolled-back' })
+    expect(await rolledBackOrigin.retireForProfileRebuild({ userConfirmedRebuild: false }))
+      .toMatchObject({ status: 'retired' })
+
+    // A crash mid-verification leaves `verifying` behind with a dead owner:
+    // the automatic rebuild runs before any claim could re-own it.
+    const verifyingTarget = fixture()
+    await sealedAwaitingRestart(verifyingTarget, 'generation-0001')
+    await store(verifyingTarget, 'generation-0002').claim()
+    expect(await store(verifyingTarget, 'generation-0002').read()).toMatchObject({ phase: 'verifying' })
+    expect(await store(verifyingTarget, 'generation-0003').retireForProfileRebuild({ userConfirmedRebuild: false }))
+      .toMatchObject({ status: 'retired' })
+  })
+
+  it('never retires a prepared WAL: a live install command still owns it', async () => {
+    const target = fixture()
+    const origin = store(target)
+    const transaction = await origin.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+
+    // Neither the automatic rebuild nor the user-confirmed one may spend a
+    // transaction whose install command can still seal or restore it.
+    for (const userConfirmedRebuild of [false, true]) {
+      expect(await store(target, 'generation-0002').retireForProfileRebuild({ userConfirmedRebuild }))
+        .toMatchObject({ status: 'kept', reason: 'protected-phase', transaction: { transactionId: transaction.transactionId } })
+    }
+    expect(existsSync(target.statePath)).toBe(true)
+    expect(existsSync(join(dirname(target.statePath), 'backups', transaction.transactionId))).toBe(true)
+  })
+
+  it('keeps the user-decision phases on the automatic rebuild and retires them once the user confirmed it', async () => {
+    for (const phase of ['recovery-pending', 'retry-requested', 'manual-recovery-required'] as const) {
+      const target = fixture()
+      const origin = store(target, 'generation-0001')
+      let transaction = await origin.begin({
+        packageName: 'plugin-a',
+        packageVersion: '1.0.0',
+        receiptId: 'receipt-0001',
+      })
+      if (phase === 'manual-recovery-required') {
+        transaction = await origin.markManualRecoveryRequired(transaction.transactionId, 'recovery-failed')
+      } else {
+        writePostinstall(target)
+        await origin.seal(transaction.transactionId)
+        const verifier = store(target, 'generation-0002')
+        await verifier.claim()
+        transaction = await verifier.recordFailure(transaction.transactionId, 'startup-unconfirmed')
+        if (phase === 'retry-requested') {
+          transaction = await verifier.requestRetry(transaction.transactionId)
+        }
+      }
+      expect(transaction.phase).toBe(phase)
+
+      // The automatic version-change rebuild must keep a pending user
+      // recovery choice (the true-recovery negative case of the P1 fix).
+      const automatic = await store(target, 'generation-0003').retireForProfileRebuild({ userConfirmedRebuild: false })
+      expect(automatic).toMatchObject({ status: 'kept', reason: 'protected-phase' })
+      expect(existsSync(target.statePath)).toBe(true)
+
+      // The recovery window's manual action is itself that user choice.
+      const manual = await store(target, 'generation-0003').retireForProfileRebuild({ userConfirmedRebuild: true })
+      expect(manual).toMatchObject({ status: 'retired', transaction: { transactionId: transaction.transactionId } })
+      expect(existsSync(target.statePath)).toBe(false)
+    }
+  })
+
+  it('never retires another profile\u2019s WAL', async () => {
+    const target = fixture()
+    // Begin through a store bound to a different profile at another path.
+    const foreignDir = join(target.root, 'profiles', 'web')
+    mkdirSync(foreignDir, { recursive: true })
+    for (const name of DESKTOP_INSTALL_RECOVERY_FILES) {
+      writeFileSync(join(foreignDir, name), PREINSTALL[name], { mode: 0o640 })
+    }
+    const foreign = new DesktopInstallRecoveryStore({
+      statePath: target.statePath,
+      profileName: 'web',
+      profileDir: foreignDir,
+      generationId: 'generation-0001',
+    })
+    const transaction = await foreign.begin({
+      packageName: 'plugin-a',
+      packageVersion: '1.0.0',
+      receiptId: 'receipt-0001',
+    })
+    writeFileSync(join(foreignDir, 'package.json'), POSTINSTALL['package.json'], { mode: 0o640 })
+    await foreign.seal(transaction.transactionId)
+
+    for (const userConfirmedRebuild of [false, true]) {
+      expect(await store(target, 'generation-0002').retireForProfileRebuild({ userConfirmedRebuild }))
+        .toMatchObject({ status: 'kept', reason: 'foreign-profile', transaction: { transactionId: transaction.transactionId } })
+    }
+    expect(existsSync(target.statePath)).toBe(true)
+  })
+
+  it('reports absent when no WAL exists', async () => {
+    const target = fixture()
+    expect(await store(target).retireForProfileRebuild({ userConfirmedRebuild: false }))
+      .toEqual({ status: 'absent' })
+  })
+})

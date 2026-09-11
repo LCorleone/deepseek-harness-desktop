@@ -31,6 +31,7 @@ import {
   desktopBootVerificationInputsFromSettings,
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   marketInstallReceiptsFromSettingsDocument,
+  marketManifestSequenceRatchetFromSettings,
   readCompanyManifestAsset,
   readDesktopBootLockfile,
   readDesktopBootReceiptsFromSettings,
@@ -1550,6 +1551,109 @@ describe('market settings receipt reader', () => {
     })
     expect(decision.manifestTrusted).toBe(true)
     expect(decision.allowed).toEqual([{ packageName, evidence: 'manifest-only', manifestSequence, keyId }])
+  })
+})
+
+describe('market manifest sequence ratchet floor (review P2)', () => {
+  const contentPolicy = { companyCatalogOrigin: null, companyManifestUrl: 'company-market/catalog-manifest.json' }
+
+  function writeSettings(home: string, market: unknown): string {
+    const settingsPath = join(home, 'settings.yaml')
+    mkdirSync(home, { recursive: true })
+    writeFileSync(settingsPath, typeof market === 'string'
+      ? market
+      : JSON.stringify({ 'dsh-community-market': market }))
+    return settingsPath
+  }
+
+  function ratchetRecord(sequence: number): Record<string, unknown> {
+    return {
+      sources: [],
+      companyManifest: {
+        sequence,
+        keyId,
+        verifiedAt: '2026-09-10T00:00:00.000Z',
+        bytesSha256: 'cd'.repeat(32),
+      },
+    }
+  }
+
+  it('reads only a well-formed persisted ratchet sequence and never throws', () => {
+    const home = temporaryDirectory()
+    expect(marketManifestSequenceRatchetFromSettings(
+      writeSettings(home, ratchetRecord(26)),
+    )).toBe(26)
+    // Absent, malformed, or non-positive records contribute nothing.
+    expect(marketManifestSequenceRatchetFromSettings(writeSettings(home, { sources: [] }))).toBeUndefined()
+    expect(marketManifestSequenceRatchetFromSettings(
+      writeSettings(home, { companyManifest: { sequence: 'twenty-six' } }),
+    )).toBeUndefined()
+    expect(marketManifestSequenceRatchetFromSettings(
+      writeSettings(home, { companyManifest: { sequence: 0 } }),
+    )).toBeUndefined()
+    expect(marketManifestSequenceRatchetFromSettings(
+      writeSettings(home, 'dsh-community-market: [broken\n'),
+    )).toBeUndefined()
+    expect(marketManifestSequenceRatchetFromSettings(join(home, 'missing.yaml'))).toBeUndefined()
+  })
+
+  it('joins the ratchet with the receipt floor, taking the higher of the two', () => {
+    const home = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(home, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    writeFileSync(assetPath, signedManifestText([packageEntry()]))
+
+    // Receipts above the ratchet: the receipt floor still wins.
+    const receiptLed = writeSettings(home, {
+      installReceipts: [marketV2Receipt({ manifestSequence: 44 })],
+      companyManifest: ratchetRecord(26).companyManifest,
+    })
+    expect(desktopBootVerificationInputsFromSettings(contentPolicy, receiptLed, moduleUrl).lastSeenSequence).toBe(44)
+
+    // Ratchet above the receipts: the persisted floor wins.
+    const ratchetLed = writeSettings(home, {
+      installReceipts: [marketV2Receipt({ manifestSequence: 20 })],
+      companyManifest: ratchetRecord(26).companyManifest,
+    })
+    expect(desktopBootVerificationInputsFromSettings(contentPolicy, ratchetLed, moduleUrl).lastSeenSequence).toBe(26)
+
+    // Neither present: no injected floor at all (the default inside
+    // verification stays receipt-derived, which is zero here).
+    const bare = writeSettings(home, { sources: [] })
+    expect(desktopBootVerificationInputsFromSettings(contentPolicy, bare, moduleUrl).lastSeenSequence).toBeUndefined()
+  })
+
+  it('keeps the anti-rollback floor after the receipts were cleared (fresh-profile swap)', () => {
+    const home = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(home, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    // The manifest is a ROLLBACK relative to what this machine already saw.
+    writeFileSync(assetPath, signedManifestText([packageEntry()], { sequence: manifestSequence }))
+
+    // Before the swap: a receipt at 22 and the market scan ratchet at 22 both
+    // sit in the settings document.
+    const beforeSwap = writeSettings(join(home, 'before'), {
+      installReceipts: [marketV2Receipt({ manifestSequence: 22 })],
+      companyManifest: ratchetRecord(22).companyManifest,
+    })
+    const before = desktopBootVerificationInputsFromSettings(contentPolicy, beforeSwap, moduleUrl)
+    expect(before.lastSeenSequence).toBe(22)
+    expect(verifyDesktopBootBundles(before.manifestBytes, [bundleInput()], { trustRoots, ...before }).manifestFailure?.code)
+      .toBe('stale-sequence')
+
+    // After the swap: the ledger clear removed every receipt, the ratchet
+    // survives in the same document — the floor must not reset to zero, or a
+    // controlled origin replaying the older signed manifest would re-admit
+    // revoked entries into the boot allow surface.
+    const swapped = writeSettings(join(home, 'after'), ratchetRecord(22))
+    const after = desktopBootVerificationInputsFromSettings(contentPolicy, swapped, moduleUrl)
+    expect(after.receipts).toEqual([])
+    expect(after.lastSeenSequence).toBe(22)
+    const decision = verifyDesktopBootBundles(after.manifestBytes, [bundleInput()], { trustRoots, ...after })
+    expect(decision.manifestTrusted).toBe(false)
+    expect(decision.manifestFailure?.code).toBe('stale-sequence')
   })
 })
 

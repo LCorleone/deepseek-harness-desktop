@@ -230,8 +230,10 @@ export interface DesktopBootVerificationInputs {
   /**
    * Anti-rollback sequence floor passed straight to manifest verification
    * (a lower sequence is stale; an equal one replays). Defaults to the
-   * highest receipt sequence, so the same embedded manifest that allowed an
-   * install re-verifies at boot while anything older is stale.
+   * highest receipt sequence joined with the market's persisted scan ratchet
+   * (review P2), so the same embedded manifest that allowed an install
+   * re-verifies at boot while anything older is stale — and a legitimate
+   * receipt clear (a fresh-profile swap) cannot reset the floor to zero.
    */
   readonly lastSeenSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
@@ -737,12 +739,45 @@ export function readDesktopBootReceiptsFromSettings(settingsPath: string): reado
 }
 
 /**
+ * Read the market's persisted anti-rollback ratchet — the highest manifest
+ * sequence its own catalog scans verified (`companyManifest.sequence` in the
+ * same settings document the receipts live in) — as a boot floor candidate.
+ *
+ * Review P2: the receipt-derived floor alone drops to zero whenever the
+ * ledger is legitimately cleared (a fresh-profile swap clears every receipt
+ * of the rebuilt profile), while the market's scan ratchet survives that
+ * clear in the same user-writable document. A well-formed record pins a
+ * sequence a full market verification observed under the same trust roots,
+ * so it is exactly as strong a floor as a receipt. Anything else — a
+ * missing document, a missing record, a malformed or non-integer sequence —
+ * contributes nothing (the floor falls back to the receipts alone, never
+ * fails the boot): this reader cannot refuse a startup either, and deleting
+ * the record is no worse than the already-signed-off user-writable-ratchet
+ * residual (R3).
+ */
+export function marketManifestSequenceRatchetFromSettings(settingsPath: string): number | undefined {
+  try {
+    const body = readFileSync(settingsPath)
+    if (body.byteLength > MAX_MARKET_SETTINGS_BYTES) return undefined
+    const parsed = parseDocument(body.toString('utf8'), { prettyErrors: true })
+    if (parsed.errors.length > 0) return undefined
+    const sequence = record(record(record(parsed.toJS() ?? {})?.[MARKET_SETTINGS_NAMESPACE])?.companyManifest)?.sequence
+    if (!Number.isSafeInteger(sequence) || (sequence as number) < 1) return undefined
+    return sequence as number
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Assemble the settings-derived slice of the production inputs for a locked
  * boot: normalized install receipts from the shared market settings document,
  * plus the embedded manifest bytes for content-mode policies. Origin-mode
  * policies contribute no bytes here — the async {@link desktopBootVerificationInputs}
- * adds the one pre-composition fetch. The sequence floor is intentionally
- * left to the receipt-derived default inside {@link verifyDesktopBootBundles}.
+ * adds the one pre-composition fetch. The sequence floor joins the highest
+ * receipt sequence with the market's persisted scan ratchet (review P2), so a
+ * legitimate receipt clear — a fresh-profile swap — cannot reset the
+ * anti-rollback floor to zero.
  */
 export function desktopBootVerificationInputsFromSettings(
   policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
@@ -752,8 +787,13 @@ export function desktopBootVerificationInputsFromSettings(
   const manifestBytes = policy.companyCatalogOrigin !== null
     ? undefined
     : readCompanyManifestAsset(companyManifestAssetPath(policy.companyManifestUrl, moduleUrl))
+  const receipts = readDesktopBootReceiptsFromSettings(settingsDocumentPath)
+  const ratchet = marketManifestSequenceRatchetFromSettings(settingsDocumentPath)
+  const receiptFloor = receiptSequenceFloor(receipts)
+  const lastSeenSequence = Math.max(receiptFloor, ratchet ?? 0)
   return {
-    receipts: readDesktopBootReceiptsFromSettings(settingsDocumentPath),
+    receipts,
+    ...(lastSeenSequence > 0 ? { lastSeenSequence } : {}),
     ...(manifestBytes === undefined ? {} : { manifestBytes }),
   }
 }
@@ -786,8 +826,9 @@ export interface DesktopBootVerificationInputOptions {
  * manifest fetch profile composition itself must never perform. The fetch
  * runs once, before composition; any failure leaves the bytes unset so boot
  * verification fails closed for third-party content while the upstream
- * client keeps booting. The receipt-derived sequence floor stays with the
- * default inside {@link verifyDesktopBootBundles}.
+ * client keeps booting. The sequence floor is assembled by
+ * {@link desktopBootVerificationInputsFromSettings}: the highest receipt
+ * sequence joined with the market's persisted scan ratchet.
  */
 export async function desktopBootVerificationInputs(
   policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,

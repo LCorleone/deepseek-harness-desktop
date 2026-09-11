@@ -1200,8 +1200,45 @@ async function start(): Promise<void> {
           }))
           return 'deferred'
         }
+        // Review P1: the rebuild just discarded every profile file the
+        // install-recovery WAL's before/after images describe, so a WAL left
+        // behind can only ever mismatch on the next claim — the recovery
+        // window it opens has no working exit on a rebuilt tree (restore
+        // mismatches into manual-recovery-required, which refuses every later
+        // boot). Retire the WAL bound to this profile right here, on both
+        // layers and the recovery window's manual action alike, BEFORE this
+        // boot's claim runs below and before the build identity is recorded
+        // (a crash in between leaves the record unwritten, so the next boot
+        // re-runs the whole swap and this retire again — self-healing, the
+        // same window the receipt clear accepts). The store method's phase
+        // whitelist keeps genuinely pending recovery transactions (another
+        // profile's WAL, a still-live `prepared` install, and — unless the
+        // user just confirmed the rebuild by hand — the user-decision phases)
+        // untouched; failures log and continue, exactly like the checkpoint
+        // and receipt clears above: the rebuilt Profile is still the better
+        // state to boot on.
+        let installRecoveryRetirement = 'absent'
+        try {
+          const retirement = await new DesktopInstallRecoveryStore({
+            statePath: installRecoveryStatePath,
+            profileName: activeProfileName,
+            profileDir: resolveProfileDir(activeProfileName, homeDir),
+            generationId,
+          }).retireForProfileRebuild({ userConfirmedRebuild: trigger === 'recovery-window' })
+          installRecoveryRetirement = retirement.status
+          if (retirement.status === 'kept') {
+            electronLogger.error(
+              `${BIN_NAME}: kept the plugin install recovery WAL of phase ${retirement.transaction.phase} (${retirement.reason}) after rebuilding profile ${retirement.transaction.profileName}; its recovery obligations stand`,
+            )
+          }
+        } catch (cause) {
+          installRecoveryRetirement = 'failed'
+          electronLogger.error(
+            `${BIN_NAME}: could not retire the plugin install recovery WAL after rebuilding profile ${activeProfileName}: ${cause instanceof Error ? cause.message : String(cause)}`,
+          )
+        }
         electronLogger.error(
-          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}${rule === undefined ? '' : `; rule ${rule}`}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)})`,
+          `${BIN_NAME}: rebuilt profile ${result.profileName} from scratch (${trigger}${rule === undefined ? '' : `; rule ${rule}`}; backup ${result.backupDir ?? 'none'}; materialized=${String(result.materialized)}; market receipts cleared=${String(result.receiptsCleared)}; install recovery WAL ${installRecoveryRetirement})`,
         )
         clientEvents?.pluginReset(pluginResetEvent(trigger, {
           profileName: result.profileName,
