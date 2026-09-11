@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { DesktopSettingsSection, desktopSettingsSectionVisibility } from '../src/client/DesktopSettingsSection.tsx'
+import { DesktopSettingsSection, desktopSettingsSectionVisibility, marketOptionRows, COMMUNITY_MARKET_URL } from '../src/client/DesktopSettingsSection.tsx'
 import { DesktopTerminalSettingsAction } from '../src/client/DesktopTerminalSettingsAction.tsx'
 import { GeneralUserInfoCard } from '../src/client/GeneralUserInfoCard.tsx'
 import {
@@ -121,6 +121,26 @@ describe('Desktop settings API', () => {
     const api = createDesktopSettingsApi(async () => json({ error: '/Users/private/profile failed' }, 400))
     await expect(api.read()).rejects.toThrow('Desktop settings request failed (400)')
     await expect(api.read()).rejects.not.toThrow('/Users/private')
+  })
+})
+
+// The company market UI offers two rows; a legacy `dsh-market` selection keeps
+// its own trailing row so the radiogroup is never left with nothing selected
+// (review P2 on the upstream-link cleanup), and the community row links the
+// internal portal instead of the upstream repository.
+describe('Desktop settings market rows', () => {
+  it('offers exactly the company rows for a supported selection', () => {
+    expect(marketOptionRows('disabled').map(option => option.id)).toEqual(['disabled', 'community-market'])
+    expect(marketOptionRows('community-market').map(option => option.id)).toEqual(['disabled', 'community-market'])
+  })
+
+  it('keeps a legacy dsh-market selection visible as a trailing row', () => {
+    expect(marketOptionRows('dsh-market').map(option => option.id)).toEqual(['disabled', 'community-market', 'dsh-market'])
+    expect(marketOptionRows('dsh-market').at(-1)?.title).toBe('dshMarketLegacy')
+  })
+
+  it('pins the community market link to the internal portal', () => {
+    expect(COMMUNITY_MARKET_URL).toBe('https://plugin-market.s.dai.deloitte.cn/')
   })
 })
 

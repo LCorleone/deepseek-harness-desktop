@@ -197,7 +197,21 @@ export function desktopSettingsSectionVisibility(
 // "dsh-market" provider option is removed from the UI altogether (its body
 // introduced the upstream marketplace). The host-side provider identity
 // stays in desktop-market.ts for unlocked/dev profiles (July, 2026-09-11).
-const COMMUNITY_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
+export const COMMUNITY_MARKET_URL = 'https://plugin-market.s.dai.deloitte.cn/'
+
+/**
+ * The market rows one view renders.
+ *
+ * `dsh-market` is legacy: the host still reports it for a profile that
+ * selected it before this change, and dropping the row outright would leave
+ * the radiogroup with nothing selected and no way back. A legacy row is
+ * appended instead, so the current selection stays visible and the user can
+ * switch away from it.
+ */
+export function marketOptionRows(requested: DesktopMarketProvider): readonly (typeof MARKET_OPTIONS)[number][] {
+  if (MARKET_OPTIONS.some(option => option.id === requested)) return MARKET_OPTIONS
+  return [...MARKET_OPTIONS, { id: requested, title: 'dshMarketLegacy', body: 'dshMarketLegacyBody' }]
+}
 
 function marketTitle(option: (typeof MARKET_OPTIONS)[number], t: Translate): ReactNode {
   if (option.id === 'community-market') {
@@ -460,7 +474,7 @@ export function DesktopSettingsSection({
         )}
         {view !== undefined && (
           <div className="dshDesktopSettingsList" role="radiogroup" aria-labelledby="dsh-desktop-market-title">
-            {MARKET_OPTIONS.map(option => (
+            {marketOptionRows(view.market.requested).map(option => (
               <Choice
                 key={option.id}
                 title={marketTitle(option, t)}
