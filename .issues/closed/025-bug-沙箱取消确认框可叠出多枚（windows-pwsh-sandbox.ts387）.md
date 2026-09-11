@@ -1,11 +1,12 @@
 # [Bug] #025 沙箱取消确认框可叠出多枚（windows-pwsh-sandbox.ts:387）
 
 **Issue ID**: #025
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: bug
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: bug
 
@@ -80,3 +81,7 @@
 ## 备注
 
 [其他相关信息、讨论、参考链接等]
+
+## 解决总结
+
+July 09-12 拍板：关闭——触发窄无实害，下次动沙箱代码时顺手修

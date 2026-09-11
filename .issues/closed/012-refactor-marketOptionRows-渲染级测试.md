@@ -1,11 +1,12 @@
 # [Refactor] #012 marketOptionRows 渲染级测试
 
 **Issue ID**: #012
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -162,3 +163,7 @@ pub struct NewDesign {
 ### 讨论记录
 
 [记录技术讨论要点]
+
+## 解决总结
+
+July 09-12 拍板：关闭——dsh-market 选项已整体移除且锁死，该渲染逻辑未来大概率被删，届时测试随重写

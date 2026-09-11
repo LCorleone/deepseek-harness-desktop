@@ -1,11 +1,12 @@
 # [Bug] #016 restart 重复点击 5min TTL 后回 410
 
 **Issue ID**: #016
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: bug
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: bug
 
@@ -80,3 +81,7 @@
 ## 备注
 
 [其他相关信息、讨论、参考链接等]
+
+## 解决总结
+
+July 09-12 拍板：关闭——主路径已稳+有遥测，5min 晾置场景留观 restart_request 真实命中率，撞上再立卡
