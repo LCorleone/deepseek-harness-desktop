@@ -1,0 +1,81 @@
+{
+  "name": "dsh-company-skills",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Company-curated skills shipped as one obfuscated plugin bundle and published through the DeepSeek Harness skill registry seam",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills",
+    "directory": "dsh-company-skills"
+  },
+  "homepage": "https://plugin-market.s.dai.deloitte.cn/",
+  "bugs": {
+    "url": "https://plugin-market.s.dai.deloitte.cn/"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "assets/skills.bundle",
+    "cordis.patch.yml",
+    "lib/**",
+    "LICENSE",
+    "README.md",
+    "README.zh.md",
+    "README.i18n.yaml",
+    "!skills/**"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsdown && tsc -p tsconfig.json --emitDeclarationOnly",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "test": "vitest run",
+    "verify:bundle": "node scripts/build-bundle-asset.mjs --check",
+    "check": "yarn run build && yarn run verify:bundle && yarn run typecheck && yarn run test",
+    "prepack": "yarn run check"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-skill": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@types/node": "^22.20.0",
+    "tsdown": "0.22.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  },
+  "keywords": [
+    "deepseek",
+    "dsh",
+    "plugin",
+    "skill",
+    "company"
+  ]
+}
