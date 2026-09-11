@@ -95,6 +95,7 @@
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://plugin-market.s.dai.deloitte.cn/",
     "revoked": false,
+    "channel": "beta",
     "runtime": {
       "dshRuntimeVersion": "^0.1.2-rc.1"
     },
