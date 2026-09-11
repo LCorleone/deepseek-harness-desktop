@@ -135,6 +135,14 @@ function isDesktopUnavailable(cause: unknown): boolean {
     && (cause as { status?: unknown }).status === 503
 }
 
+/** Whether a confirmed mutation hit the Client-side execution deadline. */
+function isMarketOperationTimeout(cause: unknown): boolean {
+  return cause !== null
+    && typeof cause === 'object'
+    && 'code' in cause
+    && (cause as { code?: unknown }).code === 'operation-timeout'
+}
+
 function operationErrorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message.trim().length > 0
     ? cause.message
@@ -309,6 +317,10 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
   const [operationPending, setOperationPending] = useState(false)
   const [desktopActionError, setDesktopActionError] = useState<string>()
   const [desktopActionPending, setDesktopActionPending] = useState(false)
+  // Latched once the Host accepts a restart request: a second click must not
+  // contradict an accepted restart (the Host answers such a repeat
+  // idempotently), so the button stays in its disabled "restarting" state.
+  const [desktopRestartRequested, setDesktopRestartRequested] = useState(false)
   const readRequest = useRef<AbortController>()
   const pageRequest = useRef<AbortController>()
   const mutationRequest = useRef<AbortController>()
@@ -760,6 +772,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setOperationPending(true)
     setOperationError(undefined)
     setDesktopActionError(undefined)
+    setDesktopRestartRequested(false)
     setOperationSuccess(undefined)
     try {
       const preview = await previewMarketOperation(requestValue, request.signal)
@@ -776,6 +789,8 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         setInstallationsUnavailable(true)
         setInstallationsError(t('desktopUnavailable'))
         setOperationError(t('desktopUnavailable'))
+      } else if (isMarketOperationTimeout(cause)) {
+        setOperationError(t('previewTimeoutError'))
       } else {
         setOperationError(operationErrorMessage(cause, t(requestValue.action === 'install'
           ? 'previewError'
@@ -810,6 +825,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setOperationSuccess(undefined)
     setOperationError(undefined)
     setDesktopActionError(undefined)
+    setDesktopRestartRequested(false)
     const beginInstallPreview = () => {
       if (selectedKeyRef.current !== selectionKey) return
       void beginOperationPreview({
@@ -951,6 +967,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       selectedKeyRef.current = undefined
       setSelected(undefined)
       setOperationSuccess({ preview, restartToken: result.restartToken })
+      setDesktopRestartRequested(false)
       if (result.action === 'install') {
         if (viewRef.current === 'installable') void loadInstallable()
         // A completed replacement changes the verified-installation view the
@@ -968,6 +985,8 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         setInstallationsUnavailable(true)
         setInstallationsError(t('desktopUnavailable'))
         setOperationError(t('desktopUnavailable'))
+      } else if (isMarketOperationTimeout(cause)) {
+        setOperationError(t('executeTimeoutError'))
       } else {
         setOperationError(operationErrorMessage(cause, t('executeError')))
       }
@@ -988,7 +1007,12 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setDesktopActionError(undefined)
     try {
       if (action === 'open-terminal') await openMarketTerminal(request.signal)
-      else if (restartToken !== undefined) await requestMarketRestart(restartToken, request.signal)
+      else if (restartToken !== undefined) {
+        await requestMarketRestart(restartToken, request.signal)
+        // Accepted (or already in progress): latch the "restarting" state so
+        // the button cannot fire a second, contradictory request.
+        setDesktopRestartRequested(true)
+      }
       else throw new Error('restart token missing')
     } catch (cause) {
       if (request.signal.aborted || desktopActionRequest.current !== request) return
@@ -1227,6 +1251,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           operation={operationSuccess}
           canRestart={state?.desktopActions.requestRestart === true}
           pending={desktopActionPending}
+          restartRequested={desktopRestartRequested}
           error={desktopActionError}
           onClose={() => setOperationSuccess(undefined)}
           onRestart={() => { void runDesktopAction('request-restart', operationSuccess.restartToken) }}
@@ -2054,10 +2079,11 @@ function OperationConfirmModal({ preview, pending, error, onCancel, onConfirm, t
   )
 }
 
-function OperationSuccessModal({ operation, canRestart, pending, error, onClose, onRestart, t }: {
+function OperationSuccessModal({ operation, canRestart, pending, restartRequested, error, onClose, onRestart, t }: {
   operation: CompletedOperation
   canRestart: boolean
   pending: boolean
+  restartRequested: boolean
   error?: string | undefined
   onClose: () => void
   onRestart: () => void
@@ -2083,10 +2109,10 @@ function OperationSuccessModal({ operation, canRestart, pending, error, onClose,
         <Button variant="ghost" disabled={pending} onClick={onClose}>{t('restartLater')}</Button>
         <Button
           variant="primary"
-          disabled={!canRestart || pending}
+          disabled={!canRestart || pending || restartRequested}
           icon={<IconRefreshOutline16 />}
           onClick={onRestart}
-        >{pending ? t('restarting') : t('restartNow')}</Button>
+        >{pending || restartRequested ? t('restarting') : t('restartNow')}</Button>
       </div>}
     >
       <div className="dshMarketOperationReview">

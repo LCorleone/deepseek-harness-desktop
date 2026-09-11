@@ -112,11 +112,12 @@ import {
   pluginInstallEvent,
   pluginResetEvent,
   pythonRuntimeEvent,
+  restartRequestEvent,
   sandboxEscalationEvent,
   ssoLoginEvent,
   stableCatalogRefreshEvent,
 } from './client-event-reporter.ts'
-import type { MarketInstallEventSink } from 'dsh-community-market'
+import type { MarketInstallEventSink, MarketRestartRequestEventSink } from 'dsh-community-market'
 import {
   managedModelGateway,
   managedModelsPresetGateEntry,
@@ -139,6 +140,7 @@ import {
 } from './boot-update-prompt.ts'
 import { companyCatalogHttpOverElectronNet, fetchCompanyManifestTextOverElectronNet } from './electron-company-manifest.ts'
 import { stageCompanyManifestForCliChildren } from './company-manifest-handoff.ts'
+import { DESKTOP_COMPANY_MANIFEST_FILE_ENV } from './company-manifest-origin.ts'
 import { createDesktopCompanyMarketTarballInstallChannel } from './company-market-install.ts'
 import { writeDesktopBootVerificationSnapshot } from './diagnostic-self-check.ts'
 import DesktopSettingsController, { projectSsoSession } from './desktop-settings-controller.ts'
@@ -183,9 +185,11 @@ import { DesktopAgentBrowserWindowHost, clearAgentBrowserPersistedPartition } fr
 import { AgentBrowserLoginFileStore } from './agent-browser-partition.ts'
 import {
   createDesktopExitCoordinator,
+  createDesktopRestartRequest,
   createDesktopShutdown,
   installShutdownRequests,
   type DesktopShutdown,
+  type DesktopShutdownOutcome,
 } from './shutdown.ts'
 import {
   diagnoseWindowsVolumes,
@@ -552,7 +556,6 @@ async function start(): Promise<void> {
       }
     },
   )
-  let restartRequested = false
   // Parsed once for the whole launch: the locked flag feeds the runtime's
   // update wiring below, and the same immutable policy document reaches the
   // profile composition (boot verification, market, CLI environment).
@@ -603,15 +606,11 @@ async function start(): Promise<void> {
       )
     }
   }
-  runtime = new ElectronDesktopRuntime(async () => {
-    if (shutdown === undefined) {
-      throw new Error('dsh-plugin-desktop: shutdown coordinator is not ready')
-    }
-    if (restartRequested) return
-    restartRequested = true
-    nativeExit.requestRelaunch()
-    await shutdown.request(0)
-  }, (report) => {
+  runtime = new ElectronDesktopRuntime(createDesktopRestartRequest(
+    () => shutdown,
+    () => { nativeExit.requestRelaunch() },
+    message => { electronLogger.error(message) },
+  ), (report) => {
     if (report.status === 'failed') {
       lifecycleRecorder.finishRendererBoot(
         report,
@@ -622,7 +621,7 @@ async function start(): Promise<void> {
     // legacy Renderer recovery dialog from racing the native startup window.
     return report.status === 'failed'
   }, electronLogger, undefined, policy.locked, disposeDisclaimerLoading)
-  const finalExit = (code: number): void => { nativeExit.finish(code) }
+  const finalExit = (code: number, outcome: DesktopShutdownOutcome): void => { nativeExit.finish(code, outcome) }
   shutdown = createDesktopShutdown(
     async () => { await generation.release() },
     finalExit,
@@ -878,7 +877,9 @@ async function start(): Promise<void> {
       on: (event, handler) => process.on(event, handler),
       off: (event, handler) => process.off(event, handler),
       stderr: electronLogger,
-      exit: finalExit,
+      // A fail-loud abort is a failed generation, not a teardown timeout: it
+      // exits with its code and never relaunches a requested restart.
+      exit: code => { finalExit(code, 'failed') },
     }
     installFailLoud(BIN_NAME, failLoudProcess, async () => { await generation.release() })
 
@@ -1614,6 +1615,14 @@ async function start(): Promise<void> {
     if (companyManifestHandoff !== undefined) {
       generation.own(() => { companyManifestHandoff.dispose() })
     }
+    // 方案D: the market channel refreshes this same staging file with the
+    // exact bytes it verifies for each operation, so a CLI child spawned for
+    // a market install reads a current snapshot instead of the aging boot
+    // bytes. Only a generation whose boot staging actually wrote a file pins
+    // a path (content mode and a failed boot staging leave it undefined, and
+    // nothing is created later).
+    const stagedCompanyManifestFile =
+      companyManifestHandoff?.environment[DESKTOP_COMPANY_MANIFEST_FILE_ENV]
     const cliPolicyEnvironment: Record<string, string> = {
       ...desktopPolicyEnvironmentEntries(policy),
       ...(companyManifestHandoff?.environment ?? {}),
@@ -2036,9 +2045,14 @@ async function start(): Promise<void> {
           bootBetaOverlay?.packages,
           bootVerificationInputs?.manifestBytes,
         )
-        const clientEventReporterForMarket: MarketInstallEventSink = {
+        const clientEventReporterForMarket: MarketInstallEventSink & MarketRestartRequestEventSink = {
           reportInstallEvent: event => {
             clientEvents?.pluginInstall(pluginInstallEvent(event, installBetaDeliveredKeys))
+          },
+          // Restart requests were invisible in fleet telemetry (b91): the
+          // uninstall landed but the failing restart branch left no trace.
+          reportRestartRequest: event => {
+            clientEvents?.restartRequest(restartRequestEvent(event))
           },
         }
         hostCtx.provide('desktopClientEventReporter', clientEventReporterForMarket)
@@ -2066,6 +2080,9 @@ async function start(): Promise<void> {
               return highest
             },
             fetchManifestText: fetchCompanyManifestTextOverElectronNet,
+            ...(stagedCompanyManifestFile === undefined
+              ? {}
+              : { stableManifestStagingFile: stagedCompanyManifestFile }),
             request: (url, init) => net.fetch(url, init),
             // Beta overlay (P9): beta tarball entries verify through the
             // shared resolver before the registry cross-check would reject

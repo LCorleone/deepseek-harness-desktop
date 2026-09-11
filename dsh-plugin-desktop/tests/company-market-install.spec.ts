@@ -11,7 +11,7 @@
  * re-verification over the same signed manifest — runs for real.
  */
 
-import { createHash, generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -31,6 +31,7 @@ import {
 } from 'dsh-community-market'
 import { createDesktopCompanyMarketTarballInstallChannel } from '../src/company-market-install.ts'
 import { authorizeLockedPluginAdd } from '../src/cli-install-channel.ts'
+import { companyManifestFileRequest } from '../src/company-manifest-origin.ts'
 import {
   cleanCompanyMarketStagingOrphans,
   desktopCompanyManifestVerifierForMarket,
@@ -961,6 +962,134 @@ describe('market UI tarball install orchestration (P7 2c)', () => {
     } finally {
       await composition.dispose()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 方案D: the market channel re-stages the CLI children's stable manifest file
+// with the exact bytes each operation verifies, so a market install never
+// hands the child a snapshot older than the catalog it just scanned (the
+// child's own network retry — the b91 fix — being the corporate-CA path the
+// staging exists to avoid).
+// ---------------------------------------------------------------------------
+
+describe('market operation re-stages the stable manifest for CLI children (方案D)', () => {
+  /** A locked origin-mode channel whose manifest fetch serves one fixed text. */
+  function restageChannel(options: {
+    readonly profileDir: string
+    readonly manifestText: string
+    readonly stableManifestStagingFile?: string
+    readonly warn?: (message: string) => void
+  }) {
+    return createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir: options.profileDir,
+      fetchManifestText: async () => options.manifestText,
+      ...(options.stableManifestStagingFile === undefined
+        ? {}
+        : { stableManifestStagingFile: options.stableManifestStagingFile }),
+      ...(options.warn === undefined ? {} : { warn: options.warn }),
+    })
+  }
+
+  it('writes the freshly verified bytes at the path the CLI child reads', async () => {
+    const root = temporaryDirectory('restage')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    // The boot-time snapshot, deliberately one sequence behind the catalog.
+    const stagingFile = join(root, 'cli-company-manifest', 'company-manifest-gen-1.json')
+    mkdirSync(dirname(stagingFile), { recursive: true })
+    writeFileSync(stagingFile, signedManifestText([tarballEntry()], 25))
+    const freshText = signedManifestText([tarballEntry()], 27)
+
+    const channel = restageChannel({ profileDir, manifestText: freshText, stableManifestStagingFile: stagingFile })
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+
+    // The file the child's `DSH_COMPANY_MANIFEST_FILE` names now carries the
+    // operation's bytes, and the child's own staged request boundary serves them.
+    expect(readFileSync(stagingFile, 'utf8')).toBe(freshText)
+    const served = await companyManifestFileRequest(stagingFile)(MANIFEST_URL, {})
+    expect(await served.text()).toBe(freshText)
+  })
+
+  it('writes nothing when no stable staging file is pinned for the generation', async () => {
+    const root = temporaryDirectory('restage-absent')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const channel = restageChannel({ profileDir, manifestText: signedManifestText() })
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(existsSync(join(root, 'cli-company-manifest'))).toBe(false)
+  })
+
+  it('leaves the staging file untouched in content mode', async () => {
+    const root = temporaryDirectory('restage-content')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const stagingFile = join(root, 'cli-company-manifest', 'company-manifest-gen-1.json')
+    mkdirSync(dirname(stagingFile), { recursive: true })
+    writeFileSync(stagingFile, 'sentinel')
+
+    // A content-mode build's asset beside the channel module; boot only stages
+    // a stable file in origin mode, so even a pinned path must stay untouched.
+    const assetName = `restage-${randomUUID()}.json`
+    const moduleDir = dirname(fileURLToPath(new URL('../src/company-market-install.ts', import.meta.url)))
+    const assetPath = join(moduleDir, assetName)
+    writeFileSync(assetPath, signedManifestText([]))
+    try {
+      const contentPolicy = parseDesktopPolicy({
+        locked: true,
+        managedModels: false,
+        pluginResetOnVersionChange: false,
+        requireSso: false,
+        companyCatalogOrigin: null,
+        companyManifestUrl: assetName,
+        allowHomePatch: false,
+        allowManualPluginAdd: false,
+        trustRoots,
+        usageReport: false,
+        agentBrowser: { enabled: false, allowOrigins: [], allowPersistLogin: false },
+      })
+      const channel = createDesktopCompanyMarketTarballInstallChannel({
+        policy: contentPolicy,
+        profileDir,
+        stableManifestStagingFile: stagingFile,
+      })
+      await channel.verifyTarballEntry(
+        { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+        new AbortController().signal,
+      )
+      expect(readFileSync(stagingFile, 'utf8')).toBe('sentinel')
+    } finally {
+      rmSync(assetPath, { force: true })
+    }
+  })
+
+  it('does not fail the operation when the re-stage write fails', async () => {
+    const root = temporaryDirectory('restage-write-failure')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    // A regular file where the staging directory should be makes the atomic
+    // write fail; the operation must still succeed on the verified bytes.
+    const blocker = join(root, 'blocked')
+    writeFileSync(blocker, 'not a directory')
+    const warn = vi.fn()
+    const channel = restageChannel({
+      profileDir,
+      manifestText: signedManifestText(),
+      stableManifestStagingFile: join(blocker, 'cli-company-manifest', 'company-manifest-gen-1.json'),
+      warn,
+    })
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshing the staged company catalog manifest'))
   })
 })
 

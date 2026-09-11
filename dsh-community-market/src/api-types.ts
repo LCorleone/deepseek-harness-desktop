@@ -290,4 +290,10 @@ export type MarketOperationExecuteResponse =
 
 export interface MarketDesktopActionResponse {
   readonly ok: true
+  /**
+   * Present when the Host answered a repeated restart request: the grant was
+   * already accepted in this generation and the restart is still in progress.
+   * The renderer keeps its "restarting" state instead of reporting an error.
+   */
+  readonly alreadyRequested?: boolean
 }

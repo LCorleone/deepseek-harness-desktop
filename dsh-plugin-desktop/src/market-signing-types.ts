@@ -109,6 +109,29 @@ export interface MarketInstallEventSink {
   reportInstallEvent(event: MarketInstallEvent): void
 }
 
+/** Categorical outcome of one Host-handled restart request. */
+export type MarketRestartRequestOutcome = 'accepted' | 'already-requested' | 'rejected'
+
+/**
+ * Mirror of `dsh-community-market/src/host/routes.ts`
+ * `MarketRestartRequestEvent`: categorical restart-request facts the Desktop
+ * host forwards into `dsh_client_events` (`restart_request`). The refusing
+ * branch code rides `reason`; no token or local path is ever carried.
+ */
+export interface MarketRestartRequestEvent {
+  readonly outcome: MarketRestartRequestOutcome
+  readonly reason?: string
+}
+
+/**
+ * Mirror of the same file's `MarketRestartRequestEventSink`: the
+ * `desktopClientEventReporter` context capability the market consumes.
+ * Implementations must never throw.
+ */
+export interface MarketRestartRequestEventSink {
+  reportRestartRequest(event: MarketRestartRequestEvent): void
+}
+
 export type CompanyManifestVerification =
   | {
     readonly ok: true

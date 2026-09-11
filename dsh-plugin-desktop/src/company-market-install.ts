@@ -120,6 +120,19 @@ export interface DesktopCompanyMarketTarballInstallOptions {
    * focused tests inject a constant.
    */
   readonly lastSeenSequence?: () => number | undefined
+  /**
+   * Absolute path of the launcher's generation-scoped stable manifest
+   * staging file (`DSH_COMPANY_MANIFEST_FILE`), present only when the boot
+   * path staged one for this generation. When set, every manifest this
+   * channel verifies is re-written here (atomically, `0o600`) so a CLI child
+   * spawned for the same market operation reads a current snapshot: the
+   * boot-time bytes age as the catalog advances, and a snapshot below the
+   * child's receipts ratchet would deny the install — the child's own
+   * network retry being exactly the corporate-CA path the staging exists to
+   * bypass. `undefined` (content mode, a boot staging failure, or a
+   * non-origin generation) writes nothing; an absent file is never created.
+   */
+  readonly stableManifestStagingFile?: string
   /** Origin-mode manifest acquisition override (the Electron `net.fetch` composition); defaults to the shared restricted fetch. */
   readonly fetchManifestText?: typeof fetchCompanyManifestText
   /**
@@ -204,6 +217,26 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     })
     if (!verification.ok) return undefined
     verified = { manifest: verification.manifest }
+    // Re-stage the stable snapshot for the CLI children (方案D): the boot
+    // path staged the manifest once at startup, so those bytes age as the
+    // catalog advances while the market scan keeps raising the child's
+    // anti-rollback floor — a stale snapshot then denies every install until
+    // the client restarts, and the child's own network retry is the
+    // corporate-CA transport the staging exists to avoid. This operation just
+    // verified fresh bytes through the Electron network stack, so refresh the
+    // same file the children read (`DSH_COMPANY_MANIFEST_FILE`) with exactly
+    // those bytes. Origin mode only (content mode has no boot-staged file),
+    // and best-effort: a failed write must never fail the operation, since
+    // the child keeps its restricted network fallback. The child re-verifies
+    // the signature over whatever bytes it reads, so this carries freshness,
+    // never trust.
+    if (policy.companyCatalogOrigin !== null && options.stableManifestStagingFile !== undefined) {
+      try {
+        await writeFileAtomic(options.stableManifestStagingFile, raw, { mode: 0o600, dirMode: 0o700 })
+      } catch (cause) {
+        options.warn?.(`refreshing the staged company catalog manifest for CLI children failed: ${messageOf(cause)}`)
+      }
+    }
     // Beta overlay (P9): resolved after the stable manifest verifies, so its
     // staleness floor is the just-verified stable sequence; every overlay
     // outcome except an admitted package list keeps the channel stable-only.

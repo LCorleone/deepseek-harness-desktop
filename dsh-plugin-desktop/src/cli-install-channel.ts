@@ -70,9 +70,12 @@
  * `stale-sequence` verdict over the staged bytes earns exactly one retry
  * through the restricted network fetch; the retried bytes face the identical
  * signature, trust-root, origin, expiry, and floor checks, and the gate
- * remains fail-closed. Every other failure (bad signature, expired,
- * malformed, unknown key, origin mismatch) keeps its original denial and
- * never swaps sources.
+ * remains fail-closed. That retry is itself bounded
+ * (`STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS`): the bundled-Node child's own
+ * fetch is the very transport the staging bypasses, so one that stalls
+ * rather than fails must deny with the stale verdict rather than hang the
+ * operation. Every other failure (bad signature, expired, malformed, unknown
+ * key, origin mismatch) keeps its original denial and never swaps sources.
  *
  * Anti-rollback: the sequence floor comes from the local receipts ratchet —
  * the caller derives `lastSeenSequence` from the highest manifest sequence
@@ -128,6 +131,22 @@ const BIN_NAME = 'dsh-plugin-desktop'
 const MAX_MANIFEST_ASSET_BYTES = 4 * 1024 * 1024
 const MARKET_GUIDANCE = 'Install plugins from the company plugin market instead.'
 /**
+ * Hard connect+response bound for the one stale-staged retry fetch below,
+ * deliberately its own constant.
+ *
+ * The retry exists because a launcher-staged boot snapshot ages as the
+ * catalog advances (陈旧 ≠ 回滚), but it runs over the bundled-Node CLI
+ * child's own restricted fetch — exactly the transport the staging step
+ * exists to bypass, since that child ignores the Windows system certificate
+ * store and cannot reach a corporate-CA origin. On a device where that
+ * transport stalls instead of failing, an unbounded retry would hold every
+ * gated operation (and the market UI behind it) forever. The gate therefore
+ * enforces this budget itself, not only through the transport's abort
+ * signal; acquisition never uses this constant, so a plain origin read keeps
+ * its own default from `company-manifest-origin.ts`.
+ */
+export const STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS = 8_000
+/**
  * pnpm flag the launcher injects after an allow so the profile lockfile pins
  * the exact specifier; a user-typed copy directly after `add` is accepted and
  * never duplicated.
@@ -177,6 +196,7 @@ export interface LockedPluginAddOptions {
    * `stale-sequence` verdict over them retries once through that same
    * restricted network fetch, under the same trust roots and sequence floor
    * (a boot snapshot ages as the catalog advances — stale is not rollback).
+   * That retry is bounded by `STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS`.
    * Without it this gate behaves byte-for-byte as before: no retry is armed.
    */
   readonly stagedManifestFile?: string
@@ -220,6 +240,53 @@ function denied(reason: string): LockedPluginAddDecision {
 }
 
 const messageOf = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause)
+
+/** Outcome of the one stale-staged retry fetch, bounded by {@link STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS}. */
+type StaleStagedRetryResult =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly timedOut: boolean; readonly reason: string }
+
+/**
+ * Run the one stale-staged retry fetch under a hard wall-clock bound.
+ *
+ * `fetchCompanyManifestText` already arms `AbortSignal.timeout` on the
+ * transport, but that abort is only as reliable as the child's fetch
+ * implementation: a connect that never settles can leave the gate awaiting
+ * it forever, which is how the retry hung every gated operation on the b91
+ * device. The bound is therefore enforced a second time at the gate with a
+ * `setTimeout` race, so the denied path always resolves; the same budget
+ * still rides the fetch options as `timeoutMs` so a cooperating transport is
+ * torn down at the same moment. A timeout is not a source swap — it denies
+ * with the stale verdict it was asked to clear (see the caller).
+ */
+async function fetchStaleStagedRetry(
+  policy: Pick<DesktopPolicy, 'companyCatalogOrigin' | 'companyManifestUrl'>,
+  options: CompanyManifestFetchOptions | undefined,
+): Promise<StaleStagedRetryResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const bound = new Promise<StaleStagedRetryResult>((resolve) => {
+    timer = setTimeout(
+      () => resolve({
+        ok: false,
+        timedOut: true,
+        reason: `did not answer within the ${String(STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS)} ms retry bound`,
+      }),
+      STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS,
+    )
+  })
+  const attempt = fetchCompanyManifestText(policy, {
+    ...options,
+    timeoutMs: STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS,
+  }).then(
+    (text): StaleStagedRetryResult => ({ ok: true, text }),
+    (cause): StaleStagedRetryResult => ({ ok: false, timedOut: false, reason: messageOf(cause) }),
+  )
+  try {
+    return await Promise.race([attempt, bound])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /**
  * Parse one `<package>@<exact version>` plugin-add spec. Tags, ranges,
@@ -427,20 +494,28 @@ export async function authorizeLockedPluginAdd(
     // until the client restarts. Retry exactly once over the restricted
     // network fetch: the retried bytes go through this same verifier with the
     // same trust roots, origin binding, expiry, and floor, so a genuinely
-    // rolled-back catalog is still denied, and a network failure is a denial
-    // too (the retry's own reason is reported — the stale snapshot is never
-    // silently swapped for unverified bytes).
-    let retriedRaw: string
-    try {
-      retriedRaw = await fetchCompanyManifestText(policy, options.fetch ?? {})
-    } catch (cause) {
+    // rolled-back catalog is still denied, a network failure is a denial too
+    // (the retry's own reason is reported — the stale snapshot is never
+    // silently swapped for unverified bytes), and a transport that stalls
+    // instead of failing is stopped at the gate's own hard bound
+    // (`STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS`) so a gated operation can
+    // never again wait on it indefinitely.
+    const retried = await fetchStaleStagedRetry(policy, options.fetch)
+    if (!retried.ok) {
+      // Fail closed now: quote the snapshot's stale verdict (the reason this
+      // retry was armed) plus either the transport's failure or the fact that
+      // the bound expired. The message must never cost the user a hanging
+      // operation just to report the retry.
+      const retryOutcome = retried.timedOut
+        ? retried.reason
+        : `failed: ${retried.reason}`
       return denied(
         `rejected the company catalog manifest (stale-sequence): ${verification.reason}.`
         + ` The launcher-staged manifest is a boot-time snapshot that went stale as the catalog advanced,`
-        + ` and the restricted network retry failed: ${messageOf(cause)}. ${MARKET_GUIDANCE}`,
+        + ` and the restricted network retry ${retryOutcome}. ${MARKET_GUIDANCE}`,
       )
     }
-    const retryVerification = verifyManifest(retriedRaw)
+    const retryVerification = verifyManifest(retried.text)
     if (!retryVerification.ok) {
       // Quote the snapshot's own numbers too (P3 from review): without them a
       // retry that expired or failed the signature reads as if the staged

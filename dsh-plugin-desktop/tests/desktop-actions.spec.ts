@@ -27,20 +27,24 @@ describe('desktop actions Host service', () => {
     expect(Object.keys(mounted.service).sort()).not.toContain('runCommand')
   })
 
-  it('coalesces a restart request and rejects retained references after disposal', async () => {
-    let finishRestart!: () => void
-    const requestRestart = vi.fn(() => new Promise<void>(resolve => { finishRestart = resolve }))
+  it('re-enters the bootstrap on a repeat request and rejects retained references after disposal', async () => {
+    const resolvers: Array<() => void> = []
+    const requestRestart = vi.fn(() => new Promise<void>(resolve => { resolvers.push(resolve) }))
     const mounted = await mount({ openTerminal: vi.fn(), requestRestart })
 
     const first = mounted.service.requestRestart()
     const second = mounted.service.requestRestart()
-    expect(second).toBe(first)
-    expect(requestRestart).toHaveBeenCalledOnce()
+    // A repeated request must reach the bootstrap: the launcher turns it into
+    // an escalation of a wedged shutdown, so coalescing would swallow the
+    // retry the Market route deliberately forwards.
+    expect(second).not.toBe(first)
+    expect(requestRestart).toHaveBeenCalledTimes(2)
     await mounted.dispose()
     expect(() => mounted.service.openTerminal()).toThrow(/service disposed/u)
     await expect(mounted.service.requestRestart()).rejects.toThrow(/service disposed/u)
 
-    finishRestart()
+    for (const resolve of resolvers) resolve()
     await expect(first).resolves.toBeUndefined()
+    await expect(second).resolves.toBeUndefined()
   })
 })

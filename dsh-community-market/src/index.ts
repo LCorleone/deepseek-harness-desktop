@@ -8,6 +8,7 @@ import {
   registerMarketSettings,
   type MarketCompanyCatalogRouteWiring,
   type MarketDesktopPlugins,
+  type MarketRestartRequestEventSink,
 } from './host/routes.js'
 import { createRestrictedHttpClient } from './network/restricted-http.js'
 import {
@@ -375,6 +376,10 @@ export function apply(ctx: Context): void {
   // capability keeps the built-in no-op sink — standalone deployments
   // included — so install behavior is byte-for-byte unchanged.
   const installEventSink = ctx.get('desktopClientEventReporter') as MarketInstallEventSink | undefined
+  // Restart telemetry rides the same capability: the Host route reports one
+  // categorical row per restart request (accepted / already-requested /
+  // rejected), which is the branch visibility the b91 restart failure lacked.
+  const restartEventSink = ctx.get('desktopClientEventReporter') as MarketRestartRequestEventSink | undefined
   const locked = policy?.locked === true
   // L2 wiring: a locked deployment with pinned trust roots serves the signed
   // company catalog end to end. A locked policy without trust roots cannot
@@ -407,7 +412,7 @@ export function apply(ctx: Context): void {
   const desktopActionsProvider = { get: () => desktopActions }
   const desktopPluginsProvider = { get: () => desktopPlugins }
   ctx.effect(
-    () => registerMarketRoutes(ctx, scope, installProvider, desktopActionsProvider, desktopPluginsProvider, sourceLock, companyCatalogRoutes),
+    () => registerMarketRoutes(ctx, scope, installProvider, desktopActionsProvider, desktopPluginsProvider, sourceLock, companyCatalogRoutes, restartEventSink),
     'community-market: routes',
   )
   ctx.inject(['desktopActions'], (desktopCtx) => {
@@ -472,6 +477,11 @@ export function apply(ctx: Context): void {
 }
 
 export { marketRoutes } from './host/routes.js'
+export type {
+  MarketRestartRequestEvent,
+  MarketRestartRequestEventSink,
+  MarketRestartRequestOutcome,
+} from './host/routes.js'
 export { BUILT_IN_PROVIDERS, DefaultCatalogService } from './catalog/service.js'
 export {
   COMPANY_CATALOG_ADAPTER_ID,

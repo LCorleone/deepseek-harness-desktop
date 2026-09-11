@@ -28,6 +28,8 @@ import {
   pluginInstallEvent,
   pluginResetEvent,
   PYTHON_RUNTIME_VERSION_LIMIT,
+  RESTART_REQUEST_REASON_LIMIT,
+  restartRequestEvent,
   pythonRuntimeEvent,
   sandboxEscalationEvent,
   ssoLoginEvent,
@@ -139,7 +141,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation', 'restart_request'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -314,11 +316,13 @@ describe('client event collector', () => {
     collector.disclaimer({ decision: 'agree', clientVersion: '9.9.9-test', textHash: 'a'.repeat(64) })
     collector.pythonRuntime({ available: true, version: '3.12.10' })
     collector.sandboxEscalation({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
+    collector.restartRequest({ outcome: 'accepted' })
+    collector.restartRequest({ outcome: 'rejected', reason: 'intent-expired' })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
       'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
-      'python_runtime', 'sandbox_escalation',
+      'python_runtime', 'sandbox_escalation', 'restart_request', 'restart_request',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -328,6 +332,8 @@ describe('client event collector', () => {
     expect(rows[1]?.detail).toEqual({ result: 'failure', reason: 'the portal rejected the token', mode: 'browser' })
     expect(rows[7]?.detail).toEqual({ available: true, version: '3.12.10' })
     expect(rows[8]?.detail).toEqual({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
+    expect(rows[9]?.detail).toEqual({ outcome: 'accepted' })
+    expect(rows[10]?.detail).toEqual({ outcome: 'rejected', reason: 'intent-expired' })
   })
 
   it('carries a null email when no SSO session exists', async () => {
@@ -652,6 +658,21 @@ describe('plugin install projection', () => {
         reason: 'intent expired before the install could be confirmed',
       }, new Set())
       expect(detail.reason).toBe('intent expired before the install could be confirmed')
+    })
+
+    it('restartRequestEvent keeps only the categorical outcome and bounded branch code', () => {
+      expect(restartRequestEvent({ outcome: 'accepted' })).toEqual({ outcome: 'accepted' })
+      expect(restartRequestEvent({ outcome: 'already-requested' })).toEqual({ outcome: 'already-requested' })
+      expect(restartRequestEvent({ outcome: 'rejected', reason: 'intent-expired' }))
+        .toEqual({ outcome: 'rejected', reason: 'intent-expired' })
+      // No token material can ride through: a message-shaped reason is masked,
+      // flattened, and bounded before it becomes a row.
+      const detail = restartRequestEvent({
+        outcome: 'rejected',
+        reason: `token=AKIA1234567890ABCDEFGHI\n${'x'.repeat(200)}`,
+      })
+      expect(detail.reason).not.toContain('AKIA1234567890ABCDEFGHI')
+      expect(detail.reason?.length).toBeLessThanOrEqual(RESTART_REQUEST_REASON_LIMIT)
     })
 
     it('ssoLoginEvent masks secret-shaped fragments in the failure reason', () => {

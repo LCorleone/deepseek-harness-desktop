@@ -26,7 +26,6 @@ export interface DesktopActionsBootstrap {
 /** Publish only terminal-open and restart operations for one Cordis generation. */
 export class DesktopActionsService extends Service implements DesktopActions {
   private disposed = false
-  private restartCompleted = false
   private restartOperation: Promise<void> | undefined
 
   constructor(ctx: Context, private readonly bootstrap: DesktopActionsBootstrap) {
@@ -45,18 +44,22 @@ export class DesktopActionsService extends Service implements DesktopActions {
   requestRestart(): Promise<void> {
     try {
       this.assertActive()
-      if (this.restartCompleted) return Promise.resolve()
-      if (this.restartOperation !== undefined) return this.restartOperation
-      const operation = (async () => {
-        this.assertActive()
-        await this.bootstrap.requestRestart()
-        this.restartCompleted = true
-      })()
-      this.restartOperation = operation
-      void operation.catch(() => {
-        if (this.restartOperation === operation) this.restartOperation = undefined
-      })
-      return operation
+      // Every request reaches the bootstrap. The launcher's restart handler
+      // treats a repeated call as an escalation of a shutdown that has not
+      // finished tearing down, so coalescing repeats (or short-circuiting a
+      // settled promise) would swallow the retry the Market route forwards.
+      if (this.restartOperation === undefined) {
+        const operation = (async () => {
+          this.assertActive()
+          await this.bootstrap.requestRestart()
+        })()
+        this.restartOperation = operation
+        void operation.catch(() => {
+          if (this.restartOperation === operation) this.restartOperation = undefined
+        })
+        return operation
+      }
+      return Promise.resolve(this.bootstrap.requestRestart())
     } catch (cause) {
       return Promise.reject(cause)
     }

@@ -853,6 +853,117 @@ describe('MarketSettingsTab', () => {
     expect(readMarketCatalog).not.toHaveBeenCalled()
   })
 
+  it('surfaces a localized timeout when the confirmed operation never answers', async () => {
+    const receipt = makeReceipt()
+    vi.mocked(readMarketState).mockResolvedValue(emptyState)
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt }],
+    })
+    vi.mocked(previewMarketOperation).mockResolvedValue({
+      action: 'uninstall',
+      profileName: receipt.profileName,
+      packageName: receipt.packageName,
+      version: receipt.version,
+      displayName: receipt.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-uninstall-preview',
+    })
+    // The Client-side deadline fired: a disposed Market generation would
+    // otherwise leave this fetch pending and the spinner turning forever.
+    vi.mocked(executeMarketOperation).mockRejectedValue(
+      Object.assign(new Error('The market operation timed out before the Host answered.'), {
+        status: 408,
+        code: 'operation-timeout',
+      }),
+    )
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('heading', { name: en.emptyTitle })
+    fireEvent.click(screen.getByRole('button', { name: en.installed }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.uninstall}: ${receipt.displayName}` }))
+    expectMarketModal(await screen.findByRole('dialog', { name: en.confirmUninstallTitle }), 'dshMarketConfirmModal')
+    fireEvent.click(screen.getByRole('button', { name: en.confirmUninstall }))
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert').some(node => node.textContent === en.executeTimeoutError)).toBe(true)
+    })
+  })
+
+  it('surfaces a localized timeout when an operation preview never answers', async () => {
+    const receipt = makeReceipt()
+    vi.mocked(readMarketState).mockResolvedValue(emptyState)
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt }],
+    })
+    // The preview deadline fired: a disposed Market generation would otherwise
+    // leave this fetch pending and the spinner turning forever.
+    vi.mocked(previewMarketOperation).mockRejectedValue(
+      Object.assign(new Error('The market operation timed out before the Host answered.'), {
+        status: 408,
+        code: 'operation-timeout',
+      }),
+    )
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('heading', { name: en.emptyTitle })
+    fireEvent.click(screen.getByRole('button', { name: en.installed }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.uninstall}: ${receipt.displayName}` }))
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert').some(node => node.textContent === en.previewTimeoutError)).toBe(true)
+    })
+  })
+
+  it('keeps the restart button latched while the Host reports a restart already in progress', async () => {
+    const receipt = makeReceipt()
+    vi.mocked(readMarketState).mockResolvedValue(emptyState)
+    vi.mocked(readMarketInstallations)
+      .mockResolvedValueOnce({
+        installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt }],
+      })
+      .mockResolvedValue({ installations: [] })
+    vi.mocked(previewMarketOperation).mockResolvedValue({
+      action: 'uninstall',
+      profileName: receipt.profileName,
+      packageName: receipt.packageName,
+      version: receipt.version,
+      displayName: receipt.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-uninstall-preview',
+    })
+    vi.mocked(executeMarketOperation).mockResolvedValue({
+      action: 'uninstall',
+      receiptId: receipt.receiptId,
+      packageName: receipt.packageName,
+      restartToken: 'opaque-uninstall-restart',
+    })
+    // A repeated click: the Host accepted this grant earlier and now answers
+    // idempotently instead of 410 intent-expired.
+    vi.mocked(requestMarketRestart).mockResolvedValue({ ok: true, alreadyRequested: true })
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('heading', { name: en.emptyTitle })
+    fireEvent.click(screen.getByRole('button', { name: en.installed }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.uninstall}: ${receipt.displayName}` }))
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenCalledWith(
+        { action: 'uninstall', receiptId: receipt.receiptId },
+        expect.any(AbortSignal),
+      )
+    })
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmUninstall }))
+    const dialog = await screen.findByRole('dialog', { name: en.uninstallComplete })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: en.restartNow }))
+    await waitFor(() => {
+      expect(requestMarketRestart).toHaveBeenCalledWith('opaque-uninstall-restart', expect.any(AbortSignal))
+    })
+
+    const latched = await within(dialog).findByRole('button', { name: en.restarting }) as HTMLButtonElement
+    expect(latched.disabled).toBe(true)
+    expect(screen.queryByText(en.restartError)).toBeNull()
+  })
+
   it('disables an external bundle through an exact Host preview without offering uninstall', async () => {
     const external = {
       kind: 'external' as const,

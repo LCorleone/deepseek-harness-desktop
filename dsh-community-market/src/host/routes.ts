@@ -132,6 +132,80 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body)
 }
 
+/**
+ * One-line diagnostic for a response the Host could not deliver. Exists so a
+ * future skipped write of this class never disappears silently again.
+ */
+function logSkippedResponse(
+  res: ServerResponse,
+  logger: Pick<Context['logger'], 'error'> | undefined,
+): void {
+  logger?.error(
+    `dsh-community-market: response skipped; the client connection is gone or the response was already sent (destroyed=${String(res.destroyed)}, writableEnded=${String(res.writableEnded)})`,
+  )
+}
+
+/**
+ * Answer a completed request whenever its response is still writable.
+ *
+ * The request signal is deliberately NOT consulted here: when the Market
+ * generation is disposed mid-operation, `generationController` aborts while
+ * the Client is still waiting. Suppressing the answer in that case left the
+ * post-uninstall UI spinning forever (b91). A real disconnect leaves
+ * `res.destroyed`/`res.writableEnded` set, and the skipped write is logged
+ * once instead of vanishing.
+ */
+function sendJsonIfWritable(
+  res: ServerResponse,
+  status: number,
+  value: unknown,
+  logger: Pick<Context['logger'], 'error'> | undefined,
+): void {
+  if (res.destroyed || res.writableEnded) {
+    logSkippedResponse(res, logger)
+    return
+  }
+  sendJson(res, status, value)
+}
+
+/** {@link sendJsonIfWritable} for the failure path (status/code chosen by {@link sendInstallError}). */
+function sendInstallErrorIfWritable(
+  res: ServerResponse,
+  cause: unknown,
+  logger: Pick<Context['logger'], 'error'> | undefined,
+): void {
+  if (res.destroyed || res.writableEnded) {
+    logSkippedResponse(res, logger)
+    return
+  }
+  sendInstallError(res, cause, logger as Pick<Context['logger'], 'error'>)
+}
+
+/**
+ * {@link sendJsonIfWritable} for a body built by a route-specific sender
+ * (`sendCatalogFailure`, a fixed shape, …): the sender runs only while the
+ * response is still writable, and a skipped write is logged.
+ */
+function sendIfWritable(
+  res: ServerResponse,
+  logger: Pick<Context['logger'], 'error'> | undefined,
+  send: () => void,
+): void {
+  if (res.destroyed || res.writableEnded) {
+    logSkippedResponse(res, logger)
+    return
+  }
+  send()
+}
+
+/** Explicit cancellation for work the Host abandoned because the Market generation ended. */
+function cancelledOperationError(operation: 'market operation' | 'restart request'): MarketInstallError {
+  return new MarketInstallError(
+    'operation-failed',
+    `The ${operation} was cancelled because the Market session ended.`,
+  )
+}
+
 /** One-line cause digest (message plus the first stack frames) for the generic install-failure log. */
 function installFailureDetail(cause: unknown): string {
   if (!(cause instanceof Error)) return String(cause)
@@ -526,6 +600,29 @@ export interface MarketDesktopActionsProvider {
   get(): MarketDesktopActions | undefined
 }
 
+/** Categorical outcome of one handled restart request (client event telemetry). */
+export type MarketRestartRequestOutcome = 'accepted' | 'already-requested' | 'rejected'
+
+/**
+ * One restart request's reportable facts. Categorical only: `reason` is the
+ * refusing branch's fixed code (`invalid-request`, `intent-expired`, …), never
+ * the token or a local path.
+ */
+export interface MarketRestartRequestEvent {
+  readonly outcome: MarketRestartRequestOutcome
+  readonly reason?: string
+}
+
+/**
+ * Host-injected restart telemetry seam (the `desktopClientEventReporter`
+ * context capability). The default is a no-op, so standalone deployments and
+ * Hosts without the injection keep byte-for-byte behavior. Implementations
+ * must never throw — telemetry must never alter a restart decision.
+ */
+export interface MarketRestartRequestEventSink {
+  reportRestartRequest(event: MarketRestartRequestEvent): void
+}
+
 export interface MarketDesktopPluginBundle {
   readonly bundleId: string
   readonly packageName: string
@@ -769,9 +866,18 @@ export function registerMarketRoutes(
   desktopPluginsProvider?: MarketDesktopPluginsProvider,
   sourceLock?: CatalogSourceLockOptions,
   companyCatalog?: MarketCompanyCatalogRouteWiring,
+  restartEventSink?: MarketRestartRequestEventSink,
 ): () => void {
   const expectedPort = ctx.webServer.port
   const generationController = new AbortController()
+  /** Fire-and-forget restart telemetry; a failed report never changes the response. */
+  const reportRestartRequest = (event: MarketRestartRequestEvent): void => {
+    try {
+      restartEventSink?.reportRestartRequest(event)
+    } catch {
+      // Telemetry must never fail (or alter) a restart request.
+    }
+  }
   type DesktopPluginPreviewBinding = {
     readonly expiresAt: number
     readonly bundleId: string
@@ -781,6 +887,11 @@ export function registerMarketRoutes(
   const disablePreviews = new Map<string, DesktopPluginPreviewBinding>()
   const enablePreviews = new Map<string, DesktopPluginPreviewBinding>()
   const desktopPluginRestartTokens = new Map<string, number>()
+  // Grants this generation already consumed through an accepted POST. Kept for
+  // the same TTL so a repeated click (the renderer shows no success feedback)
+  // reads as "the restart is already in progress" instead of a misleading 410;
+  // it never authorizes a fresh action, and the grant stays one-shot.
+  const acceptedRestartTokens = new Map<string, number>()
   const purgeDesktopTokens = () => {
     const now = Date.now()
     for (const [token, preview] of disablePreviews) {
@@ -791,6 +902,9 @@ export function registerMarketRoutes(
     }
     for (const [token, expiresAt] of desktopPluginRestartTokens) {
       if (now >= expiresAt) desktopPluginRestartTokens.delete(token)
+    }
+    for (const [token, expiresAt] of acceptedRestartTokens) {
+      if (now >= expiresAt) acceptedRestartTokens.delete(token)
     }
   }
   const rememberDesktopToken = (tokens: Map<string, number>, token: string, expiresAt: number) => {
@@ -990,7 +1104,7 @@ export function registerMarketRoutes(
             : cachedCatalogResponse(settingsScope.get().catalogCache, activeSource, localeKey)
           if (cached !== undefined) {
             servedCatalogPreviews.add(previewKey)
-            if (!signal.aborted && !res.destroyed) sendJson(res, 200, cached)
+            sendJsonIfWritable(res, 200, cached, ctx.logger)
             return
           }
         }
@@ -1002,12 +1116,18 @@ export function registerMarketRoutes(
             ...(scope === undefined ? {} : { expectedSourceRecordId: scope.sourceRecordId }),
           })
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendCatalogFailure(res, cause)
+          // A generation disposal aborts the scan: the waiting Client still
+          // needs an answer, and a genuinely cancelled scan must not masquerade
+          // as a catalog failure.
+          if (generationController.signal.aborted) {
+            sendInstallErrorIfWritable(res, cancelledOperationError('market operation'), ctx.logger)
+          } else {
+            sendIfWritable(res, ctx.logger, () => { sendCatalogFailure(res, cause) })
+          }
           return
         }
-        signal.throwIfAborted()
         const response = buildCatalogResponse(index, query, scope)
-        if (!signal.aborted && !res.destroyed) sendJson(res, 200, response)
+        sendJsonIfWritable(res, 200, response, ctx.logger)
         if (previewKey !== undefined && previewSourceRecordId !== undefined
           && index !== undefined && !generationController.signal.aborted) {
           servedCatalogPreviews.add(previewKey)
@@ -1015,7 +1135,11 @@ export function registerMarketRoutes(
         }
       } catch {
         if (refreshPreviewKey !== undefined) servedCatalogPreviews.delete(refreshPreviewKey)
-        if (!signal.aborted && !res.destroyed) sendJson(res, 400, { error: 'invalid catalog query' })
+        if (generationController.signal.aborted) {
+          sendInstallErrorIfWritable(res, cancelledOperationError('market operation'), ctx.logger)
+        } else {
+          sendJsonIfWritable(res, 400, { error: 'invalid catalog query' }, ctx.logger)
+        }
       } finally {
         stopWatching()
       }
@@ -1156,7 +1280,7 @@ export function registerMarketRoutes(
             throw new MarketInstallError('not-available', 'No catalog source is active.')
           }
           const response = await install.listInstallable(index, signal)
-          if (!signal.aborted && !res.destroyed) sendJson(res, 200, response)
+          sendJsonIfWritable(res, 200, response, ctx.logger)
           if (!generationController.signal.aborted) {
             servedCatalogPreviews.add(catalogPreviewKey(index.source.sourceRecordId, localeKey))
             const preview = buildCatalogResponse(
@@ -1167,7 +1291,12 @@ export function registerMarketRoutes(
             void persistCatalogResponse(preview, index.source.sourceRecordId, localeKey)
           }
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+          const cancellation = generationController.signal.aborted && !(cause instanceof MarketInstallError)
+          sendInstallErrorIfWritable(
+            res,
+            cancellation ? cancelledOperationError('market operation') : cause,
+            ctx.logger,
+          )
         } finally {
           stopWatching()
         }
@@ -1185,9 +1314,9 @@ export function registerMarketRoutes(
         }
         try {
           const installations = reconcileInstallations(await install.listVerifiedReceipts(), desktopPlugins.list())
-          if (!generationController.signal.aborted && !res.destroyed) sendJson(res, 200, { installations })
+          sendJsonIfWritable(res, 200, { installations }, ctx.logger)
         } catch (cause) {
-          if (!generationController.signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+          sendInstallErrorIfWritable(res, cause, ctx.logger)
         }
       }}),
       ctx.webServer.register({ kind: 'exact', path: ROUTE_OPERATION_PREVIEW, handler: async (req, res) => {
@@ -1275,16 +1404,14 @@ export function registerMarketRoutes(
                 managedReceipt?.receiptId,
               )
             }
-            if (!signal.aborted && !res.destroyed) {
-              sendJson(res, 200, {
-                action: request.action,
-                profileName: preview.profileName,
-                packageName: preview.packageName,
-                displayName: preview.packageName,
-                expiresAt: preview.expiresAt,
-                previewId: preview.previewId,
-              })
-            }
+            sendJsonIfWritable(res, 200, {
+              action: request.action,
+              profileName: preview.profileName,
+              packageName: preview.packageName,
+              displayName: preview.packageName,
+              expiresAt: preview.expiresAt,
+              previewId: preview.previewId,
+            }, ctx.logger)
           } else {
             const install = installProvider.get()
             if (install === undefined) {
@@ -1294,10 +1421,15 @@ export function registerMarketRoutes(
               ? await install.previewInstall(request.sourceRecordId, request.itemId, signal)
               : await install.previewUninstall(request.receiptId, signal)
             const { intent, ...summary } = preview
-            if (!signal.aborted && !res.destroyed) sendJson(res, 200, { ...summary, previewId: intent })
+            sendJsonIfWritable(res, 200, { ...summary, previewId: intent }, ctx.logger)
           }
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+          const cancellation = generationController.signal.aborted && !(cause instanceof MarketInstallError)
+          sendInstallErrorIfWritable(
+            res,
+            cancellation ? cancelledOperationError('market operation') : cause,
+            ctx.logger,
+          )
         } finally {
           stopWatching()
         }
@@ -1316,6 +1448,10 @@ export function registerMarketRoutes(
           // Closing the Market surface may stop the HTTP response, but must not
           // interrupt profile writes between pnpm, post-checks, and the receipt.
           purgeDesktopTokens()
+          // Only a generation that is still live may start the mutation: an
+          // aborted signal here means the Market session already ended, and the
+          // Client must hear that rather than wait forever for a response.
+          generationController.signal.throwIfAborted()
           let result: unknown
           const disablePreview = disablePreviews.get(previewId)
           const enablePreview = enablePreviews.get(previewId)
@@ -1399,9 +1535,17 @@ export function registerMarketRoutes(
             }
             result = await install.executePreview(previewId, generationController.signal)
           }
-          if (!signal.aborted && !res.destroyed) sendJson(res, 200, result)
+          sendJsonIfWritable(res, 200, result, ctx.logger)
         } catch (cause) {
-          if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+          // A completed operation answers above regardless of the request
+          // signal; only work the generation actually cancelled reports an
+          // error here, so a cancellation is never mistaken for success.
+          const cancellation = generationController.signal.aborted && !(cause instanceof MarketInstallError)
+          sendInstallErrorIfWritable(
+            res,
+            cancellation ? cancelledOperationError('market operation') : cause,
+            ctx.logger,
+          )
         } finally {
           stopWatching()
         }
@@ -1411,32 +1555,27 @@ export function registerMarketRoutes(
   if (desktopActionsProvider !== undefined) {
     routes.push(ctx.webServer.register({ kind: 'exact', path: ROUTE_REQUEST_RESTART, handler: async (req, res) => {
       if (req.method !== 'POST' || !mutationAllowed(req, expectedPort)) {
+        ctx.logger.error('dsh-community-market: restart request refused (405: not a local same-origin POST)')
+        reportRestartRequest({ outcome: 'rejected', reason: 'mutation-not-allowed' })
         sendJson(res, 405, { error: 'requesting a restart requires a local same-origin POST' })
         return
       }
       const actions = desktopActionsProvider.get()
       if (actions === undefined) {
+        ctx.logger.error('dsh-community-market: restart request refused (503: desktop restart is unavailable)')
+        reportRestartRequest({ outcome: 'rejected', reason: 'desktop-unavailable' })
         sendJson(res, 503, { error: 'desktop restart is unavailable' })
         return
       }
       const controller = new AbortController()
       const signal = AbortSignal.any([controller.signal, generationController.signal])
       const stopWatching = abortOnDisconnect(req, res, controller)
-      try {
-        const restartToken = asRestartToken(await readOperationJson(req, signal))
-        signal.throwIfAborted()
-        purgeDesktopTokens()
-        if (!desktopPluginRestartTokens.delete(restartToken)) {
-          const install = installProvider?.get()
-          if (install === undefined) {
-            throw new MarketInstallError('intent-expired', 'The restart confirmation expired or was already used.')
-          }
-          install.consumeRestartToken(restartToken)
-        }
-        // Once the Host consumes the one-shot grant it owns the restart. A
-        // renderer disconnect may drop the acknowledgement, but must not burn
-        // the token without performing the accepted action.
-        if (!res.destroyed) sendJson(res, 200, { ok: true })
+      // Once the Host consumes the one-shot grant it owns the restart. A
+      // renderer disconnect may drop the acknowledgement, but must not burn
+      // the token without performing the accepted action. A repeated click is
+      // forwarded too: the launcher escalates a shutdown that has not finished
+      // tearing down instead of silently dropping the retry.
+      const requestDesktopRestart = (): void => {
         try {
           void actions.requestRestart().catch(() => {
             ctx.logger.error('dsh-community-market: desktop restart request failed')
@@ -1444,8 +1583,55 @@ export function registerMarketRoutes(
         } catch {
           ctx.logger.error('dsh-community-market: desktop restart request failed')
         }
+      }
+      try {
+        const restartToken = asRestartToken(await readOperationJson(req, signal))
+        signal.throwIfAborted()
+        purgeDesktopTokens()
+        // A consumed grant stays one-shot: repeating the same click (the
+        // renderer offers no success feedback) answers "already in progress"
+        // without authorizing a fresh action. The desktop action still runs so
+        // the launcher's repeated-request escalation can unstick a wedged
+        // teardown — the grant itself is never re-authorized.
+        if (acceptedRestartTokens.has(restartToken)) {
+          ctx.logger.error('dsh-community-market: restart request was already accepted; reporting it in progress')
+          reportRestartRequest({ outcome: 'already-requested' })
+          sendJsonIfWritable(res, 200, { ok: true, alreadyRequested: true }, ctx.logger)
+          requestDesktopRestart()
+          return
+        }
+        if (!desktopPluginRestartTokens.delete(restartToken)) {
+          const install = installProvider?.get()
+          if (install === undefined) {
+            throw new MarketInstallError('intent-expired', 'The restart confirmation expired or was already used.')
+          }
+          install.consumeRestartToken(restartToken)
+        }
+        rememberDesktopToken(acceptedRestartTokens, restartToken, Date.now() + 5 * 60 * 1000)
+        ctx.logger.error('dsh-community-market: restart grant accepted; requesting the desktop restart')
+        reportRestartRequest({ outcome: 'accepted' })
+        sendJsonIfWritable(res, 200, { ok: true }, ctx.logger)
+        requestDesktopRestart()
       } catch (cause) {
-        if (!signal.aborted && !res.destroyed) sendInstallError(res, cause, ctx.logger)
+        if (res.destroyed || res.writableEnded) {
+          logSkippedResponse(res, ctx.logger)
+        } else if (generationController.signal.aborted && !(cause instanceof MarketInstallError)) {
+          // The Market generation ended before the grant was consumed: answer
+          // an explicit cancellation rather than hanging the waiting Client.
+          reportRestartRequest({ outcome: 'rejected', reason: 'operation-cancelled' })
+          sendInstallErrorIfWritable(res, cancelledOperationError('restart request'), ctx.logger)
+        } else {
+          // Name the refusing branch (400 invalid body / 410 expired grant);
+          // sendInstallError already logs the unexpected-cause detail below.
+          if (cause instanceof MarketInstallError) {
+            ctx.logger.error(`dsh-community-market: restart request refused (${cause.code})`)
+          }
+          reportRestartRequest({
+            outcome: 'rejected',
+            reason: cause instanceof MarketInstallError ? cause.code : 'operation-failed',
+          })
+          sendInstallError(res, cause, ctx.logger)
+        }
       } finally {
         stopWatching()
       }
@@ -1459,6 +1645,7 @@ export function registerMarketRoutes(
     disablePreviews.clear()
     enablePreviews.clear()
     desktopPluginRestartTokens.clear()
+    acceptedRestartTokens.clear()
     media.dispose()
     routes.forEach(dispose => dispose())
   }

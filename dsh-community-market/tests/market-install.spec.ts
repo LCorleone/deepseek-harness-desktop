@@ -23,7 +23,7 @@ import {
   type MarketInstallEventSink,
   type MarketInstallReceipt,
 } from '../src/install/service.js'
-import { marketRoutes, registerMarketRoutes, registerMarketSettings } from '../src/host/routes.js'
+import { marketRoutes, registerMarketRoutes, registerMarketSettings, type MarketRestartRequestEvent } from '../src/host/routes.js'
 import { manualInstallHint } from '../src/install/manual.js'
 
 const packageName = 'dsh-plugin-safe'
@@ -1868,6 +1868,106 @@ describe('market install Host routes', () => {
     dispose()
   })
 
+  it('answers a repeated restart grant idempotently and reports every branch to telemetry', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
+    const ctx = {
+      logger: { error: logError },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    // Only 'restart-token' was ever issued; everything else is unknown/expired.
+    const issued = new Set(['restart-token'])
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      consumeRestartToken: vi.fn((token: string) => {
+        if (!issued.delete(token)) {
+          throw new MarketInstallError('intent-expired', 'The restart confirmation expired or was already used.')
+        }
+      }),
+    } as unknown as MarketInstallService
+    const requestRestart = vi.fn(async () => {})
+    const actions = { openTerminal: vi.fn(), requestRestart }
+    const restartEvents: MarketRestartRequestEvent[] = []
+    const restartEventSink = {
+      reportRestartRequest: vi.fn((event: MarketRestartRequestEvent) => { restartEvents.push(event) }),
+    }
+    const dispose = registerMarketRoutes(
+      ctx as never,
+      memoryScope().scope,
+      { get: () => install },
+      { get: () => actions },
+      undefined,
+      undefined,
+      undefined,
+      restartEventSink,
+    )
+    const request = async (body: unknown) => {
+      const req = Object.assign(new EventEmitter(), {
+        method: 'POST',
+        url: marketRoutes.requestRestart,
+        headers: {
+          host: '127.0.0.1:43120',
+          origin: 'http://127.0.0.1:43120',
+          'sec-fetch-site': 'same-origin',
+        },
+        socket: { remoteAddress: '127.0.0.1' },
+        destroy: vi.fn(),
+      })
+      let responseBody = ''
+      const res = Object.assign(new EventEmitter(), {
+        destroyed: false,
+        writableEnded: false,
+        statusCode: 0,
+        setHeader: vi.fn(),
+        removeHeader: vi.fn(),
+        end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+      })
+      const pending = handlers.get(marketRoutes.requestRestart)!(req, res)
+      queueMicrotask(() => {
+        req.emit('data', Buffer.from(JSON.stringify(body)))
+        req.emit('end')
+      })
+      await pending
+      return { status: res.statusCode, body: JSON.parse(responseBody) as Record<string, unknown> }
+    }
+
+    await expect(request({ restartToken: 'restart-token' })).resolves.toEqual({ status: 200, body: { ok: true } })
+    expect(install.consumeRestartToken).toHaveBeenCalledWith('restart-token')
+    expect(requestRestart).toHaveBeenCalledOnce()
+
+    // The same one-shot grant again: a restart is already in progress, so the
+    // Host answers idempotently but still forwards the click to the desktop
+    // action, whose repeated-request escalation can unstick a wedged teardown.
+    await expect(request({ restartToken: 'restart-token' }))
+      .resolves.toEqual({ status: 200, body: { ok: true, alreadyRequested: true } })
+    expect(install.consumeRestartToken).toHaveBeenCalledOnce()
+    expect(requestRestart).toHaveBeenCalledTimes(2)
+
+    // A never-issued (or expired) grant stays fail-closed.
+    await expect(request({ restartToken: 'never-issued' }))
+      .resolves.toMatchObject({ status: 410, body: { code: 'intent-expired' } })
+    expect(requestRestart).toHaveBeenCalledTimes(2)
+
+    expect(restartEvents).toEqual([
+      { outcome: 'accepted' },
+      { outcome: 'already-requested' },
+      { outcome: 'rejected', reason: 'intent-expired' },
+    ])
+    expect(logError.mock.calls.map(call => call[0])).toEqual([
+      expect.stringContaining('restart grant accepted'),
+      expect.stringContaining('already accepted'),
+      expect.stringContaining('refused (intent-expired)'),
+    ])
+    dispose()
+  })
+
   it('reconciles verified receipts with direct bundles without starting catalog verification', async () => {
     type Handler = (req: any, res: any) => Promise<void>
     const handlers = new Map<string, Handler>()
@@ -1937,7 +2037,9 @@ describe('market install Host routes', () => {
   it('keeps a confirmed Host operation alive after the Renderer connection closes', async () => {
     type Handler = (req: any, res: any) => Promise<void>
     const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
     const ctx = {
+      logger: { error: logError },
       webServer: {
         port: 43_120,
         register: vi.fn((route: { path: string; handler: Handler }) => {
@@ -1987,12 +2089,351 @@ describe('market install Host routes', () => {
     req.emit('end')
     await vi.waitFor(() => expect(executePreview).toHaveBeenCalledOnce())
 
+    // A real disconnect destroys the response before 'close' fires.
+    res.destroyed = true
     res.emit('close')
     expect(operationSignal?.aborted).toBe(false)
     finishOperation()
     await pending
     expect(res.end).not.toHaveBeenCalled()
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('response skipped'))
     dispose()
+  })
+
+  it('answers a completed operation even when the Market generation is disposed mid-flight', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
+    const ctx = {
+      logger: { error: logError },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    let finishOperation!: () => void
+    const executePreview = vi.fn(async () => {
+      await new Promise<void>(resolve => { finishOperation = resolve })
+      return { action: 'uninstall' as const, receiptId: 'receipt-1', packageName, restartToken: 'restart-token' }
+    })
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      previewInstall: vi.fn(),
+      previewUninstall: vi.fn(),
+      executePreview,
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const dispose = registerMarketRoutes(ctx as never, memoryScope().scope, { get: () => install })
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.operationExecute,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    const pending = handlers.get(marketRoutes.operationExecute)!(req, res)
+    req.emit('data', Buffer.from(JSON.stringify({ previewId: 'opaque-preview-id' })))
+    req.emit('end')
+    await vi.waitFor(() => expect(executePreview).toHaveBeenCalledOnce())
+
+    // The Market generation is replaced while pnpm finishes: the request signal
+    // aborts, but the committed operation must still reach the waiting client
+    // instead of leaving its spinner forever (b91).
+    dispose()
+    finishOperation()
+    await pending
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(responseBody)).toMatchObject({
+      action: 'uninstall',
+      receiptId: 'receipt-1',
+      restartToken: 'restart-token',
+    })
+    expect(logError).not.toHaveBeenCalled()
+  })
+
+  it('answers a cancellation when the Market generation ends before a mutation commits', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
+    const ctx = {
+      logger: { error: logError },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const executePreview = vi.fn(async (_previewId: string, signal: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+      throw new Error('unreachable')
+    })
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      previewInstall: vi.fn(),
+      previewUninstall: vi.fn(),
+      executePreview,
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const dispose = registerMarketRoutes(ctx as never, memoryScope().scope, { get: () => install })
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.operationExecute,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    const pending = handlers.get(marketRoutes.operationExecute)!(req, res)
+    req.emit('data', Buffer.from(JSON.stringify({ previewId: 'opaque-preview-id' })))
+    req.emit('end')
+    await vi.waitFor(() => expect(executePreview).toHaveBeenCalledOnce())
+
+    // The work really was cancelled: answer an explicit error, never a false
+    // success and never silence.
+    dispose()
+    await pending
+
+    expect(res.statusCode).toBe(502)
+    expect(JSON.parse(responseBody)).toMatchObject({ code: 'operation-failed' })
+    expect(JSON.parse(responseBody).error).toContain('cancelled')
+  })
+
+  it('answers a completed preview even when the Market generation is disposed mid-flight', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const logError = vi.fn()
+    const ctx = {
+      logger: { error: logError },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    let finishPreview!: () => void
+    const previewInstall = vi.fn(async () => {
+      await new Promise<void>(resolve => { finishPreview = resolve })
+      return {
+        intent: 'opaque-preview-id',
+        action: 'install' as const,
+        profileName: 'web',
+        packageName,
+        version,
+        displayName: 'Safe Plugin',
+        expiresAt: '2099-08-18T00:05:00.000Z',
+      }
+    })
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      previewInstall,
+      previewUninstall: vi.fn(),
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const dispose = registerMarketRoutes(ctx as never, memoryScope().scope, { get: () => install })
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.operationPreview,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    const pending = handlers.get(marketRoutes.operationPreview)!(req, res)
+    req.emit('data', Buffer.from(JSON.stringify({
+      action: 'install',
+      sourceRecordId: 'source-1',
+      itemId: 'example/dsh-plugin-safe',
+    })))
+    req.emit('end')
+    await vi.waitFor(() => expect(previewInstall).toHaveBeenCalledOnce())
+
+    // The Market generation is replaced while the preview resolves: a disposal
+    // during preview must not leave the waiting Client spinning for the whole
+    // deadline.
+    dispose()
+    finishPreview()
+    await pending
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(responseBody)).toMatchObject({ previewId: 'opaque-preview-id', action: 'install' })
+    expect(logError).not.toHaveBeenCalled()
+  })
+
+  it('answers a cancellation when the Market generation ends before a preview commits', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const ctx = {
+      logger: { error: vi.fn() },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const previewInstall = vi.fn(async (_sourceRecordId: string, _itemId: string, signal: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+      throw new Error('unreachable')
+    })
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      previewInstall,
+      previewUninstall: vi.fn(),
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const dispose = registerMarketRoutes(ctx as never, memoryScope().scope, { get: () => install })
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.operationPreview,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    const pending = handlers.get(marketRoutes.operationPreview)!(req, res)
+    req.emit('data', Buffer.from(JSON.stringify({
+      action: 'install',
+      sourceRecordId: 'source-1',
+      itemId: 'example/dsh-plugin-safe',
+    })))
+    req.emit('end')
+    await vi.waitFor(() => expect(previewInstall).toHaveBeenCalledOnce())
+
+    // The work really was cancelled: answer an explicit error, never silence.
+    dispose()
+    await pending
+
+    expect(res.statusCode).toBe(502)
+    expect(JSON.parse(responseBody)).toMatchObject({ code: 'operation-failed' })
+    expect(JSON.parse(responseBody).error).toContain('cancelled')
+  })
+
+  it('refuses a mutation whose Market generation already ended before the request arrived', async () => {
+    type Handler = (req: any, res: any) => Promise<void>
+    const handlers = new Map<string, Handler>()
+    const ctx = {
+      logger: { error: vi.fn() },
+      webServer: {
+        port: 43_120,
+        register: vi.fn((route: { path: string; handler: Handler }) => {
+          handlers.set(route.path, route.handler)
+          return vi.fn()
+        }),
+      },
+    }
+    const executePreview = vi.fn()
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      previewInstall: vi.fn(),
+      previewUninstall: vi.fn(),
+      executePreview,
+      observeCatalog: vi.fn(),
+      invalidateSource: vi.fn(),
+    } as unknown as MarketInstallService
+    const dispose = registerMarketRoutes(ctx as never, memoryScope().scope, { get: () => install })
+    const handler = handlers.get(marketRoutes.operationExecute)!
+    // The generation is gone before the Host even reads the request body.
+    dispose()
+
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST',
+      url: marketRoutes.operationExecute,
+      headers: {
+        host: '127.0.0.1:43120',
+        origin: 'http://127.0.0.1:43120',
+        'sec-fetch-site': 'same-origin',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      destroy: vi.fn(),
+    })
+    let responseBody = ''
+    const res = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      statusCode: 0,
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+      end: vi.fn((value?: string) => { responseBody = value ?? ''; res.writableEnded = true }),
+    })
+
+    const pending = handler(req, res)
+    req.emit('data', Buffer.from(JSON.stringify({ previewId: 'opaque-preview-id' })))
+    req.emit('end')
+    await pending
+
+    expect(executePreview).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(502)
+    expect(JSON.parse(responseBody).error).toContain('cancelled')
   })
 
   it('logs the cause behind an unexpected install failure while keeping the generic 500 shape', async () => {

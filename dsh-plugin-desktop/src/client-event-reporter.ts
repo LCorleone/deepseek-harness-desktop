@@ -63,6 +63,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   pluginReset: 'plugin_reset',
   pythonRuntime: 'python_runtime',
   sandboxEscalation: 'sandbox_escalation',
+  restartRequest: 'restart_request',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -196,6 +197,19 @@ export interface PluginInstallEventDetail {
   /** Bounded failure category (the market's install error code vocabulary). */
   readonly reasonCode?: string
   /** Optional one-line bounded failure reason; never free stderr text. */
+  readonly reason?: string
+}
+
+/**
+ * `restart_request`: how one Host-handled desktop restart request ended —
+ * `accepted` (grant consumed, restart requested), `already-requested` (a
+ * repeated click for a grant this generation already consumed), or `rejected`
+ * (fail-closed refusal). The refusing branch code rides `reason`, so the fleet
+ * can tell a 405/400/410 apart without a token.
+ */
+export interface RestartRequestEventDetail {
+  readonly outcome: 'accepted' | 'already-requested' | 'rejected'
+  /** Refusing branch's fixed code (e.g. `intent-expired`); present when rejected. */
   readonly reason?: string
 }
 
@@ -681,6 +695,35 @@ export function pluginInstallEvent(
   }
 }
 
+/** Mirror of the market route's categorical restart-request facts. */
+export interface MarketRestartRequestEventView {
+  readonly outcome: 'accepted' | 'already-requested' | 'rejected'
+  /** Refusing branch's fixed code (the market's 405/400/410 causes). */
+  readonly reason?: string | undefined
+}
+
+/** Longest refusing branch kept in a `restart_request` detail. */
+export const RESTART_REQUEST_REASON_LIMIT = 64
+
+/**
+ * Project one Host-handled restart request into a `restart_request` detail.
+ * The vocabulary is categorical by construction (the market route reports its
+ * own fixed branch codes), and `reason` is masked and bounded again here so no
+ * message-shaped value can ever become a row.
+ */
+export function restartRequestEvent(event: MarketRestartRequestEventView): RestartRequestEventDetail {
+  const reason = event.reason === undefined
+    ? undefined
+    : maskSecrets(event.reason)
+        .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+        .trim()
+        .slice(0, RESTART_REQUEST_REASON_LIMIT)
+  return {
+    outcome: event.outcome,
+    ...(reason === undefined || reason === '' ? {} : { reason }),
+  }
+}
+
 /**
  * Project one disclaimer gate decision into a `disclaimer` detail. The
  * detail carries the version and text hash the decision was about (the
@@ -829,6 +872,10 @@ export class ClientEventCollector {
 
   sandboxEscalation(detail: SandboxEscalationEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.sandboxEscalation, detail)
+  }
+
+  restartRequest(detail: RestartRequestEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.restartRequest, detail)
   }
 
   #emit<T extends object>(eventType: string, detail: T): void {

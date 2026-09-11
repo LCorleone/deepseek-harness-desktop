@@ -15,6 +15,7 @@ import {
   authorizeLockedPluginAdd,
   companyManifestAssetPath,
   parseExactPluginAddSpec,
+  STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS,
 } from '../src/cli-install-channel.ts'
 import {
   companyTarballHandoffText,
@@ -29,6 +30,20 @@ import type { DesktopPolicy } from '../src/desktop-policy.ts'
 
 const keyId = 'company-catalog-2026.01'
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+
+/**
+ * Wait in real time (on real `setImmediate` turns) until `predicate` holds
+ * while fake timers are installed. The staged-file read and the gate's lazy
+ * `desktop-market.ts` import are real async work, not faked timers, so a
+ * fake-clock advance cannot drive them. Fails loudly instead of hanging.
+ */
+async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the stale retry to start')
+    await new Promise<void>(resolve => setImmediate(resolve))
+  }
+}
 
 function lockedCatalogPolicy(overrides: Record<string, unknown> = {}): DesktopPolicy {
   return parseDesktopPolicy({
@@ -482,6 +497,93 @@ describe('locked plugin-add authorization', () => {
       expect(deniedByTransport.reason).toContain('could not be downloaded')
     }
     expect(throwing).toHaveBeenCalledTimes(1)
+  })
+
+  it('denies at the retry bound when the stale retry fetch never settles', async () => {
+    // Device regression (b91): the retry rides the bundled-Node child's own
+    // fetch — the very transport the staging bypasses — and that transport can
+    // stall instead of failing. The gate must deny with the snapshot's stale
+    // verdict once its hard bound expires so a gated operation (and the market
+    // UI behind it) can never stay pending forever.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-stale-hang'))
+    const neverSettles = vi.fn(() => new Promise<Response>(() => {}))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const decisionPromise = authorizeLockedPluginAdd(
+        ['example-plugin@1.0.0'],
+        policy,
+        { stagedManifestFile: stagedFile, fetch: { request: neverSettles }, lastSeenSequence: 27 },
+      )
+      // Let the staged read and verification finish so the retry is armed.
+      await waitUntil(() => neverSettles.mock.calls.length > 0)
+      expect(neverSettles).toHaveBeenCalledTimes(1)
+      let settled = false
+      void decisionPromise.then(() => { settled = true })
+      // One tick short of the bound the gate is still waiting; the bound
+      // itself is what resolves it.
+      await vi.advanceTimersByTimeAsync(STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS - 1)
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      const decision = await decisionPromise
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) {
+        expect(decision.reason).toContain('stale-sequence')
+        expect(decision.reason).toContain('regressed below the last seen sequence 27')
+        expect(decision.reason).toContain(`did not answer within the ${String(STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS)} ms retry bound`)
+        expect(decision.reason).toContain('company plugin market')
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the retry bound only for the stale retry, never for the normal acquisition path', async () => {
+    // A plain origin read keeps its own fetch-options plumbing and arms no
+    // gate-level bound at all; only the stale snapshot's one retry is governed
+    // by the exported constant.
+    const policy = lockedCatalogPolicy({
+      companyCatalogOrigin: 'https://market.company.example',
+      companyManifestUrl: 'https://market.company.example/catalog-manifest.json',
+    })
+    const manifestText = readFileSync(writeCatalog(unsignedCatalog()), 'utf8')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const request = vi.fn(async () => new Response(manifestText))
+      const plain = await authorizeLockedPluginAdd(
+        ['example-plugin@1.0.0'],
+        policy,
+        { fetch: { request } },
+      )
+      expect(plain.allowed).toBe(true)
+      expect(request).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+
+      const stagedFile = writeCatalog(unsignedCatalog({ sequence: 25 }), join(roots, 'staged-stale-constant'))
+      const neverSettles = vi.fn(() => new Promise<Response>(() => {}))
+      const decisionPromise = authorizeLockedPluginAdd(
+        ['example-plugin@1.0.0'],
+        policy,
+        { stagedManifestFile: stagedFile, fetch: { request: neverSettles }, lastSeenSequence: 27 },
+      )
+      await waitUntil(() => neverSettles.mock.calls.length > 0)
+      expect(neverSettles).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS)
+      const decision = await decisionPromise
+      expect(decision.allowed).toBe(false)
+      if (!decision.allowed) {
+        expect(decision.reason).toContain(`did not answer within the ${String(STALE_STAGED_MANIFEST_RETRY_TIMEOUT_MS)} ms retry bound`)
+      }
+      // The bound is released once it has answered.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('never retries a staged manifest that fails anything other than the sequence floor', async () => {

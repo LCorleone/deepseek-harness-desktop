@@ -4,6 +4,7 @@ import type { MarketSourceMutation } from '../src/api-types.js'
 import {
   executeMarketOperation,
   MarketApiError,
+  MARKET_OPERATION_TIMEOUT_MS,
   mutateMarketSource,
   openMarketTerminal,
   previewMarketOperation,
@@ -184,6 +185,84 @@ describe('community market client API', () => {
     expect(cachedUrl.searchParams.get('locale')).toBe('zh-CN')
     expect(cachedUrl.searchParams.has('refresh')).toBe(false)
     expect(refreshedUrl.searchParams.get('refresh')).toBe('1')
+  })
+
+  it('bounds a confirmed operation with the execution deadline and localizes the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetch)
+
+      const pending = executeMarketOperation('preview-1')
+      const outcome = expect(pending).rejects.toMatchObject({
+        name: 'MarketOperationTimeoutError',
+        status: 408,
+        code: 'operation-timeout',
+      })
+      await vi.advanceTimersByTimeAsync(MARKET_OPERATION_TIMEOUT_MS)
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds an operation preview with the same deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetch)
+
+      const pending = previewMarketOperation({ action: 'install', sourceRecordId: 'source-1', itemId: 'example/plugin' })
+      const outcome = expect(pending).rejects.toMatchObject({
+        name: 'MarketOperationTimeoutError',
+        status: 408,
+        code: 'operation-timeout',
+      })
+      await vi.advanceTimersByTimeAsync(MARKET_OPERATION_TIMEOUT_MS)
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a caller cancellation distinct from the preview deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetch)
+      const controller = new AbortController()
+
+      const pending = previewMarketOperation({ action: 'uninstall', receiptId: 'receipt-1' }, controller.signal)
+      const outcome = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      controller.abort()
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a caller cancellation distinct from the execution deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetch)
+      const controller = new AbortController()
+
+      const pending = executeMarketOperation('preview-1', controller.signal)
+      const outcome = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      controller.abort()
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('opens the terminal without a command and sends only the one-shot token when restarting', async () => {
