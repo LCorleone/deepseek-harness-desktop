@@ -68,8 +68,10 @@ function installRequirementsUrl(locale: string): string {
   return locale.toLowerCase().startsWith('zh') ? INSTALL_REQUIREMENTS_DOCS.zh : INSTALL_REQUIREMENTS_DOCS.en
 }
 
-function catalogAdapterGuideUrl(locale: string): string {
-  return locale.toLowerCase().startsWith('zh') ? CATALOG_ADAPTER_GUIDE_DOCS.zh : CATALOG_ADAPTER_GUIDE_DOCS.en
+function catalogAdapterGuideUrl(): string {
+  // Company lockdown: the upstream adapter guide link is replaced by the
+  // internal plugin-market portal (July, 2026-09-11) — colleagues read there.
+  return 'https://plugin-market.s.dai.deloitte.cn/'
 }
 
 interface VisibleItem {
@@ -1161,7 +1163,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
             catalog={catalog}
             error={mutationError}
             pending={mutationPending}
-            adapterGuideHref={catalogAdapterGuideUrl(readLocale())}
+            adapterGuideHref={catalogAdapterGuideUrl()}
             onMutation={mutation => { void mutate(mutation) }}
             onAddStandard={() => setAddOpen(true)}
             t={t}
@@ -1803,9 +1805,7 @@ function SourcesView({ state, catalog, error, pending, adapterGuideHref, onMutat
       <div className="dshMarketBanner dshMarketSourceGuide">
         <IconGlobeOutline14 size={14} />
         <span>
-          {t('sourcePartnershipBefore')}
-          <a href={DSH_DESKTOP_ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('sourcePartnershipContact')}</a>
-          {t('sourcePartnershipAfter')}{' '}
+          {t('sourcePartnershipBefore')}{' '}
           <a href={adapterGuideHref} target="_blank" rel="noopener noreferrer">{t('sourcePartnershipGuide')}</a>
         </span>
       </div>

@@ -1139,7 +1139,7 @@ describe('MarketSettingsTab', () => {
     expect(screen.getByText('This notice remains visible.')).toBeTruthy()
   })
 
-  it('links source teams to the partnership contact and catalog adapter guide', async () => {
+  it('links source teams to the company catalog adapter guide', async () => {
     vi.mocked(readMarketState).mockResolvedValue(enabledState)
     vi.mocked(readMarketCatalog).mockResolvedValue(catalog)
     render(<MarketSettingsTab {...props} />)
@@ -1147,14 +1147,11 @@ describe('MarketSettingsTab', () => {
     await screen.findByRole('button', { name: /Fixture Plugin/u })
     fireEvent.click(screen.getByRole('button', { name: en.sources }))
 
-    const contact = screen.getByRole('link', { name: en.sourcePartnershipContact }) as HTMLAnchorElement
-    expect(contact.href).toBe('https://github.com/anywhere-labs/deepseek-harness-desktop/issues')
-    expect(contact.target).toBe('_blank')
-    expect(contact.rel).toContain('noopener')
+    // The upstream "contact us" partnership link is removed in the company
+    // build; only the guide link remains, pinned to the internal portal.
+    expect(screen.queryByRole('link', { name: /contact us/u })).toBeNull()
     const guide = screen.getByRole('link', { name: en.sourcePartnershipGuide }) as HTMLAnchorElement
-    expect(guide.href).toBe(
-      'https://github.com/anywhere-labs/deepseek-harness-desktop/blob/master/dsh-community-market/docs/catalog-adapter-guide.md',
-    )
+    expect(guide.href).toBe('https://plugin-market.s.dai.deloitte.cn/')
     expect(guide.target).toBe('_blank')
     expect(guide.rel).toContain('noopener')
   })
