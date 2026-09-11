@@ -629,6 +629,35 @@ latch 全是 8/18 老代码（b90 已 shipped）；卸载不走锁定 gate（gat
 
 **b92**：`yarn check` 43/43 绿 → 构建 run `34608528924`（8m47s ✓）。**未打 tag（等 July 口令）**。
 
+### 2026-09-12 晨（07:03–07:15）b92 验收✓ + tag + engramory 下架
+
+**b92 真机验收（遥测 23 条全绿）**：06:54 b92 首启（disclaimer 重签）→ 06:56 装 free-search ✓ →
+06:57 卸 better-sidebar ✓ + `restart_request accepted`（**新遥测首次落库**）+ 10 秒后新会话（真重启）✓ →
+06:59 卸 company-skills ✓（有事件=已提交，旧「转圈无事件」场景）+ 重启 ✓ → 07:00 重装
+company-skills 0.1.1（beta）✓ —— **tester 分轨场景：b91 必拒，b92 直接过**。三项观察点全中。
+tag `v2.0.4-b92` → `351516c6e5`（fork+backup）。安装包存
+`tmp_sessions/dsh-desktop-asserts/DSH-Desktop-2.0.4-x64-Setup.exe`（sha256 `bf4c8a48…`，161.96 MiB）。
+
+**engramory 从 beta 下架**：allowlist revoked:true（`bbf9da30e6`）→ CI 签名 run `34656749412`
+（channel=beta）→ publish-local 推 GitLab seq 29→30 → 回读 seq30 engramory revoked=true ✓ →
+棘轮 30（`22f1195fc8`）。目录现状：**stable seq27（5 条）/ beta seq30（8 条，含 skills 0.1.0+0.1.1、
+engramory revoked）**。生效面=3 tester 下次刷新后市场隐藏 engramory；stable 不受影响。
+运维注：本机对 GitLab 缺企业 CA——已从服务端链提取 Deloitte CA 存 `.deloitte-ca-bundle.pem`
+（仓库根、未提交）；publish-local 需 `NODE_EXTRA_CA_CERTS=.deloitte-ca-bundle.pem` + `GITLAB_TOKEN`。
+
+### 当前 TODO 快照（2026-09-12 07:15）
+**等 July**：b92 分发决策（建议跳过 b91 直接 b92；安装包+sha256 已就绪）。
+**目录/插件**：`dsh-company-skills@0.1.1` promote stable（纯发版节奏，非前置；棘轮将到 31）；
+engramory 后续：确认 sebtang/lizywu 刷新后市场隐藏 + 是否走 retire（出窗，需群公告）。
+**观察项（b92 分发后）**：① CI 首跑 `e2e:market-reliability` ② `restart_request` 遥测
+   （已首验✓）③ 8s 重试拒绝若出现看分支日志定位子进程 TLS 实况。
+**待拍板（不挡道）**：engramory 反馈稿（作者侧）· `sandbox_escalation` 遥测 · R10 · 升级重放 runbook ·
+   0.1.5 立卡（等 rc.3）。
+**技术债（已记，未做）**：① bundle 双份 ~60MB（可改 CI 侧构建）② `marketOptionRows` 渲染级测试
+   ③ 插件体积 42.2MB ④ beta 水位合法高于 stable 的设计账（分轨已解主径，剩文档化）。
+**排队**：free-search rebase 上游 v0.4.19+ · sso-gate 浏览器路径主动测 · 同事 MR 浸泡线（另一 session）。
+**暂缓**：main.ts 组合根拆分（等 0.1.5）· 目录发布单点 · C 类仓库门面文档。
+
 ### 当前 TODO 快照（2026-09-11 22:35）
 **等 July**：① b92 真机验收：卸载/立即重启/安装公司插件（tester 分轨场景——b91 上必失败的那条现在应直接过）
    ② 是否打 tag `v2.0.4-b92` ③ b91 vs b92 分发决策（b91 已知含「安装可能挂」风险，建议直接 b92）。
