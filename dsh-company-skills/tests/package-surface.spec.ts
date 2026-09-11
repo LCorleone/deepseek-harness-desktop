@@ -26,7 +26,12 @@ describe('company-skills package surface', () => {
 
   it('excludes the collected plaintext from the tarball', () => {
     // A whitelist entry for skills/** would ship every plaintext source file;
-    // the always-included README files ship regardless unless negated.
+    // the always-included README files ship regardless unless negated. Pin
+    // the whole rule, not just one spelling: no non-negated `files` entry may
+    // target the skills tree (a bare `"skills"` would ship everything while
+    // a literal `!skills/**` check alone stayed green).
+    const whitelist = manifest.files.filter(entry => !entry.startsWith('!'))
+    expect(whitelist.some(entry => entry === 'skills' || entry.startsWith('skills/'))).toBe(false)
     expect(manifest.files.some(entry => entry.startsWith('!') && entry.includes('skills'))).toBe(true)
     expect(manifest.files).not.toContain('skills/**')
   })
