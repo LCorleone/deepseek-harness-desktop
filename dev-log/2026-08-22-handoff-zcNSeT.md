@@ -587,7 +587,7 @@ sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；st
 （先前担心的「b88 撞带 description 的 stable 清单」实际未发生：webhu 在 stable seq27 发布期间未拉取，升级后直接 b90 接受）。
 **fleet 已扩张**：julu/sebtang/lizywu/kwen/jackjuzhang/mzhuo/gaxie/webhu/luklu/lucylachen/tammtang（含非 tester）。
 
-### 2026-09-11 16:33 【待修】卸载插件后「立即重启」失效（b91 真机）
+### 2026-09-11 16:33 【已修→b92】卸载插件后「立即重启」失效（b91 真机）
 **现象（July）**：从市场卸载 beta 插件 `dsh-dai-engramory` → 成功弹窗里点「立即重启」无效，UI 报
 `DSH Desktop could not be restarted. Restart it manually when convenient.`（`restartError`）；**手动重启正常**。
 **日志证据**：b91 的 `logs/main.log` 里点到重启前后**零错误行**，只有 `plugin_install written=6` 等正常事件
@@ -600,6 +600,48 @@ token 的两个存放位置（路由 `desktopPluginRestartTokens`、服务 `rest
 **拟定修法**：把一次性重启授权（含 TTL、一次性语义）挪到**跨代存活**的存储（模块级按 profile 键控的内存表，
 不随 generation dispose 清），使卸载/安装后点「立即重启」稳定可用；应用真重启后 token 自然失效仍报 intent-expired。
 **状态**：scout 正在核实「卸载是否真触发换代」与 token 存活范围；修复设计方案定稿后先过评审再动手。
+
+### 2026-09-11 晚（16:47–22:15）可靠性大扫除 → 四批修复 + 棘轮分轨 + e2e → b92 已构建（未打 tag）
+
+**真机现场回顾**（julu，唯一 b91 用户；kwen/luklu b90 正常）：卸 engramory 后点重启无效 →
+手动重启 → 卸 free-search 无限转圈（无事件未提交）→ 卸 npm 通道 agent-teams 一切正常。
+全面评审（b90→b91 range diff）结论：**两个症状都不是 b91 新代码直接造成**——吞响应守卫/token 表/
+latch 全是 8/18 老代码（b90 已 shipped）；卸载不走锁定 gate（gate 仅 plugin add）；tarball/npm
+相关性为巧合。b91 真正新增风险面只有：**安装路径 stale 重试无界**（子进程 TLS 卡住→挂）。
+
+**四个提交（全过评审，desktop 2406 / market 488 / typecheck 0 / layout 43 全绿）**：
+- `c521a0d803` 四条主修：①已提交操作必回响应（可写即回，不再被 generation 中止吞）+跳过写日志
+  ②客户端长操作超时（不再无限转圈）③重启可靠性（重复点击 200 alreadyRequested 且真二次触发
+  桌面动作强制退出；teardown 超时也 relaunch；新增 `restart_request` 遥测）④重试 8s 硬上限 +
+  每次操作 re-stage（launcher 用 Electron 网络现抓的清单字节顺手覆盖 staged 文件，子进程不上网）
+- `313e42b6e7` 剩余 4 条路由（state/media/sources/open-terminal）同守护 + 超时补齐
+- `32ca244325` **棘轮分轨**（根治 tester 安装误拒）：地板 = max(回执,棘轮) 把 beta 序号混进 stable
+  比较 → stable 27 < beta 抬高的 29 被误判回滚 → 重试注定失败（联网也一样，拿到的最新 stable 就是 27）。
+  分轨后 stable 字节只对 stable 水位、beta 只对 beta；迁移纯读、水位只升不降、防回滚全保持。
+  曾考虑的绕过 = promote stable 到 30，**已降级为纯发版决策，不再是 b92 前置**。
+- `dd65b8d845` stable 水位持久化 writer（之前只有 beta 有）+ 扫描地板 = 完整读侧地板
+  （关掉「合法签名重放 21–27 经 staged 窗口拉低水位」的 P2 残留）
+- `351516c6e5` **e2e**（`dsh-plugin-desktop/scripts/e2e-market-reliability.mjs`，root 脚本
+  `e2e:market-reliability`，CI check job 门控产品变更）：E1 响应存活（真 http+真 routes，中途
+  dispose 必须有响应）+ E3 真地板推导（e3a 走生产 `lockedPluginAddSequenceFloors`，通道重组必红）/
+  8s 上限（e3c 挂起 origin，去上限必红——已做反证）。July 拍板：重试保留不删（终端裸 dsh add 场景）。
+- `39a87418b6` 复盘文档（P1 brief §4 晚间复盘）。
+
+**b92**：`yarn check` 43/43 绿 → 构建 run `34608528924`（8m47s ✓）。**未打 tag（等 July 口令）**。
+
+### 当前 TODO 快照（2026-09-11 22:35）
+**等 July**：① b92 真机验收：卸载/立即重启/安装公司插件（tester 分轨场景——b91 上必失败的那条现在应直接过）
+   ② 是否打 tag `v2.0.4-b92` ③ b91 vs b92 分发决策（b91 已知含「安装可能挂」风险，建议直接 b92）。
+**目录/插件**：`dsh-company-skills@0.1.1` promote stable（棘轮 30；**不再是 b92 前置**，纯发版节奏）；
+   目录现状 stable seq27 / beta seq29 不变。
+**观察项（b92 分发后）**：① CI 首跑 `e2e:market-reliability` 是否绿 ② `restart_request` 遥测字段
+   落库是否正常（事件字典已加）③ 8s 重试拒绝若出现，看分支日志定位子进程 TLS 实况。
+**待拍板（不挡道）**：engramory 反馈稿 · `sandbox_escalation` 遥测 · R10 · 升级重放 runbook · 0.1.5 立卡（等 rc.3）。
+**技术债（已记，未做）**：① bundle 双份 ~60MB（可改 CI 侧构建）② `marketOptionRows` 渲染级测试
+   ③ 插件体积 42.2MB ④ beta 水位合法高于 stable 的设计账（分轨已解主径，剩文档化）。
+   （原「launcher 安装前 re-stage」已随 c521a0d803 实现并关闭。）
+**排队**：free-search rebase 上游 v0.4.19+ · sso-gate 浏览器路径主动测 · 同事 MR 浸泡线（另一 session）。
+**暂缓**：main.ts 组合根拆分（等 0.1.5）· 目录发布单点 · C 类仓库门面文档。
 
 ### 当前 TODO 快照（2026-09-11 15:47，收工前）
 **等 fleet（分发后）**：b91 分发 → 用遥测确认全员升级 → 重点验「不重启也能装插件」（P1 修）。
