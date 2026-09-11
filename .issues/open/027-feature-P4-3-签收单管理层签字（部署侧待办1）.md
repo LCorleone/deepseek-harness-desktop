@@ -1,8 +1,8 @@
-# [Feature] #005 0.1.5 上游升级立卡（等 rc.3）
+# [Feature] #027 P4-3 签收单管理层签字（部署侧待办#1）
 
-**Issue ID**: #005
+**Issue ID**: #027
 **Status**: Open
-**Priority**: Medium
+**Priority**: Low
 **Type**: feature
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
@@ -97,8 +97,6 @@ impl NewFeature {
 - [ ] 实现高级功能
 - [ ] 编写测试
 - [ ] 更新文档
-- 等上游 rc.3。三雷已知：modeSelectionEnabled 新默认/session v2-v3 不可回滚/默认模型 V41 Flash。需四波重放。
-- 补充参考（迁移评审补齐）：①上游评审『值得抄 8 项』（含 acceptIdentity）②档3 首拒自动弹窗=runtime 升级需求清单项 ③P6 per-skill derived-key 升级路径（briefs/2026-09-10-p6-company-skills.md:18）。升级时四波重放需覆盖。
 
 ## 验收标准
 

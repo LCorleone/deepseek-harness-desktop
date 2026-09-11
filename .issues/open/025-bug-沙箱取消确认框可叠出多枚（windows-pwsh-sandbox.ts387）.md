@@ -1,6 +1,6 @@
-# [Bug] #018 声明窗 Escape 键绑定 + 早期渲染灰屏（09-08挂账，核实）
+# [Bug] #025 沙箱取消确认框可叠出多枚（windows-pwsh-sandbox.ts:387）
 
-**Issue ID**: #018
+**Issue ID**: #025
 **Status**: Open
 **Priority**: Low
 **Type**: bug
@@ -66,7 +66,7 @@
 - [ ] 实现代码修复
 - [ ] 编写单元测试
 - [ ] 更新文档
-- 09-08 挂账(disclaimer Escape+早期渲染死亡灰屏 P3)，先核实是否已修。
+- 来源：2026-09-10 综合评审 logic P3（reviews/2026-09-10-comprehensive-review-logic.md:38）；同批 pyenv 锁已修(81d0cfffab)，此项未修、HEAD 代码未变。现象：连续取消沙箱升权确认可叠出多枚对话框。
 
 ## 验收标准
 

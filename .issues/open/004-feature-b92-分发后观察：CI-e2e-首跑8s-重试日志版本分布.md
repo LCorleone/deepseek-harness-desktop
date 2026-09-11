@@ -98,6 +98,7 @@ impl NewFeature {
 - [ ] 编写测试
 - [ ] 更新文档
 - 观察项：①CI check job 首跑 e2e:market-reliability 是否绿(351516c6e5 新增) ②若出现 8s 重试拒绝→看分支日志定位子进程 TLS 实况 ③DSH_LOG 版本分布 b90→b92。restart_request 遥测已首验✓(07:00 accepted)
+- 补充观察项（迁移评审补齐）：deferredUpdates 真机观察（P15 客户端上线后，09-10 快照挂账未闭环）。
 
 ## 验收标准
 

@@ -136,6 +136,7 @@ pub struct NewDesign {
 - [ ] 更新测试
 - [ ] 更新文档
 - 评审 P2 遗留：MARKET_OPERATION_TIMEOUT_MS 共用 120s，冷启动安装>120s 会误报 executeTimeoutError(提示刷新 Installed 可恢复)。改法：execute 专属更长界或 host 侧同界。
+- 分类注：评审指出实为 bug 味（冷装>120s 误报 executeTimeoutError），保留本卡不重开；修复时按 bug 验证。
 
 ## 验收标准
 
