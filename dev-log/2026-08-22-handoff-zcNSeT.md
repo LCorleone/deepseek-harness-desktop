@@ -589,8 +589,9 @@ sha256 `0400a3dcf0ae1e1d…`；0.1.0 旧钉保留）→ 棘轮 `f03e13b9dc`；st
 **技术债（已记，未做）**：① bundle 在仓库存两份（~60MB；可改成 CI 侧构建 bundle）；
    ② launcher 「安装前重新 stage」（彻底解法；P2-1 真机若发现子进程连不上 origin，则升级为主修）；
    ③ `marketOptionRows` 缺渲染级测试（现只钉纯函数 + URL）；④ 插件包体积（0.1.1 = 42.2 MB）。
-**排队**：free-search rebase 上游 v0.4.19+ · sso-gate 浏览器路径主动测 · ppt-designer 立项评估（包已发，可含）·
-   同事 MR 浸泡线（另一 session）。
+**排队**：free-search rebase 上游 v0.4.19+ · sso-gate 浏览器路径主动测 · 同事 MR 浸泡线（另一 session）。
+**关闭项**：**ppt-designer 立项评估 → 关闭**（July 09-11 15:51：已随公司 skill 插件交付——`dsh-company-skills@0.1.1`
+   beta seq29 真机可用，无需另立项）。
 **暂缓**：main.ts 组合根拆分（等 0.1.5 波次）· 目录发布单点（协作扩张前）· C 类仓库门面文档（根 README/CONTRIBUTING/docs/faq 仍指上游）。
 **已闭环可移出挂账**：backup 远端落后（catalog-artifacts 分支）已推齐，fork/backup 现全同步。
 
