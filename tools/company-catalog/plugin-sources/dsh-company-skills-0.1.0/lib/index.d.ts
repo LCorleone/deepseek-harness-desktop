@@ -1,0 +1,47 @@
+/**
+ * `dsh-company-skills` — the container plugin that ships a set of curated
+ * company skills as one obfuscated bundle and publishes them through the skill
+ * registry seam.
+ *
+ * Registration uses the reactive child-fiber form on purpose:
+ *
+ *   ctx.inject(['skills'], inner => inner.effect(() => inner.skills.registerProvider(...)))
+ *
+ * A bare `ctx.skills` read inside a plugin fiber throws (`cannot get property
+ * "skills" without inject` under Cordis reflective contexts — the failure mode
+ * a real third-party plugin hit and documented in
+ * `tools/company-catalog/plugin-sources/dsh-dai-engramory-0.2.4/README.md`),
+ * and registering straight from `apply()` would bind the registration to this
+ * plugin's own fiber instead of a disposable child. The child fiber's
+ * `effect()` ties the registration to that fiber, so unmounting the plugin
+ * unregisters the provider and invalidates the catalog caches; the regex pin in
+ * `tests/provider.spec.ts` keeps a later refactor from reintroducing a direct
+ * service read.
+ *
+ * The container is read and decoded once, at module initialization; nothing on
+ * this path throws, and a missing or corrupt asset degrades to an empty
+ * catalog (see `catalog.ts` for the reasoning).
+ *
+ * Batch 3 adds the execution channel: the same reactive-injection form mounts
+ * the `company_skill_run` and `company_skill_read` tools as soon as the host
+ * provides `tools` and `subprocess`, so a profile without those services still
+ * gets the provider (and a profile that mounts them later gets the tools then).
+ * The run tool's spawn is the host's `ctx.subprocess.spawn`, and the addressed
+ * script runs from a per-run staged copy of the skill that is removed when the
+ * run settles — see `execute.ts`. The read tool resolves the opaque bundle's
+ * prose resources (which no workspace `read` can see) by materializing exactly
+ * one entry for the duration of the call.
+ *
+ * @module dsh-company-skills
+ */
+import type { Context } from '@deepseek-ai/cordis';
+/** Cordis plugin name. */
+export declare const name = "company-skills";
+/** The skill registry this plugin contributes to. */
+export declare const inject: string[];
+/** The shipped container asset: one obfuscated block carrying every bundled skill. */
+export declare const SKILLS_BUNDLE_URL: import("url").URL;
+/** The catalog decoded from the shipped asset at module initialization. */
+export declare const catalog: import("./catalog.js").CompanySkillCatalog;
+/** Register the company-skill provider and the script-execution tool on their seams. */
+export declare function apply(ctx: Context): void;
