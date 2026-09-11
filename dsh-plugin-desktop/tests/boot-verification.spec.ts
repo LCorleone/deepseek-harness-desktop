@@ -34,7 +34,9 @@ import {
   marketInstallReceiptsFromSettingsDocument,
   marketManifestChannelRatchetsFromSettings,
   marketManifestSequenceRatchetFromSettings,
+  marketStableManifestScanFloorFromSettings,
   raiseMarketBetaManifestRatchet,
+  raiseMarketStableManifestRatchet,
   readCompanyManifestAsset,
   readDesktopBootLockfile,
   readDesktopBootReceiptsFromSettings,
@@ -1724,6 +1726,16 @@ describe('per-channel manifest sequence ratchets (review P3)', () => {
     })
     expect(marketManifestChannelRatchetsFromSettings(split)).toEqual({ stable: 30, beta: 31 })
 
+    // A stable-only split record (no beta entry): stable reads its own
+    // record and beta seeds from that persisted mark — not the legacy 29 —
+    // exercising the simplified `splitBeta ?? stableRatchet` expression's
+    // fallback arm (never-beta machines).
+    const stableOnlySplit = channelSettingsPath(join(home, 'stable-only'), {
+      ...legacyRatchetRecord(29),
+      companyManifestChannels: { stable: 30 },
+    })
+    expect(marketManifestChannelRatchetsFromSettings(stableOnlySplit)).toEqual({ stable: 30, beta: 30 })
+
     // A malformed channel value contributes nothing for that channel alone:
     // stable falls back to the migrated legacy value, beta keeps its record.
     const halfMalformed = channelSettingsPath(join(home, 'half'), {
@@ -1786,6 +1798,150 @@ describe('per-channel manifest sequence ratchets (review P3)', () => {
     const settingsPath = join(home, 'nested', 'settings.yaml')
     await raiseMarketBetaManifestRatchet(settingsPath, 29)
     expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: undefined, beta: 29 })
+  })
+
+  it('persists the stable split value on a scan advance and later reads use it, not the clamp', async () => {
+    // The residual machine from the ratchet-split review: durable beta
+    // evidence, installs lagging scans (receipts 20, legacy 27) — the
+    // receipts-evidence clamp pins the stable floor at 20, so a signed,
+    // unexpired stable replay at 21 (above every receipt, below the true
+    // stable mark 27) still verifies through the writable staged-file
+    // window. The first post-split stable scan persists
+    // `companyManifestChannels.stable`, and the same replay goes stale.
+    const home = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(home, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    writeFileSync(assetPath, signedManifestText([packageEntry()], { sequence: 21 }))
+    const settingsPath = channelSettingsPath(home, {
+      installReceipts: [marketV2Receipt({ manifestSequence: 20 })],
+      ...legacyRatchetRecord(27),
+      companyManifestChannels: { beta: 27 },
+    })
+
+    // The legacy generation's guess: stable clamped 27→20, replay at 21 in.
+    const clamped = desktopBootVerificationInputsFromSettings(contentPolicy, settingsPath, moduleUrl)
+    expect(clamped.lastSeenSequence).toBe(20)
+    expect(verifyDesktopBootBundles(clamped.manifestBytes, [bundleInput()], { trustRoots, ...clamped }).manifestTrusted)
+      .toBe(true)
+
+    // The stable scan advance: the desktop's writer records the verified 27.
+    await raiseMarketStableManifestRatchet(settingsPath, 27)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 27 })
+
+    // The later read uses the persisted value instead of the clamp: the
+    // floor is back at the true stable mark and the replay is refused.
+    const persisted = desktopBootVerificationInputsFromSettings(contentPolicy, settingsPath, moduleUrl)
+    expect(persisted.lastSeenSequence).toBe(27)
+    const decision = verifyDesktopBootBundles(persisted.manifestBytes, [bundleInput()], { trustRoots, ...persisted })
+    expect(decision.manifestTrusted).toBe(false)
+    expect(decision.manifestFailure?.code).toBe('stale-sequence')
+  })
+
+  it('raises the persisted stable ratchet without ever lowering it', async () => {
+    const home = temporaryDirectory()
+    const settingsPath = join(home, 'settings.yaml')
+    mkdirSync(home, { recursive: true })
+    // Real YAML with a comment, sibling records, and a stale higher split
+    // value already on disk: the AST edit must keep everything and never
+    // touch the market provider's own legacy record.
+    writeFileSync(settingsPath, [
+      '# shared market settings',
+      'dsh-community-market:',
+      '  companyManifest:',
+      '    sequence: 27',
+      '    keyId: company-catalog-2026.01',
+      '    verifiedAt: "2026-09-10T00:00:00.000Z"',
+      '  companyManifestChannels:',
+      '    stable: 30',
+      '    beta: 31',
+      '  sources: []',
+      '',
+    ].join('\n'))
+
+    // A stale lower observation on disk plus a higher live sequence: the
+    // persisted 30 stays (a scan that only reached 27 never walks it back).
+    await raiseMarketStableManifestRatchet(settingsPath, 27)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 30, beta: 31 })
+    // The replay steady state writes nothing and throws nothing.
+    await raiseMarketStableManifestRatchet(settingsPath, 30)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 30, beta: 31 })
+    // Only a strictly newer stable scan raises the entry.
+    await raiseMarketStableManifestRatchet(settingsPath, 33)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 33, beta: 31 })
+
+    const text = readFileSync(settingsPath, 'utf8')
+    expect(text).toContain('# shared market settings')
+    expect(text).toContain('sequence: 27')
+    expect(parseDocument(text).toJS()).toMatchObject({
+      'dsh-community-market': {
+        companyManifest: { sequence: 27 },
+        companyManifestChannels: { stable: 33, beta: 31 },
+        sources: [],
+      },
+    })
+  })
+
+  it('floors a market stable scan at the full read-side floor (review P2)', () => {
+    // The scan-side floor the desktop's market scan wiring derives — never
+    // the receipts alone, which let a signed replay between the receipts
+    // mark and the legacy mark verify and persist (durably lowering the
+    // boot-side floor the read side still enforced).
+    const home = temporaryDirectory()
+    // The exact finding's machine: installs lag scans (receipts 10, legacy
+    // 27, no split record, no beta) — the floor the scan must enforce is
+    // the read side's 27, not the receipts' 10.
+    const replay = channelSettingsPath(join(home, 'replay'), {
+      installReceipts: [marketV2Receipt({ manifestSequence: 10 })],
+      ...legacyRatchetRecord(27),
+    })
+    expect(marketStableManifestScanFloorFromSettings(replay)).toBe(27)
+    // A persisted stable record below the legacy mark (the pre-fix writer's
+    // signature, or a hand-edited document) never lowers the effective
+    // floor with it: the legacy clamp holds 27 until a ≥27 scan persists.
+    const belowLegacy = channelSettingsPath(join(home, 'below-legacy'), {
+      ...legacyRatchetRecord(27),
+      companyManifestChannels: { stable: 20 },
+    })
+    expect(marketStableManifestScanFloorFromSettings(belowLegacy)).toBe(27)
+    // A persisted record at or above the legacy mark outranks it, and the
+    // receipts still floor when they run ahead of every ratchet.
+    const above = channelSettingsPath(join(home, 'above'), {
+      ...legacyRatchetRecord(27),
+      companyManifestChannels: { stable: 30 },
+    })
+    expect(marketStableManifestScanFloorFromSettings(above)).toBe(30)
+    const receiptsAhead = channelSettingsPath(join(home, 'receipts-ahead'), {
+      installReceipts: [marketV2Receipt({ manifestSequence: 35 })],
+      ...legacyRatchetRecord(27),
+    })
+    expect(marketStableManifestScanFloorFromSettings(receiptsAhead)).toBe(35)
+    // The beta-evidence clamp machine (receipts 20, legacy 27, beta record
+    // 27): the read side clamps stable to 20, and the scan floors at
+    // exactly that — never above it, so the first post-split stable scan
+    // (a legitimate 21) still verifies, persists 21, and only raises the
+    // read-side floor.
+    const betaEvidence = channelSettingsPath(join(home, 'beta-evidence'), {
+      installReceipts: [marketV2Receipt({ manifestSequence: 20 })],
+      ...legacyRatchetRecord(27),
+      companyManifestChannels: { beta: 27 },
+    })
+    expect(marketStableManifestScanFloorFromSettings(betaEvidence)).toBe(20)
+  })
+
+  it('derives the market stable scan floor fail-closed (review P2)', () => {
+    const home = temporaryDirectory()
+    // A missing document legitimately carries no evidence — a machine that
+    // never wrote settings has nothing to floor on, matching the read side.
+    expect(marketStableManifestScanFloorFromSettings(join(home, 'missing.yaml'))).toBeUndefined()
+    // A document whose floor cannot be computed throws instead of skipping
+    // the floor: the scan refuses to verify rather than admit bytes below
+    // an unknowable floor (the boot readers stay deliberately tolerant —
+    // they cannot refuse a startup; the scan can).
+    const broken = channelSettingsPath(join(home, 'broken'), 'dsh-community-market: [broken\n')
+    expect(() => marketStableManifestScanFloorFromSettings(broken)).toThrow(/not parseable YAML/u)
+    const empty = channelSettingsPath(join(home, 'empty'), { sources: [] })
+    expect(marketStableManifestScanFloorFromSettings(empty)).toBeUndefined()
   })
 
   it('keeps the boot stable floor isolated from the beta channel\u2019s ratchet', () => {

@@ -756,7 +756,9 @@ export function readDesktopBootReceiptsFromSettings(settingsPath: string): reado
  * contributes nothing (the floor falls back to the receipts alone, never
  * fails the boot): this reader cannot refuse a startup either, and deleting
  * the record is no worse than the already-signed-off user-writable-ratchet
- * residual (R3).
+ * residual (R3). Since the review-P3 split, every production floor reads
+ * through {@link marketManifestChannelRatchetsFromSettings}; this
+ * single-value reader is test-only.
  */
 export function marketManifestSequenceRatchetFromSettings(settingsPath: string): number | undefined {
   try {
@@ -810,24 +812,32 @@ function channelRatchetValue(channels: unknown, channel: 'stable' | 'beta'): num
  * did (`companyManifest.sequence` — that writer records only the sequence of
  * the STABLE manifest a full market verification observed), and this desktop
  * owns one new record, `companyManifestChannels: { stable?, beta? }`. The
- * desktop writes only the `beta` entry (after a beta overlay verifies); the
- * `stable` entry exists so a reader never needs the migration guess below
- * once an explicit split value is present, but no desktop writer ever lowers
- * or duplicates the market's stable record into it.
+ * desktop writes both entries, each only after verifying that channel's
+ * bytes through the deployment trust roots: `beta` after a beta overlay
+ * verifies (`raiseMarketBetaManifestRatchet`), `stable` after a stable
+ * catalog scan verifies (`raiseMarketStableManifestRatchet`, wired into the
+ * desktop's market scan channel). Neither writer ever lowers its entry, so
+ * a persisted value always outranks the migration guesses below.
  *
  * Migration from a document that still carries only the legacy single value
  * is explicit and per the fail-closed invariants: neither channel's floor
  * may ever decrease.
  *
- * - `betaRatchet = existingRatchet` when beta was ever applied, else the
- *   stable value. The only durable evidence that beta was ever applied is
- *   the desktop-written `companyManifestChannels.beta` record itself; a
- *   legacy-only document predates the split, so its fallback is the else
- *   branch and the beta floor starts at the stable mark — exactly the
- *   online rule every beta consumer already enforces (a beta publication
- *   must ride at or above the verified stable sequence).
- * - `stableRatchet = min(existingRatchet, currentAppliedStableSequence)`,
- *   applied ONLY when beta evidence exists. Lowering stable's floor to the
+ * - `betaRatchet = splitBeta ?? stableRatchet`. A defined split beta record
+ *   is the answer whenever beta was ever applied (it is the only durable,
+ *   channel-attributed evidence this host can write); when it is absent the
+ *   beta floor starts at the stable mark — exactly the online rule every
+ *   beta consumer already enforces (a beta publication must ride at or
+ *   above the verified stable sequence). An earlier `betaEverApplied ?
+ *   legacy : stableRatchet` ternary on this arm was unreachable: it sat
+ *   behind `splitBeta ??`, whose fallback only evaluates when beta was never
+ *   applied, so only the `stableRatchet` arm could ever run.
+ * - `stableRatchet = splitStable` whenever the split record carries a
+ *   stable entry — a persisted post-split observation needs no guess.
+ *   Otherwise (the one legacy generation: a document that predates the
+ *   split writer, on which the clamp below is the last resort) the value
+ *   is `min(existingRatchet, currentAppliedStableSequence)`, applied ONLY
+ *   when beta evidence exists. Lowering stable's floor to the
  *   true stable high-water mark does not weaken anti-rollback: the stable
  *   floor defends signed-stable-manifest replay, and a value above every
  *   stable-channel observation on a machine that durably applied beta was
@@ -839,6 +849,20 @@ function channelRatchetValue(channels: unknown, channel: 'stable' | 'beta'): num
  *   the legacy value is pure stable history and is kept intact, so no
  *   machine's floor decreases through the migration (a stable-only machine
  *   whose scans ran ahead of its installs keeps the scan ratchet).
+ *
+ *   Residual of that legacy-generation clamp (accepted, self-closing): the
+ *   channel attribution of pre-split history is unrecoverable, so on a
+ *   beta-evidence machine whose installs lag its scans (receipts 20,
+ *   legacy 27) the clamp pins the stable floor to 20, re-admitting a
+ *   signed, unexpired stable replay in 21–27 through the writable
+ *   staged-file window until the split writer runs. The window is bounded
+ *   (the manifest's own signature, expiry, and revocation still gate the
+ *   replay) and closes for good as soon as the first post-split stable
+ *   scan verifies and persists `companyManifestChannels.stable`, after
+ *   which every read uses the persisted value and never the clamp. Since
+ *   the review-P2 fix that scan floors at the full read-side floor
+ *   (`marketStableManifestScanFloorFromSettings`), the value it persists
+ *   can never sit below the mark this reader would have kept.
  *
  * Anything malformed contributes nothing per channel (the floor falls back
  * per channel, never fails the boot); this reader cannot refuse a startup.
@@ -856,35 +880,130 @@ export function marketManifestChannelRatchetsFromSettings(
   } catch {
     return { stable: undefined, beta: undefined }
   }
-  const marketNamespace = record(document)?.[MARKET_SETTINGS_NAMESPACE]
-  const splitStable = channelRatchetValue(record(marketNamespace)?.[MARKET_MANIFEST_CHANNELS_KEY], 'stable')
-  const splitBeta = channelRatchetValue(record(marketNamespace)?.[MARKET_MANIFEST_CHANNELS_KEY], 'beta')
-  const legacySequence = record(record(marketNamespace)?.companyManifest)?.sequence
-  const legacy = Number.isSafeInteger(legacySequence) && (legacySequence as number) >= 1
-    ? legacySequence as number
-    : undefined
-  if (legacy === undefined) {
+  const evidence = marketManifestRatchetEvidence(document)
+  if (evidence.legacy === undefined) {
     // No legacy ratchet: the split record alone speaks, per channel.
-    return { stable: splitStable, beta: splitBeta }
+    return { stable: evidence.splitStable, beta: evidence.splitBeta }
   }
   // "Beta was ever applied" — the only durable, channel-attributed evidence
-  // this host can write. A legacy-only document takes the else branch.
-  const betaEverApplied = splitBeta !== undefined
-  const currentAppliedStableSequence = receiptSequenceFloor(
-    desktopBootReceipts(marketInstallReceiptsFromSettingsDocument(document)),
-  )
-  const stableRatchet = splitStable ?? (betaEverApplied
-    ? Math.min(legacy, currentAppliedStableSequence > 0 ? currentAppliedStableSequence : legacy)
-    : legacy)
-  const betaRatchet = splitBeta ?? (betaEverApplied ? legacy : stableRatchet)
+  // this host can write — decides whether the legacy value needs the
+  // receipts-evidence clamp below; a legacy-only document never does.
+  const stableRatchet = evidence.splitStable ?? legacyStableClamp(evidence)
+  // An absent `splitBeta` is exactly "beta never applied", so the beta
+  // floor always seeds from the (possibly persisted) stable mark; the old
+  // `betaEverApplied ? legacy : stableRatchet` ternary's `legacy` arm was
+  // unreachable behind the `??`.
+  const betaRatchet = evidence.splitBeta ?? stableRatchet
   return { stable: stableRatchet, beta: betaRatchet }
 }
 
+/** Raw per-channel floor evidence extracted from one parsed market settings document. */
+interface MarketManifestRatchetEvidence {
+  /** The desktop-written `companyManifestChannels.stable` record, when well-formed. */
+  readonly splitStable: number | undefined
+  /** The desktop-written `companyManifestChannels.beta` record, when well-formed. */
+  readonly splitBeta: number | undefined
+  /** The market provider's pre-split single-value record, when well-formed. */
+  readonly legacy: number | undefined
+  /** Highest install-receipt sequence; 0 when the ledger is empty or v1-only. */
+  readonly receiptFloor: number
+}
+
+/** Extract every ratchet floor candidate from one parsed settings document; malformed values contribute nothing. */
+function marketManifestRatchetEvidence(document: unknown): MarketManifestRatchetEvidence {
+  const marketNamespace = record(document)?.[MARKET_SETTINGS_NAMESPACE]
+  const channels = record(marketNamespace)?.[MARKET_MANIFEST_CHANNELS_KEY]
+  const legacySequence = record(record(marketNamespace)?.companyManifest)?.sequence
+  return {
+    splitStable: channelRatchetValue(channels, 'stable'),
+    splitBeta: channelRatchetValue(channels, 'beta'),
+    legacy: Number.isSafeInteger(legacySequence) && (legacySequence as number) >= 1
+      ? legacySequence as number
+      : undefined,
+    receiptFloor: receiptSequenceFloor(
+      desktopBootReceipts(marketInstallReceiptsFromSettingsDocument(document)),
+    ),
+  }
+}
+
 /**
- * Raise the persisted beta-channel ratchet (review P3). Never lowers: the
- * write is `max(recorded, sequence)`, so neither channel's floor can regress
- * through normal operation. The edit is the same YAML-AST, locked,
- * atomically-committed discipline the receipts ledger clear uses
+ * The legacy-generation fallback the read side's stable floor uses when the
+ * split record carries no stable entry: the legacy value kept intact on a
+ * stable-only machine (beta was never applied), clamped down to the highest
+ * receipt on a beta-evidence machine, and nothing when no legacy record
+ * exists. Both the boot read side (`marketManifestChannelRatchetsFromSettings`)
+ * and the market scan floor (`marketStableManifestScanFloorFromSettings`)
+ * derive it from here, so the two can never drift apart.
+ */
+function legacyStableClamp(evidence: MarketManifestRatchetEvidence): number | undefined {
+  if (evidence.legacy === undefined) return undefined
+  if (evidence.splitBeta === undefined) return evidence.legacy
+  return Math.min(evidence.legacy, evidence.receiptFloor > 0 ? evidence.receiptFloor : evidence.legacy)
+}
+
+/**
+ * The stable-channel anti-rollback floor a market catalog scan must enforce
+ * before its verified sequence may be persisted (review P2): the FULL
+ * read-side floor — `max(install receipts, persisted stable channel ratchet,
+ * legacy fallback clamp)` — never the receipts alone.
+ *
+ * The desktop's stable-ratchet writer (`raiseMarketStableManifestRatchet`,
+ * wired into the market scan channel) records the sequence of every stable
+ * manifest that scan verifies, and reads then prefer the persisted record
+ * over the legacy migration guess. Seeding that writer from a receipts-only
+ * floor let a signed stable replay between the receipts mark and the legacy
+ * mark — a normal installs-lag-scans machine whose scans the market provider
+ * recorded at 27 while its receipts reached only 10 — verify at 15 and
+ * persist 15, durably lowering the boot-side floor the read side still
+ * enforced at 27. Flooring the scan at the same maximum the read side
+ * derives refuses such a replay BEFORE the writer can persist it: this floor
+ * is by construction at least the read-side floor
+ * (`max(receipts, splitStable, clamp) ≥ max(receipts, splitStable ?? clamp)`),
+ * so every sequence the scan admits — and only those are persisted — can
+ * never lower a floor this machine already enforces. A split stable record
+ * reading BELOW the legacy mark (the pre-fix writer's signature, or a
+ * hand-edited document) cannot drag the floor down with it: the legacy clamp
+ * keeps the effective floor at the legacy mark until a legitimate ≥legacy
+ * publication persists.
+ *
+ * Fail-closed exactly where the boot readers are deliberately tolerant: a
+ * missing document legitimately carries no evidence (undefined — a machine
+ * that never wrote settings has nothing to floor on, matching the read
+ * side), but a document this reader cannot read or parse leaves the
+ * machine's true floor unknowable, and computing a floor from the partial
+ * evidence that survived would be the skip this guard exists to prevent —
+ * so those throw, and the scan refuses to verify instead. The boot readers
+ * cannot refuse a startup; the scan can.
+ */
+export function marketStableManifestScanFloorFromSettings(settingsPath: string): number | undefined {
+  let body: Buffer
+  try {
+    body = readFileSync(settingsPath)
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw cause
+  }
+  if (body.byteLength > MAX_MARKET_SETTINGS_BYTES) {
+    throw new Error(`settings document ${settingsPath} exceeds ${String(MAX_MARKET_SETTINGS_BYTES)} bytes`)
+  }
+  const parsed = parseDocument(body.toString('utf8'), { prettyErrors: true })
+  if (parsed.errors.length > 0) {
+    throw new Error(`settings document ${settingsPath} is not parseable YAML`)
+  }
+  const evidence = marketManifestRatchetEvidence(parsed.toJS() ?? {})
+  const floor = Math.max(
+    evidence.receiptFloor,
+    evidence.splitStable ?? 0,
+    legacyStableClamp(evidence) ?? 0,
+  )
+  return floor > 0 ? floor : undefined
+}
+
+/**
+ * Raise one channel entry of the persisted per-channel ratchet (review P3).
+ * Never lowers: the write is `max(recorded, sequence)`, so neither channel's
+ * floor can regress through normal operation. The edit is the same YAML-AST,
+ * locked, atomically-committed discipline the receipts ledger clear uses
  * (`fresh-profile.ts`): comments and every sibling record — the market
  * provider's own `companyManifest` stable ratchet included — survive the
  * round trip, and a concurrent writer's value cannot be lost to the rename.
@@ -894,9 +1013,13 @@ export function marketManifestChannelRatchetsFromSettings(
  * whether that failure is loud (a write path may) and never lets it fail the
  * operation the ratchet serves.
  */
-export async function raiseMarketBetaManifestRatchet(settingsPath: string, sequence: number): Promise<void> {
+async function raiseMarketManifestChannelRatchet(
+  settingsPath: string,
+  channel: 'stable' | 'beta',
+  sequence: number,
+): Promise<void> {
   if (!Number.isSafeInteger(sequence) || sequence < 1) {
-    throw new TypeError('the beta manifest ratchet sequence must be a safe positive integer')
+    throw new TypeError(`the ${channel} manifest ratchet sequence must be a safe positive integer`)
   }
   mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 })
   await withFileLock(settingsPath, async () => {
@@ -922,14 +1045,40 @@ export async function raiseMarketBetaManifestRatchet(settingsPath: string, seque
       // verification that called this just observed as a valid one.
       document.setIn([MARKET_SETTINGS_NAMESPACE, MARKET_MANIFEST_CHANNELS_KEY], document.createNode({}))
     }
-    const existing = document.getIn([MARKET_SETTINGS_NAMESPACE, MARKET_MANIFEST_CHANNELS_KEY, 'beta'])
+    const existing = document.getIn([MARKET_SETTINGS_NAMESPACE, MARKET_MANIFEST_CHANNELS_KEY, channel])
     // Never lower: a sequence at or above the recorded one is the replay
-    // steady state (nothing to persist), and only a strictly newer beta
+    // steady state (nothing to persist), and only a strictly newer
     // publication raises the ratchet.
     if (typeof existing === 'number' && Number.isSafeInteger(existing) && existing >= sequence) return
-    document.setIn([MARKET_SETTINGS_NAMESPACE, MARKET_MANIFEST_CHANNELS_KEY, 'beta'], sequence)
+    document.setIn([MARKET_SETTINGS_NAMESPACE, MARKET_MANIFEST_CHANNELS_KEY, channel], sequence)
     await writeFileAtomic(settingsPath, document.toString(), { mode: 0o600, dirMode: 0o700 })
   })
+}
+
+/**
+ * Raise the persisted beta-channel ratchet: called after a beta overlay
+ * verifies, so the beta floor survives restarts. The write discipline and
+ * failure contract are {@link raiseMarketManifestChannelRatchet}'s.
+ */
+export async function raiseMarketBetaManifestRatchet(settingsPath: string, sequence: number): Promise<void> {
+  await raiseMarketManifestChannelRatchet(settingsPath, 'beta', sequence)
+}
+
+/**
+ * Raise the persisted STABLE-channel ratchet (the review-P2 residual closer):
+ * called after a stable catalog scan verifies fresh signed bytes, so the
+ * split record carries the stable channel's own high-water mark and later
+ * reads (`marketManifestChannelRatchetsFromSettings`) stop guessing from the
+ * unattributable pre-split legacy value — whose receipts-evidence clamp
+ * pinned a beta-evidence machine's stable floor to its highest receipt, on
+ * installs-lag-scans machines strictly below the true stable mark. The scan
+ * that feeds this writer enforces the full read-side floor first
+ * (`marketStableManifestScanFloorFromSettings`), so the recorded sequence is
+ * never below a floor the machine already enforces. The write discipline and
+ * failure contract are {@link raiseMarketManifestChannelRatchet}'s.
+ */
+export async function raiseMarketStableManifestRatchet(settingsPath: string, sequence: number): Promise<void> {
+  await raiseMarketManifestChannelRatchet(settingsPath, 'stable', sequence)
 }
 
 /**

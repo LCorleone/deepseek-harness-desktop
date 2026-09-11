@@ -583,8 +583,9 @@ describe('published package surface', () => {
         + "  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,\n"
         + "  desktopBootVerificationInputs,\n"
         + "  marketManifestChannelRatchetsFromSettings,\n"
+        + "  marketStableManifestScanFloorFromSettings,\n"
         + "  raiseMarketBetaManifestRatchet,\n"
-        + "  readDesktopBootReceiptsFromSettings,\n"
+        + "  raiseMarketStableManifestRatchet,\n"
         + "} from './boot-verification.ts'",
     )
     expect(main).toContain('await desktopBootVerificationInputs(')

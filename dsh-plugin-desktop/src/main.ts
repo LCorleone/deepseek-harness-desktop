@@ -130,8 +130,9 @@ import {
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
   marketManifestChannelRatchetsFromSettings,
+  marketStableManifestScanFloorFromSettings,
   raiseMarketBetaManifestRatchet,
-  readDesktopBootReceiptsFromSettings,
+  raiseMarketStableManifestRatchet,
 } from './boot-verification.ts'
 import type { DesktopBootVerification } from './boot-verification.ts'
 import {
@@ -2070,16 +2071,25 @@ async function start(): Promise<void> {
           // install → signed tree re-verification → rollback — instead of
           // the registry target. Origin-mode fetches (manifest and tarball)
           // ride the same Chromium network boundary boot verification uses,
-          // and the anti-rollback floor is the shared receipts ratchet.
+          // and the anti-rollback floor is the full read-side stable floor
+          // (review P2): receipts, the persisted stable ratchet, and the
+          // legacy migration clamp joined
+          // (`marketStableManifestScanFloorFromSettings`), so a manifest
+          // below a floor this machine already enforces is refused before
+          // the ratchet persistence below could durably record it.
           const companyMarketTarballInstall = createDesktopCompanyMarketTarballInstallChannel({
             policy,
             profileDir: prepared.profile.dir,
-            lastSeenSequence: () => {
-              let highest: number | undefined
-              for (const receipt of readDesktopBootReceiptsFromSettings(join(homeDir, 'settings.yaml'))) {
-                if (highest === undefined || receipt.manifestSequence > highest) highest = receipt.manifestSequence
-              }
-              return highest
+            lastSeenSequence: () =>
+              marketStableManifestScanFloorFromSettings(join(homeDir, 'settings.yaml')),
+            // Stable-channel ratchet persistence (the review-P2 residual
+            // closer): every stable catalog scan this channel verifies raises
+            // the persisted `companyManifestChannels.stable` record (never
+            // lowering it), so the boot-side stable floor migrates off the
+            // unattributable pre-split legacy guess as soon as the first
+            // post-split scan lands.
+            persistStableSequenceRatchet: async sequence => {
+              await raiseMarketStableManifestRatchet(join(homeDir, 'settings.yaml'), sequence)
             },
             fetchManifestText: fetchCompanyManifestTextOverElectronNet,
             ...(stagedCompanyManifestFile === undefined

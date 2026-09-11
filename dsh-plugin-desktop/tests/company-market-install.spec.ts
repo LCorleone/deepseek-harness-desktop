@@ -42,7 +42,9 @@ import {
   computeDesktopBootTreeRootDigest,
   desktopBootLockIntegrity,
   marketManifestChannelRatchetsFromSettings,
+  marketStableManifestScanFloorFromSettings,
   raiseMarketBetaManifestRatchet,
+  raiseMarketStableManifestRatchet,
   readDesktopBootLockfile,
   verifyDesktopBootBundles,
 } from '../src/boot-verification.ts'
@@ -1283,6 +1285,240 @@ describe('market channel beta overlay floor and ratchet persistence (review P3)'
       { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
       new AbortController().signal,
     )).resolves.toBeUndefined()
+  })
+
+  it('raises the persisted stable ratchet from the stable scan path', async () => {
+    // The stable half of the split record's writers (the review-P2 residual
+    // closer): the channel's stable catalog scan verifies fresh signed bytes
+    // and the production persistence hook raises
+    // `companyManifestChannels.stable`, so a later read uses the persisted
+    // mark instead of migrating from the pre-split legacy value. On this
+    // legacy-only machine (no split record yet, beta never applied) that
+    // migration would have seeded both floors at the legacy 42.
+    const root = temporaryDirectory('stable-ratchet-scan')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify({
+      'dsh-community-market': {
+        companyManifest: { sequence: 42, keyId, verifiedAt: '2026-09-10T00:00:00.000Z' },
+      },
+    }))
+    const persist = vi.fn(async (sequence: number) => {
+      await raiseMarketStableManifestRatchet(settingsPath, sequence)
+    })
+    const channel = createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir,
+      fetchManifestText: async () => signedManifestText([tarballEntry()], 44),
+      persistStableSequenceRatchet: persist,
+    })
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledWith(44)
+    // The persisted stable mark outranks the legacy migration — and a
+    // replayed scan never walks it back (44 stays; the writer is a no-op).
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 44, beta: 44 })
+  })
+})
+
+describe('market channel stable scan floor and ratchet persistence (review P2)', () => {
+  /** A minimal market receipt v2 record the receipts reader accepts, at one sequence. */
+  function v2Receipt(manifestSequence: number): Record<string, unknown> {
+    return {
+      receiptId: `receipt:company-install-floor-${String(manifestSequence)}`,
+      profileName: 'web',
+      packageName: PACKAGE_NAME,
+      version: PACKAGE_VERSION,
+      integrity: TARBALL_INTEGRITY,
+      bundlePatch: BUNDLE_PATCH,
+      sourceRecordId: 'company-catalog',
+      providerId: 'com.deepseek.company-catalog',
+      itemId: `npm:${PACKAGE_NAME}@${PACKAGE_VERSION}`,
+      displayName: PACKAGE_NAME,
+      installedAt: '2026-09-01T00:00:00.000Z',
+      receiptVersion: 2,
+      manifestSequence,
+      keyId,
+      treeDigest: { algorithm: 'sha256', files: [], rootDigest: 'ab'.repeat(32) },
+    }
+  }
+
+  /** The market namespace of an installs-lag-scans machine: legacy `sequence`, optional extras. */
+  function legacyMarketSettings(sequence: number, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      'dsh-community-market': {
+        companyManifest: { sequence, keyId, verifiedAt: '2026-09-10T00:00:00.000Z' },
+        ...extra,
+      },
+    }
+  }
+
+  /** The production wiring under test: the full read-side floor supplier plus the real persistence hook. */
+  function scanFlooredChannel(
+    settingsPath: string,
+    manifestText: string,
+    persist: (sequence: number) => Promise<void>,
+    warn?: (message: string) => void,
+  ) {
+    const profileDir = join(dirname(settingsPath), 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    return createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir,
+      lastSeenSequence: () => marketStableManifestScanFloorFromSettings(settingsPath),
+      fetchManifestText: async () => manifestText,
+      persistStableSequenceRatchet: persist,
+      ...(warn === undefined ? {} : { warn }),
+    })
+  }
+
+  it('refuses a below-legacy signed replay before the ratchet writer can persist it', async () => {
+    // The exact review-P2 scenario: a normal installs-lag-scans machine —
+    // the market provider's legacy ratchet reached 27 while the receipts
+    // reached only 10, no split record, no beta — is offered a signed,
+    // unexpired stable manifest replay at 15 by a compromised or
+    // origin-controlled endpoint. The receipts-only floor the scan used to
+    // seed from (15 ≥ 10) admitted it, and the writer then persisted
+    // `companyManifestChannels.stable = 15`, durably lowering the boot-side
+    // floor the read side still enforced at 27. The full read-side floor
+    // refuses the manifest BEFORE the writer runs: nothing verifies,
+    // nothing persists, the machine keeps its 27 floor.
+    const root = temporaryDirectory('stable-floor-replay')
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify(legacyMarketSettings(27, {
+      installReceipts: [v2Receipt(10)],
+    })))
+    const persist = vi.fn(async (sequence: number) => {
+      await raiseMarketStableManifestRatchet(settingsPath, sequence)
+    })
+    const channel = scanFlooredChannel(
+      settingsPath,
+      signedManifestText([tarballEntry()], 15),
+      persist,
+    )
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+    expect(persist).not.toHaveBeenCalled()
+    // Nothing was persisted: the machine still reads — and scans at — its
+    // full floor (27), never the receipts' 10.
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 27 })
+    expect(marketStableManifestScanFloorFromSettings(settingsPath)).toBe(27)
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual(legacyMarketSettings(27, {
+      installReceipts: [v2Receipt(10)],
+    }))
+  })
+
+  it('still persists a legitimate advance at and above the legacy mark', async () => {
+    // The same machine, offered the genuine next publication (28 ≥ 27):
+    // the full floor admits it, the writer records 28, and every later
+    // read floors at 28 — the floor only ever rises.
+    const root = temporaryDirectory('stable-floor-advance')
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify(legacyMarketSettings(27, {
+      installReceipts: [v2Receipt(10)],
+    })))
+    const persist = vi.fn(async (sequence: number) => {
+      await raiseMarketStableManifestRatchet(settingsPath, sequence)
+    })
+    const channel = scanFlooredChannel(
+      settingsPath,
+      signedManifestText([tarballEntry()], 28),
+      persist,
+    )
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledWith(28)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 28, beta: 28 })
+    expect(marketStableManifestScanFloorFromSettings(settingsPath)).toBe(28)
+  })
+
+  it('keeps a below-legacy persisted stable record from lowering the effective floor', async () => {
+    // A machine already carrying a below-legacy split record — the pre-fix
+    // writer's signature, or a hand-edited document (the settings file is
+    // user-writable): the persisted 20 does not drag the floor down with
+    // it. The scan floors at max(20, legacy 27) = 27, so a 21 replay stays
+    // refused and nothing persists, while the legitimate ≥27 publication
+    // still verifies and persists 27 — no durable lowering, no lock-out.
+    const root = temporaryDirectory('stable-floor-below-legacy')
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify(legacyMarketSettings(27, {
+      companyManifestChannels: { stable: 20 },
+    })))
+    const persist = vi.fn(async (sequence: number) => {
+      await raiseMarketStableManifestRatchet(settingsPath, sequence)
+    })
+    const replay = scanFlooredChannel(
+      settingsPath,
+      signedManifestText([tarballEntry()], 21),
+      persist,
+    )
+    await expect(replay.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+    expect(persist).not.toHaveBeenCalled()
+    expect(marketStableManifestScanFloorFromSettings(settingsPath)).toBe(27)
+
+    const advance = scanFlooredChannel(
+      settingsPath,
+      signedManifestText([tarballEntry()], 27),
+      persist,
+    )
+    await expect(advance.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+    expect(persist).toHaveBeenCalledWith(27)
+    // The read side now uses the persisted 27 — raised from 20, never
+    // below the legacy mark the machine enforced all along.
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 27 })
+    expect(marketStableManifestScanFloorFromSettings(settingsPath)).toBe(27)
+  })
+
+  it('refuses the scan when the floor cannot be computed (fail-closed, never floorless)', async () => {
+    // A settings document whose floor cannot be derived (here: unparseable
+    // YAML) makes the supplier throw: the scan refuses to verify instead of
+    // proceeding floorless — the manifest admitted below an unknowable
+    // floor is exactly what the writer would durably record. The refusal is
+    // the seam's silent undefined (the market verifier contract), the warn
+    // sink carries the reason, and nothing persists.
+    const root = temporaryDirectory('stable-floor-fail-closed')
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, 'dsh-community-market: [broken\n')
+    const persist = vi.fn(async (sequence: number) => {
+      await raiseMarketStableManifestRatchet(settingsPath, sequence)
+    })
+    const warn = vi.fn()
+    const channel = scanFlooredChannel(
+      settingsPath,
+      signedManifestText([tarballEntry()], 42),
+      persist,
+      warn,
+    )
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+    expect(persist).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('computing the stable manifest scan floor failed'))
+    expect(readFileSync(settingsPath, 'utf8')).toBe('dsh-community-market: [broken\n')
   })
 })
 

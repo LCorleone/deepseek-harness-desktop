@@ -114,10 +114,17 @@ export interface DesktopCompanyMarketTarballInstallOptions {
   /** Active profile directory; the staging area lives inside it. */
   readonly profileDir: string
   /**
-   * Anti-rollback floor supplier — the highest manifest sequence this
-   * machine has already verified through an install (the receipts ratchet).
-   * The main process derives it from the shared market settings document;
-   * focused tests inject a constant.
+   * Stable-channel anti-rollback floor supplier — the FULL read-side floor:
+   * `max(install receipts, persisted companyManifestChannels.stable record,
+   * legacy migration clamp the boot read side would use)`. The main process
+   * derives exactly that from the shared market settings document
+   * (`marketStableManifestScanFloorFromSettings`); focused tests inject a
+   * constant. The scan refuses a manifest below this floor BEFORE the
+   * stable-ratchet persistence below could record it — seeding the writer
+   * from the receipts alone let a signed replay between the receipts mark
+   * and the legacy mark persist and durably lower the boot-side floor
+   * (review P2). A supplier that THROWS refuses this scan outright
+   * (fail-closed): a floor this machine cannot compute is never skipped.
    */
   readonly lastSeenSequence?: () => number | undefined
   /**
@@ -139,6 +146,18 @@ export interface DesktopCompanyMarketTarballInstallOptions {
    * failure is warned, never fatal to the operation that verified the bytes.
    */
   readonly persistBetaSequenceRatchet?: (sequence: number) => Promise<void> | void
+  /**
+   * Persistence hook for the stable-channel ratchet (the review-P2 residual
+   * closer), invoked after this channel's stable catalog scan verifies fresh
+   * signed bytes: the main process raises the persisted
+   * `companyManifestChannels.stable` record (never lowering it), so the
+   * boot-side stable floor stops migrating from the unattributable
+   * pre-split legacy value whose receipts-evidence clamp under-floored
+   * installs-lag-scans machines (see `marketManifestChannelRatchetsFromSettings`).
+   * Best-effort by contract — the hook's failure is warned, never fatal to
+   * the scan that already verified the bytes.
+   */
+  readonly persistStableSequenceRatchet?: (sequence: number) => Promise<void> | void
   /**
    * Absolute path of the launcher's generation-scoped stable manifest
    * staging file (`DSH_COMPANY_MANIFEST_FILE`), present only when the boot
@@ -227,7 +246,18 @@ export function createDesktopCompanyMarketTarballInstallChannel(
       return undefined
     }
     if (signal.aborted) return undefined
-    const floor = options.lastSeenSequence?.()
+    // Fail-closed floor (review P2): a supplier that cannot compute the
+    // floor throws, and a throw refuses this scan — the manifest admitted
+    // below an unknowable floor is exactly what the ratchet persistence
+    // below would durably record. The seam stays silent (undefined) exactly
+    // like any acquisition failure, per the market verifier contract.
+    let floor: number | undefined
+    try {
+      floor = options.lastSeenSequence?.()
+    } catch (cause) {
+      options.warn?.(`computing the stable manifest scan floor failed: ${messageOf(cause)}`)
+      return undefined
+    }
     const verification = verifyDesktopCompanyManifest(raw, {
       trustRoots: policy.trustRoots,
       companyCatalogOrigin: policy.companyCatalogOrigin,
@@ -236,6 +266,20 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     })
     if (!verification.ok) return undefined
     verified = { manifest: verification.manifest }
+    // Persist the stable-channel ratchet (review P2 residual): this scan
+    // just verified the stable manifest at `sequence` through the deployment
+    // trust roots — the strongest stable-channel evidence this host can
+    // durably record — so the split record rises with it and later reads use
+    // the persisted value instead of the receipts-evidence clamp the one
+    // pre-split legacy generation is stuck with. Never lowering (the writer
+    // is `max(recorded, sequence)`), so a replayed scan writes nothing, and
+    // best-effort exactly like the beta raise below: a bookkeeping failure
+    // never fails a verification that already succeeded.
+    try {
+      await options.persistStableSequenceRatchet?.(verification.manifest.sequence)
+    } catch (cause) {
+      options.warn?.(`persisting the stable catalog sequence ratchet failed: ${messageOf(cause)}`)
+    }
     // Re-stage the stable snapshot for the CLI children (方案D): the boot
     // path staged the manifest once at startup, so those bytes age as the
     // catalog advances while the market scan keeps raising the child's
