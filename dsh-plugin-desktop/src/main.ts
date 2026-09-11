@@ -129,6 +129,8 @@ import {
   createCachedDesktopBootTreeRootDigestMeasure,
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   desktopBootVerificationInputs,
+  marketManifestChannelRatchetsFromSettings,
+  raiseMarketBetaManifestRatchet,
   readDesktopBootReceiptsFromSettings,
 } from './boot-verification.ts'
 import type { DesktopBootVerification } from './boot-verification.ts'
@@ -2086,10 +2088,20 @@ async function start(): Promise<void> {
             request: (url, init) => net.fetch(url, init),
             // Beta overlay (P9): beta tarball entries verify through the
             // shared resolver before the registry cross-check would reject
-            // their signed sha512.
+            // their signed sha512. Since review P3 the overlay also faces the
+            // BETA channel's own persisted floor (raised after every admitted
+            // overlay), so a genuine beta rollback is refused durably while
+            // the stable floor keeps flooring only the stable verification.
             ...(resolveBetaCatalogOverlay === undefined
               ? {}
-              : { betaOverlay: resolveBetaCatalogOverlay }),
+              : {
+                  betaOverlay: resolveBetaCatalogOverlay,
+                  lastSeenBetaSequence: () =>
+                    marketManifestChannelRatchetsFromSettings(join(homeDir, 'settings.yaml')).beta,
+                  persistBetaSequenceRatchet: async sequence => {
+                    await raiseMarketBetaManifestRatchet(join(homeDir, 'settings.yaml'), sequence)
+                  },
+                }),
             ...(electronLogger === undefined
               ? {}
               : {

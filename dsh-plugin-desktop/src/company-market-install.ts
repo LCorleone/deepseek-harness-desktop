@@ -121,6 +121,25 @@ export interface DesktopCompanyMarketTarballInstallOptions {
    */
   readonly lastSeenSequence?: () => number | undefined
   /**
+   * BETA-channel anti-rollback floor supplier (review P3): the highest beta
+   * sequence this machine has already verified — the beta receipts-plus-
+   * ratchet high-water mark from the shared market settings document. The
+   * resolved beta overlay is admitted only at or above it, so a genuine beta
+   * rollback (an overlay below the beta channel's own floor) stays refused
+   * while the stable floor keeps flooring only the stable verification
+   * above. `undefined` (the default) keeps today's online-only bound — the
+   * overlay must still ride at or above the just-verified stable sequence.
+   */
+  readonly lastSeenBetaSequence?: () => number | undefined
+  /**
+   * Persistence hook for the beta-channel ratchet (review P3), invoked after
+   * this channel admits a verified overlay: the main process raises the
+   * persisted `companyManifestChannels.beta` record (never lowering it), so
+   * the beta floor survives restarts. Best-effort by contract — the hook's
+   * failure is warned, never fatal to the operation that verified the bytes.
+   */
+  readonly persistBetaSequenceRatchet?: (sequence: number) => Promise<void> | void
+  /**
    * Absolute path of the launcher's generation-scoped stable manifest
    * staging file (`DSH_COMPANY_MANIFEST_FILE`), present only when the boot
    * path staged one for this generation. When set, every manifest this
@@ -240,11 +259,29 @@ export function createDesktopCompanyMarketTarballInstallChannel(
     // Beta overlay (P9): resolved after the stable manifest verifies, so its
     // staleness floor is the just-verified stable sequence; every overlay
     // outcome except an admitted package list keeps the channel stable-only.
+    // Review P3: the overlay additionally faces the BETA channel's own
+    // persisted floor (the beta receipts-plus-ratchet high-water mark) —
+    // per-channel, never the stable floor, so a beta overlay legitimately
+    // ahead of stable stays installable while a genuine beta rollback
+    // (below the beta channel's own high-water mark) is refused here too,
+    // durably across restarts, not just within one session.
     if (options.betaOverlay !== undefined) {
       try {
         const overlay = await options.betaOverlay()
-        if (overlay !== undefined && overlay.sequence >= verification.manifest.sequence) {
+        const betaFloor = Math.max(
+          options.lastSeenBetaSequence?.() ?? 0,
+          verification.manifest.sequence,
+        )
+        if (overlay !== undefined && overlay.sequence >= betaFloor) {
           verifiedBeta = { packages: overlay.packages, sequence: overlay.sequence, manifestText: overlay.manifestText }
+          // Raise the persisted beta ratchet (best-effort: a verification
+          // that already succeeded must not fail on the durable floor's
+          // bookkeeping — the next admitted overlay re-raises it).
+          try {
+            await options.persistBetaSequenceRatchet?.(overlay.sequence)
+          } catch (cause) {
+            options.warn?.(`persisting the beta catalog sequence ratchet failed: ${messageOf(cause)}`)
+          }
         }
       } catch {
         verifiedBeta = undefined

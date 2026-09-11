@@ -887,6 +887,95 @@ describe('packaged dsh bootstrap', () => {
     }
   })
 
+  it('admits a locked terminal add on a beta-raised machine whose stable floor is per-channel (review P3)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-channel-floors-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // The affected-machine shape (P3): a tester durably applied beta — the
+    // beta record is the evidence — and the single legacy ratchet carries the
+    // raised 43, while the machine's receipts (stable-evidenced) provably
+    // reached only 42 and the embedded catalog publishes 42. The mixed single
+    // floor max(42, 43) = 43 denied this add as `stale-sequence` until stable
+    // caught up; the per-channel floors seed stable at its true high-water
+    // mark 42 (beta at 43), and today's stable bytes install.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': {
+        installReceipts: [marketReceipt({ manifestSequence: 42 })],
+        companyManifest: {
+          sequence: 43,
+          keyId: catalogKeyId,
+          verifiedAt: '2026-09-10T00:00:00.000Z',
+          bytesSha256: 'cd'.repeat(32),
+        },
+        companyManifestChannels: { beta: 43 },
+      },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog())
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+      const argv = [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0']
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, argv, companyLockedPolicy(), assetPath)
+
+      expect(load).toHaveBeenCalledOnce()
+      expect(stderrWrite.mock.calls.flat().join('')).not.toContain('stale-sequence')
+      expect(argv.slice(2)).toEqual([
+        'plugin', '--profile', 'desktop', 'add', '--save-exact', 'example-plugin@1.0.0',
+      ])
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('denies a locked terminal add when the stable channel alone rolled back below its own floor (review P3)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-stable-rollback-'))
+    const homeDir = join(root, 'home')
+    mkdirSync(join(homeDir, 'profiles', 'desktop'), { recursive: true })
+    // Same beta-raised machine (beta 43 / stable receipts 42), but the
+    // catalog asset is a genuine STABLE rollback at 40: the stable floor 42
+    // denies it on its own channel — the per-channel split must never become
+    // a stable-rollback escape hatch.
+    writeFileSync(join(homeDir, 'settings.yaml'), JSON.stringify({
+      'dsh-community-market': {
+        installReceipts: [marketReceipt({ manifestSequence: 42 })],
+        companyManifest: {
+          sequence: 43,
+          keyId: catalogKeyId,
+          verifiedAt: '2026-09-10T00:00:00.000Z',
+          bytesSha256: 'cd'.repeat(32),
+        },
+        companyManifestChannels: { beta: 43 },
+      },
+    }))
+    const assetPath = writeCompanyCatalogAsset(root, unsignedCatalog({ sequence: 40 }))
+    const originalExitCode = process.exitCode
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const load = vi.fn(async () => undefined)
+
+      await runDesktopDshCli({
+        DSH_HOME: homeDir,
+        DSH_DESKTOP_DEFAULT_PROFILE: 'desktop',
+      }, load, [process.execPath, '/app/desktop-cli.js', 'plugin', 'add', 'example-plugin@1.0.0'],
+      companyLockedPolicy(), assetPath)
+
+      expect(load).not.toHaveBeenCalled()
+      expect(process.exitCode).toBe(1)
+      expect(stderrWrite.mock.calls.flat().join('')).toContain('stale-sequence')
+    } finally {
+      stderrWrite.mockRestore()
+      process.exitCode = originalExitCode
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('allows a locked terminal add replaying the receipts ratchet sequence', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-desktop-terminal-locked-sequence-replay-'))
     const homeDir = join(root, 'home')

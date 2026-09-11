@@ -1899,3 +1899,286 @@ describe('locked plugin-add beta manifest hand-off (#59)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Per-channel sequence floors (review P3): the stable bytes the gate verifies
+// face the STABLE floor alone, and the staged beta hand-off faces the BETA
+// floor alone. A tester machine whose beta overlay ran ahead of stable
+// (beta 29 / stable 27) is the normal steady state this split keeps
+// installable — under the single mixed floor those stable bytes died as
+// `stale-sequence` until stable caught up — while a genuine rollback on
+// either channel still denies, and the one stale-stable retry (8 s bound)
+// keeps its exact semantics.
+// ---------------------------------------------------------------------------
+
+describe('locked plugin-add per-channel sequence floors (review P3)', () => {
+  const roots = mkdtempSync(join(tmpdir(), 'dsh-desktop-cli-install-channel-floors-'))
+  // Tarball-channel entries only verify under an origin-mode policy.
+  const policy = lockedCatalogPolicy({
+    companyCatalogOrigin: 'https://market.company.example',
+    companyManifestUrl: 'https://market.company.example/company-market/catalog-manifest.json',
+  })
+  const BETA_NAME = 'company-beta-plugin'
+  const BETA_VERSION = '0.4.184'
+  const betaBytes = Buffer.from('beta-only plugin tarball fixture bytes\n', 'utf8')
+  const betaIntegrity = `sha512-${createHash('sha512').update(betaBytes).digest('base64')}`
+  const betaUrl = 'https://market.company.example/julu/dsh-desktop-config/-/packages/company-beta-plugin-0.4.184.tgz'
+  const betaStagedPath = (profileDir: string) => desktopMarketTarballStagingPath(profileDir, BETA_NAME, BETA_VERSION)
+  /** The affected-machine numbers: stable publishes 27, the beta overlay 29. */
+  const STABLE_SEQUENCE = 27
+  const BETA_SEQUENCE = 29
+
+  afterEach(() => {
+    rmSync(roots, { recursive: true, force: true })
+  })
+
+  function writeCatalog(manifest: Record<string, unknown>, directory = roots): string {
+    const signature = createCompanyManifestSignature(asUnsigned(manifest), privateKey, keyId)
+    const assetPath = join(directory, 'company-market', 'catalog-manifest.json')
+    mkdirSync(join(directory, 'company-market'), { recursive: true })
+    writeFileSync(assetPath, canonicalJsonText({ ...manifest, signature }))
+    return assetPath
+  }
+
+  function stageBetaFixture(profileDir: string): string {
+    const stagedPath = betaStagedPath(profileDir)
+    mkdirSync(dirname(stagedPath), { recursive: true })
+    writeFileSync(stagedPath, betaBytes)
+    return stagedPath
+  }
+
+  /** One signed beta manifest (default: the beta-only tarball entry at 29). */
+  function writeBetaManifest(
+    profileDir: string,
+    overrides: { readonly sequence?: number } = {},
+  ): { readonly path: string; readonly sequence: number } {
+    const sequence = overrides.sequence ?? BETA_SEQUENCE
+    const unsigned = unsignedCatalog({
+      sequence,
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        treeDigest: 'cd'.repeat(32),
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+        approvedBuilds: ['@company/signed-beta-builder'],
+        source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+    })
+    const signature = createCompanyManifestSignature(asUnsigned(unsigned), privateKey, keyId)
+    const path = desktopBetaManifestHandoffStagingPath(profileDir)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, canonicalJsonText({ ...unsigned, signature }))
+    return { path, sequence }
+  }
+
+  const serveCatalog = (assetPath: string) => async () => new Response(readFileSync(assetPath, 'utf8'))
+
+  /** The locked add exactly as the pnpm boundary spawns it for the beta target. */
+  const betaAddArguments = (profileDir: string): readonly string[] => [
+    '--save-exact',
+    '--registry=https://registry.npmjs.org/',
+    `file:${betaStagedPath(profileDir)}`,
+  ]
+
+  const betaHandoff = (profileDir: string, betaSequence: number) => ({
+    packageName: BETA_NAME,
+    version: BETA_VERSION,
+    integrity: betaIntegrity,
+    path: betaStagedPath(profileDir),
+    betaManifestPath: desktopBetaManifestHandoffStagingPath(profileDir),
+    betaSequence,
+  })
+
+  it('admits the stable staged bytes at the stable floor while the beta floor runs ahead', async () => {
+    // The P3 regression shape: the receipts-plus-ratchet floors of a tester
+    // machine are stable 27 / beta 29, and the launcher staged today's stable
+    // bytes (27). Under the single mixed floor the gate computed max(…) = 29
+    // and denied these bytes as `stale-sequence` (fast, fail-closed) until
+    // stable published ≥ 29; the stable bytes must face the stable floor
+    // alone, and the running-ahead beta floor must neither deny them nor arm
+    // the stale retry.
+    const stagedFile = writeCatalog(
+      unsignedCatalog({ sequence: STABLE_SEQUENCE }),
+      join(roots, 'staged-stable-27'),
+    )
+    const network = vi.fn(async () => {
+      throw new TypeError('the stable bytes verified against the stable floor — no retry may be armed')
+    })
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      {
+        stagedManifestFile: stagedFile,
+        fetch: { request: network },
+        lastSeenSequence: STABLE_SEQUENCE,
+        lastSeenBetaSequence: BETA_SEQUENCE,
+      },
+    )
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: 'example-plugin', version: '1.0.0' }],
+    })
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('admits the beta hand-off at the beta floor while the stable bytes sit below it', async () => {
+    // The same machine, installing the beta-only target: the stable staged
+    // bytes verify against the stable floor (27 ≥ 27, the replay steady
+    // state) and the staged beta bytes verify against the beta floor
+    // (29 ≥ 29) — an equal sequence is a legitimate replay, and the beta
+    // hand-off still faces the identical tarball-channel authorization.
+    const stagedFile = writeCatalog(
+      unsignedCatalog({ sequence: STABLE_SEQUENCE }),
+      join(roots, 'staged-stable-27-beta'),
+    )
+    const profileDir = join(roots, 'profiles', 'beta-at-floor')
+    stageBetaFixture(profileDir)
+    writeBetaManifest(profileDir)
+    const network = vi.fn(async () => {
+      throw new TypeError('no network fallback may run for verified staged bytes')
+    })
+
+    const decision = await authorizeLockedPluginAdd(
+      betaAddArguments(profileDir),
+      policy,
+      {
+        stagedManifestFile: stagedFile,
+        fetch: { request: network },
+        lastSeenSequence: STABLE_SEQUENCE,
+        lastSeenBetaSequence: BETA_SEQUENCE,
+        tarballHandoff: betaHandoff(profileDir, BETA_SEQUENCE),
+        profileDir,
+      },
+    )
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+      approvedBuildDependencies: ['@company/signed-beta-builder'],
+    })
+    expect(network).not.toHaveBeenCalled()
+  })
+
+  it('still denies a genuine stable rollback below the stable floor, retrying exactly once', async () => {
+    // Stable 25 against the stable floor 27 is a rollback whatever the beta
+    // channel published: the staged snapshot AND the one network retry face
+    // the same stable floor, so both rejections hold and the one-retry
+    // semantics are unchanged.
+    const stagedFile = writeCatalog(
+      unsignedCatalog({ sequence: STABLE_SEQUENCE - 2 }),
+      join(roots, 'staged-stable-25'),
+    )
+    const networkText = readFileSync(
+      writeCatalog(unsignedCatalog({ sequence: STABLE_SEQUENCE - 2 }), join(roots, 'network-25')),
+      'utf8',
+    )
+    const network = vi.fn(async () => new Response(networkText))
+
+    const decision = await authorizeLockedPluginAdd(
+      ['example-plugin@1.0.0'],
+      policy,
+      {
+        stagedManifestFile: stagedFile,
+        fetch: { request: network },
+        lastSeenSequence: STABLE_SEQUENCE,
+        lastSeenBetaSequence: BETA_SEQUENCE,
+      },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain('stale-sequence')
+      expect(decision.reason).toContain(`regressed below the last seen sequence ${String(STABLE_SEQUENCE)}`)
+      expect(decision.reason).toContain('restricted network retry was rejected too')
+    }
+    expect(network).toHaveBeenCalledTimes(1)
+  })
+
+  it('denies the beta hand-off below the beta floor (a genuine beta rollback)', async () => {
+    // The staged beta bytes are at 28 — above the stable sequence 27, so the
+    // anti-downgrade rule alone would admit them — but the machine's beta
+    // high-water mark is 29: a replay of the superseded beta publication is
+    // a beta-channel rollback, the hand-off is ignored, and the beta-only
+    // target falls back to the stable catalog where it does not exist.
+    const stagedFile = writeCatalog(
+      unsignedCatalog({ sequence: STABLE_SEQUENCE }),
+      join(roots, 'staged-stable-27-beta-rollback'),
+    )
+    const profileDir = join(roots, 'profiles', 'beta-below-floor')
+    stageBetaFixture(profileDir)
+    const betaSequence = BETA_SEQUENCE - 1
+    writeBetaManifest(profileDir, { sequence: betaSequence })
+
+    const decision = await authorizeLockedPluginAdd(
+      betaAddArguments(profileDir),
+      policy,
+      {
+        stagedManifestFile: stagedFile,
+        fetch: { request: serveCatalog(stagedFile) },
+        lastSeenSequence: STABLE_SEQUENCE,
+        lastSeenBetaSequence: BETA_SEQUENCE,
+        tarballHandoff: betaHandoff(profileDir, betaSequence),
+        profileDir,
+      },
+    )
+
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) {
+      expect(decision.reason).toContain(
+        `${BETA_NAME}@${BETA_VERSION} is not in the signed company plugin catalog`,
+      )
+      expect(decision.reason).toContain('the beta manifest hand-off was ignored')
+      expect(decision.reason).toContain('verification rejected the staged beta manifest (stale-sequence)')
+    }
+  })
+
+  it('keeps a non-beta machine byte-identical: no beta floor, the beta hand-off rides the stable bound', async () => {
+    // Without a persisted beta floor the gate behaves exactly as before the
+    // split (#59/#60): the stable bytes face the receipts floor and the
+    // staged beta bytes face only the online bounds (≥ the verified stable
+    // sequence, = the hand-off's claim).
+    const stagedFile = writeCatalog(
+      unsignedCatalog({ sequence: 42 }),
+      join(roots, 'staged-stable-42'),
+    )
+    const profileDir = join(roots, 'profiles', 'beta-no-floor')
+    stageBetaFixture(profileDir)
+    const unsigned = unsignedCatalog({
+      sequence: 43,
+      packages: [catalogEntry({
+        packageName: BETA_NAME,
+        version: BETA_VERSION,
+        integrity: betaIntegrity,
+        treeDigest: 'cd'.repeat(32),
+        repository: { url: 'https://github.com/example/company-beta-plugin' },
+        source: { kind: 'tarball', url: betaUrl, integrity: betaIntegrity },
+      })],
+      testers: ['julu@deloittecn.com.cn'],
+    })
+    const signature = createCompanyManifestSignature(asUnsigned(unsigned), privateKey, keyId)
+    const betaPath = desktopBetaManifestHandoffStagingPath(profileDir)
+    mkdirSync(dirname(betaPath), { recursive: true })
+    writeFileSync(betaPath, canonicalJsonText({ ...unsigned, signature }))
+
+    const decision = await authorizeLockedPluginAdd(
+      betaAddArguments(profileDir),
+      policy,
+      {
+        stagedManifestFile: stagedFile,
+        fetch: { request: serveCatalog(stagedFile) },
+        lastSeenSequence: 42,
+        tarballHandoff: betaHandoff(profileDir, 43),
+        profileDir,
+      },
+    )
+
+    expect(decision).toEqual({
+      allowed: true,
+      packages: [{ packageName: BETA_NAME, version: BETA_VERSION }],
+    })
+  })
+})

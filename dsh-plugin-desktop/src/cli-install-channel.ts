@@ -77,22 +77,32 @@
  * operation. Every other failure (bad signature, expired, malformed, unknown
  * key, origin mismatch) keeps its original denial and never swaps sources.
  *
- * Anti-rollback: the sequence floor comes from the local receipts ratchet —
- * the caller derives `lastSeenSequence` from the highest manifest sequence
- * recorded in the market settings install receipts, and that floor is a
- * lower bound: an allowed add requires a manifest at least as new as any
- * that already allowed an install on this machine, so a rolled-back
- * manifest (sequence below the floor) is denied, while the same sequence —
- * re-installing from, or installing a second plugin out of, the catalog that
- * is already deployed — is the normal steady state and is allowed. The floor
- * applies to whatever bytes the gate ends up verifying: a stale boot
- * snapshot is retried once over the network (see above), never admitted on
- * its own. The manifest asset ships inside the application bundle, but
- * under a per-user Windows install that bundle directory is user-writable,
- * so the asset alone is not a rollback boundary; closing that writable-asset
- * window is deferred to P3. Freshness is still enforced through the signed
- * `expiresAt`. (The Market channel keeps its own settings-backed sequence
- * store; this terminal gate rides the receipts ratchet instead.)
+ * Anti-rollback: the sequence floors come from the local receipts ratchet
+ * — the caller derives them from the highest manifest sequence recorded in
+ * the market settings install receipts plus the persisted scan ratchets —
+ * and each floor is a lower bound: an allowed add requires a manifest at
+ * least as new as any that already allowed an install on this machine, so a
+ * rolled-back manifest (sequence below the floor) is denied, while the same
+ * sequence — re-installing from, or installing a second plugin out of, the
+ * catalog that is already deployed — is the normal steady state and is
+ * allowed. Since review P3 the floors are PER CHANNEL: the stable bytes the
+ * gate verifies (`DSH_COMPANY_MANIFEST_FILE`, the embedded asset, or the
+ * stale retry's network bytes) face the STABLE floor only, and the staged
+ * beta hand-off bytes face the BETA floor only. The channels share one
+ * publishing sequence space but not one publication cadence — a tester
+ * machine's beta overlay legitimately runs ahead of stable (beta 29 /
+ * stable 27), and comparing stable's bytes against a beta-raised floor (the
+ * single mixed floor this split removed) denied every gated install,
+ * fail-closed and fast, until stable caught up: stable bytes at 27 are not a
+ * rollback merely because beta published 29. The floor applies to whatever
+ * bytes the gate ends up verifying: a stale boot snapshot is retried once
+ * over the network (see above), never admitted on its own. The manifest
+ * asset ships inside the application bundle, but under a per-user Windows
+ * install that bundle directory is user-writable, so the asset alone is not
+ * a rollback boundary; closing that writable-asset window is deferred to
+ * P3. Freshness is still enforced through the signed `expiresAt`. (The
+ * Market channel keeps its own settings-backed sequence store; this
+ * terminal gate rides the receipts ratchet instead.)
  *
  * Layered integrity: the gate authenticates catalog membership — package,
  * exact version, revocation state, and the manifest signature. The pinned
@@ -208,6 +218,17 @@ export interface LockedPluginAddOptions {
    * argument validation.
    */
   readonly lastSeenSequence?: number
+  /**
+   * Highest BETA-channel manifest sequence this machine has already verified
+   * (the beta receipts-plus-ratchet floor, review P3). The staged beta
+   * hand-off bytes are verified against this floor — and ONLY this floor —
+   * so a genuine beta rollback (staged beta bytes below the beta channel's
+   * own high-water mark) is denied, while the stable channel's floor (which
+   * a tester machine's beta overlay may legitimately run ahead of) never
+   * denies them. A safe non-negative integer or omitted; the equal sequence
+   * is the replay steady state exactly as for the stable floor.
+   */
+  readonly lastSeenBetaSequence?: number
   /** Clock deciding manifest expiry; defaults to `Date.now`. */
   readonly now?: () => number
   /**
@@ -353,7 +374,7 @@ function isAcceptedRegistryFlag(argument: string): boolean {
  * plugin add keeps its startup free of the market bundle.
  * @param packageSpecs - positional arguments after `plugin add` (profile flags already removed).
  * @param policy - embedded company policy providing the trust roots and manifest location.
- * @param options - the manifest asset path, origin fetch overrides, the launcher-staged manifest file, the receipts sequence floor, the test clock, and — for a market-orchestrated install — the launcher's parsed tarball hand-off plus the profile directory confining its staged path.
+ * @param options - the manifest asset path, origin fetch overrides, the launcher-staged manifest file, the per-channel receipts sequence floors, the test clock, and — for a market-orchestrated install — the launcher's parsed tarball hand-off plus the profile directory confining its staged path.
  * @returns the allow decision with the resolved targets, or the denial reason.
  */
 export async function authorizeLockedPluginAdd(
@@ -539,9 +560,10 @@ export async function authorizeLockedPluginAdd(
   // The staged path is confined to the profile's deterministic staging
   // location (the same discipline the staged tarball target gets), and any
   // failure — an unreadable file, a failed signature, expiry, a sequence
-  // below the just-verified stable manifest (a downgrade), a sequence other
-  // than the one the host admitted — keeps the decision on the stable
-  // manifest alone (fail closed to today's behavior). Verification codes are
+  // below the beta channel's own floor (a genuine beta rollback, review P3),
+  // a sequence below the just-verified stable manifest (a downgrade), a
+  // sequence other than the one the host admitted — keeps the decision on
+  // the stable manifest alone (fail closed to today's behavior). Verification codes are
   // echoed into the denial, never raw reasons: a roster-carrying manifest's
   // rejection text may quote roster contents the log contract keeps masked.
   const betaHandoff = handoff?.betaManifestPath !== undefined && handoff.betaSequence !== undefined
@@ -567,6 +589,18 @@ export async function authorizeLockedPluginAdd(
           trustRoots: policy.trustRoots,
           companyCatalogOrigin: policy.companyCatalogOrigin,
           channel: 'beta',
+          // Review P3: the staged beta bytes face their OWN channel's floor —
+          // the beta receipts-plus-ratchet high-water mark — never the stable
+          // floor. A beta sequence below it is a genuine beta rollback and
+          // the verdict below (`stale-sequence`) keeps the decision on the
+          // stable manifest alone (fail closed); a beta sequence at or above
+          // it while the STABLE floor runs higher is the tester steady state
+          // this split exists to keep installable. The floor still stacks on
+          // the anti-downgrade rule below (beta ≥ the just-verified stable
+          // sequence), so both channel bounds hold independently.
+          ...(options.lastSeenBetaSequence === undefined
+            ? {}
+            : { lastSeenSequence: options.lastSeenBetaSequence }),
           ...(options.now === undefined ? {} : { now: options.now }),
         })
         if (!betaVerification.ok) {

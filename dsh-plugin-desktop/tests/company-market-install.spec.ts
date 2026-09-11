@@ -41,6 +41,8 @@ import {
   collectDesktopBootBundles,
   computeDesktopBootTreeRootDigest,
   desktopBootLockIntegrity,
+  marketManifestChannelRatchetsFromSettings,
+  raiseMarketBetaManifestRatchet,
   readDesktopBootLockfile,
   verifyDesktopBootBundles,
 } from '../src/boot-verification.ts'
@@ -1135,6 +1137,154 @@ async function pnpmHarness(
     dispose: async () => { await fiber.dispose() },
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-channel beta floor + ratchet persistence (review P3): the channel's
+// overlay admission faces the BETA channel's own high-water mark (raised
+// after every admitted overlay), so a genuine beta rollback is refused
+// durably while the stable floor keeps flooring only the stable verification.
+// ---------------------------------------------------------------------------
+
+describe('market channel beta overlay floor and ratchet persistence (review P3)', () => {
+  /** The verified overlay fixture exactly like the shared host resolver produces it. */
+  function betaOverlayFixture(sequence = 43) {
+    const manifestText = signedBetaManifestText([nextTarballEntry()], sequence)
+    const verification = verifyDesktopCompanyManifest(manifestText, {
+      trustRoots: policy.trustRoots,
+      companyCatalogOrigin: CATALOG_ORIGIN,
+      channel: 'beta',
+    })
+    if (!verification.ok) throw new Error(`the beta fixture manifest does not verify: ${verification.code}`)
+    return async () => ({
+      packages: verification.manifest.packages,
+      sequence: verification.manifest.sequence,
+      manifestText,
+    })
+  }
+
+  it('refuses an overlay below the beta floor (a genuine beta rollback)', async () => {
+    const root = temporaryDirectory('beta-floor-rollback')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    // The overlay sits at 43 — above the stable 42, so the online
+    // anti-downgrade bound alone would admit it — but the machine's beta
+    // high-water mark is already 44: the superseded beta publication must
+    // stay refused, durably across restarts.
+    const channel = createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir,
+      fetchManifestText: async () => signedManifestText([tarballEntry()], 42),
+      betaOverlay: betaOverlayFixture(43),
+      lastSeenBetaSequence: () => 44,
+      persistBetaSequenceRatchet: vi.fn(),
+    })
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+    // The stable-only view still resolves the stable entry: the refused
+    // overlay degraded this channel to stable, exactly the non-roster shape.
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: TARBALL_INTEGRITY })
+  })
+
+  it('admits an overlay at the beta floor and raises the persisted ratchet', async () => {
+    const root = temporaryDirectory('beta-floor-admit')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const persist = vi.fn(async () => {})
+    const channel = createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir,
+      fetchManifestText: async () => signedManifestText([tarballEntry()], 42),
+      betaOverlay: betaOverlayFixture(43),
+      lastSeenBetaSequence: () => 43,
+      persistBetaSequenceRatchet: persist,
+    })
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: NEXT_TARBALL_INTEGRITY })
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledWith(43)
+  })
+
+  it('never fails the operation when the ratchet persistence hook throws', async () => {
+    const root = temporaryDirectory('beta-floor-persist-failure')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const warn = vi.fn()
+    const channel = createDesktopCompanyMarketTarballInstallChannel({
+      policy,
+      profileDir,
+      fetchManifestText: async () => signedManifestText([tarballEntry()], 42),
+      betaOverlay: betaOverlayFixture(43),
+      lastSeenBetaSequence: () => 43,
+      persistBetaSequenceRatchet: async () => {
+        throw new Error('settings document is locked')
+      },
+      warn,
+    })
+
+    await expect(channel.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: NEXT_TARBALL_INTEGRITY })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('persisting the beta catalog sequence ratchet failed'))
+  })
+
+  it('wires the real settings-backed beta ratchet end to end', async () => {
+    // The production pair the Electron host injects: the floor supplier reads
+    // the shared settings document, the persistence hook raises the beta
+    // record — and the two compose across operations: the first admission
+    // persists 43, and a later channel instance refuses an older overlay.
+    const root = temporaryDirectory('beta-floor-settings')
+    const profileDir = join(root, 'profiles', 'web')
+    mkdirSync(profileDir, { recursive: true })
+    const settingsPath = join(root, 'settings.yaml')
+    writeFileSync(settingsPath, JSON.stringify({
+      'dsh-community-market': {
+        companyManifest: { sequence: 42, keyId, verifiedAt: '2026-09-10T00:00:00.000Z' },
+      },
+    }))
+    const channelOptions = {
+      policy,
+      profileDir,
+      fetchManifestText: async () => signedManifestText([tarballEntry()], 42),
+      betaOverlay: betaOverlayFixture(43),
+      lastSeenBetaSequence: () => marketManifestChannelRatchetsFromSettings(settingsPath).beta,
+      persistBetaSequenceRatchet: async (sequence: number) => {
+        await raiseMarketBetaManifestRatchet(settingsPath, sequence)
+      },
+    }
+
+    const first = createDesktopCompanyMarketTarballInstallChannel(channelOptions)
+    await expect(first.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ integrity: NEXT_TARBALL_INTEGRITY })
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 42, beta: 43 })
+
+    // A later operation on the same machine, offered the superseded beta
+    // publication at 42: that still satisfies the online anti-downgrade bound
+    // (≥ the verified stable 42) — only the persisted beta floor (43) refuses
+    // it. Without the durable ratchet a restart would have forgotten the
+    // machine ever saw beta 43 and re-admitted the superseded bytes.
+    const rolledBackOverlay = betaOverlayFixture(42)
+    const second = createDesktopCompanyMarketTarballInstallChannel({
+      ...channelOptions,
+      betaOverlay: rolledBackOverlay,
+    })
+    await expect(second.verifyTarballEntry(
+      { packageName: PACKAGE_NAME, version: NEXT_PACKAGE_VERSION },
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+  })
+})
 
 describe('npm-channel install path stays byte-identical', () => {
   const npmRequest = {

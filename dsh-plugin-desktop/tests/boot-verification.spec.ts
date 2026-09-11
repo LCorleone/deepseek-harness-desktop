@@ -5,6 +5,7 @@ import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { parseDocument } from 'yaml'
 import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-app-boot'
 import {
   canonicalJsonText,
@@ -31,7 +32,9 @@ import {
   desktopBootVerificationInputsFromSettings,
   DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,
   marketInstallReceiptsFromSettingsDocument,
+  marketManifestChannelRatchetsFromSettings,
   marketManifestSequenceRatchetFromSettings,
+  raiseMarketBetaManifestRatchet,
   readCompanyManifestAsset,
   readDesktopBootLockfile,
   readDesktopBootReceiptsFromSettings,
@@ -1654,6 +1657,160 @@ describe('market manifest sequence ratchet floor (review P2)', () => {
     const decision = verifyDesktopBootBundles(after.manifestBytes, [bundleInput()], { trustRoots, ...after })
     expect(decision.manifestTrusted).toBe(false)
     expect(decision.manifestFailure?.code).toBe('stale-sequence')
+  })
+})
+
+describe('per-channel manifest sequence ratchets (review P3)', () => {
+  const contentPolicy = { companyCatalogOrigin: null, companyManifestUrl: 'company-market/catalog-manifest.json' }
+
+  function channelSettingsPath(home: string, market: unknown): string {
+    const settingsPath = join(home, 'settings.yaml')
+    mkdirSync(home, { recursive: true })
+    writeFileSync(settingsPath, typeof market === 'string'
+      ? market
+      : JSON.stringify({ 'dsh-community-market': market }))
+    return settingsPath
+  }
+
+  function legacyRatchetRecord(sequence: number): Record<string, unknown> {
+    return {
+      companyManifest: {
+        sequence,
+        keyId,
+        verifiedAt: '2026-09-10T00:00:00.000Z',
+        bytesSha256: 'cd'.repeat(32),
+      },
+    }
+  }
+
+  it('migrates a beta-raised single ratchet into per-channel floors (beta 29 / stable 27)', async () => {
+    // The affected-machine shape: the machine durably applied beta (the beta
+    // record is the evidence) while its install receipts — each copying the
+    // stable verification evidence — provably reached only 27, so the stable
+    // floor seeds at the true stable high-water mark 27 (never higher than
+    // what stable actually reached) and the beta floor keeps the raised 29.
+    const home = temporaryDirectory()
+    const settingsPath = channelSettingsPath(home, {
+      installReceipts: [marketV2Receipt({ manifestSequence: 27 })],
+      ...legacyRatchetRecord(29),
+      companyManifestChannels: { beta: 29 },
+    })
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 29 })
+  })
+
+  it('keeps a stable-only machine\u2019s single ratchet intact and seeds beta from it', () => {
+    // No durable beta evidence: the legacy value is pure stable history and
+    // must survive the migration untouched (a machine whose stable scans ran
+    // ahead of its installs — receipts 27, ratchet 29 — keeps the 29 floor:
+    // migration never lowers a channel\u2019s floor), and the beta floor starts
+    // at the stable mark — the online rule every beta consumer enforces.
+    const home = temporaryDirectory()
+    const settingsPath = channelSettingsPath(home, {
+      installReceipts: [marketV2Receipt({ manifestSequence: 27 })],
+      ...legacyRatchetRecord(29),
+    })
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 29, beta: 29 })
+
+    // Without receipts either, the legacy value is the only observation.
+    const bare = channelSettingsPath(join(home, 'bare'), legacyRatchetRecord(26))
+    expect(marketManifestChannelRatchetsFromSettings(bare)).toEqual({ stable: 26, beta: 26 })
+  })
+
+  it('uses the explicit per-channel record per channel, tolerating malformed values', () => {
+    const home = temporaryDirectory()
+    const split = channelSettingsPath(home, {
+      ...legacyRatchetRecord(29),
+      companyManifestChannels: { stable: 30, beta: 31 },
+    })
+    expect(marketManifestChannelRatchetsFromSettings(split)).toEqual({ stable: 30, beta: 31 })
+
+    // A malformed channel value contributes nothing for that channel alone:
+    // stable falls back to the migrated legacy value, beta keeps its record.
+    const halfMalformed = channelSettingsPath(join(home, 'half'), {
+      ...legacyRatchetRecord(26),
+      companyManifestChannels: { stable: 'twenty', beta: 31 },
+    })
+    expect(marketManifestChannelRatchetsFromSettings(halfMalformed)).toEqual({ stable: 26, beta: 31 })
+  })
+
+  it('reads nothing from absent or malformed documents and never throws', () => {
+    const home = temporaryDirectory()
+    expect(marketManifestChannelRatchetsFromSettings(join(home, 'missing.yaml')))
+      .toEqual({ stable: undefined, beta: undefined })
+    const broken = channelSettingsPath(home, 'dsh-community-market: [broken\n')
+    expect(marketManifestChannelRatchetsFromSettings(broken)).toEqual({ stable: undefined, beta: undefined })
+    const empty = channelSettingsPath(join(home, 'empty'), { sources: [] })
+    expect(marketManifestChannelRatchetsFromSettings(empty)).toEqual({ stable: undefined, beta: undefined })
+  })
+
+  it('raises the persisted beta ratchet without ever lowering it', async () => {
+    const home = temporaryDirectory()
+    const settingsPath = join(home, 'settings.yaml')
+    mkdirSync(home, { recursive: true })
+    // Real YAML with a comment and sibling records: the AST edit must keep
+    // both and never touch the market provider's own stable record.
+    writeFileSync(settingsPath, [
+      '# shared market settings',
+      'dsh-community-market:',
+      '  companyManifest:',
+      '    sequence: 27',
+      '    keyId: company-catalog-2026.01',
+      '    verifiedAt: "2026-09-10T00:00:00.000Z"',
+      '  sources: []',
+      '',
+    ].join('\n'))
+
+    await raiseMarketBetaManifestRatchet(settingsPath, 29)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 29 })
+
+    // A later, older observation never walks the ratchet back (29 stays).
+    await raiseMarketBetaManifestRatchet(settingsPath, 27)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: 27, beta: 29 })
+    // The replay steady state writes nothing and throws nothing.
+    await raiseMarketBetaManifestRatchet(settingsPath, 29)
+
+    const text = readFileSync(settingsPath, 'utf8')
+    expect(text).toContain('# shared market settings')
+    expect(text).toContain('sequence: 27')
+    expect(parseDocument(text).toJS()).toMatchObject({
+      'dsh-community-market': {
+        companyManifest: { sequence: 27 },
+        companyManifestChannels: { beta: 29 },
+        sources: [],
+      },
+    })
+  })
+
+  it('creates the beta record in a document that does not exist yet', async () => {
+    const home = temporaryDirectory()
+    const settingsPath = join(home, 'nested', 'settings.yaml')
+    await raiseMarketBetaManifestRatchet(settingsPath, 29)
+    expect(marketManifestChannelRatchetsFromSettings(settingsPath)).toEqual({ stable: undefined, beta: 29 })
+  })
+
+  it('keeps the boot stable floor isolated from the beta channel\u2019s ratchet', () => {
+    const home = temporaryDirectory()
+    const moduleUrl = pathToFileURL(join(home, 'lib', 'boot-verification.js')).href
+    const assetPath = companyManifestAssetPath('company-market/catalog-manifest.json', moduleUrl)
+    mkdirSync(dirname(assetPath), { recursive: true })
+    // The stable manifest is at 27; the beta overlay ran ahead to 29. Boot
+    // verification checks the STABLE bytes, so its floor must stay 27 —
+    // under the old single mixed floor the beta-raised 29 would reject every
+    // third-party bundle at boot until stable caught up.
+    writeFileSync(assetPath, signedManifestText([packageEntry()], { sequence: 27 }))
+    const settingsPath = channelSettingsPath(home, {
+      // No receipts (a fresh-profile swap clears them): the ratchets alone
+      // carry the floors — stable 27, beta 29.
+      ...legacyRatchetRecord(27),
+      companyManifestChannels: { beta: 29 },
+    })
+    const inputs = desktopBootVerificationInputsFromSettings(contentPolicy, settingsPath, moduleUrl)
+    expect(inputs.lastSeenSequence).toBe(27)
+    const decision = verifyDesktopBootBundles(inputs.manifestBytes, [bundleInput()], { trustRoots, ...inputs })
+    expect(decision.manifestTrusted).toBe(true)
+    expect(decision.allowed).toEqual([
+      { packageName, evidence: 'manifest-only', manifestSequence: 27, keyId },
+    ])
   })
 })
 

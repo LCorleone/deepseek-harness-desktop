@@ -582,6 +582,8 @@ describe('published package surface', () => {
       "  createCachedDesktopBootTreeRootDigestMeasure,\n"
         + "  DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME,\n"
         + "  desktopBootVerificationInputs,\n"
+        + "  marketManifestChannelRatchetsFromSettings,\n"
+        + "  raiseMarketBetaManifestRatchet,\n"
         + "  readDesktopBootReceiptsFromSettings,\n"
         + "} from './boot-verification.ts'",
     )

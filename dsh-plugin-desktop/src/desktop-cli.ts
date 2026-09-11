@@ -268,26 +268,53 @@ function injectSaveExactFlag(argv: string[], addIndex: number): void {
 }
 
 /**
- * Highest anti-rollback sequence floor for a locked plugin add: the highest
- * market receipt sequence joined with the market's persisted scan ratchet
- * from the same settings document (review P2 — a fresh-profile swap clears
- * the receipts but leaves the scan ratchet behind, and the add gate must not
+ * Per-channel anti-rollback sequence floors for a locked plugin add (review
+ * P3): each verification the gate runs compares bytes against its own
+ * channel's high-water mark only. `stable` floors the stable manifest bytes
+ * (`DSH_COMPANY_MANIFEST_FILE` / the embedded asset); `beta` floors the beta
+ * hand-off re-verification. Both are the highest market receipt sequence of
+ * the machine joined with that channel's persisted scan ratchet from the
+ * same settings document (review P2 — a fresh-profile swap clears the
+ * receipts but leaves the scan ratchet behind, and the add gate must not
  * forget what the market already verified). Undefined without either.
  */
-async function lockedPluginAddSequenceFloor(homeDir: string | undefined): Promise<number | undefined> {
-  if (homeDir === undefined) return undefined
+interface LockedPluginAddSequenceFloors {
+  readonly stable: number | undefined
+  readonly beta: number | undefined
+}
+
+async function lockedPluginAddSequenceFloors(
+  homeDir: string | undefined,
+): Promise<LockedPluginAddSequenceFloors> {
+  if (homeDir === undefined) return { stable: undefined, beta: undefined }
   // Lazy like the channel's market import: ordinary CLI startups stay free of
   // the market bundle that boot-verification transitively pulls in.
-  const { marketManifestSequenceRatchetFromSettings, readDesktopBootReceiptsFromSettings } =
+  const { marketManifestChannelRatchetsFromSettings, readDesktopBootReceiptsFromSettings } =
     await import('./boot-verification.ts')
   const settingsPath = join(homeDir, 'settings.yaml')
-  let highest: number | undefined
+  let receiptFloor: number | undefined
   for (const receipt of readDesktopBootReceiptsFromSettings(settingsPath)) {
-    if (highest === undefined || receipt.manifestSequence > highest) highest = receipt.manifestSequence
+    if (receiptFloor === undefined || receipt.manifestSequence > receiptFloor) {
+      receiptFloor = receipt.manifestSequence
+    }
   }
-  const ratchet = marketManifestSequenceRatchetFromSettings(settingsPath)
-  if (ratchet !== undefined && (highest === undefined || ratchet > highest)) highest = ratchet
-  return highest
+  // Review P3: the receipts record the sequence of the STABLE manifest that
+  // allowed each install (the market's signed-manifest evidence), and the
+  // publishing pipeline shares one global sequence with beta riding at or
+  // above stable — so the receipt floor lower-bounds both channels. The
+  // ratchets, however, are joined per channel: a tester machine's beta
+  // overlay legitimately runs ahead of stable (beta 29 / stable 27), and a
+  // beta-raised floor must never deny the stable bytes the gate is verifying
+  // (the apples-to-oranges comparison this split removes).
+  const ratchets = marketManifestChannelRatchetsFromSettings(settingsPath)
+  return {
+    stable: receiptFloor === undefined && ratchets.stable === undefined
+      ? undefined
+      : Math.max(receiptFloor ?? 0, ratchets.stable ?? 0),
+    beta: receiptFloor === undefined && ratchets.beta === undefined
+      ? undefined
+      : Math.max(receiptFloor ?? 0, ratchets.beta ?? 0),
+  }
 }
 
 class CapturedDesktopCliExit {
@@ -458,9 +485,11 @@ export async function runDesktopDshCli(
     if (effectivePolicy.locked) {
       // Signed-catalog channel (P2-5): only a verified, unrevoked, exact
       // `<package>@<version>` entry may proceed; every denial stays here.
-      // The sequence floor rides the receipts-plus-scan-ratchet floor boot
-      // verification also reconciles against (see cli-install-channel.ts for
-      // the rationale).
+      // The sequence floors ride the receipts-plus-scan-ratchet floors boot
+      // verification also reconciles against — per channel since review P3:
+      // the stable floor floors the stable bytes, the beta floor floors the
+      // beta hand-off re-verification (see cli-install-channel.ts for the
+      // rationale).
       //
       // A launcher hand-off, when present, is strictly parsed first: the
       // launcher only ever injects a canonical document in one of the three
@@ -477,14 +506,15 @@ export async function runDesktopDshCli(
           return
         }
       }
-      const lastSeenSequence = await lockedPluginAddSequenceFloor(homeDir)
+      const sequenceFloors = await lockedPluginAddSequenceFloors(homeDir)
       const decision = await authorizeLockedPluginAdd(
         installCommand.packageSpecs,
         effectivePolicy,
         {
           ...(manifestAssetPath === undefined ? {} : { assetPath: manifestAssetPath }),
           ...(companyManifestFile === undefined ? {} : { stagedManifestFile: companyManifestFile }),
-          ...(lastSeenSequence === undefined ? {} : { lastSeenSequence }),
+          ...(sequenceFloors.stable === undefined ? {} : { lastSeenSequence: sequenceFloors.stable }),
+          ...(sequenceFloors.beta === undefined ? {} : { lastSeenBetaSequence: sequenceFloors.beta }),
           ...(tarballHandoff === undefined ? {} : { tarballHandoff }),
           ...(homeDir === undefined
             ? {}
