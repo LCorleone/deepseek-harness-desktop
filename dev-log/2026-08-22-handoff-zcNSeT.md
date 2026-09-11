@@ -498,6 +498,20 @@ b76（53b7f5f82b…f97f0c）真机：**市场装 dsh-better-sidebar@0.18.1 成�
 **拍板落点**：engramory 反馈稿=推荐插件侧写盘（credentials-local 范式背书）；PYTHONDONTWRITEBYTECODE **不做**（上游靠 CPython 静默容忍）；includeDefaultRoots **不动**（保持用户逃生口；上游测试钉死 shell/fs 同根 parity）。
 **对 P6 的启示（批④方案定型）**：ppt-designer 两大死结用 code-runtime-python 范式解——脚本物化进已有 0600 临时目录再跑（`__file__`/兄弟 import 天然工作，**无需改动源 skill**）+ `OPEN_KIMI_PPT_EDITOR` env 指到 staged 目录；agent-browser/Chrome 降级可选（pptx 导出本体走本地 WASM 不依赖）。**红线放宽（July 20:19 批准）**：「明文不落盘」→「明文不留驻」：脚本/资源允许瞬时落盘于 0600 mkdtemp、finally 即删，与 stdin 管道实质同等暴露面。
 
+### 2026-09-11 晨报（10:15）
+**23:00 三路综合评审（定时任务，报告 dev-log/reviews/2026-09-10-comprehensive-review-{arch,logic,upstream}.md，已落库 `cf92ae8e28`）**：arch APPROVED（1×P1+4×P2）/ logic NEEDS CHANGES（1×P1+1×P2+5×P3）/ upstream（0.1.5 已出官方 Electron 桌面端；三颗确认雷 modeSelectionEnabled/session v2v3 不可逆迁移/默认模型 V41 Flash；值得抄 8 项含 acceptIdentity；建议等 rc.3 直升 0.1.5 四波重放）。**arch 与 logic 独立命中同一 P1**（换新不清安装恢复 WAL → 三连命中即砖）。
+**修复批落地+评审 APPROVED**：`3ce59e41c5`（P1+P2：退休在共享原语 runFreshProfileSwap 内，三个调用点全覆盖；相位白名单——awaiting-restart/verifying/verified/rolled-back 换新即退休，真待恢复相位仅 userConfirmedRebuild 退休，prepared/异 profile 永不；boot/CLI 反回滚地板并入持久棘轮）+ `81d0cfffab`（P3 批：pnpm terminate 后有界 reap/非法回执行读侧隔离/孤儿 backupDir 触发面扩大/pyenv 文件锁）。四包 2357+8skip/468/70/186，typecheck 0，评审亲跑 130/130。
+**b90 已构建+已下载**：`d9fe078013…9f0aff`（161.9MB）= b89 全部+修复批；July 直接分发 b90 跳过 b89。
+**CI 连红 8 次破案**：dsh-company-skills README 改过但 README.i18n.yaml 哈希没刷（bilingual 门只在 CI 跑）→ `8a8c613283` 刷新记录后 CI 绿；b90 产物不受影响（纯文档哈希差异）。
+**教训台账（新增）**：⑩发版前本地必须跑 `corepack yarn check`（含 bilingual/architecture/layout 门），不能只三包 test+typecheck；⑪worker 尾声 503 断线时 commit 可能已落——先核实 git log/status 再重跑，勿盲目重发。
+
+### 当前 TODO 快照（2026-09-11 10:15，晨）
+**等 fleet**：July 分发 b90 → 四台升级 → 遥测确认 → 发 **stable seq26**（描述全员上线）。
+**今天主线**：批④ 打 tarball → verify/accept（description 必填）→ CI 签名 → **beta seq27** 发 skill 插件 → 真机验（PPT 生成含 Deloitte 模板 + skill-creator 跑通 + PyYAML 首装授权链）。
+**待拍板（不挡道）**：engramory 反馈稿（插件侧写盘已有上游范式背书）；sandbox_escalation 遥测接/裁；deferral 锚点收窄补残余风险表 R10（arch P2-2）；升级重放点清单补齐+runbook 困化 diff 上游 defaults（arch P2-3）；0.1.5 升级路线立卡（战略，等 rc.3）。
+**暂缓**：main.ts 组合根拆分（等 0.1.5 升级波次一起，省双倍重放）；目录发布单点（多人协作扩张前）；cancelled 叠框/pyenv 锁以外的 logic P3 均已修。
+**基线**：desktop **2357+8skip** · market 468 · skills 70 · catalog 186 · HEAD `8a8c613283`（fork+backup 已推）· 安装包 b90 `d9fe078013…9f0aff` · 目录 beta seq26 / stable seq25。
+
 ### 当前 TODO 快照（2026-09-10 21:40，收工）
 **今晚已完成**：① beta **seq26 上线**（run 34482556545 → publish-local exit 0 → 棘轮 `e93e8d9530` 24→25→26；门禁把 `0.15.2 (+treeDigest)` 列为保守误报——已实证 stable seq25 早已带同值、旧客户端本就接受，唯一真·新键=`description`）；② July 装 b89 并验收市场描述 ✓，遥测实证 `catalog_refresh applied sequence 26 entries 6 beta-overlay`（stable 仍 25，按计划）；③ 批④ skill 插件（skill-creator + ppt-designer）实现+两轮评审闭环，HEAD `ad9af69fab`，测试 70 绿。
 **明早第一件事**：sebtang/lizywu/webhu 升 b89 → 确认（遥测或侬 July 报告）→ 发 **stable seq26**（描述对全员上线；注意仍有 `--confirm-fleet-upgraded` 门禁）。
