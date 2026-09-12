@@ -1,11 +1,12 @@
 # [Feature] #007 sandbox_escalation 遥测：接 or 裁（待拍板）
 
 **Issue ID**: #007
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -119,3 +120,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+July 09-12 拍板：不管了，关闭（sandbox_escalation 遥测不接也不裁，现状维持）
