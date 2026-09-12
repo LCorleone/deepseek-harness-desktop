@@ -37,16 +37,30 @@ export class MarketApiError extends Error {
 }
 
 /**
- * Upper bound for one long Market request the Host must answer (a confirmed
- * mutation, its preview, a source change, or a desktop action).
+ * Upper bound for one long Market request the Host must answer (an
+ * operation preview, a source change, or a desktop action).
  *
- * A completed Host operation answers immediately; this only bounds the case
- * where the answer never arrives. A Market generation disposed mid-operation
- * used to leave the Client's `fetch` pending forever (b91): the spinner never
- * cleared. 120s covers a slow pnpm install while still guaranteeing the wait
- * ends; the Client maps the resulting error to a localized message.
+ * These legs only touch Host-side state and answer as soon as that work
+ * finishes; this only bounds the case where the answer never arrives. A Market
+ * generation disposed mid-operation used to leave the Client's `fetch` pending
+ * forever (b91): the spinner never cleared. 120s guarantees the wait ends and
+ * the Client maps the resulting error to a localized message. The confirmed
+ * execute leg alone gets the longer {@link MARKET_EXECUTE_TIMEOUT_MS}.
  */
 export const MARKET_OPERATION_TIMEOUT_MS = 120_000
+
+/**
+ * Upper bound for the execute leg alone ({@link executeMarketOperation}).
+ *
+ * Unlike every other bounded Market request, a confirmed install is pnpm-backed
+ * on the user's machine: a cold install downloads, extracts, links, and wires
+ * the profile, and on a loaded corporate laptop with real-time AV scanning that
+ * legitimately runs past the 120s preview bound — reporting it as a timeout was
+ * a false negative (the Host keeps going and commits). 300s (5 minutes) covers
+ * that cold-install tail while staying the ceiling beyond which we would rather
+ * surface the "refresh Installed" recovery hint than keep the spinner turning.
+ */
+export const MARKET_EXECUTE_TIMEOUT_MS = 300_000
 
 /** The Client-side deadline elapsed before the Host answered a long operation. */
 export class MarketOperationTimeoutError extends MarketApiError {
@@ -57,7 +71,8 @@ export class MarketOperationTimeoutError extends MarketApiError {
 }
 
 /**
- * Run one Market request under {@link MARKET_OPERATION_TIMEOUT_MS}.
+ * Run one Market request under the given deadline bound (either
+ * {@link MARKET_OPERATION_TIMEOUT_MS} or {@link MARKET_EXECUTE_TIMEOUT_MS}).
  *
  * The caller's own cancellation (the surface closed) is forwarded unchanged
  * and stays distinct from the deadline, so closing the view never surfaces as
@@ -65,6 +80,7 @@ export class MarketOperationTimeoutError extends MarketApiError {
  */
 async function withMarketOperationDeadline<T>(
   signal: AbortSignal | undefined,
+  timeoutMs: number,
   request: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const deadline = new AbortController()
@@ -72,7 +88,7 @@ async function withMarketOperationDeadline<T>(
   const timer = setTimeout(() => {
     timedOut = true
     deadline.abort()
-  }, MARKET_OPERATION_TIMEOUT_MS)
+  }, timeoutMs)
   const forwardCallerAbort = () => { deadline.abort() }
   if (signal?.aborted === true) deadline.abort()
   else signal?.addEventListener('abort', forwardCallerAbort, { once: true })
@@ -137,7 +153,7 @@ export async function readMoreMarketCatalog(
 }
 
 export async function mutateMarketSource(mutation: MarketSourceMutation, signal?: AbortSignal): Promise<MarketStateResponse['sources']> {
-  const response = await withMarketOperationDeadline(signal, async deadline => readJson<{ sources: MarketStateResponse['sources'] }>(await fetch('/api/community-market/sources', {
+  const response = await withMarketOperationDeadline(signal, MARKET_OPERATION_TIMEOUT_MS, async deadline => readJson<{ sources: MarketStateResponse['sources'] }>(await fetch('/api/community-market/sources', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(mutation),
@@ -171,7 +187,7 @@ export async function previewMarketOperation(
   request: MarketOperationPreviewRequest,
   signal?: AbortSignal,
 ): Promise<MarketOperationPreviewResponse> {
-  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/operations/preview', {
+  return await withMarketOperationDeadline(signal, MARKET_OPERATION_TIMEOUT_MS, async deadline => readJson(await fetch('/api/community-market/operations/preview', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request),
@@ -183,7 +199,7 @@ export async function executeMarketOperation(
   previewId: string,
   signal?: AbortSignal,
 ): Promise<MarketOperationExecuteResponse> {
-  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/operations/execute', {
+  return await withMarketOperationDeadline(signal, MARKET_EXECUTE_TIMEOUT_MS, async deadline => readJson(await fetch('/api/community-market/operations/execute', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ previewId }),
@@ -192,7 +208,7 @@ export async function executeMarketOperation(
 }
 
 export async function openMarketTerminal(signal?: AbortSignal): Promise<MarketDesktopActionResponse> {
-  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/desktop/open-terminal', {
+  return await withMarketOperationDeadline(signal, MARKET_OPERATION_TIMEOUT_MS, async deadline => readJson(await fetch('/api/community-market/desktop/open-terminal', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
@@ -204,7 +220,7 @@ export async function requestMarketRestart(
   restartToken: string,
   signal?: AbortSignal,
 ): Promise<MarketDesktopActionResponse> {
-  return await withMarketOperationDeadline(signal, async deadline => readJson(await fetch('/api/community-market/desktop/request-restart', {
+  return await withMarketOperationDeadline(signal, MARKET_OPERATION_TIMEOUT_MS, async deadline => readJson(await fetch('/api/community-market/desktop/request-restart', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ restartToken }),

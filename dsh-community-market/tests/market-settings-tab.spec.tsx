@@ -887,6 +887,9 @@ describe('MarketSettingsTab', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('alert').some(node => node.textContent === en.executeTimeoutError)).toBe(true)
     })
+    // The deadline only ends the wait: the pending stage must clear too, so
+    // the surface is left usable rather than spinning forever.
+    expect(screen.getByRole('region', { name: en.title }).getAttribute('aria-busy')).toBe('false')
   })
 
   it('surfaces a localized timeout when an operation preview never answers', async () => {

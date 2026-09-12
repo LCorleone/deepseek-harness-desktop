@@ -4,6 +4,7 @@ import type { MarketSourceMutation } from '../src/api-types.js'
 import {
   executeMarketOperation,
   MarketApiError,
+  MARKET_EXECUTE_TIMEOUT_MS,
   MARKET_OPERATION_TIMEOUT_MS,
   mutateMarketSource,
   openMarketTerminal,
@@ -187,7 +188,7 @@ describe('community market client API', () => {
     expect(refreshedUrl.searchParams.get('refresh')).toBe('1')
   })
 
-  it('bounds a confirmed operation with the execution deadline and localizes the timeout', async () => {
+  it('keeps a confirmed execution waiting past the preview deadline, then bounds it with the longer execute deadline', async () => {
     vi.useFakeTimers()
     try {
       const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
@@ -195,20 +196,34 @@ describe('community market client API', () => {
       }))
       vi.stubGlobal('fetch', fetch)
 
-      const pending = executeMarketOperation('preview-1')
+      // The split itself: execute is the only pnpm-backed leg (a cold install
+      // on an AV-scanned machine), so it gets the strictly longer bound.
+      expect(MARKET_EXECUTE_TIMEOUT_MS).toBeGreaterThan(MARKET_OPERATION_TIMEOUT_MS)
+
+      let settled = false
+      const pending = executeMarketOperation('preview-1').then(
+        value => { settled = true; return value },
+        cause => { settled = true; throw cause },
+      )
+      // Past the 120s preview bound a cold install is still legitimate work,
+      // so the execute leg must still be waiting, not a false timeout.
+      await vi.advanceTimersByTimeAsync(MARKET_OPERATION_TIMEOUT_MS)
+      expect(settled).toBe(false)
+
       const outcome = expect(pending).rejects.toMatchObject({
         name: 'MarketOperationTimeoutError',
         status: 408,
         code: 'operation-timeout',
       })
-      await vi.advanceTimersByTimeAsync(MARKET_OPERATION_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(MARKET_EXECUTE_TIMEOUT_MS - MARKET_OPERATION_TIMEOUT_MS)
       await outcome
+      expect(settled).toBe(true)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('bounds an operation preview with the same deadline', async () => {
+  it('bounds an operation preview with the 120s operation deadline', async () => {
     vi.useFakeTimers()
     try {
       const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
@@ -229,7 +244,7 @@ describe('community market client API', () => {
     }
   })
 
-  it('bounds source mutations and desktop actions with the same deadline', async () => {
+  it('bounds source mutations and desktop actions with the 120s operation deadline', async () => {
     vi.useFakeTimers()
     try {
       const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
