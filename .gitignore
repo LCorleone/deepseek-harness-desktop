@@ -15,3 +15,5 @@ dsh-community-market/lib/
 dsh-company-skills/lib/
 
 .env.yarn
+.deloitte-ca-bundle.pem
+.pi/

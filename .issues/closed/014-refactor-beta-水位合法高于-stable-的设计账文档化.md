@@ -1,11 +1,12 @@
 # [Refactor] #014 beta 水位合法高于 stable 的设计账文档化
 
 **Issue ID**: #014
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -162,3 +163,7 @@ pub struct NewDesign {
 ### 讨论记录
 
 [记录技术讨论要点]
+
+## 解决总结
+
+设计账已写（双语对，逐条引用核实），评审 APPROVED

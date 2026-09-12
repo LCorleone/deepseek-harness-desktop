@@ -1,11 +1,12 @@
-# [Refactor] #015 execute 超时界与 preview 分离（现共用120s）
+# [Refactor] #024 C 类仓库门面文档（README/CONTRIBUTING/docs 指上游）
 
-**Issue ID**: #015
-**Status**: Open
+**Issue ID**: #024
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -135,8 +136,7 @@ pub struct NewDesign {
 - [ ] 实现重构
 - [ ] 更新测试
 - [ ] 更新文档
-- 评审 P2 遗留：MARKET_OPERATION_TIMEOUT_MS 共用 120s，冷启动安装>120s 会误报 executeTimeoutError(提示刷新 Installed 可恢复)。改法：execute 专属更长界或 host 侧同界。
-- 分类注：评审指出实为 bug 味（冷装>120s 误报 executeTimeoutError），保留本卡不重开；修复时按 bug 验证。
+- 暂缓：root README/CONTRIBUTING/docs/faq 仍指上游。
 
 ## 验收标准
 
@@ -163,3 +163,7 @@ pub struct NewDesign {
 ### 讨论记录
 
 [记录技术讨论要点]
+
+## 解决总结
+
+门面三组重写（README/CONTRIBUTING/docs），社区指针清零，事实逐项核实，评审 APPROVED
