@@ -57,6 +57,7 @@ export interface BuildAssetModule {
   readonly ASSET_PATH: string
   encodeShippedBundle(packerArtifact: string): string
   decodeShippedBundle(assetText: string): string
+  documentDigest(assetText: string): string
 }
 
 const toolsUrl = (relative: string): string => new URL(relative, import.meta.url).href

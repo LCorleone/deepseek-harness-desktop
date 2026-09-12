@@ -68,6 +68,9 @@ integrity 一律由管线在构建时从官方 registry 抓取，绝不采信本
     "treeDigest": "<64 lowercase hex>",   // optional: expected installed-tree root digest (see below)
     "approvedBuilds": ["sharp"],          // optional: signed build-script approval list (see below)
     "description": "一句话中文描述",          // optional: market-card one-liner, signed verbatim (see below)
+    "bundleDocumentDigest": "<hex>",   // dsh-company-skills only (#028): allowlist-only pin of the
+                                         // reviewed bundle document; recorded by accept-handoff, asserted by
+                                         // the CI ensure-skills-bundles step — never signed into the manifest
     "revoked": false,                     // revocation state, set by `revoke`
     "source": {                           // optional: install channel (P7 dual channel) — omit for npm
       "kind": "tarball",
@@ -367,6 +370,25 @@ manifest。均为渐进启用字段：评审入 allowlist 才会被原样签名�
   且为插件 A 的条目批准的名字会让同 profile 内其它插件的同名依赖同样获得构
   建批准；名字集合本身的可信度即公司签名对它的约束。没有该字段的条目仅用内
   置清单，且该清单只能扩展内置批准，绝不能收缩。
+- **`bundleDocumentDigest`** — the `dsh-company-skills`-only (#028)
+  allowlist authority field: the sha256 of the canonical document the
+  reviewed tgz's `assets/skills.bundle` decodes to. accept-handoff records
+  it at acceptance (`build-bundle-asset.mjs --document-digest` —
+  document-level, so the documented brotli wire drift between Node versions
+  cannot change it), and the CI ensure-skills-bundles step asserts the same
+  document after every rebuild from skills/, failing loudly on drift
+  (skills/ advanced since accept → re-run the handoff review). It is
+  **never signed into the manifest** (the pipeline assembles signed entries
+  field by field), so it takes no part in the fleet upgrade ordering below;
+  legacy entries (0.1.0/0.1.1) carry none and are never asserted.
+- **`bundleDocumentDigest`** — `dsh-company-skills` 条目专用（#028）的
+  allowlist 权威字段：评审过的 tgz 内 `assets/skills.bundle` 解码后规范文档
+  的 sha256，由 accept-handoff 在受理时自动记录（
+  `build-bundle-asset.mjs --document-digest`，文档级——Node 版本间的 brotli
+  线码漂移不会改变它），CI 的 ensure-skills-bundles 步在每次从 skills/ 重建
+  后断言同一文档，漂移即响亮失败（受理后 skills/ 前进 → 重新走受理评审）。
+  **绝不签名进清单**（管线逐字段拼装签名条目），因此不参与下面的 fleet 升级
+  顺序门禁；旧条目（0.1.0/0.1.1）无此字段，断言只对带字段者生效。
 
 **Fleet upgrade ordering (publication gate).** These optional fields are
 optional to the *signer*, not to the fleet: before any manifest carrying

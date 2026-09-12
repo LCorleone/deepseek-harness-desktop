@@ -12,6 +12,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { SKILLS_PACKAGE_NAME } from './skills-bundle.mjs'
 
 /** npm package name grammar accepted by the manifest schema. */
 export const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
@@ -36,7 +37,10 @@ export function expectedTarballFilename(packageName, version) {
 const BUNDLE_PATCH_FORBIDDEN = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u
 
 const RUNTIME_RANGE_FIELDS = ['dshRuntimeVersion', 'cordisRuntimeVersion', 'nodeRuntimeVersion']
-const ENTRY_FIELDS = ['approvedBuilds', 'bundlePatch', 'channel', 'description', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
+// bundleDocumentDigest (#028) is allowlist-only authority — never signed into
+// the manifest (the pipeline assembles signed entries field by field) — so
+// it has no manifest-shape/desktop twin to keep in sync.
+const ENTRY_FIELDS = ['approvedBuilds', 'bundleDocumentDigest', 'bundlePatch', 'channel', 'description', 'packageName', 'repository', 'revoked', 'runtime', 'source', 'treeDigest', 'version']
 const SOURCE_KINDS = ['npm', 'tarball']
 const TARBALL_SOURCE_FIELDS = ['integrity', 'kind', 'path', 'url']
 const NPM_SOURCE_FIELDS = ['kind']
@@ -285,7 +289,10 @@ export function repositoryFromPackument(value) {
  * reviewed right here in the MR): signed verbatim into the entry when
  * present, omitted whole when absent — there is no registry-metadata
  * fallback, because the npm and tarball channels have no common source of
- * display text.
+ * display text. The optional `bundleDocumentDigest` (#028, skills package
+ * only) is the reviewed skills-bundle content pin accept-handoff records
+ * and the CI ensure-skills-bundles step asserts; unlike the fields above it
+ * is allowlist-only authority and never reaches the signed manifest.
  */
 export function validateAllowlistEntry(entry, at, options = {}) {
   if (!isPlainObject(entry)) return { ok: false, reason: `${at} must be an object` }
@@ -344,6 +351,30 @@ export function validateAllowlistEntry(entry, at, options = {}) {
       reason: `${at}.treeDigest must be the expected installed-tree root digest as 64 lowercase hex characters (measured in a clean reference environment; omit the field until then)`,
     }
   }
+  // The skills-bundle content pin (#028): the canonical-document sha256 of
+  // the reviewed dsh-company-skills bundle asset, recorded by accept-handoff
+  // at handoff acceptance (never hand-written) and asserted by the CI
+  // ensure-skills-bundles step against the fresh skills/ rebuild — the
+  // reviewed-content authority for a bundle CI repacks at publish time.
+  // Only the skills package may carry it (any other package has no bundle
+  // to pin), and legacy skills entries accepted before the field existed
+  // (0.1.0/0.1.1) legitimately carry none: the CI assertion applies only
+  // when the field is present.
+  const bundleDocumentDigest = entry.bundleDocumentDigest
+  if (bundleDocumentDigest !== undefined) {
+    if (entry.packageName !== SKILLS_PACKAGE_NAME) {
+      return {
+        ok: false,
+        reason: `${at}.bundleDocumentDigest is the ${SKILLS_PACKAGE_NAME} bundle content pin (issue #028) — only ${SKILLS_PACKAGE_NAME} entries may carry it`,
+      }
+    }
+    if (typeof bundleDocumentDigest !== 'string' || !TREE_DIGEST_PATTERN.test(bundleDocumentDigest)) {
+      return {
+        ok: false,
+        reason: `${at}.bundleDocumentDigest must be the canonical bundle-document sha256 as 64 lowercase hex characters (recorded by accept-handoff at handoff acceptance; omit the field rather than hand-writing it)`,
+      }
+    }
+  }
   const approvedBuilds = entry.approvedBuilds
   if (approvedBuilds !== undefined) {
     if (!Array.isArray(approvedBuilds) || approvedBuilds.length === 0) {
@@ -386,6 +417,7 @@ export function validateAllowlistEntry(entry, at, options = {}) {
       revoked,
       runtime: normalizedRuntime,
       ...(treeDigest === undefined ? {} : { treeDigest }),
+      ...(bundleDocumentDigest === undefined ? {} : { bundleDocumentDigest }),
       ...(approvedBuilds === undefined ? {} : { approvedBuilds }),
       ...(source.kind === 'tarball' ? { source } : {}),
     },

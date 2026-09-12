@@ -19,6 +19,8 @@ import {
   saveAllowlist,
   validateAllowlistEntry,
 } from '../lib/allowlist.mjs'
+import { validateCompanyManifestShapeWithSources } from '../lib/manifest-shape.mjs'
+import { loadSemverRangeChecker } from '../lib/market.mjs'
 import { sha512IntegrityOf } from '../lib/tarball.mjs'
 
 const TOOL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -249,6 +251,66 @@ test('the digest fill treats resolved tarball entries like any other entry', () 
   const entry = { ...baseEntry, treeDigest: 'c'.repeat(64), source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-2.1.0.tgz'), integrity: 'sha512-' + 'A'.repeat(86) + '==' } }
   const filled = applyTreeDigests([entry], [{ packageName: entry.packageName, version: entry.version, treeDigest: 'c'.repeat(64) }])
   assert.deepEqual(filled.unchanged, [entryKey(entry)])
+})
+
+test('bundleDocumentDigest validates only on the skills package and never on a hand-written shape (#028)', async () => {
+  const digest = '5'.repeat(64)
+  const validRange = await loadSemverRangeChecker()
+  const skillsEntry = {
+    packageName: 'dsh-company-skills',
+    version: '0.1.2',
+    description: '公司技能包',
+    bundlePatch: './cordis.patch.yml',
+    repository: 'https://plugin-market.company.example/packages/dsh-company-skills',
+    revoked: false,
+    channel: 'beta',
+    runtime: { dshRuntimeVersion: '^0.1.2-rc.1' },
+    treeDigest: 'c'.repeat(64),
+    bundleDocumentDigest: digest,
+    source: { kind: 'tarball', url: tarballUrl('dsh-company-skills-0.1.2.tgz'), path: 'tools/company-catalog/out/packages/dsh-company-skills-0.1.2.tgz' },
+  }
+  // The field normalizes through like every optional authority field, so the
+  // accepted entry (accept-handoff's writer) loads back verbatim.
+  const result = validate(skillsEntry)
+  assert.equal(result.ok, true)
+  assert.equal(result.value.bundleDocumentDigest, digest)
+  // Only the skills package may carry it — any other package has no bundle
+  // content to pin, so a hand-added field is a review-time refusal, never a
+  // silently-ignored key.
+  const foreign = validate({ ...skillsEntry, packageName: 'company-hardened-plugin', source: { kind: 'tarball', url: tarballUrl('company-hardened-plugin-0.1.2.tgz'), path: 'tools/company-catalog/out/packages/company-hardened-plugin-0.1.2.tgz' } })
+  assert.equal(foreign.ok, false)
+  assert.match(foreign.reason, /bundleDocumentDigest is the dsh-company-skills bundle content pin/u)
+  // The shape is the canonical-document sha256 — 64 lowercase hex, nothing else.
+  for (const [value, hint] of [['not-hex', 'non-hex'], ['X'.repeat(64), 'uppercase'], [5, 'non-string'], ['e'.repeat(63), 'short']]) {
+    const bad = validate({ ...skillsEntry, bundleDocumentDigest: value })
+    assert.equal(bad.ok, false, `a ${hint} bundleDocumentDigest must be refused`)
+    assert.match(bad.reason, /bundleDocumentDigest must be the canonical bundle-document sha256 as 64 lowercase hex/u)
+  }
+  // Absent is the documented legacy state (0.1.0/0.1.1): valid, and the CI
+  // content assertion treats it as exempt.
+  const legacyEntry = { ...skillsEntry }
+  delete legacyEntry.bundleDocumentDigest
+  const legacy = validate(legacyEntry)
+  assert.equal(legacy.ok, true)
+  assert.equal('bundleDocumentDigest' in legacy.value, false)
+  // The field never reaches a signed manifest entry: the pipeline assembles
+  // entries field by field, and the manifest-shape mirror would reject it —
+  // pinned here so the allowlist-only authority cannot leak into the wire.
+  const signed = {
+    packageName: skillsEntry.packageName,
+    version: skillsEntry.version,
+    integrity: 'sha512-' + 'A'.repeat(86) + '==',
+    bundlePatch: skillsEntry.bundlePatch,
+    repository: { url: skillsEntry.repository },
+    revoked: false,
+    runtime: skillsEntry.runtime,
+    treeDigest: skillsEntry.treeDigest,
+    bundleDocumentDigest: digest,
+  }
+  assert.throws(
+    () => validateCompanyManifestShapeWithSources({ manifestVersion: '1.0.0', sequence: 1, expiresAt: '2026-12-31T00:00:00.000Z', packages: [signed], signature: { keyId: 'k', publicKey: 'A'.repeat(43) + '=', value: 'B'.repeat(86) + '==' } }, { companyCatalogOrigin: CATALOG_ORIGIN, validRange, channel: 'stable' }),
+    /unknown field\(s\) bundleDocumentDigest/u,
+  )
 })
 
 test('the landed allowlist pins the release policy’s real catalog origin — no example domains survive review', () => {

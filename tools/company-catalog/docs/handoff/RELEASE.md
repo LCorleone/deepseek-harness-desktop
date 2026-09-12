@@ -118,6 +118,22 @@ one (matched by the staging tree's package.json name; the committed
 this run's packed bytes; packing a bundle-less skills tree fails closed,
 with the same one-command guidance in the error.
 
+**Accept-side content authority (#028)**: because CI rebuilds the bundle
+from `skills/` at publish time, the bytes it ships must be tied to what the
+handoff review actually reviewed, not just to their own fresh digest. When
+accept-handoff applies a `dsh-company-skills` entry it therefore records
+`bundleDocumentDigest` on the entry — the sha256 of the decoded canonical
+bundle document INSIDE the reviewed tgz (`build-bundle-asset.mjs
+--document-digest`; document-level, so the documented brotli wire drift
+between Node versions cannot false-alarm it). The ensure step then asserts,
+after every rebuild, that `skills/` still packs exactly that document and
+fails loudly otherwise ("skills/ advanced since accept — re-run the handoff
+review"): a skills tree that moved between accept (t0) and publish (t1)
+stops the build instead of silently shipping unreviewed bundle content
+under the reviewed lib/ + treeDigest. The field is allowlist-only authority
+(never signed into the manifest), and the legacy 0.1.0/0.1.1 entries carry
+none — the assertion applies only to entries that have the field.
+
 ## 1. The four daily chains
 
 ### 1.A Accepting a new version (colleague MR → verify → accept → ready to publish)
@@ -254,6 +270,21 @@ promote used exactly this):
 # ③ Publish via 1.B channel=beta again to re-sign the beta manifest forward
 #    (beta is a superset; the entry stays; testers see nothing change)
 ```
+
+**The low-probability fallback of this path (final-review P3 note; mandatory
+reading when 0.1.0/0.1.1 ride along)**: step ② repacks the skills package's
+0.1.0/0.1.1 from the COMMITTED v1 staging blobs — byte-stable under the
+pinned Node/zlib, but on any packer/Node gzip drift the repacked bytes differ
+from the bytes hosted back then and publish-local's immutability (byte) gate
+refuses the push fail-closed; the 1.F version-bump escape does not exist for
+these immutable legacy pins (the content is unchanged, a published
+name@version cannot be re-issued, and the old versions stay pinned by the
+catalog until revoked). In that case the ONLY fallback is `cli.mjs promote`
+on the key-custody machine: the signed bytes move verbatim into stable (zero
+re-verification, zero repacking — the byte gate never fires). The
+probability is low (the pinned Node plus the committed blobs are
+byte-stable; the differing premise is the dai-context packer-drift incident
+in 1.F), but if it ever drifts, do not burn time on the keyless machine.
 
 One equivalent command in a signing-key environment (CI / key-custody machine):
 
@@ -561,3 +592,21 @@ group announcement — issue #003).
   copy → measure re-measures those treeDigests from this run's packed
   bytes); 0.5/1.A/1.F rewritten as the transitional rule + the post-0.1.2
   steady state.
+- 2026-09-12 #028: accept-chain content authority — accept-handoff records
+  `bundleDocumentDigest` (the canonical-document sha256 of the reviewed
+  tgz's bundle, via `build-bundle-asset.mjs --document-digest`) on every
+  dsh-company-skills acceptance, and the ensure step asserts after each
+  rebuild that skills/ still packs that document, failing loudly on drift;
+  legacy entries without the field stay unasserted (0.5).
+- 2026-09-12 #029: 1.C gained the low-probability fallback note for the
+  keyless promote path — when 0.1.0/0.1.1 repacked from the committed v1
+  blobs hit packer byte drift, publish-local's bytes gate refuses and the
+  version-bump escape is impossible for immutable legacy pins, leaving
+  `cli.mjs promote` on the key-custody machine (zero repacking) as the only
+  fallback.
+- 2026-09-12 #030: the embedded offline-fallback manifest refreshed to the
+  deployed stable seq27 bytes
+  (dsh-plugin-desktop/assets/company-market/catalog-manifest.json, formerly
+  a seq2 sample); a new spec gates its freshness (release-trust-root
+  verification + at most 8 sequences behind the repository ratchet + not
+  expired, failing loudly when it rots).

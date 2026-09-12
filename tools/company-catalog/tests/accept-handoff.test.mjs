@@ -197,6 +197,9 @@ test('green: a PASS verdict joins the old active pin (P15 multi-version), commit
     assert.equal(accepted.source.url, `${CATALOG_ORIGIN}/julu/dsh-desktop-config/-/raw/master/packages/fixture-hello-1.0.0.tgz`)
     assert.match(accepted.source.path, /^tools\/company-catalog\/out\/accept-handoff-test-[^/]+\/packages-[^/]+\/fixture-hello-1\.0\.0\.tgz$/u)
     assert.equal(accepted.runtime.dshRuntimeVersion, PINNED_RUNTIME_RANGE)
+    // The #028 skills-bundle content pin is skills-package-only: a
+    // fixture-hello (non-skills) acceptance never carries it.
+    assert.equal('bundleDocumentDigest' in accepted, false)
     assert.deepEqual(kept, OLD_ACTIVE_ENTRY)
     // The commit: exact message, exactly the one file, clean tree afterwards.
     assert.match(result.commitSha, /^[0-9a-f]{7,40}$/u)
@@ -660,6 +663,125 @@ test('green: the accepted entry carries the market-card description from the ver
     const kept = entries.find((entry) => entry.version === '0.9.0')
     assert.equal(kept.description, undefined)
     assert.deepEqual(kept, OLD_ACTIVE_ENTRY)
+  } finally {
+    rmSync(submission.root, { recursive: true, force: true })
+    rmSync(allowlist.root, { recursive: true, force: true })
+  }
+})
+
+/** A dsh-company-skills submission (the #028 pin's package): the same verify flow over a bundle-carrying skills tgz. */
+async function skillsSubmission({ allowlist, withBundle = true } = {}) {
+  const packageName = 'dsh-company-skills'
+  const version = '0.1.2'
+  const fileName = `${packageName}-${version}.tgz`
+  const manifest = {
+    name: packageName,
+    version,
+    description: '公司技能包',
+    license: 'MIT',
+    repository: { type: 'git', url: 'https://plugin-market.company.example/packages/dsh-company-skills' },
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+  }
+  // The bundle asset's bytes only matter to the injected digester — the
+  // content is opaque wire as far as this fixture is concerned.
+  const bundleWire = 'dskb2-br-wire-bytes-as-far-as-the-acceptance-stub-cares\n'
+  const tarball = buildDeterministicTarball([
+    fileEntry('package/package.json', `${JSON.stringify(manifest, null, 2)}\n`),
+    fileEntry('package/cordis.patch.yml', '[]\n'),
+    ...(withBundle ? [fileEntry('package/assets/skills.bundle', bundleWire)] : []),
+  ])
+  const root = mkdtempSync(join(tmpdir(), 'accept-handoff-skills-'))
+  const submissionDir = join(root, 'submissions', `${packageName}-${version}`)
+  mkdirSync(submissionDir, { recursive: true })
+  writeFileSync(join(submissionDir, fileName), tarball)
+  writeFileSync(join(submissionDir, 'handoff.json'), `${JSON.stringify({
+    schemaVersion: 2,
+    plugin: { packageName, version, author: 'zhangsan', description: 'A company skills submission fixture for the #028 pin.', type: 'tool' },
+    compat: { dshRuntimeVersion: PINNED_RUNTIME_RANGE, dshCommit: PINNED_DSH_COMMIT, desktopVersion: PINNED_DESKTOP },
+    artifact: { file: fileName, sha256: createHash('sha256').update(tarball).digest('hex'), sizeBytes: tarball.byteLength },
+    submitter: { name: '张三', gitlabHandle: '@zhangsan', submittedAt: '2026-09-12' },
+    evidence: { summary: '安装无错，bundle 可解码，技能加载正常。', checks: ['install-in-dev-workspace', 'client-face-renders'] },
+    changes: 'skills submission fixture for the bundle content pin',
+  }, null, 2)}\n`, 'utf8')
+  const compatPath = join(root, 'compat.json')
+  writeFileSync(compatPath, `${JSON.stringify(compatContract(), null, 2)}\n`, 'utf8')
+  const packagesDir = join(PACKAGES_ROOT, `packages-${Math.random().toString(36).slice(2, 8)}`)
+  const receiptsDir = join(root, 'verdict-receipts')
+  const verdict = await verifyHandoffSubmission({
+    submissionDir,
+    schemaPath: SCHEMA_PATH,
+    compatPath,
+    ...(allowlist === undefined ? {} : { allowlistPath: allowlist.path }),
+    packagesDir,
+    receiptsDir,
+    description: '公司技能包：skill 创建指南与 PPT 设计器（PPTD）',
+    measureTarball: () => ({ packageName, version, treeDigest: FIXED_DIGEST }),
+  })
+  return { root, submissionDir, verdict, packagesDir, receiptsDir, bundleWire }
+}
+
+test('green (#028): a dsh-company-skills acceptance records the reviewed bundle document digest on the entry', async () => {
+  const allowlist = gitAllowlistRepo([OLD_ACTIVE_ENTRY])
+  const submission = await skillsSubmission({ allowlist })
+  const digest = 'e'.repeat(64)
+  const logLines = []
+  try {
+    assert.equal(submission.verdict.ok, true, JSON.stringify(submission.verdict.steps, null, 2))
+    const result = accept({
+      submissionDir: submission.submissionDir,
+      allowlistPath: allowlist.path,
+      receiptsDir: submission.receiptsDir,
+      gitEnv: GIT_IDENTITY,
+      documentDigestOfBytes: (bytes) => {
+        // The pin digests the bundle bytes inside the reviewed tgz — the same
+        // artifact step 2 just re-fingerprinted — never a fresh skills/ pack.
+        assert.equal(bytes.toString('utf8'), submission.bundleWire)
+        return digest
+      },
+      log: (line) => logLines.push(line),
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.entry.bundleDocumentDigest, digest)
+    // The committed entry carries the pin: the content authority CI's
+    // ensure-skills-bundles step asserts at publish time.
+    const entries = JSON.parse(readFileSync(allowlist.path, 'utf8'))
+    const accepted = entries.find((entry) => entry.packageName === 'dsh-company-skills')
+    assert.equal(accepted.bundleDocumentDigest, digest)
+    assert.match(logLines.join('\n'), /bundleDocumentDigest e{16}…/u)
+    // Re-accepting the same verdict stays idempotent: the pin is part of the
+    // canonical comparison, so the replay neither commits nor drifts.
+    const again = accept({
+      submissionDir: submission.submissionDir,
+      allowlistPath: allowlist.path,
+      receiptsDir: submission.receiptsDir,
+      gitEnv: GIT_IDENTITY,
+      documentDigestOfBytes: () => digest,
+    })
+    assert.equal(again.alreadyAccepted, true)
+  } finally {
+    rmSync(submission.root, { recursive: true, force: true })
+    rmSync(allowlist.root, { recursive: true, force: true })
+  }
+})
+
+test('red (#028): a skills submission whose reviewed tgz lacks the bundle asset refuses (no reviewed content to pin)', async () => {
+  const allowlist = gitAllowlistRepo([OLD_ACTIVE_ENTRY])
+  const submission = await skillsSubmission({ allowlist, withBundle: false })
+  try {
+    assert.equal(submission.verdict.ok, true)
+    const error = await refusalOf(() => accept({
+      submissionDir: submission.submissionDir,
+      allowlistPath: allowlist.path,
+      receiptsDir: submission.receiptsDir,
+      gitEnv: GIT_IDENTITY,
+      documentDigestOfBytes: () => {
+        throw new Error('the digester must not run when there is no bundle to pin')
+      },
+    }))
+    assert.match(error.message, /dsh-company-skills@0\.1\.2: the reviewed tarball carries no package\/assets\/skills\.bundle/u)
+    assert.match(error.message, /pack-time guard/u)
+    assert.match(error.message, /build-bundle-asset\.mjs/u)
+    assert.equal(gitIn(allowlist.root, ['status', '--porcelain']), '', 'nothing was applied')
   } finally {
     rmSync(submission.root, { recursive: true, force: true })
     rmSync(allowlist.root, { recursive: true, force: true })

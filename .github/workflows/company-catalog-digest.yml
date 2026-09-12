@@ -83,6 +83,11 @@ jobs:
         # those entries' treeDigest from this run's packed bytes. A skills
         # tgz without the bundle asset is invalid, so the pack step below
         # depends on this.
+        # Content authority (#028): entries carrying a bundleDocumentDigest
+        # (recorded by accept-handoff at handoff acceptance) are asserted —
+        # the rebuild (or, on a no-op run, the staging tree's own bundle)
+        # must decode to the accepted document, else this step fails loudly
+        # telling review to re-run. Legacy 0.1.0/0.1.1 carry no pin.
         run: node tools/company-catalog/ensure-skills-bundles.mjs
       - name: Pack tarball-channel artifacts (allowlist pack-artifact entries)
         # Every allowlist entry whose source pins a path gets its

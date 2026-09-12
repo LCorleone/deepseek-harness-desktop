@@ -152,7 +152,11 @@ Commands:
                                explicit retire flow, never an accept side
                                effect), and commits allowlist.json alone as
                                'catalog: accept <name>@<version> (staging handoff)'.
-                               Only PASS verdicts; fail-closed without git or
+                               A dsh-company-skills entry additionally records
+                               bundleDocumentDigest (#028) — the reviewed
+                               bundle document digest the CI ensure step
+                               asserts against the skills/ rebuild at publish
+                               time. Only PASS verdicts; fail-closed without git or
                                with an allowlist carrying uncommitted changes;
                                never signs, never publishes.
   keygen                       Generate an ed25519 key pair and print the pipeline

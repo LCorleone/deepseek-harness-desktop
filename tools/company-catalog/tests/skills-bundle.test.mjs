@@ -18,6 +18,13 @@
  *    pinning a treeDigest stay skipped (the committed legacy shape) unless
  *    their staging bundle was provisioned this run (marker → re-measure from
  *    the CI-packed bytes); digest-less entries always measure;
+ *  - the #028 content pin (`bundleDocumentDigest`): a rebuild run digests the
+ *    fresh asset BEFORE any copy and fails loudly when skills/ no longer
+ *    decodes to the accepted document; a no-op run asserts each pinned
+ *    entry's own staging-tree bundle; pin-less legacy entries (0.1.0/0.1.1,
+ *    accepted before the field existed) are never asserted; and the loaded
+ *    allowlist entries are a required input (the pin is asserted against
+ *    them, so a caller cannot silently drop the gate);
  *  - the .gitignore rules: source-tree and 0.1.2+ staging bundles ignored,
  *    the two legacy staging pins trackable, the marker ignored (asserted
  *    through `git check-ignore`, the same engine git itself uses).
@@ -156,8 +163,14 @@ test('ensureSkillsBundles is a logged no-op that never invokes the builder when 
     const result = ensureSkillsBundles({
       repoRoot: root,
       pluginSourcesRoot: root,
+      // No entry pins a bundleDocumentDigest (the legacy shape — the field
+      // postdates the 0.1.0/0.1.1 acceptances), so nothing is digested.
+      entries: [],
       buildAsset: () => {
         throw new Error('the builder must not run when no staging tree lacks the asset')
+      },
+      documentDigest: () => {
+        throw new Error('no pin is asserted when no entry carries bundleDocumentDigest (#028: legacy entries are exempt)')
       },
       log: (line) => logs.push(line),
     })
@@ -178,6 +191,7 @@ test('ensureSkillsBundles rebuilds once and copies the fresh asset into exactly 
     const result = ensureSkillsBundles({
       repoRoot: root,
       pluginSourcesRoot: root,
+      entries: [],
       buildAsset: () => {
         builds += 1
         // The real builder writes the source-tree asset; the stub mirrors that.
@@ -290,6 +304,168 @@ test('needsTreeDigestMeasurement: digest-pinned entries skip unless their stagin
     // A path whose staging tree does not exist (a not-yet-staged entry)
     // behaves like the legacy shape: skipped, never a phantom re-measure.
     assert.equal(needsTreeDigestMeasurement({ ...legacyEntry, source: { kind: 'tarball', path: 'tools/company-catalog/out/packages/dsh-company-skills-7.7.7.tgz' } }, root), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/** A pinned (#028) dsh-company-skills allowlist entry for the fixture root's trees. */
+const pinnedSkillsEntry = (version, digest) => ({
+  packageName: SKILLS_PACKAGE_NAME,
+  version,
+  ...(digest === undefined ? {} : { bundleDocumentDigest: digest }),
+  treeDigest: 'd'.repeat(64),
+  source: { kind: 'tarball', path: `tools/company-catalog/out/packages/${SKILLS_PACKAGE_NAME}-${version}.tgz` },
+})
+
+/** The builder stub: writes the source-tree asset the real builder would. */
+const buildAssetStub = (root, bytes = 'freshly-built-bytes\n') => () => {
+  mkdirSync(join(root, SKILLS_PACKAGE_NAME, 'assets'), { recursive: true })
+  writeFileSync(join(root, SKILLS_PACKAGE_NAME, 'assets', 'skills.bundle'), bytes)
+}
+
+test('ensureSkillsBundles asserts the #028 pin: a fresh rebuild decoding to the accepted document copies as usual', () => {
+  const { root, skillsWithout } = stageSourcesRootFixture()
+  try {
+    const logs = []
+    const digest = 'e'.repeat(64)
+    const result = ensureSkillsBundles({
+      repoRoot: root,
+      pluginSourcesRoot: root,
+      entries: [pinnedSkillsEntry('0.9.9', digest)],
+      buildAsset: buildAssetStub(root),
+      documentDigest: (assetPath) => {
+        // The assertion digests the freshly built source-tree asset, before any copy.
+        assert.equal(assetPath, join(root, SKILLS_PACKAGE_NAME, 'assets', 'skills.bundle'))
+        return digest
+      },
+      log: (line) => logs.push(line),
+    })
+    assert.deepEqual(result.copied.map((copy) => copy.stem), ['dsh-company-skills-0.9.9'], 'a matching pin does not block the copy')
+    assert.equal(readFileSync(join(skillsWithout, 'assets', 'skills.bundle'), 'utf8'), 'freshly-built-bytes\n')
+    assert.equal(logs.some((line) => line.includes('equals the accepted pin') && line.includes('dsh-company-skills@0.9.9')), true, `the pin confirmation must be logged: ${logs.join(' | ')}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ensureSkillsBundles fails loudly when the fresh rebuild no longer decodes to the accepted document (#028: skills/ advanced since accept)', () => {
+  const { root, skillsWithout } = stageSourcesRootFixture()
+  try {
+    const logs = []
+    assert.throws(
+      () => ensureSkillsBundles({
+        repoRoot: root,
+        pluginSourcesRoot: root,
+        entries: [pinnedSkillsEntry('0.9.9', 'e'.repeat(64))],
+        buildAsset: buildAssetStub(root),
+        documentDigest: () => 'f'.repeat(64),
+        log: (line) => logs.push(line),
+      }),
+      (error) => {
+        assert.match(error.message, /dsh-company-skills@0\.9\.9 pins bundleDocumentDigest e{64}/u)
+        assert.match(error.message, /decodes to f{64}/u)
+        assert.match(error.message, /skills\/ advanced since accept/u, 'the refusal must name the root cause')
+        assert.match(error.message, /re-run the handoff review \(verify-handoff \+ accept-handoff\)/u, 'the refusal must be actionable')
+        assert.match(error.message, /nothing was packed/u, 'the refusal is explicitly fail-closed')
+        return true
+      },
+    )
+    // Fail-closed BEFORE any copy: the bundle-less staging tree stays bundle-less.
+    assert.equal(existsSync(join(skillsWithout, 'assets', 'skills.bundle')), false, 'a drifted rebuild must not be copied into any staging tree')
+    assert.equal(existsSync(join(skillsWithout, SKILLS_BUNDLE_REBUILT_MARKER_FILENAME)), false, 'no provisioning marker either')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ensureSkillsBundles leaves legacy pin-less entries unasserted while rebuilding (#028: the assertion applies only when the field is present)', () => {
+  const { root, skillsWithout } = stageSourcesRootFixture()
+  try {
+    // The 0.1.0/0.1.1 shape: skills entries accepted before #028 carry no
+    // bundleDocumentDigest, so a rebuild that copies bytes for them asserts
+    // nothing — the field's absence is the documented legacy exemption.
+    const result = ensureSkillsBundles({
+      repoRoot: root,
+      pluginSourcesRoot: root,
+      entries: [pinnedSkillsEntry('0.9.9'), pinnedSkillsEntry('1.2.3')],
+      buildAsset: buildAssetStub(root),
+      documentDigest: () => {
+        throw new Error('no pin is asserted when no entry carries bundleDocumentDigest (#028: legacy entries are exempt)')
+      },
+      log: () => {},
+    })
+    assert.deepEqual(result.copied.map((copy) => copy.stem), ['dsh-company-skills-0.9.9'])
+    assert.equal(readFileSync(join(skillsWithout, 'assets', 'skills.bundle'), 'utf8'), 'freshly-built-bytes\n')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("ensureSkillsBundles' no-op path asserts the pin against the staging tree's own bundle, not a rebuild", () => {
+  const { root, skillsWith, skillsWithout } = stageSourcesRootFixture()
+  try {
+    // The committed world: no tree lacks its bundle, so nothing rebuilds.
+    rmSync(skillsWithout, { recursive: true, force: true })
+    const logs = []
+    // Every tree carries its bundle (the committed world): the pin must be
+    // asserted against the bytes that run would pack — the staging tree's
+    // own asset — with the builder never invoked.
+    const result = ensureSkillsBundles({
+      repoRoot: root,
+      pluginSourcesRoot: root,
+      entries: [pinnedSkillsEntry('1.2.3', 'e'.repeat(64))],
+      buildAsset: () => {
+        throw new Error('the builder must not run when nothing is missing')
+      },
+      documentDigest: (assetPath) => {
+        assert.equal(assetPath, join(skillsWith, 'assets', 'skills.bundle'), 'the no-op path digests the staging tree\'s own bundle')
+        return 'e'.repeat(64)
+      },
+      log: (line) => logs.push(line),
+    })
+    assert.deepEqual(result, { rebuilt: [], copied: [] })
+    assert.equal(logs.some((line) => line.includes('dsh-company-skills@1.2.3') && line.includes('equals the accepted pin')), true, `the no-op pin check must be logged: ${logs.join(' | ')}`)
+    // A drifted staging bundle fails just as loudly (a stale locally-built
+    // copy seeding the tree is not accepted content either).
+    assert.throws(
+      () => ensureSkillsBundles({
+        repoRoot: root,
+        pluginSourcesRoot: root,
+        entries: [pinnedSkillsEntry('1.2.3', 'e'.repeat(64))],
+        buildAsset: () => {
+          throw new Error('the builder must not run when nothing is missing')
+        },
+        documentDigest: () => 'f'.repeat(64),
+        log: () => {},
+      }),
+      /skills\/ advanced since accept/u,
+    )
+    // A pinned entry whose staging tree cannot be located fails closed
+    // (there are no bytes this run could honestly assert against).
+    assert.throws(
+      () => ensureSkillsBundles({
+        repoRoot: root,
+        pluginSourcesRoot: root,
+        entries: [pinnedSkillsEntry('7.7.7', 'e'.repeat(64))],
+        buildAsset: buildAssetStub(root),
+        documentDigest: () => 'e'.repeat(64),
+        log: () => {},
+      }),
+      /dsh-company-skills-7\.7\.7.*carries no assets\/skills\.bundle/u,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ensureSkillsBundles requires the loaded allowlist entries (the #028 pin is asserted against them)', () => {
+  const { root } = stageSourcesRootFixture()
+  try {
+    assert.throws(
+      () => ensureSkillsBundles({ repoRoot: root, pluginSourcesRoot: root }),
+      /requires the loaded allowlist entries/u,
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

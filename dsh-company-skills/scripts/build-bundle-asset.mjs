@@ -7,6 +7,10 @@
  *   node scripts/build-bundle-asset.mjs --check    # fail if it is stale (an
  *     absent asset is rebuilt in place — the untracked-output world of
  *     issue #011, where a fresh clone carries none to compare against)
+ *   node scripts/build-bundle-asset.mjs --document-digest <asset-path>
+ *     # print the sha256 of the asset's decoded canonical document (issue
+ *     #028): the content-level identity of the bundle, stable across the
+ *     documented compressor-version wire drift. Read-only; never writes.
  *
  * This is the author-side assembly step of P6 batch 2/4 (plus the #013 size
  * work). It assembles in two steps, both in this script:
@@ -52,6 +56,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -125,6 +130,22 @@ function canonicalDocument(assetText) {
   return JSON.stringify(JSON.parse(decodeShippedBundle(assetText)))
 }
 
+/**
+ * The content-level digest of one bundle asset (issue #028): sha256 over the
+ * canonical JSON of the DECODED document — never the wire bytes, which the
+ * documented compressor-version drift may change while the document stays
+ * identical. `accept-handoff` pins this value on dsh-company-skills allowlist
+ * entries (`bundleDocumentDigest`) at handoff acceptance, and the CI
+ * `ensure-skills-bundles` step asserts the fresh skills/ rebuild still
+ * produces it — the reviewed-content authority for a bundle CI repacks from
+ * skills/ at publish time.
+ * @param assetText - raw blob or generated-module asset text (v1 or v2 wire).
+ * @returns the lowercase hex sha256 of the canonical document.
+ */
+export function documentDigest(assetText) {
+  return createHash('sha256').update(canonicalDocument(assetText), 'utf8').digest('hex')
+}
+
 /** Read the committed asset if it exists; undefined when absent (issue #011 rebuild world). */
 function readAsSetIfExists(path) {
   try {
@@ -137,6 +158,37 @@ function readAsSetIfExists(path) {
 
 function main() {
   const args = process.argv.slice(2)
+  // --document-digest <path> (issue #028): print the canonical-document
+  // sha256 of the asset at <path> and touch nothing. The decode/canon
+  // machinery is the one this script already owns — the catalog-side callers
+  // (accept-handoff, ensure-skills-bundles) spawn this mode instead of
+  // duplicating the codec.
+  const digestIndex = args.indexOf('--document-digest')
+  if (digestIndex !== -1) {
+    if (args.includes('--check')) {
+      process.stderr.write('build-bundle-asset: --document-digest and --check are mutually exclusive (one reads an asset, the other rebuilds from skills/)\n')
+      process.exit(1)
+    }
+    const unknown = args.filter((argument, index) => index !== digestIndex && index !== digestIndex + 1)
+    if (unknown.length > 0) {
+      process.stderr.write(`build-bundle-asset: unknown argument "${unknown[0]}"\n`)
+      process.exit(1)
+    }
+    const target = args[digestIndex + 1]
+    if (typeof target !== 'string' || target.length === 0 || target.startsWith('--')) {
+      process.stderr.write('build-bundle-asset: --document-digest requires the path of the bundle asset to digest\n')
+      process.exit(1)
+    }
+    let assetText
+    try {
+      assetText = readFileSync(target, 'utf8')
+    } catch (error) {
+      process.stderr.write(`build-bundle-asset: cannot read ${target} (${error.code ?? error.message})\n`)
+      process.exit(1)
+    }
+    process.stdout.write(`${documentDigest(assetText)}\n`)
+    return
+  }
   const check = args.includes('--check')
   const unknown = args.filter((argument) => argument !== '--check')
   if (unknown.length > 0) {

@@ -30,7 +30,8 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -54,6 +55,8 @@ export const SKILLS_BUNDLE_REBUILT_MARKER_FILENAME = '.bundle-rebuilt'
 export const BUILD_SCRIPT_RELATIVE_PATH = 'dsh-company-skills/scripts/build-bundle-asset.mjs'
 /** Default in-repo root of the plugin staging trees (mirrors lib/tarball.mjs). */
 export const DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE = 'tools/company-catalog/plugin-sources'
+/** The bundle asset's path inside a packed plugin tarball (the npm pack prefix). */
+export const PACKED_SKILLS_BUNDLE_PATH = `package/${SKILLS_BUNDLE_RELATIVE_PATH}`
 
 /** Read a package directory's `name` field; undefined when it carries no readable manifest. */
 function packageNameOf(directory) {
@@ -151,30 +154,76 @@ export function needsTreeDigestMeasurement(entry, pluginSourcesRoot) {
 
 /**
  * Rebuild the source-tree bundle asset and copy it into every skills staging
- * tree that lacks one (the CI pre-pack step, issue #011). The rebuild always
- * runs fresh when a copy is needed — a pre-existing source-tree asset is
- * never trusted as the copy source — and with nothing missing the whole step
- * is a logged no-op. Every copy is logged with its byte count and leaves the
+ * tree that lacks one (the CI pre-pack step, issue #011), asserting the #028
+ * content pin over the bytes this run ships. The rebuild always runs fresh
+ * when a copy is needed — a pre-existing source-tree asset is never trusted
+ * as the copy source — and with nothing missing the whole step is a logged
+ * no-op. Every copy is logged with its byte count and leaves the
  * `.bundle-rebuilt` marker at the staging-tree root so the measure step
  * re-measures those entries from this run's packed bytes.
- * @param options - `{ repoRoot, pluginSourcesRoot?, buildAsset?, log? }`;
- *   `buildAsset` (injectable for tests) must produce the asset at
- *   `<repoRoot>/dsh-company-skills/assets/skills.bundle`.
+ *
+ * Content authority (#028): `entries` are the loaded allowlist entries (the
+ * caller loads them — this module deliberately never imports the allowlist
+ * loader, so lib/allowlist.mjs can import this module's SKILLS_PACKAGE_NAME
+ * without a cycle). Every dsh-company-skills entry carrying a
+ * `bundleDocumentDigest` (recorded by accept-handoff at handoff acceptance)
+ * must have this run's shipping bundle decode to exactly that canonical
+ * document: a run that rebuilds digests the fresh asset once BEFORE any
+ * copy, and a no-op run (every staging tree already carries its bundle)
+ * digests each pinned entry's own staging-tree asset — the bytes that run
+ * would pack. A drift fails loudly with the re-run-the-review guidance;
+ * legacy entries accepted before the field existed (0.1.0/0.1.1) carry no
+ * pin and are never asserted — the assertion applies only when the field
+ * is present.
+ * @param options - `{ repoRoot, entries, pluginSourcesRoot?, buildAsset?,
+ *   documentDigest?, log? }`; `buildAsset` (injectable for tests) must
+ *   produce the asset at `<repoRoot>/dsh-company-skills/assets/skills.bundle`,
+ *   and `documentDigest` (injectable for tests) maps an asset path to the
+ *   canonical-document sha256.
  * @returns `{ rebuilt: string[], copied: [{stem, bytes}] }`.
  */
 export function ensureSkillsBundles({
   repoRoot,
+  entries,
   pluginSourcesRoot = join(repoRoot, ...DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE.split('/')),
   buildAsset = defaultBuildAsset(repoRoot),
+  documentDigest = (assetPath) => skillsBundleDocumentDigestOfFile(repoRoot, assetPath),
   log = console.log,
 } = {}) {
   if (repoRoot === undefined) throw new Error('ensureSkillsBundles requires a repoRoot')
+  if (!Array.isArray(entries)) {
+    throw new Error('ensureSkillsBundles requires the loaded allowlist entries (entries) — the #028 content pin is asserted against every entry carrying a bundleDocumentDigest; load them with loadAllowlist in the caller (ensure-skills-bundles.mjs does)')
+  }
+  const pinned = entries.filter((entry) => entry.bundleDocumentDigest !== undefined)
+  // The no-op path's pin check: this run rebuilds nothing, so the bytes it
+  // would pack are the staging tree's own (committed or previously
+  // provisioned) bundle — digest those, never a rebuild.
+  const assertStagingTreePin = (entry) => {
+    if (entry.source?.kind !== 'tarball' || entry.source.path === undefined) {
+      throw new Error(
+        `${entry.packageName}@${entry.version} pins bundleDocumentDigest but its source pins no staging-tree path — the content pin can only be asserted against the tree the pack step packs; fix the entry (the skills package ships from plugin-sources staging trees)`,
+      )
+    }
+    const stagingDir = stagingTreeForTarballSourcePath(entry.source.path, pluginSourcesRoot)
+    const bundlePath = join(stagingDir, ...SKILLS_BUNDLE_RELATIVE_PATH.split('/'))
+    if (!existsSync(bundlePath)) {
+      throw new Error(
+        `${entry.packageName}@${entry.version} pins bundleDocumentDigest but the staging tree ${stagingDir} carries no ${SKILLS_BUNDLE_RELATIVE_PATH} — the pinned content cannot be asserted against bytes this run cannot locate (fail closed); stage the tree or re-run the handoff review`,
+      )
+    }
+    const digest = documentDigest(bundlePath)
+    if (digest !== entry.bundleDocumentDigest) {
+      refuseBundleDocumentDrift(entry, `the staging tree ${stagingDir}'s ${SKILLS_BUNDLE_RELATIVE_PATH}`, digest)
+    }
+    log(`skills-bundle: ${entry.packageName}@${entry.version} staging bundle document digest ${digest.slice(0, 16)}… equals the accepted pin (nothing rebuilt this run — the shipping bytes are the staging tree's own)`)
+  }
   const { missing, present } = skillsBundleStagingTrees(pluginSourcesRoot)
   if (missing.length === 0) {
     log(
       `skills-bundle: no ${SKILLS_PACKAGE_NAME} staging tree lacks ${SKILLS_BUNDLE_RELATIVE_PATH} `
       + `(checked ${present.length > 0 ? present.join(', ') : 'no skills staging tree'}) — nothing to rebuild`,
     )
+    for (const entry of pinned) assertStagingTreePin(entry)
     return { rebuilt: [], copied: [] }
   }
   log(
@@ -185,6 +234,20 @@ export function ensureSkillsBundles({
   const sourceAsset = join(repoRoot, SKILLS_PACKAGE_NAME, ...SKILLS_BUNDLE_RELATIVE_PATH.split('/'))
   if (!existsSync(sourceAsset) || !statSync(sourceAsset).isFile()) {
     throw new Error(`${BUILD_SCRIPT_RELATIVE_PATH} produced no ${sourceAsset} — refusing to pack a bundle-less skills tree (fail closed)`)
+  }
+  // Assert the #028 pin BEFORE any copy: a skills/ tree that advanced since
+  // the handoff acceptance fails here with nothing staged into the trees.
+  if (pinned.length > 0) {
+    const freshDigest = documentDigest(sourceAsset)
+    for (const entry of pinned) {
+      if (entry.bundleDocumentDigest !== freshDigest) {
+        refuseBundleDocumentDrift(entry, `the fresh rebuild of ${SKILLS_PACKAGE_NAME}/skills/`, freshDigest)
+      }
+    }
+    log(
+      `skills-bundle: fresh rebuild document digest ${freshDigest.slice(0, 16)}… equals the accepted pin of `
+      + `${pinned.map((entry) => `${entry.packageName}@${entry.version}`).join(', ')} — the shipped bundle is the reviewed content (#028)`,
+    )
   }
   const copied = []
   for (const tree of missing) {
@@ -214,4 +277,70 @@ function defaultBuildAsset(repoRoot) {
       throw new Error(`${BUILD_SCRIPT_RELATIVE_PATH} exited ${String(probe.status)} — the skills bundle cannot be rebuilt from skills/ (fail closed)`)
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The #028 content pin: bundleDocumentDigest
+// ---------------------------------------------------------------------------
+
+/** 64-lowercase-hex shape of a bundleDocumentDigest pin (mirrors TREE_DIGEST_PATTERN). */
+const HEX_64_PATTERN = /^[0-9a-f]{64}$/u
+
+/**
+ * The canonical-document sha256 of a skills-bundle asset FILE, computed by
+ * the rebuild script's `--document-digest` mode (issue #028): the decode and
+ * canonicalization machinery stays in exactly one place (the script), and
+ * the digest is wire-drift-stable — the same document compressed by a
+ * different Node/brotli version digests equal, so a pin recorded at accept
+ * time keeps asserting after the documented compressor byte drift.
+ * @param repoRoot - the repository root (the rebuild script's cwd).
+ * @param assetPath - the bundle asset file to digest.
+ * @returns the lowercase hex sha256 of the decoded canonical document.
+ */
+export function skillsBundleDocumentDigestOfFile(repoRoot, assetPath) {
+  const probe = spawnSync(process.execPath, [join(repoRoot, ...BUILD_SCRIPT_RELATIVE_PATH.split('/')), '--document-digest', assetPath], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 600_000,
+  })
+  if (probe.error !== undefined) {
+    throw new Error(`the bundle document digest could not be computed (${probe.error.message}) — is Node available?`)
+  }
+  if (probe.status !== 0) {
+    throw new Error(`${BUILD_SCRIPT_RELATIVE_PATH} --document-digest ${assetPath} exited ${String(probe.status)}: ${(probe.stderr ?? '').trim()}`)
+  }
+  const digest = (probe.stdout ?? '').trim()
+  if (!HEX_64_PATTERN.test(digest)) {
+    throw new Error(`${BUILD_SCRIPT_RELATIVE_PATH} --document-digest printed no 64-lowercase-hex digest (got ${JSON.stringify(digest)}) — the pin cannot be asserted (fail closed)`)
+  }
+  return digest
+}
+
+/**
+ * The same digest over raw bundle asset bytes (e.g. extracted from a reviewed
+ * tarball): the bytes are obfuscated wire (never plaintext) and are written
+ * to a private tmpdir scratch file that is always removed — the digest child
+ * needs a path, and the asset bytes must not outlive the call on disk.
+ * @param repoRoot - the repository root (the rebuild script's cwd).
+ * @param bytes - the bundle asset bytes (v1 or v2 wire).
+ * @returns the lowercase hex sha256 of the decoded canonical document.
+ */
+export function skillsBundleDocumentDigestOfBytes(repoRoot, bytes) {
+  const scratch = mkdtempSync(join(tmpdir(), 'skills-bundle-digest-'))
+  try {
+    const assetPath = join(scratch, 'skills.bundle')
+    writeFileSync(assetPath, bytes)
+    return skillsBundleDocumentDigestOfFile(repoRoot, assetPath)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
+/** The fail-closed #028 refusal: the shipping bundle is not the reviewed content. */
+function refuseBundleDocumentDrift(entry, subject, got) {
+  throw new Error(
+    `${entry.packageName}@${entry.version} pins bundleDocumentDigest ${entry.bundleDocumentDigest} (the bundle content accepted at handoff review) `
+    + `but ${subject} decodes to ${got} — skills/ advanced since accept: re-run the handoff review (verify-handoff + accept-handoff) so the pin matches the content being shipped, `
+    + 'or revert skills/ to the reviewed state; the shipped bundle must equal the reviewed document (fail closed; nothing was packed)',
+  )
 }

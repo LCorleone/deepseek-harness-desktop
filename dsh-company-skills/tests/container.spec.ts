@@ -8,8 +8,9 @@
  * for byte. That is what stops the two copies of the format from drifting.
  */
 
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -270,6 +271,61 @@ describe('v2 wire format: compression inside the obfuscation layer (#013)', () =
     // ratchet, not a measurement: crossing it again needs a deliberate
     // decision (skill-set growth or a codec change), not silent drift.
     expect(statSync(ASSET_PATH).size).toBeLessThan(30_000_000)
+  })
+})
+
+describe('document digest mode (#028): the content-level identity of the bundle', () => {
+  const SCRIPT = join(PACKAGE_ROOT_PATH, 'scripts', 'build-bundle-asset.mjs')
+
+  /** Run the script's --document-digest CLI over a scratch asset file; returns stdout. */
+  const digestOf = (assetText: string): string => {
+    const file = join(scratch(), 'skills.bundle')
+    writeFileSync(file, assetText, 'utf8')
+    return execFileSync(process.execPath, [SCRIPT, '--document-digest', file], { encoding: 'utf8' }).trim()
+  }
+
+  it('prints the sha256 of the decoded canonical document — and the same document on either wire digests equal', () => {
+    const v1 = packFixtures('.bundle')
+    const v2 = buildAsset.encodeShippedBundle(v1)
+    const canonical = JSON.stringify(JSON.parse(buildAsset.decodeShippedBundle(v1)))
+    const expected = createHash('sha256').update(canonical, 'utf8').digest('hex')
+    // The CLI mode and the exported function agree, on both wire formats —
+    // the documented compressor-version drift changes bytes, never this
+    // digest, which is exactly why #028 pins it instead of the wire sha.
+    expect(digestOf(v1)).toBe(expected)
+    expect(digestOf(v2)).toBe(expected)
+    expect(buildAsset.documentDigest(v1)).toBe(expected)
+    expect(buildAsset.documentDigest(v2)).toBe(expected)
+    expect(digestOf(v1)).toMatch(/^[0-9a-f]{64}$/u)
+  })
+
+  it('changes when (and only when) the document changes', () => {
+    const container = JSON.parse(buildAsset.decodeShippedBundle(packFixtures('.bundle'))) as { version: number }
+    const changed = buildAsset.encodeShippedBundle(
+      toolsCodec.encodeBundleBlob(JSON.stringify({ ...container, version: container.version + 1 })),
+    )
+    expect(digestOf(packFixtures('.bundle'))).not.toBe(digestOf(changed))
+  })
+
+  it('refuses a missing path, an unreadable file, and the --check combination', () => {
+    const asset = join(scratch(), 'skills.bundle')
+    writeFileSync(asset, packFixtures('.bundle'), 'utf8')
+    for (const [arguments_, hint] of [
+      [['--document-digest'], 'no path'],
+      [['--document-digest', '--check'], 'a flag where the path belongs'],
+      [['--document-digest', join(scratch(), 'absent.bundle')], 'an absent file'],
+      [['--document-digest', asset, '--check'], 'the --check combination'],
+      [['--document-digest', asset, '--nonsense'], 'an unknown extra flag'],
+    ] as const) {
+      const probe = spawnSync(process.execPath, [SCRIPT, ...arguments_], { encoding: 'utf8' })
+      expect(probe.status, `--document-digest must refuse ${hint}`).toBe(1)
+      expect(probe.stderr).toMatch(/build-bundle-asset:/u)
+      expect(probe.stdout).toBe('')
+    }
+    // The mode never writes: the scratch asset's bytes are untouched.
+    const before = readFileSync(asset, 'utf8')
+    execFileSync(process.execPath, [SCRIPT, '--document-digest', asset], { encoding: 'utf8' })
+    expect(readFileSync(asset, 'utf8')).toBe(before)
   })
 })
 

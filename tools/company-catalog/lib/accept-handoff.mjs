@@ -34,6 +34,13 @@
  *                  new entry carries the market-card one-liner, so a PASS
  *                  receipt issued by a pre-flag verify-handoff run cannot
  *                  ride in — re-run verify-handoff with --description)
+ *   3½ skills pin  a dsh-company-skills entry additionally records
+ *                  bundleDocumentDigest (#028): the canonical-document
+ *                  sha256 of the reviewed tgz's assets/skills.bundle, so
+ *                  the CI rebuild from skills/ at publish time is asserted
+ *                  against the content accepted here — a skills/ tree that
+ *                  advanced between accept and publish fails the build
+ *                  loudly instead of shipping unreviewed bundle content
  *   4 merge        multi-version pins (P15 Phase 0): the entry JOINS the
  *                  package's existing ACTIVE entries — promote adds a pin
  *                  and keeps the old ones, because every client boots by
@@ -84,7 +91,12 @@ import {
   STABLE_VERSION_PATTERN,
   validateAllowlistEntry,
 } from './allowlist.mjs'
-import { REPO_ROOT, TOOL_DIR } from './tarball.mjs'
+import {
+  PACKED_SKILLS_BUNDLE_PATH,
+  SKILLS_PACKAGE_NAME,
+  skillsBundleDocumentDigestOfBytes,
+} from './skills-bundle.mjs'
+import { parseTarball, REPO_ROOT, TOOL_DIR } from './tarball.mjs'
 import { DEFAULT_VERDICT_RECEIPTS_DIR, verdictReceiptRecordPath } from './verify-handoff.mjs'
 
 /** tools/company-catalog — lib/tarball.mjs's TOOL_DIR is lib/ itself. */
@@ -378,6 +390,47 @@ function resolveVerifiedEntry({ receipt, repositoryOverride, companyCatalogOrigi
 }
 
 // ---------------------------------------------------------------------------
+// Step 3½ (#028): pin the reviewed skills-bundle content
+// ---------------------------------------------------------------------------
+
+/**
+ * For a dsh-company-skills entry, record the content authority of the
+ * reviewed bundle (#028): the canonical-document sha256 of the
+ * assets/skills.bundle INSIDE the reviewed tgz — not its wire bytes, which
+ * the documented Node/brotli compressor drift may change while the decoded
+ * document stays identical, so the pin survives a rebuild on a different
+ * compressor version. CI's ensure-skills-bundles step rebuilds the asset
+ * from skills/ at publish time and asserts the same digest, so a skills/
+ * tree that advanced between accept (t0) and publish (t1) fails the build
+ * loudly instead of silently shipping unreviewed bundle content under the
+ * reviewed lib/ + treeDigest. Every other package passes through untouched
+ * (validateAllowlistEntry admits the field on the skills package only), and
+ * the entry never hand-carries it — this step is its only writer.
+ */
+function pinReviewedSkillsBundleDocumentDigest({ entry, submissionDir, artifact, documentDigestOfBytes, log }) {
+  if (entry.packageName !== SKILLS_PACKAGE_NAME) return
+  // Step 2 re-verified this exact file (sha256 + size); the pin reads the
+  // same bytes the verdict measured.
+  const tarballPath = resolve(submissionDir, artifact.file)
+  let bytes
+  try {
+    bytes = readFileSync(tarballPath)
+  } catch (error) {
+    refuse(`the reviewed artifact '${esc(artifact.file)}' is no longer readable (${error.code ?? error.message}) — re-run verify-handoff and accept the fresh verdict`)
+  }
+  const bundle = parseTarball(bytes, `the reviewed ${SKILLS_PACKAGE_NAME} tarball`)
+    .find((tarEntry) => tarEntry.path === PACKED_SKILLS_BUNDLE_PATH && tarEntry.type === 'file')
+  if (bundle === undefined) {
+    refuse(
+      `${entryKey(entry)}: the reviewed tarball carries no ${PACKED_SKILLS_BUNDLE_PATH} — a skills package without the bundle asset is invalid (the pack-time guard refuses it; see lib/skills-bundle.mjs), so there is no reviewed bundle content to pin; ` + 'have the submission packed with the asset (node dsh-company-skills/scripts/build-bundle-asset.mjs), bump the version, and re-run verify-handoff',
+    )
+  }
+  const digest = documentDigestOfBytes(bundle.data)
+  entry.bundleDocumentDigest = digest
+  log(`pin:      ${entryKey(entry)} bundleDocumentDigest ${digest.slice(0, 16)}… (the reviewed bundle document — CI's ensure-skills-bundles step fails the build if skills/ no longer packs it)`)
+}
+
+// ---------------------------------------------------------------------------
 // Step 4: the merge — multi-version pins: active entries join, revoked kept
 // ---------------------------------------------------------------------------
 
@@ -665,7 +718,9 @@ function writeAndCommit({ git, gitEnv, allowlistPath, originalText, nextText, to
  * tool default), repository (the --repository pin), dryRun,
  * companyCatalogOrigin (the same origin every build validates tarball urls
  * against), git (injectable git channel, default spawnGitRunner), gitEnv
- * (extra git child environment), log.
+ * (extra git child environment), documentDigestOfBytes (injectable #028
+ * skills-bundle document digester, default the rebuild script's
+ * --document-digest mode over a tmpdir scratch), log.
  */
 export function acceptHandoffVerdict(options) {
   const submissionDir = resolve(options.submissionDir)
@@ -706,6 +761,18 @@ export function acceptHandoffVerdict(options) {
     companyCatalogOrigin: options.companyCatalogOrigin,
   })
   log(`entry:    ${entryKey(entry)} validated (measured treeDigest ${entry.treeDigest.slice(0, 16)}…)`)
+
+  // 3½ — the skills-bundle content pin (#028): dsh-company-skills entries
+  // additionally record the reviewed bundle document digest, so the CI
+  // rebuild-from-skills/ at publish time is asserted against the content
+  // accepted here, never just against its own fresh bytes.
+  pinReviewedSkillsBundleDocumentDigest({
+    entry,
+    submissionDir,
+    artifact: receipt.artifact,
+    documentDigestOfBytes: options.documentDigestOfBytes ?? ((bytes) => skillsBundleDocumentDigestOfBytes(REPO_ROOT, bytes)),
+    log,
+  })
 
   // 4 — the merge.
   const entries = loadAllowlist(allowlistPath, {

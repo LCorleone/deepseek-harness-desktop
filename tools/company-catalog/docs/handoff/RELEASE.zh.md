@@ -96,6 +96,18 @@ CI 无需手工动作：publish / digest 两个 workflow 的 pack 步之前各�
 measure 步据此从本次打包字节重测 treeDigest；缺 bundle 的技能包树 pack
 时 fail-closed，报错里带同款一条命令指引。
 
+**受理侧内容权威（#028）**：CI 在发布时从 `skills/` 重建 bundle，因此装出去
+的字节必须钉在「受理评审实际看过的内容」上，而不只是它自己的新摘要。
+accept-handoff 受理 `dsh-company-skills` 条目时会记下条目的
+`bundleDocumentDigest` ——评审过的 tgz **内部** bundle 解码后的规范文档
+sha256（`build-bundle-asset.mjs --document-digest`；文档级摘要，Node 版本间
+已注明的 brotli 线码漂移不会误伤）。ensure 步在每次重建后断言 `skills/`
+仍打出同一文档，漂移即响亮失败（“skills/ advanced since accept — re-run
+the handoff review”）：受理(t0)与发布(t1)之间 skills/ 前进时，构建停下，
+而不是在评审过的 lib/ + treeDigest 下静默装出未评审的 bundle。该字段仅
+allowlist 权威（绝不进签名清单）；旧条目 0.1.0/0.1.1 无此字段——断言只对
+带字段者生效。
+
 ## 1. 四条日常链
 
 ### 1.A 新版本受理（同事 MR → verify → accept → 发布就绪）
@@ -209,6 +221,16 @@ was pushed"）。可选先 `--dry-run`：验证 + 棘轮对拍 + 打印 push pla
 #      --confirm-fleet-upgraded（§2）
 # ③ 再走 1.B channel=beta 把 beta 清单重签推进（beta=超集，条目仍在，名单机器无感）
 ```
+
+**低概率回退（终审 P3 补记，含 0.1.0/0.1.1 时必读）**：② 的 stable 重打包会把
+技能包 0.1.0/0.1.1 从**已提交的 v1 staging blob** 重新打出来——同一 Node/zlib
+钉内字节稳定，但若打包器/Node gzip 漂移，重打包字节 ≠ 当年托管字节，
+publish-local 的字节闸（不可变门）会 fail-closed 拒推；而 1.F 的换版前进对
+这两个不可变旧钉**不可行**（内容未变，已发布的 名@版本 不可重发，且旧版本仍
+被 beta 清单钉着，撤钉要走 revoke）。此情形下唯一回退 = 密钥托管机上
+`cli.mjs promote`：原签名字节原样并入 stable（零重验、零重打包，字节闸天然
+不触发）。概率低（Node 钉 + 已提交 blob = 字节稳定；前提差异见 1.F 的
+dai-context 打包器漂移实证），但一旦漂移，别在无钥机上耗时间。
 
 有签名钥的环境（CI / 密钥托管机）一条命令等价：
 
@@ -460,3 +482,14 @@ beta-overlay applied sequence 30 可证）。后续未完项：确认 sebtang/li
   checkout 上 CI 拷 v2 资产重打包 → 字节闸堵死所有 beta 发布；新增
   `.bundle-rebuilt` 标记链（ensure 拷贝留标记 → measure 从本次打包字节
   重测 treeDigest）；0.5/1.A/1.F 相应改写为过渡规则 + 0.1.2 后稳态。
+- 2026-09-12 #028：受理链内容权威——accept-handoff 受理 dsh-company-skills
+  条目时记录 `bundleDocumentDigest`（评审 tgz 内 bundle 的规范文档 sha256，
+  `build-bundle-asset.mjs --document-digest`），ensure 步重建后断言 skills/
+  仍打出同文档、漂移即响亮失败；旧条目无字段不断言（0.5）。
+- 2026-09-12 #029：1.C 补无钥 promote 主路径的低概率回退说明——0.1.0/0.1.1
+  从已提交 v1 blob 重打包遇字节漂移时，publish-local 字节闸拒推且换版前进
+  对不可变旧钉不可行，唯一回退 = 密钥托管机 `cli.mjs promote`（零重打包）。
+- 2026-09-12 #030：内嵌离线兜底清单刷新至部署 stable seq27 字节
+  （dsh-plugin-desktop/assets/company-market/catalog-manifest.json，原为
+  seq2 样例）；新增嵌入清单新鲜度门禁（新 spec：信任根验签 + 距仓库棘轮
+  滑窗 ≤8 + 未过期，腐烂即响亮失败）。
