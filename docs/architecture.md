@@ -59,10 +59,16 @@ Launcher 私有的 `desktopRuntime`、`desktopPnpmBootstrap`、Electron executab
 
 根 workspace 使用 Yarn；固定的 `deepseek-harness/` 子模块保持上游自己的 pnpm workspace。桌面代码、测试、打包配置和发布脚本属于 `dsh-plugin-desktop/`，不修改上游子模块。
 
+## 公司锁定层
+
+发布构建内嵌只读的公司策略（`dsh-plugin-desktop/src/policy/desktop-policy.release.json`）：钉住公司目录 origin 与 ed25519 信任根，锁定市场 provider 与 catalog source。锁定构建的安装链只接受公司签名目录钉住的条目：市场安装经 `dsh-community-market` 的签名验证库与 Desktop 注入的验证 seam 校验；终端 `dsh plugin add` 由 CLI 门禁（`src/cli-install-channel.ts`）拦截；每次启动由 boot 复验（`src/boot-verification.ts`）对已装插件树重验，诊断自检（`src/diagnostic-self-check.ts`）对启动验签决定签名。签名目录如何产出与发布，见 [`tools/company-catalog/README.md`](../tools/company-catalog/README.md) 与[插件生态与分发](plugin-ecosystem.md)。
+
 ## 维护者深入阅读
 
 - [Desktop service contract](../dsh-plugin-desktop/docs/plugin-services.md)
 - [Package README](../dsh-plugin-desktop/README.md)
+- [Company catalog publishing pipeline](../tools/company-catalog/README.md)
+- [Company market owner handover](../.agents/notes/implemented/process/2026-09-04-company-market-owner-handover.md)
 - [Pinned upstream and isolated Yarn workspace](../.agents/notes/implemented/process/2026-08-15-pinned-upstream-and-isolated-yarn-workspace.md)
 - [Profile and pnpm services decision](../.agents/notes/implemented/architecture/2026-08-15-desktop-profile-and-pnpm-services.md)
 - [Advanced shell decision](../.agents/notes/implemented/architecture/2026-08-15-desktop-advanced-shell.md)

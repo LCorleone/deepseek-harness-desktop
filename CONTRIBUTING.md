@@ -1,55 +1,33 @@
-# 参与贡献
+# 参与贡献（公司内部）
 
-感谢你愿意参与 DSH Desktop。这是一个社区项目，无论你是普通用户、插件作者还是开发者，都有适合你的贡献方式。
+本仓库是 DSH Desktop 的唯一源，面向 fleet 与后续接手的同事。工作方式：`.issues/` 立项跟踪、`dev-log/` 记录会话过程、`.agents/notes/` 沉淀架构与流程决策；动手前先对齐这三处，方向性问题先开卡再动工。
 
-## 普通用户：使用、反馈与传播
+## 上手
 
-- 遇到问题或异常，[提 issue](https://github.com/anywhere-labs/deepseek-harness-desktop/issues)：说明操作系统（macOS / Windows）、应用版本和复现步骤。
-- 有功能想法或改进建议，也欢迎提 issue 讨论。
-- 参与[社区交流](README.md#社区交流)（微信群、QQ 群、Discord），帮助其他用户解决问题。
-- 写使用教程、体验文章，或帮助完善和翻译文档。
-- 在[友情链接](README.md#友情链接)中收录生态项目。
+- 前提：Node `^22.19.0 || >=24.0.0`，Corepack 启用的 Yarn `4.18.0`。
+- 初始化固定的上游子模块：`git submodule update --init --recursive`，然后 `corepack yarn install --immutable`。
+- `corepack yarn check` 全绿是硬门槛：布局/双语/架构门禁 + 各自有包的构建、类型检查与测试 + 目录管线自测。
+- `corepack yarn dev` 需要图形环境；构建、类型检查、单元测试与冒烟检查保持 headless-safe。
 
-## 插件作者：扩展生态
+## 红线（全文见 AGENTS.md）
 
-DSH 的核心是插件。如果你写插件，请先阅读：
+- `deepseek-harness/` 是 pin 死的上游子模块：**绝不就地修改**；上游更新只走单独的 pin 提交，并与行为改动分开提交（`upstream.json` 同步记录 pin）。
+- 上游命令只经根 `upstream:*` 脚本执行；子模块保持自己的 pnpm workspace，外层统一用根 Yarn release。
+- `dsh-community-market/` 不得 import Desktop 实现（依赖方向由架构门禁强制）；策略只能经注入构造。
+- `dsh-community-fabric/` 保持纯文档，无可加载入口点。
+- 方向性调整前先提交一次存档，便于回退与追溯。
 
-- [插件开发](docs/plugin-development.md)：如何编写普通 DSH 插件和 Desktop 插件。
-- [DSH 插件生态倡议书](docs/plugin-ecosystem.md)：开放、可组合、可持续的生态愿景，以及组合优先、声明清晰、兼容优先三条原则。
-- [DSH Community Fabric Draft](dsh-community-fabric/README.zh.md)：参与 Manifest、Capability、Host Descriptor 和事件 contract 的公开讨论。
-- [Community Market 设计](dsh-community-market/docs/market-shell.zh.md)：未来市场如何发现插件，以及为什么收录不等于安全审核。
+## 提交约定
 
-遵循倡议书的插件更容易与其他插件共存，也会在未来上线时更容易在插件市场中被发现和信任。
+- Conventional commits（例如 `fix(desktop): ...`、`docs: ...`）。
+- 改动生产依赖后运行 `corepack yarn workspace dsh-plugin-desktop verify:notices`，并提交更新后的 `dsh-plugin-desktop/THIRD_PARTY_NOTICES.md`。
+- 双语文档成对修改，并用 `git hash-object` 更新对应 `.i18n.yaml` 的 blob hash 记录（根入口是 `README.i18n.yaml`）。
+- 评审通过、门禁全绿后合入；描述里写清改动、动机和验证方式。
 
-## 开发者：贡献代码
+## 想发布插件
 
-### 开发环境
+不在本仓库直接发布。同事插件走内网 GitLab 插件交接仓的 MR 交接（`submissions/<名>-<版本>`），所有者经 `verify-handoff` / `accept-handoff` 受理进 allowlist，再由签名管线发布到公司目录。权威步骤见 [`tools/company-catalog/docs/handoff/`](tools/company-catalog/docs/handoff/) 的 SOP；模型概览见 [README · 插件如何上架](README.md#插件如何上架)。
 
-```sh
-git submodule update --init --recursive
-corepack yarn install --immutable
-corepack yarn check   # 完整 headless gate：构建、类型检查、测试与冒烟
-corepack yarn dev     # 有图形环境时启动应用
-```
+## 协作氛围
 
-### 仓库边界（开始前务必了解）
-
-- `deepseek-harness/` 是固定版本的上游子模块，**桌面开发不修改其中的任何文件**；上游内容更新走独立的 pin 提交。
-- 桌面代码位于 `dsh-plugin-desktop/`；`dsh-community-fabric/` 保存社区标准 Draft，`dsh-community-market/` 保存市场壳设计。两个社区 package 当前都只有文档、尚不可加载，三个自有 package 共用外层 Yarn workspace。
-- 构建、类型检查、单元测试和冒烟检查必须保持 headless-safe。
-
-### 提交与 PR
-
-- 提交信息使用 conventional commits 风格（例如 `fix(desktop): ...`、`docs: ...`）。
-- 提交前运行 `yarn check` 并保证全绿。
-- 变更生产依赖后，运行 `yarn workspace dsh-plugin-desktop verify:notices` 刷新第三方许可清单，并提交更新后的 `dsh-plugin-desktop/THIRD_PARTY_NOTICES.md`。
-- 文档改动请中英同步，并更新 `README.i18n.yaml` 的双语 hash 记录。
-- PR 描述说明改动内容、动机和验证方式；CI 通过后再合并。
-
-## 加入技术团队
-
-如果你希望加入我们的技术团队，欢迎通过 [t4wefan@qq.com](mailto:t4wefan@qq.com) 联系我们。
-
-## 行为准则
-
-请保持友善与尊重，就事论事。我们希望这是一个欢迎新人的社区。完整的[参与者公约](CODE_OF_CONDUCT.md)适用于所有项目空间。
+保持尊重、就事论事；完整的[参与者公约](CODE_OF_CONDUCT.md)适用于所有项目空间。

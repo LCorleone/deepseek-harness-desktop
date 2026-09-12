@@ -59,10 +59,16 @@ Release artifacts use Electron Builder and `app.asar`, while dependencies that m
 
 The outer workspace uses Yarn. The pinned `deepseek-harness/` submodule keeps its own pnpm workspace. Desktop source, tests, packaging, and release scripts belong to `dsh-plugin-desktop/`; the upstream submodule is not edited from Desktop branches.
 
+## Company lockdown layer
+
+Release builds embed a read-only company policy (`dsh-plugin-desktop/src/policy/desktop-policy.release.json`): it pins the company-catalog origin and the ed25519 trust roots and locks the market provider and catalog source. On locked builds the install chain accepts only entries pinned by the company signed catalog: market installs verify through the signing library of `dsh-community-market` and a Desktop-injected verification seam; the terminal `dsh plugin add` is blocked by the CLI gate (`src/cli-install-channel.ts`); every boot re-verifies the installed plugin tree (`src/boot-verification.ts`), and the diagnostics self-check (`src/diagnostic-self-check.ts`) signs the boot-verification decision. How the signed catalog is produced and published is covered by [`tools/company-catalog/README.md`](../tools/company-catalog/README.md) and [Plugin ecosystem and distribution](plugin-ecosystem.en.md).
+
 ## Maintainer reading
 
 - [Desktop service contract](../dsh-plugin-desktop/docs/plugin-services.md)
 - [Package README](../dsh-plugin-desktop/README.md)
+- [Company catalog publishing pipeline](../tools/company-catalog/README.md)
+- [Company market owner handover](../.agents/notes/implemented/process/2026-09-04-company-market-owner-handover.md)
 - [Pinned upstream and isolated Yarn workspace](../.agents/notes/implemented/process/2026-08-15-pinned-upstream-and-isolated-yarn-workspace.md)
 - [Profile and pnpm services decision](../.agents/notes/implemented/architecture/2026-08-15-desktop-profile-and-pnpm-services.md)
 - [Advanced shell decision](../.agents/notes/implemented/architecture/2026-08-15-desktop-advanced-shell.md)

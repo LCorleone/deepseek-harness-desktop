@@ -2,48 +2,36 @@
 
 [中文](faq.md)
 
-This page answers common questions about installation, supported platforms, the bundled runtime, and plugins in the current stable release. The [latest GitHub Release](https://github.com/anywhere-labs/deepseek-harness-desktop/releases/latest) and [user guide](user-guide.en.md) define the shipped product scope.
+Quick answers for company-internal users. The shipped scope follows the fleet builds distributed internally; the [user guide](user-guide.en.md) covers daily use in more detail.
 
 ## What is DSH Desktop?
 
-DSH Desktop is an open-source DeepSeek Harness desktop client for Windows and macOS. It packages the official Harness local Web UI, Host service, and plugin system into a native desktop application with a window, system tray, terminal, updates, and profile management.
+The company-internal DSH desktop client: it packages the local Web UI, Host service, and plugin system of a pinned upstream DeepSeek Harness into a native desktop application, with the company lockdown policy and signed plugin catalog on top. The product is for company-internal use only and is not published externally.
 
-## Is this an official DeepSeek product?
+## Which platforms are supported? Do I need to install a runtime?
 
-No. DSH Desktop is an independent, community-maintained open-source project. It is not affiliated with or endorsed by DeepSeek. The name only describes its technical relationship with the official [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+The company distribution target is Windows x64. The installer bundles Electron, Node, pnpm, and the pinned DSH dependencies, so users install and launch directly without Node.js or any command-line setup.
 
-## Which operating systems are supported?
+## Where do I get the app and plugins?
 
-Current release installers support Windows x64 and universal macOS (Intel and Apple Silicon). There is currently no Linux installer. Cross-platform compatibility code in the source tree does not imply that an installer has been released for that platform.
+Installers are distributed internally (CI Windows fleet builds); there is no public download site. Plugins install through the built-in company market; the market portal is <https://plugin-market.s.dai.deloitte.cn/>.
 
-## Do I need to install Node.js, pnpm, or DSH?
+## Can I install any npm plugin?
 
-No. The installer includes Electron, Node.js, pnpm, and pinned DSH dependencies. Ordinary users can install and launch directly, and Desktop does not modify the global system PATH or user shell configuration.
+No. Locked builds install only entries pinned by the company signed catalog: market installs verify the signed manifest first, the terminal `dsh plugin add` is gated, and the installed plugin tree is re-verified at every boot. To ship a self-built plugin, follow the handoff SOP — see [Plugin ecosystem and distribution](plugin-ecosystem.en.md).
 
-## Does the first launch download a runtime?
+## Is there a beta channel for plugins?
 
-No separate Node.js or Harness core download is required. The installer is larger because it contains the runtime and pinned dependencies, trading download size for a more deterministic first launch and dependency set. Cloud models, update checks, and new-version downloads still require network access.
+Yes. New plugins first ship on the beta manifest to a signed tester roster for soaking; after promotion (`promote`) they enter the stable manifest and become visible to everyone. Machines outside the roster are unaffected by beta.
 
-## Does DSH Desktop modify official Harness?
+## How does the app update?
 
-No. The repository pins an unmodified official Harness checkout. Compatibility mode runs the upstream default Web client. Advanced mode adds Desktop-owned layout and native window presentation through plugins without editing upstream source.
+New fleet builds are distributed internally; the upgrade cadence follows the internal release rhythm. The built-in update check currently still points at the public endpoint inherited from the upstream product (replacing it with a company-owned update source is on the work ledger in `.issues/`).
 
-## Is data stored locally?
+## Where is data stored?
 
-The Desktop Host, profiles, and DSH home live on the local machine. Whether content is sent to an external service depends on the model or tool providers the user configures; requests to cloud models still go to those providers.
+Sessions, profiles, and settings stay on the local machine. Release builds report model-usage metering per the locked policy (SSO email, model, bucketed token counts, latency, version, and similar runtime metadata — never conversation content); details are in [`dsh-plugin-desktop/README.md`](../dsh-plugin-desktop/README.md).
 
-## Can I install DSH plugins?
+## Something is broken — what now?
 
-Yes. DSH Desktop uses the official Harness plugin system. Open DSH Terminal from the tray and run `dsh plugin add`, `dsh plugin remove`, or `dsh plugin update`. These commands default to the active profile, and Desktop must be restarted after plugin changes.
-
-## Does the Desktop profile automatically sync with an existing web profile?
-
-No plugins are copied automatically. Each profile has its own bundle and dependency composition. After switching profiles, default plugin commands target the active profile; `--profile <name>` can always select one explicitly.
-
-## How are updates installed?
-
-Packaged applications check for stable releases in the background but never install silently. A newer version requires confirmation. Before downloading, a native save dialog lets you choose the installer's directory and filename; cancelling it does not start a download. macOS downloads and opens a DMG; Windows downloads and starts an NSIS installer. After the upgrade and next launch, the app asks whether to delete or keep the installer. Network and download failures leave the current installation intact.
-
-## Where can I download the app or report a problem?
-
-Download from the [project download page](https://www.dshdesktop.cn/) or the [latest GitHub Release](https://github.com/anywhere-labs/deepseek-harness-desktop/releases/latest). Check the [troubleshooting section](user-guide.en.md#troubleshooting) first. If the problem remains, open a [GitHub Issue](https://github.com/anywhere-labs/deepseek-harness-desktop/issues/new/choose) with the operating system, app version, reproduction steps, and error details.
+Check the [user guide](user-guide.en.md) first. If the problem remains, export a diagnostics bundle from the tray (**Export Diagnostics**) and report it through the internal support channel. Developers should also see the [architecture notes](architecture.en.md) and the `dev-log/` session log.

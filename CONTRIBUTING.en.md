@@ -1,55 +1,33 @@
-# Contributing
+# Contributing (company internal)
 
-Thank you for wanting to contribute to DSH Desktop. This is a community project — whether you are a regular user, a plugin author, or a developer, there is a way to contribute that fits you.
+This repository is the single source of DSH Desktop, maintained for the fleet and for colleagues who pick it up next. How work flows: `.issues/` tracks the work ledger, `dev-log/` records session logs, and `.agents/notes/` holds the architecture and process accounts. Align with those three before you start, and open an issue before any change of direction.
 
-## Regular users: use, report, and spread the word
+## Getting started
 
-- Report problems or odd behavior in an [issue](https://github.com/anywhere-labs/deepseek-harness-desktop/issues): include your operating system (macOS / Windows), application version, and reproduction steps.
-- Feature ideas and improvement suggestions are welcome as issues too.
-- Join the [community channels](README.en.md#community) (WeChat group, QQ group, Discord) and help other users.
-- Write tutorials or experience posts, or help improve and translate the documentation.
-- Suggest ecosystem projects for the [related links](README.en.md#friendly-links) section.
+- Prerequisites: Node `^22.19.0 || >=24.0.0` and Corepack-enabled Yarn `4.18.0`.
+- Initialize the pinned upstream submodule with `git submodule update --init --recursive`, then `corepack yarn install --immutable`.
+- A fully green `corepack yarn check` is the hard gate: layout/bilingual/architecture gates + build, typecheck, and tests of every owned package + the catalog-pipeline selftest.
+- `corepack yarn dev` needs a graphical session; builds, typechecks, unit tests, and smoke checks stay headless-safe.
 
-## Plugin authors: extend the ecosystem
+## Red lines (full text in AGENTS.md)
 
-DSH is built around plugins. If you write plugins, start with:
+- `deepseek-harness/` is the pinned upstream submodule: **never edit it in place**. Upstream updates land only through separate pin commits, kept apart from behavior changes (`upstream.json` records the pin).
+- Upstream commands run only through the root `upstream:*` scripts; the submodule keeps its own pnpm workspace while the outer repository uses the root Yarn release.
+- `dsh-community-market/` must not import Desktop implementations (the architecture gate enforces the dependency direction); policy reaches it only through injection.
+- `dsh-community-fabric/` stays documentation-only with no loadable entry points.
+- Commit once before major changes of direction, so retreat and archaeology stay cheap.
 
-- [Plugin development](docs/plugin-development.en.md): how to write ordinary DSH plugins and Desktop plugins.
-- [DSH plugin ecosystem manifesto](docs/plugin-ecosystem.en.md): our vision of an open, composable, sustainable ecosystem, and the three principles — composition first, declare clearly, compatibility first.
-- [DSH Community Fabric Draft](dsh-community-fabric/README.md): join the public discussion of manifests, capabilities, Host Descriptors, and event contracts.
-- [Community Market design](dsh-community-market/docs/market-shell.md): how the future market will discover plugins and why listing is not a security review.
+## Commit conventions
 
-Plugins that follow the manifesto coexist better with other plugins and will be easier to discover and trust in the marketplace when it ships.
+- Conventional commits (for example `fix(desktop): ...`, `docs: ...`).
+- After changing production dependencies, run `corepack yarn workspace dsh-plugin-desktop verify:notices` and commit the updated `dsh-plugin-desktop/THIRD_PARTY_NOTICES.md`.
+- Change bilingual documents in pairs and re-record their blob hashes with `git hash-object` in the matching `.i18n.yaml` (the root entry pair lives in `README.i18n.yaml`).
+- Merge after review with all gates green; describe the change, its motivation, and how it was verified.
 
-## Developers: contribute code
+## Publishing a plugin
 
-### Development environment
+Plugins do not ship directly from this repository. Colleague plugins go through the intranet GitLab handoff repository as MRs (`submissions/<name>-<version>`); the desktop owner lands them into the allowlist via `verify-handoff` / `accept-handoff`, and the signing pipeline publishes them to the company catalog. The authoritative steps are the SOPs in [`tools/company-catalog/docs/handoff/`](tools/company-catalog/docs/handoff/); the model overview is in [README · How plugins ship](README.en.md#how-plugins-ship).
 
-```sh
-git submodule update --init --recursive
-corepack yarn install --immutable
-corepack yarn check   # full headless gate: build, typecheck, tests, and smokes
-corepack yarn dev     # launch the application when a graphical session is available
-```
+## Working atmosphere
 
-### Repository boundaries (please read before starting)
-
-- `deepseek-harness/` is the pinned upstream submodule. **Desktop development never edits files inside it**; upstream updates land through separate pin commits.
-- Desktop code lives in `dsh-plugin-desktop/`; `dsh-community-fabric/` owns the community-standard Draft and `dsh-community-market/` owns the market-shell design. Both community packages are currently documentation-only and not loadable; all three owned packages share the outer Yarn workspace.
-- Builds, typechecks, unit tests, and smoke checks must stay headless-safe.
-
-### Commits and pull requests
-
-- Use conventional commit messages (for example `fix(desktop): ...`, `docs: ...`).
-- Run `yarn check` and keep it green before committing.
-- After changing production dependencies, run `yarn workspace dsh-plugin-desktop verify:notices` to refresh the third-party notices and commit the updated `dsh-plugin-desktop/THIRD_PARTY_NOTICES.md`.
-- Documentation changes should stay bilingual and update the `README.i18n.yaml` hash record.
-- Describe the change, its motivation, and how it was verified in the PR; merge after CI passes.
-
-## Join the technical team
-
-If you would like to join our technical team, contact us at [t4wefan@qq.com](mailto:t4wefan@qq.com).
-
-## Code of conduct
-
-Be kind and respectful, and stick to the topic. We want a community that welcomes newcomers. The [Contributor Covenant](CODE_OF_CONDUCT.en.md) applies to all project spaces.
+Stay respectful and stick to the topic; the full [code of conduct](CODE_OF_CONDUCT.en.md) applies to all project spaces.

@@ -1,46 +1,40 @@
-# DSH 插件生态倡议书
+# 插件生态与分发
 
 [English](plugin-ecosystem.en.md) | 中文
 
-DSH 的插件生态正在快速增长。插件越多，它们能否协同工作就越重要：如果每个插件都假设甚至覆盖其他插件的内部实现，装几个插件就会开始冲突，生态会逐渐碎片化。这不是任何人的错，而是缺少共同约定的必然结果。
+DSH 的能力以插件组合。插件越多，它们能否协同工作就越重要：如果每个插件都假设甚至覆盖其他插件的内部实现，装几个插件就会开始冲突。本页给出公司插件生态的三条约定，以及一个插件如何从作者到达全员机器。
 
-## 我们的愿景
+## 三条约定
 
-我们希望构建一个**开放、可组合、可持续**的 DSH 插件生态：
-
-- **开放**：任何作者都可以参与，官方、桌面和第三方插件在同一个平台上平等组合。
-- **可组合**：插件按同一套约定扩展，装在一起也能一起工作、互不干扰。
-- **可持续**：升级保持向后兼容，生态可以长期演进，不需要推倒重来。
-
-## 我们倡导的三条原则
-
-1. **组合优先**：通过官方 slot、service 和 patch 组合能力，不要假设或覆盖其他插件的内部实现。
+1. **组合优先**：通过官方 slot、service 和 patch 组合能力，不假设、不覆盖其他插件的内部实现。
 2. **声明清晰**：明确声明依赖的 service 和 slot，不依赖运行时巧合。
 3. **兼容优先**：升级保持向后兼容，不破坏已有组合。
 
-## 桌面壳是第一个范例
+桌面壳本身是第一条约定的范例：桌面能力作为普通 Cordis 插件接入，与上游和公司插件走同一条组合路径，没有任何特权。
 
-DSH Desktop 是这套方式的第一个实践者：桌面壳本身就是一个普通 DSH 插件，与官方、第三方插件走同一条组合路径，没有任何特权。我们不是魔改上游源码做一个固定外壳，而是让"桌面"也成为插件生态里平等的一员。
+## 分发模型（公司签名目录）
 
-## 活文档，社区共建
+插件不经公开生态直达员工机器，而是走签名目录：
 
-这份倡议不是单方面规定，而是一份**活文档**：它随生态实践更新，接受社区讨论和修订。任何作者都可以通过 issue、讨论区或 PR 提出修改。
+- 唯一的人工输入是经评审合入的 [`tools/company-catalog/allowlist.json`](../tools/company-catalog/allowlist.json)，每条钉住包名、精确版本与完整性。
+- 同事插件在内网 GitLab 插件交接仓提交（`submissions/<名>-<版本>`，`handoff.json` + tgz）开 MR；所有者跑 `verify-handoff` / `accept-handoff` 机械闸门，并做内容审计后受理。
+- CI 把 allowlist 组装成规范 JSON 清单并以 detached ed25519 签名；`publish-local.mjs` 把签名产物推送到内网 GitLab origin。
+- 客户端只信签名清单：只安装清单钉住的条目（npm 通道或内网 tarball 通道），并在每次启动对已装插件树复验；单调 sequence 棘轮防回滚。
+- **上架不等于安全背书**：闸门是机械验证加所有者内容审计；安装链的信任来自签名与钉定，不来自提交人自述。
 
-## 插件市场：让约定成为有利的选择
+## beta 渠道
 
-插件市场上线后，符合本倡议的插件将更容易被发现、安装和信任。我们希望让"按规范开发"成为对每个作者都有利的选择，而不是额外的负担。
+新条目先以 beta 清单发布给签名测试者名单（`state/beta-testers.json`）浸泡观察，之后经 `promote` 原字节转正进 stable 清单。名单增删即时重签生效，不需要客户端发版。
 
-## 从倡议走向可测试的 contract
+## 权威 runbook
 
-[DSH Community Fabric](../dsh-community-fabric/README.zh.md) 正在把这份愿景整理成可公开讨论的 Manifest、Capability、Host Descriptor 与事件 Draft。它目前只有文档，不是已经发布的标准或运行时；当前插件仍使用现有 DSH/Cordis 接口。
+流程与命令以 [`tools/company-catalog/README.md`](../tools/company-catalog/README.md) 与 [`tools/company-catalog/docs/handoff/`](../tools/company-catalog/docs/handoff/)（SOP / RELEASE / MR-HANDLING）为准；本页只讲模型，不复述操作。
 
-Fabric 的 capability 首先用于兼容判断、用户确认和审计，不会把同进程 JavaScript 伪装成安全沙箱。只有具备真实隔离证据的 Host 才能声称权限被技术强制执行。
+## 互操作草案
 
-市场目前仍处于[产品与安全设计阶段](../dsh-community-market/README.zh.md)，尚未提供可用页面或安装器。目录收录只代表符合目录规则，不等于安全审核或推荐。
+[`dsh-community-fabric/`](../dsh-community-fabric/README.zh.md) 是仓库私有的插件互操作 RFC 草案（manifest、capability、事件契约），纯文档、无可加载入口点；当前插件仍使用现有 DSH/Cordis 接口。
 
-## 如何参与
+## 延伸阅读
 
-- 在[插件开发](plugin-development.md)中了解插件如何编写。
-- 阅读并评论 [Community Fabric RFC 0001](../dsh-community-fabric/docs/rfcs/0001-plugin-manifest-capabilities-events.zh.md)。
-- 在[用户指南](user-guide.md)中了解如何安装和管理插件。
-- 通过 issue 和讨论区提出你对本倡议的意见。
+- 编写插件：[插件开发](plugin-development.md)
+- 日常使用：[用户指南](user-guide.md) · [常见问题](faq.md)

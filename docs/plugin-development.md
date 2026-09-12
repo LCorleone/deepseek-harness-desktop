@@ -1,10 +1,12 @@
 # DSH Desktop 插件开发
 
-> **当前接口与 Draft 请勿混淆：** 本文介绍现在可用的 DSH/Cordis 与 Desktop service。`dsh-community-fabric` 中的 manifest、capability 和统一事件模型仍处于[社区 RFC Draft](../dsh-community-fabric/README.zh.md)，尚不能作为依赖或发布目标。
+> **当前接口与 Draft 请勿混淆：** 本文介绍现在可用的 DSH/Cordis 与 Desktop service。`dsh-community-fabric` 中的 manifest、capability 和统一事件模型仍是仓库内部的私有 RFC 草案（见[插件生态与分发](plugin-ecosystem.md)），尚不能作为依赖或发布目标。
 
 ## 先理解两层插件
 
 一个普通 DSH 插件可以提供 Host service、命令、路由、bundle 或 Web Client。它应该尽量只依赖官方 DSH contract，因此可以在命令行、普通 Web profile 和 DSH Desktop 中复用。
+
+注意分发边界：在公司 fleet 的锁定构建上，插件要到达同事的机器只能走公司签名目录（见[插件生态与分发](plugin-ecosystem.md)）；本地 dev workspace 中的安装只用于开发验证。
 
 Desktop 另外提供两个公开的 Host service：
 
@@ -125,16 +127,8 @@ desktopPnpm.runPlugin(['install', '--no-frozen-lockfile'], invokingDir, signal)
 
 开发者可以先阅读 [架构说明](architecture.md)，再使用包级 [service contract](../dsh-plugin-desktop/docs/plugin-services.md)。
 
-## 生态愿景：保持插件生态可组合
+## 生态约定：保持插件可组合
 
-DSH 的插件生态正在快速增长。插件越多，它们能否协同工作就越重要——如果每个插件都假设或覆盖其他插件的内部实现，装几个插件就会开始冲突，生态会逐渐碎片化。
+公司插件生态遵循三条约定：**组合优先**（通过官方 slot、service 和 patch 组合能力，不假设或覆盖其他插件的内部实现）、**声明清晰**（明确声明依赖的 service 和 slot）、**兼容优先**（升级不破坏已有组合）。桌面壳本身是第一条约定的范例——它是一个普通插件，与上游和公司插件走同一条组合路径，没有任何特权。
 
-我们倡导像浏览器插件一样的开发方式：大家在同一个平台上、按同一套约定扩展，而不是各自维护一份改过的运行时。DSH Desktop 是这套方式的第一个实践者——桌面壳本身就是一个普通插件，与官方、第三方插件走同一条组合路径，没有任何特权。
-
-为此我们发起一项开发规范倡议，希望它通过社区的采纳成为事实标准：
-
-- **组合优先**：通过官方 slot、service 和 patch 组合能力，不要假设或覆盖其他插件的内部实现。
-- **声明清晰**：明确声明依赖的 service 和 slot，不依赖运行时巧合。
-- **兼容优先**：升级保持向后兼容，不破坏已有组合。
-
-倡议是活文档，随生态实践更新，接受社区讨论和修订。插件市场上线后，遵循共同约定的插件将更容易被发现、安装和判断兼容性，让"按规范开发"成为对每个作者都有利的选择。完整愿景见 [DSH 插件生态倡议书](plugin-ecosystem.md)；未来互操作 contract 的讨论见 [DSH Community Fabric](../dsh-community-fabric/README.zh.md)。
+遵循约定的插件更容易共存，也更容易通过签名目录的评审到达同事机器。完整模型见[插件生态与分发](plugin-ecosystem.md)；未来互操作 contract 的内部草案见 [DSH Community Fabric](../dsh-community-fabric/README.zh.md)。
