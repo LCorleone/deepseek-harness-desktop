@@ -64,6 +64,12 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { CATALOG_ORIGIN_ENV, entryKey, loadAllowlist, validateCatalogOrigin } from './lib/allowlist.mjs'
+import {
+  DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE,
+  needsTreeDigestMeasurement,
+  stagingBundleWasProvisioned,
+  stagingTreeForTarballSourcePath,
+} from './lib/skills-bundle.mjs'
 
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(TOOL_DIR, '..', '..')
@@ -77,7 +83,10 @@ const USAGE = `Usage: node tools/company-catalog/measure.mjs [options]
 
 Options:
   --allowlist <path>        Allowlist file (default: tools/company-catalog/allowlist.json);
-                            entries without a treeDigest are measured
+                            entries without a treeDigest are measured, plus
+                            path-pinned skills entries whose staging bundle
+                            was provisioned this run (.bundle-rebuilt marker —
+                            the digest must reflect the CI-packed bytes)
   --tarball <path>          Measure exactly this packed plugin tarball (pack-tarball
                             output) through the reference staged install; name and
                             version come from the artifact's package/package.json
@@ -373,12 +382,29 @@ async function main() {
     console.log(`measure: skipping ${String(tarballInlineEntries.length)} tarball-channel entr${tarballInlineEntries.length === 1 ? 'y' : 'ies'} (${tarballInlineEntries.map(entryKey).join(', ')}) — their source pins a reviewed inline integrity with no local pack artifact; point source.path at the packed .tgz (pack-tarball) to measure them`)
   }
   const measurable = entries.filter((entry) => entry.source === undefined || entry.source.kind === 'npm' || entry.source.path !== undefined)
+  // The staging root path-pinned entries pack from (the pack step's default;
+  // the stem convention `pack-tarball --from-allowlist` uses). Issue #011
+  // review: an entry whose staging skills bundle was freshly provisioned by
+  // the ensure-skills-bundles step this run (.bundle-rebuilt marker) must be
+  // re-measured even when it already pins a treeDigest — this run's packed
+  // bytes are the shipped truth, never the submitter's own tgz measurement
+  // (equality confirms the pin; a mismatch fails the run — and downstream,
+  // applyTreeDigests refuses to overwrite a reviewed digest either way).
+  const pluginSourcesRoot = join(REPO_ROOT, ...DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE.split('/'))
   const targets = measurable
     .map((entry) => entry.source?.kind === 'tarball'
-      ? { ...entry, tarballPath: resolve(REPO_ROOT, ...entry.source.path.split('/')) }
+      ? {
+        ...entry,
+        tarballPath: resolve(REPO_ROOT, ...entry.source.path.split('/')),
+        bundleRebuilt: stagingBundleWasProvisioned(stagingTreeForTarballSourcePath(entry.source.path, pluginSourcesRoot)),
+      }
       : entry)
-    .filter((entry) => flags.all === true || entry.treeDigest === undefined)
+    .filter((entry) => flags.all === true || needsTreeDigestMeasurement(entry, pluginSourcesRoot))
   const skipped = measurable.filter((entry) => !targets.some((target) => target.packageName === entry.packageName && target.version === entry.version))
+  const rebuiltRemeasures = targets.filter((target) => target.bundleRebuilt === true && target.treeDigest !== undefined)
+  if (rebuiltRemeasures.length > 0) {
+    console.log(`measure: re-measuring ${String(rebuiltRemeasures.length)} entr${rebuiltRemeasures.length === 1 ? 'y' : 'ies'} whose staging skills bundle was provisioned this run (${rebuiltRemeasures.map(entryKey).join(', ')}) — the treeDigest must reflect the CI-packed bytes, not the submitter's measurement`)
+  }
   if (targets.length === 0) {
     console.log(`measure: every measurable allowlist entry already pins a treeDigest (${measurable.map(entryKey).join(', ') || 'none'}); nothing to measure${flags.all === true ? '' : ' — pass --all to re-measure'}`)
     if (flags.out !== undefined) writeFileSync(resolve(process.cwd(), flags.out), '[]\n', 'utf8')

@@ -30,6 +30,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { PACKAGE_NAME_PATTERN, STABLE_VERSION_PATTERN, expectedTarballFilename } from './allowlist.mjs'
+import { assertSkillsBundlePresent, SKILLS_BUNDLE_REBUILT_MARKER_FILENAME } from './skills-bundle.mjs'
 
 export const TOOL_DIR = dirname(fileURLToPath(import.meta.url))
 // lib/ → company-catalog/ → tools/ → repository root (the base the
@@ -328,6 +329,9 @@ export function stageSourceDirectory(sourceDir, targetDir) {
       // the artifact (npm packs top-level *.tgz files) — the accident is far
       // more likely than a plugin legitimately shipping its own .tgz.
       if (segments.length === 1 && relativePath.endsWith('.tgz')) return false
+      // The ensure-skills-bundles provisioning marker (issue #011 review) is
+      // CI-run bookkeeping for the measure step, never shipped content.
+      if (segments.length === 1 && segments[0] === SKILLS_BUNDLE_REBUILT_MARKER_FILENAME) return false
       return true
     },
   })
@@ -511,6 +515,11 @@ export function declaredBundlePatchOfTarball(bytes, what = 'the tarball') {
  * drifted entry never yields an artifact at all.
  */
 export function packPluginSource({ sourceDir, outDir, log, expectedBundlePatch, at }) {
+  // Issue #011: the skills bundle asset is a deterministic rebuild output,
+  // untracked — a skills source tree without it must refuse to pack (an
+  // invalid artifact), pointing at the one-command rebuild instead. Runs on
+  // the pre-staging directory so the guidance names the tree to fix.
+  assertSkillsBundlePresent(sourceDir, at)
   const staging = mkdtempSync(join(tmpdir(), 'company-catalog-pack-'))
   try {
     const pkgDir = join(staging, 'pkg')

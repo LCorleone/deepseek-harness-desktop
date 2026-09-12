@@ -90,6 +90,34 @@ cat tools/company-catalog/state/last-sequence.json   # current ratchet value
 Eyeball the pending allowlist entries: version / channel / revoked /
 description.
 
+### 0.5 The skills bundle (a rebuild output since #011)
+
+`dsh-company-skills`'s `assets/skills.bundle` is a deterministic repack of
+`dsh-company-skills/skills/` (byte-stable within one Node version) and is no
+longer committed since #011 (`.gitignore` pins the source-tree path and every
+0.1.2+ staging path). **Transitional exception**: the two legacy v1-era
+staging pins (0.1.0/0.1.1) stay committed until their catalog entries are
+revoked→retired (the background and bytes-gate consequences live in 1.F).
+Rebuild it once before packing the skills package locally, or before a local
+`yarn check` can pass verify:bundle (~1–2 minutes, brotli-11):
+
+```bash
+node dsh-company-skills/scripts/build-bundle-asset.mjs
+# When repacking a skills tree under plugin-sources, copy the asset into
+# that staging tree:
+cp dsh-company-skills/assets/skills.bundle \
+   tools/company-catalog/plugin-sources/dsh-company-skills-<version>/assets/skills.bundle
+```
+
+CI needs no manual action: the publish and digest workflows each run an
+`ensure-skills-bundles` step before packing that rebuilds the asset and
+copies the fresh bytes into every skills staging tree that genuinely lacks
+one (matched by the staging tree's package.json name; the committed
+0.1.0/0.1.1 v1 pins make it a no-op for those two trees), leaving a
+`.bundle-rebuilt` marker so the measure step re-measures those entries from
+this run's packed bytes; packing a bundle-less skills tree fails closed,
+with the same one-command guidance in the error.
+
 ## 1. The four daily chains
 
 ### 1.A Accepting a new version (colleague MR → verify → accept → ready to publish)
@@ -133,7 +161,12 @@ staging handoff — CI pack source)`).
 **Why ⑤ is mandatory**: the CI pack step (`pack-tarball --from-allowlist`)
 repacks from `plugin-sources/<name>-<version>/`; `out/` is gitignored, so the
 locally staged tgz never reaches the runner — skip this step and the CI dry-run
-goes red (real trap, 2026-09-09).
+goes red (real trap, 2026-09-09). Skills-package exception
+(`dsh-company-skills`): the extracted `assets/skills.bundle` is pinned in
+`.gitignore` (a #011 rebuild output) — `git add` skips it automatically;
+never force-add it (CI rebuilds it itself, see 0.5). (The two legacy
+0.1.0/0.1.1 v1 pins are the committed, explicitly negated exception — see
+1.F; new versions never commit the bundle.)
 
 **Fail-closed**: schema → sha256 → safe unpack → three-way identity binding →
 compat, enforced identically by verify and accept; same version with different
@@ -342,6 +375,28 @@ Note: a version bump = a new entry; an old version still in the manifest needs
 its own revoke; keep the new package beta-only when it should only gray-launch
 (dai-context 0.41.4 stayed beta-only, stable untouched).
 
+**Skills-package note after #011 (review correction)**: 0.1.0/0.1.1 are
+beta-only entries whose staging bundles are md5-pinned to the **hosted**
+tgz bytes (v1 wire, 60,022,105 B). The first #011 cut untracked all three
+bundles — on a fresh CI checkout the two v1 staging blobs would then be
+absent, CI would copy today's v2 asset in, both path-pinned entries would
+repack to drifted bytes on every run, the bytes gate would refuse, and
+**every beta publish would be blocked** (stable is unaffected — it carries
+neither entry); the drifted tgz would be semantically broken anyway
+(0.1.0/0.1.1 ship v1-only decoders that cannot read a v2 bundle). Hence
+the transitional rule: the two v1 staging pins **stay committed** (explicit
+`.gitignore` negations; drop them once the entries are revoked→retired out
+of the window); from 0.1.2 on, staging bundles are always CI-reproduced
+(the ensure-skills-bundles step) and never committed. The post-0.1.2 steady
+dstate differs from this section's dai-context packer drift: a version bump
+is no longer the unblock move — reproduction is deterministic on the pinned
+Node, so repacking an unchanged tree yields stable bytes and needs no bump;
+the real guard is the measure re-check (the ensure step leaves a
+`.bundle-rebuilt` marker in every staging tree it provisioned, and measure
+re-measures marked entries' treeDigest from **this run's packed bytes** —
+equality confirms the pin, a mismatch fails closed, and applyTreeDigests
+never silently overwrites a reviewed digest either).
+
 ## 2. Gate semantics (when publish-local stops you)
 
 | Gate | When it fires | Key message fragment | Correct move |
@@ -493,3 +548,16 @@ group announcement — issue #003).
   path (the latter demoted to offline replay); the CA bundle replaces
   `--insecure-tls` as the default posture. The Chinese primary RELEASE.zh.md
   and the bilingual record RELEASE.i18n.yaml were established alongside.
+- 2026-09-12 #011: skills.bundle left the repository as a deterministic
+  rebuild output — added 0.5 (one local rebuild command; CI rebuilds and
+  copies before packing); 1.A ⑤ note that the extracted bundle is
+  gitignored and must never be force-added; 1.F note on repack byte drift
+  for historical skills versions.
+- 2026-09-12 #011 review correction: the two v1 pins (the 0.1.0/0.1.1
+  staging bundles) transitionally re-committed (explicit .gitignore
+  negations, until revoked→retired) — otherwise a fresh checkout's CI would
+  copy the v2 asset in and the bytes gate would block every beta publish;
+  added the `.bundle-rebuilt` marker chain (ensure leaves a marker on every
+  copy → measure re-measures those treeDigests from this run's packed
+  bytes); 0.5/1.A/1.F rewritten as the transitional rule + the post-0.1.2
+  steady state.

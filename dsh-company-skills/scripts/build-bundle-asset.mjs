@@ -4,7 +4,9 @@
  * plugin ships.
  *
  *   node scripts/build-bundle-asset.mjs            # write the asset
- *   node scripts/build-bundle-asset.mjs --check    # fail if it is stale
+ *   node scripts/build-bundle-asset.mjs --check    # fail if it is stale (an
+ *     absent asset is rebuilt in place — the untracked-output world of
+ *     issue #011, where a fresh clone carries none to compare against)
  *
  * This is the author-side assembly step of P6 batch 2/4 (plus the #013 size
  * work). It assembles in two steps, both in this script:
@@ -123,6 +125,16 @@ function canonicalDocument(assetText) {
   return JSON.stringify(JSON.parse(decodeShippedBundle(assetText)))
 }
 
+/** Read the committed asset if it exists; undefined when absent (issue #011 rebuild world). */
+function readAsSetIfExists(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
 function main() {
   const args = process.argv.slice(2)
   const check = args.includes('--check')
@@ -147,7 +159,20 @@ function main() {
       return
     }
 
-    const committed = readFileSync(ASSET_PATH, 'utf8')
+    const committed = readAsSetIfExists(ASSET_PATH)
+    if (committed === undefined) {
+      // Issue #011: the asset is a deterministic rebuild output, untracked
+      // and gitignored — a fresh clone (or a clean CI checkout) has none.
+      // Checking an absent asset means building it: write what skills/ packs
+      // (loudly — never a silent skip) so this run passes because the tree
+      // just produced the asset, and later runs compare against real bytes.
+      writeFileSync(ASSET_PATH, artifact, 'utf8')
+      process.stdout.write(
+        'build-bundle-asset: assets/skills.bundle was absent (untracked build output, issue #011) '
+          + '— wrote it from skills/ so the check passes by production; nothing was committed\n',
+      )
+      return
+    }
     if (committed === artifact) {
       process.stdout.write('build-bundle-asset: assets/skills.bundle matches skills/\n')
       return
@@ -164,7 +189,8 @@ function main() {
     }
     process.stderr.write(
       'build-bundle-asset: assets/skills.bundle is stale — run `node scripts/build-bundle-asset.mjs` '
-        + 'and commit the result\n',
+        + 'to refresh it (the asset is an untracked build output since issue #011 — nothing to commit; '
+        + 'the company-catalog workflows rebuild it automatically)\n',
     )
     process.exit(1)
   } finally {

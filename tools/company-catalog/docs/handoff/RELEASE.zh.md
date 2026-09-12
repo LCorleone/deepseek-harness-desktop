@@ -73,6 +73,29 @@ cat tools/company-catalog/state/last-sequence.json   # 当前棘轮值
 
 allowlist 待发条目逐项过一眼：version / channel / revoked / description。
 
+### 0.5 技能包 bundle（#011 起为重建产物）
+
+`dsh-company-skills` 的 `assets/skills.bundle` 是 `dsh-company-skills/skills/`
+的确定性重打包产物（同一 Node 版本内字节恒定），#011 起不再入库
+（`.gitignore` 钉住源树路径与全部 0.1.2+ staging 路径）。**过渡例外**：
+0.1.0/0.1.1 两份 v1 时代的 staging 钉值继续入库，直到对应目录条目
+revoke→retire（背景与字节闸后果见 1.F）。本机要 pack 技能包、或让本地
+`yarn check` 过 verify:bundle，先重建一次（约 1–2 分钟，brotli-11）：
+
+```bash
+node dsh-company-skills/scripts/build-bundle-asset.mjs
+# 重打包 plugin-sources 里的技能包树时，把产物拷进对应 staging 树：
+cp dsh-company-skills/assets/skills.bundle \
+   tools/company-catalog/plugin-sources/dsh-company-skills-<版本>/assets/skills.bundle
+```
+
+CI 无需手工动作：publish / digest 两个 workflow 的 pack 步之前各有
+`ensure-skills-bundles` 步，自动重建并把新字节拷进每个**确实缺** bundle 的
+技能包 staging 树（按 staging 树 package.json 的 name 匹配；已提交的
+0.1.0/0.1.1 v1 钉值使其对这两棵树是 no-op），拷完留 `.bundle-rebuilt` 标记，
+measure 步据此从本次打包字节重测 treeDigest；缺 bundle 的技能包树 pack
+时 fail-closed，报错里带同款一条命令指引。
+
 ## 1. 四条日常链
 
 ### 1.A 新版本受理（同事 MR → verify → accept → 发布就绪）
@@ -111,7 +134,11 @@ git add tools/company-catalog/plugin-sources/<名>-<版本>
 
 **为什么必须 ⑤**：CI 的 pack 步（`pack-tarball --from-allowlist`）从
 `plugin-sources/<名>-<版本>/` 重打包；`out/` 是 gitignored，本机备料的 tgz 到
-不了 runner——漏了这步 CI 干跑就红（2026-09-09 实坑）。
+不了 runner——漏了这步 CI 干跑就红（2026-09-09 实坑）。技能包
+（`dsh-company-skills`）的例外：解包出来的 `assets/skills.bundle` 已被
+`.gitignore` 钉住（#011 重建产物）——`git add` 会自动跳过它，绝不
+`git add -f`（CI 会自己重建，见 0.5）。（0.1.0/0.1.1 两份 v1 钉值是显式
+取反的已提交例外，见 1.F；新版本一律不提交 bundle。）
 
 **fail-closed**：schema → sha256 → 安全解包 → 三方绑定 → compat，verify 与
 accept 双闸一致；同版本不同字节一律拒（不可变红线）。accept 额外要求回执指纹
@@ -283,6 +310,22 @@ git mv tools/company-catalog/plugin-sources/<名>-<旧版本> tools/company-cata
 注意：换版 = 新条目，旧版本若仍在清单里需单独 revoke；只想让新包灰度时保持
 beta-only（dai-context 0.41.4 即 beta-only，stable 未动）。
 
+**#011 后的技能包专项注记（评审修正）**：0.1.0/0.1.1 是 beta-only 条目，
+其 staging bundle 与**已托管** tgz 字节 md5 钉死（v1 线码，60,022,105 B）。
+#011 首版把三份 bundle 全部退库——那样 fresh CI checkout 里这两份 v1
+staging 字节不存在，CI 会把**当前** v2 资产拷进去 → 两个路径钉死条目每次
+运行都重打包出漂移字节 → 字节闸拦下 → **所有 beta 发布被堵死**（stable
+不受影响——stable 没有这两个条目）；且漂移的 tgz 语义上本来就是坏的
+（0.1.0/0.1.1 只带 v1 解码器，读不了 v2 bundle）。因此过渡规则：两份 v1
+staging 钉值**继续入库**（`.gitignore` 显式取反；直到这两个条目 revoke→
+retire 出窗后删除）；从 0.1.2 起，staging bundle 一律 CI 重建
+（ensure-skills-bundles 步）、绝不入库。0.1.2 之后的稳态与本节 dai-context
+那类打包器漂移**不同**：换版本号不再是“解堵”手段——重建在钉住的 Node
+上是确定性的，未变环境下重打包字节天然稳定，无需换版；真正的防线是
+measure 重测：ensure 步给每个新拷 bundle 的 staging 树留 `.bundle-rebuilt`
+标记，measure 对带标记的条目从**本次 CI 打包字节**重测 treeDigest（钉值
+相符即确认，不符即 fail-closed，applyTreeDigests 也绝不静默覆盖已审钉值）。
+
 ## 2. 门禁语义表（publish-local 会拦你时）
 
 | 门禁 | 什么时候拦 | 拦截信息关键句 | 正确姿势 |
@@ -409,3 +452,11 @@ beta-overlay applied sequence 30 可证）。后续未完项：确认 sebtang/li
   实战范例；`--run` 直取产物取代 gh run download + `--artifact-dir` 成主路径
   （后者降级为离线重放选项）；CA bundle 取代 `--insecure-tls` 成默认姿势。
   同日建立英文镜像 RELEASE.md 与双语记录 RELEASE.i18n.yaml。
+- 2026-09-12 #011：skills.bundle 退库为确定性重建产物——新增 0.5（本机
+  一条命令重建、CI pack 前自动重建并拷贝）；1.A ⑤ 补“解出的 bundle 已被
+  gitignore、绝不 force-add”；1.F 补历史技能包版本重打包字节漂移注记。
+- 2026-09-12 #011 评审修正：两份 v1 钉值（0.1.0/0.1.1 staging bundle）
+  过渡性回库（.gitignore 显式取反，直至 revoke→retire），否则 fresh
+  checkout 上 CI 拷 v2 资产重打包 → 字节闸堵死所有 beta 发布；新增
+  `.bundle-rebuilt` 标记链（ensure 拷贝留标记 → measure 从本次打包字节
+  重测 treeDigest）；0.5/1.A/1.F 相应改写为过渡规则 + 0.1.2 后稳态。

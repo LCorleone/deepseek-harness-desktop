@@ -17,3 +17,25 @@ dsh-company-skills/lib/
 .env.yarn
 .deloitte-ca-bundle.pem
 .pi/
+
+# Deterministic rebuild outputs, never committed (issue #011): the skills
+# bundle is rebuilt byte-identically from dsh-company-skills/skills/ by
+# `node dsh-company-skills/scripts/build-bundle-asset.mjs` (run by the
+# workspace `check` and by the CI pre-pack step, which also copies it into
+# plugin-sources staging trees — see .github/workflows/company-catalog-*.yml
+# and tools/company-catalog/ensure-skills-bundles.mjs).
+dsh-company-skills/assets/skills.bundle
+tools/company-catalog/plugin-sources/*/assets/skills.bundle
+# Transitional rule (#011 review): the two legacy v1-era staging pins below
+# stay COMMITTED until their catalog entries are revoked→retired — they are
+# md5-pinned to the PUBLISHED 0.1.0/0.1.1 tgz bytes, so a fresh CI checkout
+# must repack from exactly these bytes or the publish-local tarball byte gate
+# blocks every beta publish (0.1.0/0.1.1 shipped v1-only decoders, so a
+# v2-rebuilt drift would be semantically broken too). From 0.1.2 on, staging
+# bundles are CI-reproduced (ensure-skills-bundles) and never committed.
+!tools/company-catalog/plugin-sources/dsh-company-skills-0.1.0/assets/skills.bundle
+!tools/company-catalog/plugin-sources/dsh-company-skills-0.1.1/assets/skills.bundle
+# The .bundle-rebuilt marker ensure-skills-bundles drops into each staging
+# tree it provisioned (measure.mjs re-measures those entries' treeDigest
+# from the CI-packed bytes; never committed, never packed into a tgz).
+tools/company-catalog/plugin-sources/*/.bundle-rebuilt

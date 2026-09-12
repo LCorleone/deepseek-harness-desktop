@@ -143,6 +143,21 @@ jobs:
         # validation, and npm-only allowlists need no origin at all.
         if: env.CATALOG_ORIGIN_VAR != ''
         run: 'echo "COMPANY_CATALOG_ORIGIN=$env:CATALOG_ORIGIN_VAR" >> $env:GITHUB_ENV'
+      - name: Rebuild the skills bundle for the pack step (issue #011)
+        # assets/skills.bundle is a deterministic rebuild output of
+        # dsh-company-skills/skills/ — untracked and gitignored since #011
+        # (the two legacy v1-era staging pins 0.1.0/0.1.1 stay committed
+        # until their catalog entries are revoked→retired; see .gitignore).
+        # This checkout therefore carries the legacy staging bundles (which
+        # make this step a no-op for them) but no source-tree asset and no
+        # 0.1.2+ staging copy. The step rebuilds the asset once from skills/
+        # and copies the fresh bytes into every genuinely-missing staging
+        # tree (matched by manifest name, never the filename-derived stem),
+        # leaving a .bundle-rebuilt marker so the measure step re-measures
+        # those entries' treeDigest from this run's packed bytes. A skills
+        # tgz without the bundle asset is invalid, so the pack step below
+        # depends on this.
+        run: node tools/company-catalog/ensure-skills-bundles.mjs
       - name: Pack tarball-channel artifacts (allowlist pack-artifact entries)
         # The tarball channel's pack step: every allowlist entry whose source
         # pins a path gets its deterministic .tgz packed here from the
