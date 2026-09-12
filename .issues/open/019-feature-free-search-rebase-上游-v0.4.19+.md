@@ -98,6 +98,7 @@ impl NewFeature {
 - [ ] 编写测试
 - [ ] 更新文档
 - 摆脱 dsh-settings shim；上游 v0.4.19+。
+- July 09-12 拍板：目前能用，hold（不 rebase）。
 
 ## 验收标准
 

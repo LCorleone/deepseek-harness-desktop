@@ -98,6 +98,7 @@ impl NewFeature {
 - [ ] 编写测试
 - [ ] 更新文档
 - 清 portal 票触发静默失败→登录窗→浏览器流程，~10min。
+- July 09-12 拍板：hold。
 
 ## 验收标准
 

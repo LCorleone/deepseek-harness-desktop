@@ -1,11 +1,12 @@
 # [Bug] #017 start-recovery 窗菜单英语化（09-08挂账，核实是否已修）
 
 **Issue ID**: #017
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: bug
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: bug
 
@@ -80,3 +81,7 @@
 ## 备注
 
 [其他相关信息、讨论、参考链接等]
+
+## 解决总结
+
+核实=已解决（moot）：startup-recovery-window.ts:573 autoHideMenuBar:true + :588 window.removeMenu()——恢复窗压根不显示原生菜单（英语菜单无从出现），窗口创建起即如此
