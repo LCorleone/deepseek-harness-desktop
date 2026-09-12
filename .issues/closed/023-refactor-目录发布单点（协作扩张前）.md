@@ -1,11 +1,12 @@
 # [Refactor] #023 目录发布单点（协作扩张前）
 
 **Issue ID**: #023
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -136,6 +137,7 @@ pub struct NewDesign {
 - [ ] 更新测试
 - [ ] 更新文档
 - 暂缓：协作扩张前。
+- 统一 runbook 落地：RELEASE.zh.md 升级为权威操作手册+RELEASE.md 英文镜像+i18n 对账。评审 APPROVED（P2 git 信任前提+P3 已修：GIT_SSL_CAINFO 指引、双语互链、门禁字段4项对齐）。
 
 ## 验收标准
 

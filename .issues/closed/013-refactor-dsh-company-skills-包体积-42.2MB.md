@@ -1,11 +1,12 @@
 # [Refactor] #013 dsh-company-skills 包体积 42.2MB
 
 **Issue ID**: #013
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -136,6 +137,7 @@ pub struct NewDesign {
 - [ ] 更新测试
 - [ ] 更新文档
 - skills.bundle 单文件 42MB；可考虑压缩/拆分/lazy。
+- 已修①：brotli-11 v2 wire 编码，60.0MB→22.0MB(-63%)、tgz 42.2→16.7MB、装机 60.6→22.3MB。v1 兼容+旧读新=安全降级。评审 2×P3+P1/P2 已修（i18n 哈希、测试回退语义、单位、unpack 提示）。生效待 0.1.2 发布。②（按 skill 拆分/资源外链）未做——留观。
 
 ## 验收标准
 
