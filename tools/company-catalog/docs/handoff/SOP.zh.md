@@ -120,10 +120,12 @@ desktop 仓（你）
 专门开 pi session 处理同事 MR 时，读同目录 **MR-HANDLING.zh.md**——
 冷启动上下文+命令直抄版（本 SOP 是流程权威）。
 
-## 发布速查
+## 发布 Runbook（统一版）
 
-四类发布（首发 beta/转正/名单/吊销）的照抄命令见同目录 **RELEASE.zh.md**——
-本 SOP 讲流程与判断，那份只放命令。
+发布的一切操作面——**发布机环境前置（CA bundle / 凭据纪律）、四条日常链
+（受理 / 发 stable·beta / promote / revoke·retire）、门禁语义、发布后观察验证、
+演练选项、纠错姿势**——见同目录 **RELEASE.zh.md**（2026-09-12 起统一权威，
+含 seq30 实战范例）。本 SOP 只讲流程与判断：角色、人审标准、异常路径。
 
 ## 修改记录
 - 2026-09-06 初版（MR 模式定稿后；accept-handoff 命令落地同日）
@@ -136,3 +138,5 @@ desktop 仓（你）
 - 2026-09-10：allowlist 条目新增可选 `description`（一句话中文，市场卡片显示，
   原样签名/无则键不出现）；顺序雷=fleet 全员 b89 前不得发 seq26（详见
   MR-HANDLING §4 与 tools/company-catalog/README.md「Entry descriptions」）
+- 2026-09-12：发布操作面全部移交 RELEASE.zh.md 统一 runbook（#023）——
+  环境前置、命令链、门禁、验证、演练、纠错以那份为权威；本页保留流程与人审

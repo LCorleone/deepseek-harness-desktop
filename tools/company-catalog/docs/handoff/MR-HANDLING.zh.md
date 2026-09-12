@@ -1,14 +1,14 @@
 # MR 处理指南（pi session 冷启动版）
 
 > 给专门处理同事 MR 的 pi session。2026-09-07 定稿。权威流程=SOP.zh.md，
-> 发布命令=RELEASE.zh.md，本页=两者合一的操作直抄版 + session 冷启动上下文。
+> 发布命令与门禁/验证=RELEASE.zh.md（统一 runbook），本页=两者合一的操作直抄版 + session 冷启动上下文。
 > 位置：tools/company-catalog/docs/handoff/MR-HANDLING.zh.md
 
 ## 0. 冷启动：先读这四样
 
 ```
 tools/company-catalog/docs/handoff/SOP.zh.md      流程权威（角色/判断/异常路径）
-tools/company-catalog/docs/handoff/RELEASE.zh.md  发布四类命令直抄
+tools/company-catalog/docs/handoff/RELEASE.zh.md  发布统一 runbook（环境/命令链/门禁/验证）
 tools/company-catalog/docs/handoff/README.zh.md   同事视角（他们看到什么）
 dev-log/2026-08-22-handoff-zcNSeT.md 的 2026-09-07 三节   今天的状态快照
 ```
@@ -86,7 +86,7 @@ failCheck；accept-handoff 对缺非空 description 的回执一律 refuse（防
 revoked 保留钉/retire 拷贝不走 verify/accept，键不出现即合法（卡片回退英文
 占位符）。空串/非字符串仍被 allowlist 校验拒绝。
 
-## 4. 发布（细节全在 RELEASE.zh.md，此处索引）
+## 4. 发布（细节全在 RELEASE.zh.md 统一 runbook，此处索引；发布机环境前置见其 §0）
 
 ⚠ **顺序雷（2026-09-10 定）**：目录校验是严格形状——携带 `description` 的新清单
 在旧客户端（≤b88）上会**整单被拒**（一个未知键拒整份目录）。代码已进 b89；
@@ -94,9 +94,9 @@ revoked 保留钉/retire 拷贝不走 verify/accept，键不出现即合法（�
 当前 allowlist 的描述为草稿，待 July 确认后才随 seq26 发出。
 
 ```
-beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state 棘轮推进）
+beta 首发   RELEASE §1.B channel=beta（CI 签名 → publish-local --channel beta → state 棘轮推进）
 浸泡        ≥2 工作日或首个真实反馈；期间 stable 发布别动该包（守卫自动拦）
-转正        RELEASE §B（群预告 → CI stable → publish-local --channel stable）
+转正        RELEASE §1.C（群预告 → 摘 beta 旗标 → CI stable → publish-local --channel stable）
 ```
 
 **多版本钉扎三行语义（P15，转正时照此判断）**：
@@ -104,13 +104,13 @@ beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state
 - **promote＝加条目保留旧钉**：转正只加新钉版，旧钉版留在 stable 清单，老客
   户端照常命中旧条目，发布即断老客户端的时代结束。
 - **retire＝显式下窗（＋群通知）**：旧钉版要下窗必须显式——先
-  `revoke <名>@<版本>` 并推送，再 `retire <名>@<版本>`（命令见 RELEASE §D2）；
+  `revoke <名>@<版本>` 并推送，再 `retire <名>@<版本>`（命令见 RELEASE §1.D）；
   静默删旧版条目会被 publish-local 版本下窗守卫拦红。
 - **保留策略**：上一条 runtime 线的最新版默认保留直至显式 retire；不确定就
   留着，manifest 体积微增可忽略。
 - **市场视图按客户端 runtime 展示（P15 Phase 2）**：多版本目录下，客户端市场
   列表每包只显示与本机 runtime 兼容的最高钉版——老客户端只见兼容版，整包无
-  兼容钉版即不出列表（详见 RELEASE §D2）；处理 MR 时同事问「为什么我看不到
+  兼容钉版即不出列表（详见 RELEASE §1.D/§1.C）；处理 MR 时同事问「为什么我看不到
   新版」，答案就是「先升 DSH Desktop」。
 
 ## 5. 纪律红线（每次过一遍）
@@ -119,11 +119,11 @@ beta 首发   RELEASE §A（CI 签名 → publish-local --channel beta → state
 · token 不落盘不进 commit；用完即弃
 · 同版本不可变：内容变=升版本（verify/accept/publish 三处闸门一致）
 · 多版本钉扎：promote 加条目保留旧钉；旧钉下窗走显式 revoke→retire
-  （先群通知）；静默删旧版条目会被 publish-local 拦红（RELEASE §D2）
+  （先群通知）；静默删旧版条目会被 publish-local 拦红（RELEASE §1.D）
 · state/last-sequence.json 每次发布后手动推进+commit
 · 浸泡期 stable 禁令：P1 守卫会拦，被拦=先转正浸泡包或加 --allow-package-removal
   （后者=真下架，需 July 明确点头）
-· 吊销用 cli revoke；名单进出用 beta-roster（见 RELEASE §C/D）
+· 吊销用 cli revoke；名单进出用 beta-roster（见 RELEASE §1.D/§1.E）
 · 每一步的回执都贴回 MR 评论（同事看得见=流程可信）
 · 完事 dev-log 记一行（滚动文档纪律）
 ```
