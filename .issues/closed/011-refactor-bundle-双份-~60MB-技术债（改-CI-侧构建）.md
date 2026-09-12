@@ -1,11 +1,12 @@
 # [Refactor] #011 bundle 双份 ~60MB 技术债（改 CI 侧构建）
 
 **Issue ID**: #011
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: refactor
 **Created**: 2026-09-12
 **Updated**: 2026-09-12
+**Closed**: 2026-09-12
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -136,6 +137,7 @@ pub struct NewDesign {
 - [ ] 更新测试
 - [ ] 更新文档
 - 现状：plugin-sources/<stem>/ 存完整发布树，bundle 仓库存两份(~60MB)。改法：CI 侧构建 bundle，仓库只存源。
+- 已落地（A′过渡形态）：源树 bundle 退库(-57MB)；未来版本 staging bundle 由 CI 复现+marker 重测 treeDigest；0.1.0/0.1.1 v1 旧钉留库待 retire 后撤(再-114MB)。两轮评审(P0 冻结beta通道风险已修)+补评 APPROVED。
 
 ## 验收标准
 
