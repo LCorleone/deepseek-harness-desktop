@@ -69,7 +69,14 @@ The nothing-persists guarantee is asserted in `tests/execute.spec.ts`: the scrip
 
 ## Bundle formats
 
-`assets/skills.bundle` is a single XOR+base64 block (the codec of `tools/company-skills/lib/codec.mjs`) whose decoded document is a **container**:
+`assets/skills.bundle` is a single obfuscated block whose decoded document is a **container**. Since #013 the wire format compresses *inside* the obfuscation layer (compress-then-obfuscate, so the 明文不落盘 red line is unchanged — the plaintext document exists only in memory on both sides):
+
+```text
+v1  base64(XOR(utf8 json))                      — what tools/company-skills/pack.mjs writes
+v2  base64(XOR("dskb2:br:" || brotli-11(json)))  — what scripts/build-bundle-asset.mjs ships
+```
+
+The `dskb2:<codec>:` header rides behind the XOR (the raw base64 wire does not self-identify), `br` is brotli via `node:zlib` — a built-in, so no dependency moves — and an unknown codec tag is rejected by name, which degrades to an empty catalog with a reason instead of a misread. Both wire formats decode through the same reader, so every v1 asset — packed test fixtures, older hand-built blobs — keeps loading; the container *document* grammar is unchanged (still `version: 1`). The same 45 MB document that measured 60,022,105 wire bytes in v1 measures ≈ 22 MB in v2, and decompression adds ~0.2 s to the one-time module-load decode.
 
 ```jsonc
 {

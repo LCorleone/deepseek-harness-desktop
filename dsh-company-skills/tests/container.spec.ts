@@ -9,13 +9,13 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import { validateSkillBundle } from '../src/bundle.js'
-import { BUNDLE_BLOB_EXPORT_NAME, OBFUSCATION_KEY, OBFUSCATION_KEY_ID, decodeBundleBlob, extractBundleBlob } from '../src/codec.js'
+import { BUNDLE_BLOB_EXPORT_NAME, OBFUSCATION_KEY, OBFUSCATION_KEY_ID, decodeBundleBlob, decodeCanonicalBase64, extractBundleBlob, xorKeyBytes } from '../src/codec.js'
 import { CONTAINER_VERSION, decodeContainer, parseContainer } from '../src/container.js'
 import {
   FIXTURES_DIR,
@@ -24,6 +24,7 @@ import {
   REPO_ROOT,
   SHIPPED_SKILL_NAMES,
   SKILLS_DIR,
+  buildAsset,
   toolsBundle,
   toolsCodec,
   toolsReleaseSurface,
@@ -154,10 +155,25 @@ describe('company skills container decode', () => {
 
   it('is deterministic: the same sources always produce the same bytes', () => {
     expect(packFixtures('.bundle')).toBe(packFixtures('.bundle'))
-    // The shipped asset is exactly a re-pack of the collected skills root —
-    // what `verify:bundle` asserts in CI, pinned here against the decoder too.
-    expect(packCompanySkills('.bundle')).toBe(readFileSync(ASSET_PATH, 'utf8'))
-  })
+    // The v2 encoder is deterministic too (brotli has no timestamps), pinned at
+    // fixture scale here — the full-asset pin is the next expectation.
+    expect(buildAsset.encodeShippedBundle(packFixtures('.bundle'))).toBe(buildAsset.encodeShippedBundle(packFixtures('.bundle')))
+    // The shipped asset is exactly a v2 re-encode of a fresh pack of the
+    // collected skills root. Mirrors `verify:bundle`'s discipline: byte-first,
+    // but if the bytes ever drift across a Node/brotli upgrade (documented in
+    // build-bundle-asset.mjs's header), what must still hold is decoded-document
+    // equality — assert that pairing here so this test and `--check` never give
+    // mixed signals. (One brotli-11 pass over the ~45 MB document; the timeout
+    // is the measured cost, not an aspiration.)
+    const freshWire = buildAsset.encodeShippedBundle(packCompanySkills('.bundle'))
+    const shippedWire = readFileSync(ASSET_PATH, 'utf8')
+    if (freshWire !== shippedWire) {
+      const canon = (s: string) => JSON.stringify(JSON.parse(buildAsset.decodeShippedBundle(s)))
+      expect(canon(freshWire)).toBe(canon(shippedWire))
+    } else {
+      expect(freshWire).toBe(shippedWire)
+    }
+  }, 240_000)
 
   it('carries no plaintext of any bundled skill', () => {
     const artifact = readFileSync(ASSET_PATH, 'utf8')
@@ -207,6 +223,53 @@ describe('company skills container decode', () => {
       const bytes = readFileSync(join(PACKAGE_ROOT_PATH, file))
       for (const canary of CANARIES) expect(bytes.includes(canary)).toBe(false)
     }
+  })
+})
+
+describe('v2 wire format: compression inside the obfuscation layer (#013)', () => {
+  it('decodes v1 and v2 encodings of the same document to the same container', () => {
+    const v1 = packFixtures('.bundle')
+    const v2 = buildAsset.encodeShippedBundle(v1)
+    expect(decodeContainer(v2)).toEqual(decodeContainer(v1))
+    // And the dev-script decoder agrees with the shipped one on both wires.
+    expect(buildAsset.decodeShippedBundle(v2)).toBe(decodeBundleBlob(extractBundleBlob(v1)))
+    expect(buildAsset.decodeShippedBundle(v1)).toBe(decodeBundleBlob(extractBundleBlob(v2)))
+  })
+
+  it('compresses: the v2 wire is strictly smaller than the v1 wire for the same document', () => {
+    const v1 = packFixtures('.bundle')
+    expect(buildAsset.encodeShippedBundle(v1).length).toBeLessThan(v1.trim().length)
+  })
+
+  it('rejects a v2 header naming an unknown codec, instead of guessing', () => {
+    const wire = (payload: Buffer): string => xorKeyBytes(payload).toString('base64')
+    expect(() => decodeBundleBlob(wire(Buffer.from('dskb2:zz:not-a-stream', 'utf8')))).toThrow(/unknown compression codec "zz"/)
+    expect(() => decodeBundleBlob(wire(Buffer.concat([Buffer.from('dskb2:', 'utf8')])))).toThrow(/truncated dskb2 header/)
+  })
+
+  it('rejects a corrupt brotli body instead of misreading it', () => {
+    const good = buildAsset.encodeShippedBundle(packFixtures('.bundle'))
+    const payload = xorKeyBytes(decodeCanonicalBase64(extractBundleBlob(good), 'fixture wire'))
+    payload.fill(0x5a, 12, 64) // corrupt inside the compressed stream, header intact
+    expect(() => decodeContainer(xorKeyBytes(payload).toString('base64'))).toThrow()
+  })
+
+  it('ships the v2 wire: the header rides behind the XOR layer of the committed asset', () => {
+    const artifact = readFileSync(ASSET_PATH, 'utf8')
+    const blob = extractBundleBlob(artifact)
+    // The magic is not visible on the raw base64 wire — it only exists after
+    // the (key-public) XOR step, exactly like every other payload byte.
+    expect(blob.startsWith('dskb2')).toBe(false)
+    const payload = xorKeyBytes(decodeCanonicalBase64(blob, 'shipped wire'))
+    expect(payload.toString('utf8', 0, 9)).toBe('dskb2:br:')
+  })
+
+  it('keeps the shipped asset under the #013 size ratchet', () => {
+    // v1 measured 60,022,105 bytes (0.1.0/0.1.1); brotli-11 inside the
+    // obfuscation layer brings the same document to ~22 MB. The bound is a
+    // ratchet, not a measurement: crossing it again needs a deliberate
+    // decision (skill-set growth or a codec change), not silent drift.
+    expect(statSync(ASSET_PATH).size).toBeLessThan(30_000_000)
   })
 })
 

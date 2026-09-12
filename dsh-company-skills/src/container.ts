@@ -3,7 +3,9 @@
  *
  * Wire format, confirmed by the product owner on 2026-09-10 and written by the
  * batch-1.5 packer (`tools/company-skills/pack.mjs --skills <root>`), carried
- * as a single XOR+base64 block in `assets/skills.bundle`:
+ * as a single obfuscated block in `assets/skills.bundle` — since #013 in the
+ * v2 wire form `base64(XOR("dskb2:br:" || brotli(json)))`, with the v1 form
+ * `base64(XOR(json))` still accepted (see `codec.ts`):
  *
  *   {"version":1,"skills":[{"name":…,"description":…,"body":…,
  *                            "scripts":[…],"assets":[…]}, …]}

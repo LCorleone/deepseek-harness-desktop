@@ -2,6 +2,10 @@
 /**
  * Decode and verify a company-skill artifact — the author side self-check.
  *
+ * NOTE: decodes the v1 wire format only (base64(XOR(json))). Shipped assets
+ * since the v2 brotli codec are read by dsh-company-skills/src/codec.ts;
+ * this tool remains for author-side checks against v1-era blobs.
+ *
  *   node tools/company-skills/unpack.mjs --in <blob> [--out <dir>] [--expect-sha256 <hex>]
  *
  * Both document shapes are accepted: the batch-1 single-skill bundle and the

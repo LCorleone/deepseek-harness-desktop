@@ -52,11 +52,19 @@ export interface ToolsReleaseSurfaceModule {
   filesEntryMatcher(pattern: string): (path: string) => boolean
 }
 
+/** The slice of `scripts/build-bundle-asset.mjs` these tests read — the v2 wire encoder/decoder this package owns. */
+export interface BuildAssetModule {
+  readonly ASSET_PATH: string
+  encodeShippedBundle(packerArtifact: string): string
+  decodeShippedBundle(assetText: string): string
+}
+
 const toolsUrl = (relative: string): string => new URL(relative, import.meta.url).href
 
 export const toolsBundle = await import(/* @vite-ignore */ toolsUrl('../../tools/company-skills/lib/bundle.mjs')) as ToolsBundleModule
 export const toolsCodec = await import(/* @vite-ignore */ toolsUrl('../../tools/company-skills/lib/codec.mjs')) as ToolsCodecModule
 export const toolsReleaseSurface = await import(/* @vite-ignore */ toolsUrl('../../tools/company-skills/lib/release-surface.mjs')) as ToolsReleaseSurfaceModule
+export const buildAsset = await import(/* @vite-ignore */ toolsUrl('../scripts/build-bundle-asset.mjs')) as BuildAssetModule
 
 /** Repository root, derived from this test file's own location. */
 export const REPO_ROOT = new URL('../..', import.meta.url)

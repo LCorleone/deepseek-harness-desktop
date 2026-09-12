@@ -117,7 +117,19 @@ Windows 机器即使 `PATH` 上只有 shell-less spawn 跑不了的 `.cmd` 垫�
 
 ## bundle 格式
 
-`assets/skills.bundle` 是单块 XOR+base64（即 `tools/company-skills/lib/codec.mjs` 的 codec），
+`assets/skills.bundle` 是单块混淆数据，解密后得到容器文档。#013 起 wire 格式在混淆层**之内**
+压缩（先压缩后混淆，明文不落盘红线不变——两侧明文文档都只存在于内存）：
+
+```text
+v1  base64(XOR(utf8 json))                      — tools/company-skills/pack.mjs 直写
+v2  base64(XOR("dskb2:br:" || brotli-11(json)))  — scripts/build-bundle-asset.mjs 发布的形态
+```
+
+`dskb2:<codec>:` 头在 XOR 层之内（裸 base64 线格式不自识别），`br` 即 brotli（`node:zlib` 内建，零新增
+依赖）；未知 codec 按名拒绝——降级为空目录带 reason，而不是误读。两种 wire 都走同一个 reader，因此所有 v1
+asset（打包的测试 fixture、旧的手工 blob）继续可读；容器**文档**语法不变（仍是 `version: 1`）。同一份 45 MB
+文档 v1 线上是 60,022,105 字节，v2 约 22 MB，解压给一次性模块加载多加约 0.2 秒。
+
 解密后的文档是**容器**：
 
 ```jsonc
@@ -241,7 +253,7 @@ dsh-company-skills/
   src/catalog.ts        加载策略、索引、逐 skill 物化
   src/container.ts      容器 frame 解码（独立于 tools/）
   src/bundle.ts         单个 skill bundle 的字段规则（独立于 tools/）
-  src/codec.ts          XOR+base64 解码器与 key 常量
+  src/codec.ts          解码器与 key 常量：XOR+base64（v1）与 brotli+XOR+base64（v2，#013）
   src/execute.ts        staged 按运行物化脚本执行器：寻址、物化、边界
   src/tool.ts           company_skill_run / company_skill_read 定义、render、presentCall
   assets/skills.bundle  随包发布的容器块（在 files 里）
