@@ -1,11 +1,12 @@
 # [Feature] #003 engramory 下架跟进：确认隐藏 + 决定 retire
 
 **Issue ID**: #003
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
 **Updated**: 2026-09-14
+**Closed**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -123,3 +124,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+完成：July 拍板不要此插件 → 无钥 retire 路径（runbook 1.D）：seq30 revoked 记录为下窗凭证 + 遥测实证零在装（两笔历史安装均已卸）→ beta seq34 撤窗，回读无残留，棘轮 34。stable 从未携带。市场卡片即刻消失（扫描 TTL ≤5min）。
