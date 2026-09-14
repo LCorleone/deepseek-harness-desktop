@@ -1,14 +1,9 @@
 {
-  "channel": "beta",
-  "sequence": 30,
+  "channel": "stable",
+  "sequence": 35,
   "keyId": "company-catalog-2026-08",
   "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
-  "manifestSha256": "283aa80b53c2557f03faed30eaa51bdc4555b1312ae8f6cb87338851a3452385",
-  "testers": [
-    "julu@deloittecn.com.cn",
-    "sebtang@deloittecn.com.cn",
-    "lizywu@deloittecn.com.cn"
-  ],
+  "manifestSha256": "83ad05ed79ee82fac7921ecf76acefc84862355bbf5281d735266b6eb58d3d24",
   "entries": [
     {
       "packageName": "dsh-better-sidebar",
@@ -24,15 +19,8 @@
     },
     {
       "packageName": "dsh-company-skills",
-      "version": "0.1.0",
-      "treeDigest": "26fd3c70c02dd98968476d823df843327c2ed723df133d963a49b279898a3f16",
-      "sourceKind": "tarball",
-      "measured": true
-    },
-    {
-      "packageName": "dsh-company-skills",
-      "version": "0.1.1",
-      "treeDigest": "d75edc350ec7695498de59061f04c7c0cf43581c4de883f8308c8ccba01e8a6d",
+      "version": "0.1.2",
+      "treeDigest": "2564a943593c2cafbaa5d6e96a1fd306ad8ac0d413bc4a37afbd35207e154d7b",
       "sourceKind": "tarball",
       "measured": true
     },
@@ -51,9 +39,23 @@
       "measured": true
     },
     {
-      "packageName": "dsh-dai-engramory",
-      "version": "0.2.4",
-      "treeDigest": "f7e59d72e906198bf1e56357170708653cf9e65408a036bb528ba1eb26e9cc59",
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.0",
+      "treeDigest": "0da75ae88fe1c4feb7516f4a8bd203cea36001ed1b352d67ebcc86ee6eb3cce5",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.1",
+      "treeDigest": "227368ad3fb966153122f03aac73741555f7b6244c1939878174a885f01bd539",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-office-tools",
+      "version": "1.0.3",
+      "treeDigest": "c057f19152b0ef2a7c474af242901bc86630a744dc556571be91c7867ba86503",
       "sourceKind": "tarball",
       "measured": true
     },
@@ -65,8 +67,8 @@
       "measured": true
     }
   ],
-  "generatedAt": "2026-09-11T23:08:45.89Z",
-  "gitSha": "bbf9da30e6cba52057b2085e5bb5c5d3e8c0761c",
-  "runId": "34656749412",
-  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34656749412"
+  "generatedAt": "2026-09-14T07:21:07.762Z",
+  "gitSha": "111c503c793dc7cac6044952f5bdaba84f4645a5",
+  "runId": "34817188695",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34817188695"
 }
