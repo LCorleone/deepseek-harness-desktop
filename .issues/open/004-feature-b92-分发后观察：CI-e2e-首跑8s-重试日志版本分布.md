@@ -94,6 +94,7 @@ impl NewFeature {
 ### 2026-09-14
 - 版本分布✓全员b93（09-14）。CI e2e 首跑绿（run 34747131652 前 yarn check 含 e2e 6/6）。剩：deferredUpdates 真机观察 + 持续盯 8s 重试日志。
 - b94 首验（July 21:12-21:14 遥测）：①python_runtime shared/pip 字段上线即工作 ✓ ②sandbox_escalation 全库首条落库（approved）= #034+#033 端到端实证 ✓ ③启动转圈真机确认 ✓。待验：#031 迟点重启（July 等会测）+ Lucy 机器 pip 自愈（明天）。
+- b94 验证 3/4 完成：③#031 实证（装后晾 21 分钟点重启→accepted→10.7s 回来；intent-expired 全库归零）。剩④Lucy pip 自愈（明天）。b94 具备 fleet 分发条件。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析
