@@ -1,0 +1,67 @@
+{
+  "channel": "stable",
+  "sequence": 33,
+  "keyId": "company-catalog-2026-08",
+  "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
+  "manifestSha256": "87ef05770dac191d545a68154fed3df4888ba6c0782a0a72b18b97b534e50dad",
+  "entries": [
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.15.2",
+      "treeDigest": "47e34732e474c20d045e74f19155d561f27950f04262bf7ac151ff3c05758d94",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-better-sidebar",
+      "version": "0.18.1",
+      "treeDigest": "698b28cedc13148993f25ce4fe72286b6dd5a745eaf061aa4111851c848d8475",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-company-skills",
+      "version": "0.1.2",
+      "treeDigest": "2564a943593c2cafbaa5d6e96a1fd306ad8ac0d413bc4a37afbd35207e154d7b",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-agent-teams",
+      "version": "0.1.16",
+      "treeDigest": "1e0caabe6f304fb91cbf32e815c2a2cbe93c7548b0433dce2a21a6f8754d1a83",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-context",
+      "version": "0.41.4",
+      "treeDigest": "de0f7a0b17c7a99128959d921ba355475c8858edf5c8ad15a97567a62a2fbe20",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.0",
+      "treeDigest": "0da75ae88fe1c4feb7516f4a8bd203cea36001ed1b352d67ebcc86ee6eb3cce5",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-office-tools",
+      "version": "1.0.3",
+      "treeDigest": "c057f19152b0ef2a7c474af242901bc86630a744dc556571be91c7867ba86503",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-free-search",
+      "version": "0.4.184",
+      "treeDigest": "40ebd1d973371706fd434aebb22b1da4c7ce9b1b80b1c3ecf056be4b6be1d343",
+      "sourceKind": "tarball",
+      "measured": true
+    }
+  ],
+  "generatedAt": "2026-09-14T06:39:04.274Z",
+  "gitSha": "b11cb69db3f77efb894f2674fafa634b5a59d98f",
+  "runId": "34814037615",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34814037615"
+}
