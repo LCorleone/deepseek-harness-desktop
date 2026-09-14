@@ -612,6 +612,70 @@ describe('market install service', () => {
     expect(settings.receipts()).toEqual([])
   })
 
+  it('grants restart tokens their own longer TTL, independent of install intents, still one-shot', async () => {
+    const profileDir = await createProfile()
+    const calls: Array<{ args: readonly string[]; dir: string; signal?: AbortSignal }> = []
+    const settings = memoryScope()
+    const intentTtlMs = 5 * 60 * 1000
+    const restartIntentTtlMs = 24 * 60 * 60 * 1000
+    const start = Date.parse('2026-09-14T00:00:00.000Z')
+    let now = start
+    const service = new MarketInstallService(
+      settings.scope,
+      () => ({ name: 'web', dir: profileDir }),
+      runner(profileDir, calls),
+      { verify: vi.fn(async () => verification) },
+      { now: () => now },
+    )
+    service.observeCatalog(snapshot())
+
+    // Two install confirmations are outstanding when the first one executes;
+    // the completed operation mints a restart grant at the same instant.
+    const first = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const stalePreview = await service.previewInstall('source-1', 'example/dsh-plugin-safe', new AbortController().signal)
+    const firstResult = await service.executePreview(first.intent, new AbortController().signal)
+    if (firstResult.action !== 'install') throw new Error('expected install result')
+
+    // Past the 5-minute install-intent TTL: the outstanding preview
+    // confirmation is gone (#031 real-user evidence: an 11-minute-late
+    // "Restart now") while the restart grant from the earlier completed
+    // operation stays valid — restart grants keep their own longer TTL.
+    now = start + intentTtlMs + 1
+    await expect(service.executePreview(stalePreview.intent, new AbortController().signal)).rejects.toMatchObject({
+      code: 'intent-expired',
+    })
+    expect(() => service.consumeRestartToken(firstResult.restartToken)).not.toThrow()
+
+    // Still strictly one-shot even when consumed late.
+    expect(() => service.consumeRestartToken(firstResult.restartToken)).toThrow(/already used/u)
+
+    // The grant expires on its own 24-hour TTL, not the install preview's:
+    // a fresh completed operation at t+6min mints a grant that dies at its
+    // own 24-hour horizon.
+    const uninstall = await service.previewUninstall(firstResult.receipt.receiptId, new AbortController().signal)
+    const removed = await service.executePreview(uninstall.intent, new AbortController().signal)
+    if (removed.action !== 'uninstall') throw new Error('expected uninstall result')
+    now = start + intentTtlMs + 1 + restartIntentTtlMs
+    let expired: unknown
+    try { service.consumeRestartToken(removed.restartToken) } catch (cause) { expired = cause }
+    expect(expired).toBeInstanceOf(MarketInstallError)
+    expect(expired).toMatchObject({ code: 'intent-expired' })
+    expect(settings.receipts()).toEqual([])
+  })
+
+  it('rejects a non-positive restart intent TTL like the other service bounds', async () => {
+    const profileDir = await createProfile()
+    for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER * 2]) {
+      expect(() => new MarketInstallService(
+        memoryScope().scope,
+        () => ({ name: 'web', dir: profileDir }),
+        runner(profileDir, []),
+        { verify: vi.fn(async () => verification) },
+        { restartIntentTtlMs: invalid },
+      )).toThrow('invalid market install restart intent TTL')
+    }
+  })
+
   it('restores an installed receipt through a new service and file-backed settings context', async () => {
     const profileDir = await createProfile()
     const settingsPath = join(profileDir, 'settings.yaml')

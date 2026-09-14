@@ -143,6 +143,18 @@ function isMarketOperationTimeout(cause: unknown): boolean {
     && (cause as { code?: unknown }).code === 'operation-timeout'
 }
 
+/**
+ * Whether the Host refused a restart grant as expired or already used
+ * (HTTP 410 `intent-expired`): the mutation itself succeeded, so the copy
+ * must say the confirmation expired — not that the restart "failed".
+ */
+function isRestartGrantExpired(cause: unknown): boolean {
+  return cause !== null
+    && typeof cause === 'object'
+    && 'code' in cause
+    && (cause as { code?: unknown }).code === 'intent-expired'
+}
+
 function operationErrorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message.trim().length > 0
     ? cause.message
@@ -1018,7 +1030,9 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       if (request.signal.aborted || desktopActionRequest.current !== request) return
       setDesktopActionError(t(isDesktopUnavailable(cause)
         ? 'desktopActionUnavailable'
-        : action === 'open-terminal' ? 'terminalError' : 'restartError'))
+        : action === 'open-terminal'
+          ? 'terminalError'
+          : isRestartGrantExpired(cause) ? 'restartExpired' : 'restartError'))
     } finally {
       if (desktopActionRequest.current === request) {
         desktopActionRequest.current = undefined

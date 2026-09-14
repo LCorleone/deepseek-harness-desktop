@@ -43,7 +43,7 @@ import {
 import { MARKET_MEDIA_ASSET_REF_PATTERN } from '../media/ref.js'
 import { createRestrictedImageFetcher } from '../media/restricted-image.js'
 import { createMarketMediaService } from '../media/service.js'
-import { MarketInstallError, type MarketInstallService } from '../install/service.js'
+import { MarketInstallError, RESTART_INTENT_TTL_MS, type MarketInstallService } from '../install/service.js'
 import { manualInstallHints } from '../install/manual.js'
 
 export const MARKET_SETTINGS_NAMESPACE = settingsNamespace('dsh-community-market')
@@ -1557,7 +1557,10 @@ export function registerMarketRoutes(
               )
             }
             const restartToken = randomUUID()
-            rememberDesktopToken(desktopPluginRestartTokens, restartToken, Date.now() + 5 * 60 * 1000)
+            // Same restart-grant TTL the install service issues (#031): a
+            // "Restart now" clicked 11 minutes — or 11 hours — after the
+            // disable/enable must still be honored.
+            rememberDesktopToken(desktopPluginRestartTokens, restartToken, Date.now() + RESTART_INTENT_TTL_MS)
             result = { action, packageName: changed.packageName, restartToken }
           } else {
             const install = installProvider.get()
@@ -1638,7 +1641,11 @@ export function registerMarketRoutes(
           }
           install.consumeRestartToken(restartToken)
         }
-        rememberDesktopToken(acceptedRestartTokens, restartToken, Date.now() + 5 * 60 * 1000)
+        // The accepted-replay window shares the grant TTL (not the old 5min):
+        // answering idempotently for as long as the grant itself could have
+        // lived is harmless — it re-authorizes nothing — while a shorter
+        // window would turn a late repeated click back into the #031 symptom.
+        rememberDesktopToken(acceptedRestartTokens, restartToken, Date.now() + RESTART_INTENT_TTL_MS)
         ctx.logger.error('dsh-community-market: restart grant accepted; requesting the desktop restart')
         reportRestartRequest({ outcome: 'accepted' })
         sendJsonIfWritable(res, 200, { ok: true }, ctx.logger)

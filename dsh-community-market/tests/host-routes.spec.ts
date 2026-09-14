@@ -18,8 +18,15 @@ import {
 } from '../src/adapters/dshfind.js'
 import type { MarketSettingsDocument } from '../src/catalog/source-store.js'
 import type { CatalogSourceLockOptions } from '../src/catalog/source-store.js'
+import { MarketInstallError, type MarketInstallService } from '../src/install/service.js'
 import type { CatalogSourceManifest, LocalSourceRecord } from '../src/contracts/index.js'
-import { marketRoutes, registerMarketRoutes } from '../src/host/routes.js'
+import {
+  marketRoutes,
+  registerMarketRoutes,
+  type MarketDesktopActionsProvider,
+  type MarketDesktopPluginsProvider,
+  type MarketInstallServiceProvider,
+} from '../src/host/routes.js'
 import { restrictedHttpClient } from '../src/network/restricted-http.js'
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
@@ -35,6 +42,13 @@ interface MarketServer {
 
 interface SharedMarketSettings {
   document: MarketSettingsDocument
+}
+
+/** Optional Host providers for the desktop-plugin and restart routes. */
+interface MarketServerProviders {
+  readonly install?: MarketInstallServiceProvider
+  readonly desktopActions?: MarketDesktopActionsProvider
+  readonly desktopPlugins?: MarketDesktopPluginsProvider
 }
 
 function localHeaders(server: MarketServer, origin = server.baseUrl): Record<string, string> {
@@ -59,6 +73,17 @@ async function mutateSource(server: MarketServer, mutation: unknown, origin = se
       'content-type': 'application/json',
     },
     body: JSON.stringify(mutation),
+  })
+}
+
+async function postRoute(server: MarketServer, path: string, body: unknown): Promise<Response> {
+  return await fetch(`${server.baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      ...localHeaders(server),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
   })
 }
 
@@ -102,6 +127,7 @@ async function startMarketServer(
   initialSources: readonly LocalSourceRecord[],
   sharedSettings?: SharedMarketSettings,
   sourceLock?: CatalogSourceLockOptions,
+  providers?: MarketServerProviders,
 ): Promise<MarketServer> {
   const routes = new Map<string, RouteHandler>()
   const settings = sharedSettings ?? { document: { sources: initialSources } }
@@ -139,7 +165,14 @@ async function startMarketServer(
     },
     logger: { error: vi.fn() },
   } as unknown as Context
-  const disposeRoutes = registerMarketRoutes(ctx, scope, undefined, undefined, undefined, sourceLock)
+  const disposeRoutes = registerMarketRoutes(
+    ctx,
+    scope,
+    providers?.install,
+    providers?.desktopActions,
+    providers?.desktopPlugins,
+    sourceLock,
+  )
   return {
     baseUrl: `http://127.0.0.1:${String(port)}`,
     close: async () => {
@@ -622,6 +655,166 @@ describe('community market Host routes', () => {
       })
     } finally {
       await server.close()
+    }
+  })
+
+  // Harness for the desktop-plugin disable/enable restart grants: one mutable
+  // bundle whose status the preview/execute mocks flip, an install service
+  // whose restart-token fallback fails closed for unknown grants (exactly the
+  // one-shot service behavior), and a recorded restart action.
+  async function startDesktopPluginRestartServer() {
+    let bundleStatus: 'active' | 'disabled' = 'active'
+    const packageName = 'dsh-plugin-external'
+    const requestRestart = vi.fn(async () => {})
+    const knownServiceTokens = new Set<string>()
+    const consumeRestartToken = vi.fn((token: string) => {
+      if (!knownServiceTokens.delete(token)) {
+        throw new MarketInstallError('intent-expired', 'The restart confirmation expired or was already used.')
+      }
+    })
+    const install = {
+      listReceipts: vi.fn(async () => []),
+      listVerifiedReceipts: vi.fn(async () => []),
+      listInstallable: vi.fn(),
+      consumeRestartToken,
+    } as unknown as MarketInstallService
+    const desktopPlugins = {
+      list: vi.fn(() => [{
+        bundleId: 'bundle_opaque_external',
+        packageName,
+        mutable: true,
+        status: bundleStatus,
+      }]),
+      isDisabled: vi.fn(() => bundleStatus === 'disabled'),
+      disabledPackageNames: vi.fn(() => bundleStatus === 'disabled' ? [packageName] : []),
+      // Far-future preview expiry: these tests move the clock by hours, but
+      // only the restart-grant TTL is under test.
+      previewDisable: vi.fn(() => ({
+        previewId: 'disable_opaque_preview',
+        profileName: 'web',
+        packageName,
+        expiresAt: '2099-08-18T00:05:00.000Z',
+      })),
+      executeDisable: vi.fn(async () => {
+        bundleStatus = 'disabled'
+        return { packageName }
+      }),
+      previewEnable: vi.fn(() => ({
+        previewId: 'enable_opaque_preview',
+        profileName: 'web',
+        packageName,
+        expiresAt: '2099-08-18T00:05:00.000Z',
+      })),
+      executeEnable: vi.fn(async () => {
+        bundleStatus = 'active'
+        return { packageName }
+      }),
+    }
+    const server = await startMarketServer([], undefined, undefined, {
+      install: { get: () => install },
+      desktopActions: { get: () => ({ openTerminal: vi.fn(), requestRestart }) },
+      desktopPlugins: { get: () => desktopPlugins },
+    })
+    return { server, requestRestart, consumeRestartToken }
+  }
+
+  it('keeps a desktop-plugin restart grant valid past the old 5-minute TTL and replays it idempotently (#031 sibling)', async () => {
+    // Only the Date clock is faked: this spec drives a real loopback server,
+    // so its I/O must keep real timers — grant minting and purging read only
+    // Date.now().
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.parse('2026-09-14T00:00:00.000Z'))
+      const { server, requestRestart, consumeRestartToken } = await startDesktopPluginRestartServer()
+      try {
+        const disablePreview = await postRoute(server, marketRoutes.operationPreview, {
+          action: 'disable',
+          bundleId: 'bundle_opaque_external',
+        })
+        expect(disablePreview.status).toBe(200)
+        const executed = await postRoute(server, marketRoutes.operationExecute, { previewId: 'disable_opaque_preview' })
+        expect(executed.status).toBe(200)
+        const { restartToken } = await executed.json() as { restartToken: string }
+
+        // The #031 repro delay: "Restart now" clicked 11 minutes after the
+        // disable. The old hardcoded 5-minute grant answered 410 here.
+        vi.setSystemTime(Date.parse('2026-09-14T00:11:00.000Z'))
+        const late = await postRoute(server, marketRoutes.requestRestart, { restartToken })
+        expect(late.status).toBe(200)
+        await expect(late.json()).resolves.toEqual({ ok: true })
+        expect(requestRestart).toHaveBeenCalledOnce()
+        // A live desktop-plugin grant is consumed from the route map and never
+        // reaches the install-service fallback.
+        expect(consumeRestartToken).not.toHaveBeenCalled()
+
+        // A repeated click 12 minutes after acceptance (23 minutes after the
+        // disable) still reads "already in progress", not 410: the accepted
+        // window shares the 24-hour grant TTL.
+        vi.setSystemTime(Date.parse('2026-09-14T00:23:00.000Z'))
+        const replay = await postRoute(server, marketRoutes.requestRestart, { restartToken })
+        expect(replay.status).toBe(200)
+        await expect(replay.json()).resolves.toEqual({ ok: true, alreadyRequested: true })
+        expect(consumeRestartToken).not.toHaveBeenCalled()
+        expect(requestRestart).toHaveBeenCalledTimes(2)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('expires restart grants at 24 hours and never re-authorizes a spent one (#031 sibling)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.parse('2026-09-14T00:00:00.000Z'))
+      const { server, requestRestart, consumeRestartToken } = await startDesktopPluginRestartServer()
+      try {
+        // Grant A: minted and accepted at t0.
+        await postRoute(server, marketRoutes.operationPreview, {
+          action: 'disable',
+          bundleId: 'bundle_opaque_external',
+        })
+        const disabled = await postRoute(server, marketRoutes.operationExecute, { previewId: 'disable_opaque_preview' })
+        expect(disabled.status).toBe(200)
+        const grantA = (await disabled.json() as { restartToken: string }).restartToken
+        const accepted = await postRoute(server, marketRoutes.requestRestart, { restartToken: grantA })
+        expect(accepted.status).toBe(200)
+        expect(requestRestart).toHaveBeenCalledOnce()
+
+        // Grant B: minted one minute later, never consumed.
+        vi.setSystemTime(Date.parse('2026-09-14T00:01:00.000Z'))
+        await postRoute(server, marketRoutes.operationPreview, {
+          action: 'enable',
+          bundleId: 'bundle_opaque_external',
+        })
+        const enabled = await postRoute(server, marketRoutes.operationExecute, { previewId: 'enable_opaque_preview' })
+        expect(enabled.status).toBe(200)
+        const grantB = (await enabled.json() as { restartToken: string }).restartToken
+
+        // 24 hours after grant A's acceptance its idempotent replay window
+        // has closed too: presenting the already-consumed grant again is the
+        // one-shot 410, never a second acceptance.
+        vi.setSystemTime(Date.parse('2026-09-15T00:00:00.001Z'))
+        const spentAgain = await postRoute(server, marketRoutes.requestRestart, { restartToken: grantA })
+        expect(spentAgain.status).toBe(410)
+        await expect(spentAgain.json()).resolves.toMatchObject({ code: 'intent-expired' })
+        expect(requestRestart).toHaveBeenCalledOnce()
+        // The expired plugin grant falls through to the service fallback,
+        // which fails closed for a token it never issued.
+        expect(consumeRestartToken).toHaveBeenCalledWith(grantA)
+
+        // Past its own 24-hour horizon the unconsumed grant B dies as well.
+        vi.setSystemTime(Date.parse('2026-09-15T00:01:00.001Z'))
+        const expired = await postRoute(server, marketRoutes.requestRestart, { restartToken: grantB })
+        expect(expired.status).toBe(410)
+        await expect(expired.json()).resolves.toMatchObject({ code: 'intent-expired' })
+        expect(requestRestart).toHaveBeenCalledOnce()
+      } finally {
+        await server.close()
+      }
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

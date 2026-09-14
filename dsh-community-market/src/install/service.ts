@@ -26,6 +26,14 @@ const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$
 const MAX_MANIFEST_BYTES = 1024 * 1024
 const MAX_LOCKFILE_BYTES = 32 * 1024 * 1024
 const INSTALL_INTENT_TTL_MS = 5 * 60 * 1000
+// Restart grants outlive install previews (24h vs 5min) because they are
+// one-shot post-mutation conveniences — deleted on first use, and a late
+// restart is harmless: the pending generation applies whenever the app
+// restarts. The short preview TTL exists to invalidate stale version/catalog
+// previews, a concern that does not apply to a restart grant.
+// Exported for the Host restart routes, which mint their own parallel grants
+// (desktop-plugin disable/enable) and must never diverge from this TTL (#031).
+export const RESTART_INTENT_TTL_MS = 24 * 60 * 60 * 1000
 const CANDIDATE_TTL_MS = 30 * 60 * 1000
 const MAX_INTENTS = 256
 const MAX_CANDIDATES = 10_000
@@ -357,6 +365,7 @@ export const noopMarketInstallEventSink: MarketInstallEventSink = {
 export interface MarketInstallServiceOptions {
   readonly now?: () => number
   readonly intentTtlMs?: number
+  readonly restartIntentTtlMs?: number
   readonly candidateTtlMs?: number
   readonly maxIntents?: number
   readonly maxCandidates?: number
@@ -1020,6 +1029,7 @@ export class MarketInstallService {
   private readonly restartIntents = new Map<string, RestartIntent>()
   private readonly now: () => number
   private readonly intentTtlMs: number
+  private readonly restartIntentTtlMs: number
   private readonly candidateTtlMs: number
   private readonly maxIntents: number
   private readonly maxCandidates: number
@@ -1042,6 +1052,7 @@ export class MarketInstallService {
   ) {
     this.now = options.now ?? Date.now
     this.intentTtlMs = options.intentTtlMs ?? INSTALL_INTENT_TTL_MS
+    this.restartIntentTtlMs = options.restartIntentTtlMs ?? RESTART_INTENT_TTL_MS
     this.candidateTtlMs = options.candidateTtlMs ?? CANDIDATE_TTL_MS
     this.maxIntents = options.maxIntents ?? MAX_INTENTS
     this.maxCandidates = options.maxCandidates ?? MAX_CANDIDATES
@@ -1062,6 +1073,7 @@ export class MarketInstallService {
     }
     for (const [label, value] of [
       ['intent TTL', this.intentTtlMs],
+      ['restart intent TTL', this.restartIntentTtlMs],
       ['candidate TTL', this.candidateTtlMs],
       ['intent limit', this.maxIntents],
       ['candidate limit', this.maxCandidates],
@@ -1454,7 +1466,7 @@ export class MarketInstallService {
     return result
   }
 
-  /** Consume one short-lived restart grant issued only after a completed mutation. */
+  /** Consume the one-shot restart grant issued only after a completed mutation. */
   consumeRestartToken(token: string): void {
     this.assertOpen()
     this.purge()
@@ -1726,7 +1738,7 @@ export class MarketInstallService {
     while (this.restartIntents.has(token)) token = opaqueToken()
     this.restartIntents.set(token, {
       profile: this.profile(),
-      expiresAt: this.now() + this.intentTtlMs,
+      expiresAt: this.now() + this.restartIntentTtlMs,
     })
     this.trim(this.restartIntents, this.maxIntents)
     return token
