@@ -93,6 +93,9 @@ impl NewFeature {
 
 ### 2026-09-14
 - 09-14 12:56：!24/!25 已派 MR review session 处理（附最新受理规范：CI packer/repository 契约/README negation/#028 digest 钉/skills bundle 不入库）。Beta 0.1.2 浸泡中（julu updated-in-place 实证过），promote 等泡完口令。
+- MR !24 (dsh-dai-mobius 0.1.0) / !25 (dsh-dai-office-tools 1.0.3) 双 PASS 10/10（2026-09-14 12:50，回执指纹已落本机 out/verdict-receipts：db7ee0e1…/e8e30281…）。人审三点全过：mobius=7 client faces 对应研究流水线+子代理（fetch 仅自家 /plugins/dsh-mobius/*，package.json 自带 sebtang 内网源码仓声明，repository 候选 https://gitlab.s.dai.deloitte.cn/sebtang/dsh-dai-mobius——accept 时定）；office-tools=纯 host 侧零 clientInject、lib 零网络调用、OOXML 域名正常伴生、awesome-dsh-plugin=README 徽章。市场卡片描述已录（mobius=研究课题工作流一句；office=Word/Excel/PPT 文件操作一句）。verdict 已推双分支（2c0e730/b3cc992）+MR 回执已贴。等 July 拍 merge；merge 后 accept+plugin-sources。另：!23（office-tools 1.0.1）仍开着，建议随 1.0.3 处理关闭。
+- !24 mobius 0.1.0 / !25 office-tools 1.0.3 已于 2026-09-14 13:35 完成上架链：merge（4751d476/5a902329，!23 随关）→ accept（3f86d12569/d53bc6a3f5，repository 新惯例市场地址）→ plugin-sources a2f44920f1 → CI 34810325952 → beta seq32 部署验签一致 → 棘轮 32（c4c989ddf2）→ 双 MR 回执已贴。两件进入浸泡（mobius=研究流水线全流程；office=Word/Excel/PPT 各一次）。
+- 2026-09-14 14:35 三件转正 stable seq33（July 口令）：company-skills 0.1.2（摘 beta 旗）/ mobius 0.1.0 / office-tools 1.0.3（本就无旗）。零移除无守卫拦截，CI 34814037615，棘轮 33（188ad2f6ae）。stable 现 8 条（含 0.15.2 revoked 记录）。mobius/office MR 回执已贴；company-skills 线归主 session（#002 卡）。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析

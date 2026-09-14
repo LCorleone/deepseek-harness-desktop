@@ -1,11 +1,12 @@
 # [Feature] #002 promote dsh-company-skills@0.1.1 到 stable（棘轮31）
 
 **Issue ID**: #002
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: High
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-14
+**Closed**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -119,3 +120,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+完成（升级形态）：promote 的不是 0.1.1 而是 0.1.2（方案B：先发 beta seq31 浸泡，julu updated-in-place 实证后，随 mobius/office-tools 批量转正 stable seq33，MR session 执行、本 session 独立核验：8 条 7 可装、棘轮 33、repository 新惯例实际执行）。非 tester 全员已可装 22MB v2 线码版。后续尾巴见 #032。
