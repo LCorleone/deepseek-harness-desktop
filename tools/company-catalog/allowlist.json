@@ -143,6 +143,23 @@
   },
   {
     "packageName": "dsh-dai-mobius",
+    "version": "0.1.1",
+    "description": "发起研究课题的工作流：目标拆解为有序研究步骤，AI 子代理依次执行，汇总成经独立评审的完整结论",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-dai-mobius",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "0.1.2-rc.1"
+    },
+    "treeDigest": "227368ad3fb966153122f03aac73741555f7b6244c1939878174a885f01bd539",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-mobius-0.1.1.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-dai-mobius-0.1.1.tgz"
+    }
+  },
+  {
+    "packageName": "dsh-dai-mobius",
     "version": "0.1.0",
     "description": "发起研究课题的工作流：目标拆解为有序研究步骤，AI 子代理依次执行，汇总成经独立评审的完整结论",
     "bundlePatch": "./cordis.patch.yml",
