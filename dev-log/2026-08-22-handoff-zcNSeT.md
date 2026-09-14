@@ -228,6 +228,9 @@ boss-architecture-overview.html 内容终审通过（六轮迭代收官，不再
 ### 横切评审修复批闭环（2026-09-06 深夜，#61）
 横切评审（1P1+4P2）全修复+评审 APPROVED+变异抽查承重：P1 stable 移除守卫（publish-local 4c 节：deployed 有而 artifact 无且该名下有非 revoked 条目→拒推；--allow-package-removal 显式过闸——浸泡期禁令机械化）+P2-1 撤销粘滞统一包级（desktop 查找对齐 market 语义，{...beta,revoked:true} 形状保持）+P2-2 横幅方向闸（仅 pinned>installed 显示，对齐 boot 侧原则）+P2-3/4 文档（SOP⑤ 部署步+浸泡禁令、交接指南 accept-handoff 化+sequence 15）。红证 13 条（P1×6/P2-1×4/P2-2×3）；check 全绿 desktop 1896+7skip/market 429/catalog 166。#61=34040104722 已下载 asserts。评审留 1 P3（残余分歧）待看原文。**P1 守卫落地后浸泡期禁令自动执法——0.4.184 promote 前发其他 stable 会被管线自己拦住**。
 
+### 第二批 stable 转正（2026-09-14 14:35，stable seq33）
+July 口令三件转正：**company-skills 0.1.2（摘 beta 旗，旧钉 0.1.0/0.1.1 留 beta）+ mobius 0.1.0 + office-tools 1.0.3（本就无旗）**。零移除无守卫拦截，CI 34814037615 → publish-local seq33（8 条，含 0.15.2 revoked 记录）→ 棘轮 33（188ad2f6ae）。mobius/office MR 回执已贴；company-skills 归主 session #002 卡。当日累计：第五批 beta seq32 + 本批 stable seq33。
+
 ### 第五批：mobius + office-tools 上 beta（2026-09-14 13:35，seq32）
 主 session dispatch 交办的两单（勘误四条已反馈：仓在老实例 10.173.59.30 非 gitlab.s / CA 描述错位 / repository 惯例表述与文档脱节已由对方落文档 a52a291d9e / 遗漏 !23）。双 PASS 10/10 一次过闸（compat 新钉死值、market 卡片 --description 新规已遵守）。人审：mobius=7 faces+fetch 仅自家路由、包内自带 sebtang 源码仓声明但按 July 终版惯例改用市场地址；office-tools=纯 host 侧零 clientInject、零运行时网络、OOXML 域名正常伴生。merge 4751d476/5a902329（!23 随关）→ accept 3f86d12569/d53bc6a3f5 → plugin-sources a2f44920f1 → CI 34810325952 → beta **seq32**（11 条目；engramory 0.2.4 已被主 session revoke=#003 线）→ 棘轮 32（c4c989ddf2）。两件浸泡中。
 
