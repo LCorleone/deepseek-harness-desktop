@@ -71,24 +71,6 @@
     }
   },
   {
-    "packageName": "dsh-dai-engramory",
-    "version": "0.2.4",
-    "description": "文件式长期记忆：人类可读的 markdown 笔记，跨会话沉淀",
-    "bundlePatch": "./cordis.patch.yml",
-    "repository": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/dsh-dai-engramory-0.2.4.tgz",
-    "revoked": true,
-    "channel": "beta",
-    "runtime": {
-      "dshRuntimeVersion": "0.1.2-rc.1"
-    },
-    "treeDigest": "f7e59d72e906198bf1e56357170708653cf9e65408a036bb528ba1eb26e9cc59",
-    "source": {
-      "kind": "tarball",
-      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-dai-engramory-0.2.4.tgz",
-      "path": "tools/company-catalog/out/packages/dsh-dai-engramory-0.2.4.tgz"
-    }
-  },
-  {
     "packageName": "dsh-company-skills",
     "version": "0.1.2",
     "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
