@@ -5,7 +5,7 @@
 **Priority**: Low
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-14
+- 09-14 12:56：!24/!25 已派 MR review session 处理（附最新受理规范：CI packer/repository 契约/README negation/#028 digest 钉/skills bundle 不入库）。Beta 0.1.2 浸泡中（julu updated-in-place 实证过），promote 等泡完口令。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析
