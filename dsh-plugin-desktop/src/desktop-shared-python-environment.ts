@@ -23,14 +23,21 @@ const SHARED_PYTHON_DIAGNOSTIC_LIMIT = 160
 
 /**
  * How long a second desktop instance waits for the provisioning mutex before
- * degrading to the bundled aliases: the worst live holder runs both base
- * tiers under their spawn timeouts plus one probe — two provisions plus one
- * probe — so waiting that long is productive (the winner finishes and the
- * waiter reuses the result), while anything longer can only be a stuck or
- * crashed holder.
+ * degrading to the bundled aliases: the historical worst live holder runs both
+ * base tiers under their spawn timeouts plus one probe — two provisions plus
+ * one probe — so waiting that long is productive (the winner finishes and the
+ * waiter reuses the result). Since #033 a live holder can run one more leg
+ * (the ensurepip repair, ~180 s) and exceed this wait — see the NOTE below.
  */
 const SHARED_PYTHON_PROVISION_LOCK_WAIT_MS
   = 2 * SHARED_PYTHON_PROVISION_TIMEOUT_MS + SHARED_PYTHON_PROBE_TIMEOUT_MS
+
+// NOTE (#033 review P3): the wait above intentionally stays at its historical
+// value — probe + two provisions — which a repair-then-reseed boot can now
+// exceed by the ensurepip repair leg (~180 s worst). Bumping it instead would
+// make every genuinely-stuck-holder wait that much longer before degrading;
+// the chosen trade keeps degradation fast and relies on the next boot to heal
+// (the stale-break threshold below still clears any live worst case).
 
 /**
  * A lock file older than this can no longer belong to a live holder (the
@@ -74,7 +81,7 @@ export interface DesktopSharedPythonEnvironmentInputs {
   readonly probe?: DesktopSharedPythonProbe
   /** Recursive directory removal; production uses `rmSync`. */
   readonly removeAll?: (directory: string) => void
-  /** Provisioning runner; production spawns the base interpreter (stdlib `venv` for a local base, bundled `virtualenv` otherwise). */
+  /** Provisioning runner; production spawns a Python command — the base interpreter seeding the tree (stdlib `venv` for a local base, bundled `virtualenv` otherwise) or the tree's own interpreter repairing a missing pip through `ensurepip`. */
   readonly provision?: DesktopSharedPythonProvision
   /**
    * Cross-process provisioning mutex (review P3): production serializes the
@@ -101,8 +108,9 @@ export interface DesktopSharedPythonEnvironment {
 }
 
 /**
- * One provisioning attempt: runs the virtualenv command and resolves with its
- * exit code plus a bounded, sanitized failure diagnostic (empty on success).
+ * One provisioning attempt: runs a Python command (a virtualenv seeding or
+ * the pip-less-tree `ensurepip` repair) and resolves with its exit code
+ * plus a bounded, sanitized failure diagnostic (empty on success).
  */
 export type DesktopSharedPythonProvision = (
   command: string,
@@ -270,7 +278,7 @@ async function withSharedPythonProvisionLock<T>(
   return await withFileLock(lockPath, operation, { waitMs: SHARED_PYTHON_PROVISION_LOCK_WAIT_MS })
 }
 
-/** Decide, probe, and provision the shared tree; never throws (every tier degrades internally). */
+/** Decide, probe, repair, and provision the shared tree; never throws (every tier degrades internally). */
 async function provisionSharedPythonEnvironment(
   inputs: DesktopSharedPythonEnvironmentInputs,
   paths: DesktopSharedPythonEnvironmentPaths,
@@ -278,6 +286,7 @@ async function provisionSharedPythonEnvironment(
   const exists = inputs.exists ?? existsSync
   const log = inputs.log ?? (() => {})
   const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
+  const provision = inputs.provision ?? spawnSharedPythonVirtualenv
   const fallback: DesktopSharedPythonEnvironment = {
     pythonExecutable: inputs.bundledPythonExecutable,
     pipExecutable: undefined,
@@ -291,9 +300,43 @@ async function provisionSharedPythonEnvironment(
     } catch {
       runnable = false
     }
-    if (runnable) return sharedEnvironment(paths, exists)
-    // python.exe exists but does not run: a corrupt environment. Remove it
-    // once and rebuild below; an unremovable tree cannot be rebuilt in place.
+    if (runnable && exists(paths.pipExecutable)) return sharedEnvironment(paths, exists)
+    // One of two defects remains: the interpreter no longer runs (a corrupt
+    // tree), or it runs without `pip.exe` — the tier-1 venv a base Python
+    // without ensurepip wheels used to seed, which every later boot then
+    // reused forever (issue #033: `dsh-pip` never published, no self-heal).
+    // The pip-less tree gets ONE in-place repair through its own ensurepip
+    // before anything is deleted, so it keeps every package the user
+    // already installed into it; only a failed repair falls to the removal
+    // and full reseed the corrupt tree always takes.
+    let defect: string
+    if (runnable) {
+      let repaired = false
+      let diagnostic = ''
+      try {
+        const outcome = await provision(
+          paths.pythonExecutable,
+          ['-m', 'ensurepip', '--upgrade'],
+          { environment: spawnEnvironment },
+        )
+        repaired = outcome.exitCode === 0 && exists(paths.pipExecutable)
+        diagnostic = outcome.diagnostic
+      } catch (cause) {
+        diagnostic = sanitizeDiagnostic(cause instanceof Error ? cause.message : String(cause))
+      }
+      if (repaired) {
+        log(
+          `dsh-plugin-desktop: the shared python environment at ${paths.root} ran without pip; `
+            + 'repaired it in place through ensurepip and published the pip aliases',
+        )
+        return sharedEnvironment(paths, exists)
+      }
+      defect = `a runnable interpreter but no pip (the ensurepip repair failed${diagnostic === '' ? '' : `: ${diagnostic}`})`
+    } else {
+      defect = 'an interpreter that no longer runs'
+    }
+    // Remove the defective tree once and rebuild below; an unremovable tree
+    // cannot be rebuilt in place.
     const removeAll = inputs.removeAll ?? ((directory: string) => {
       rmSync(directory, { recursive: true, force: true })
     })
@@ -301,20 +344,17 @@ async function provisionSharedPythonEnvironment(
       removeAll(paths.root)
     } catch (cause) {
       log(
-        `dsh-plugin-desktop: the shared python environment at ${paths.root} holds an interpreter `
-          + `that no longer runs and could not be removed `
+        `dsh-plugin-desktop: the shared python environment at ${paths.root} holds ${defect} and could not be removed `
           + `(${cause instanceof Error ? cause.message : String(cause)}); `
           + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
       )
       return fallback
     }
     log(
-      `dsh-plugin-desktop: the shared python environment at ${paths.root} held an interpreter `
-        + 'that no longer runs; removed it and reprovisioning from scratch',
+      `dsh-plugin-desktop: the shared python environment at ${paths.root} held ${defect}; `
+        + 'removed it and reprovisioning from scratch',
     )
   }
-
-  const provision = inputs.provision ?? spawnSharedPythonVirtualenv
   const attempts: ReadonlyArray<{ readonly tool: string, readonly base: string, readonly args: readonly string[] }> = [
     // Tier 1: a local base through the standard library it always ships.
     ...(inputs.localPythonExecutable === undefined
@@ -342,12 +382,22 @@ async function provisionSharedPythonEnvironment(
         diagnostic: sanitizeDiagnostic(cause instanceof Error ? cause.message : String(cause)),
       }
     }
-    if (outcome.exitCode === 0 && exists(paths.pythonExecutable)) {
+    if (outcome.exitCode === 0 && exists(paths.pythonExecutable) && exists(paths.pipExecutable)) {
       return sharedEnvironment(paths, exists)
     }
-    const failure = outcome.exitCode === null
-      ? `could not start ${attempt.base} (${attempt.tool})`
-      : `${attempt.tool} exited with code ${outcome.exitCode} from ${attempt.base}`
+    let failure: string
+    if (outcome.exitCode === null) {
+      failure = `could not start ${attempt.base} (${attempt.tool})`
+    } else if (outcome.exitCode !== 0) {
+      failure = `${attempt.tool} exited with code ${outcome.exitCode} from ${attempt.base}`
+    } else if (exists(paths.pythonExecutable)) {
+      // Exit 0 with an interpreter but no pip (issue #033): the base Python
+      // lacks the ensurepip wheels, so its venv can never seed pip — the
+      // next tier takes over instead of publishing a pip-less tree.
+      failure = `${attempt.tool} from ${attempt.base} produced no pip (base Python without ensurepip wheels)`
+    } else {
+      failure = `${attempt.tool} exited with code 0 from ${attempt.base}`
+    }
     failures.push(`${failure}${outcome.diagnostic === '' ? '' : `: ${outcome.diagnostic}`}`)
   }
   log(
@@ -389,16 +439,25 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * standard library (`venv --copies` — `virtualenv` is a third-party package
  * a stock local Python does not install), and any local failure (or no
  * local Python at all) retries with the bundled base, whose tree ships
- * `virtualenv` (`--always-copy`). Only when both tiers fail does the
+ * `virtualenv` (`--always-copy`). A tier succeeds only when it produces the
+ * interpreter AND `pip.exe` (issue #033): a base Python without the
+ * ensurepip wheels exits 0 yet seeds a pip-less venv, which used to be
+ * accepted as success and then reused forever with `dsh-pip` unpublished —
+ * such a tree now records a failure and falls through to the bundled tier,
+ * which ships pip by construction. Only when both tiers fail does the
  * environment degrade to today's behavior.
  *
  * Creation is idempotent and self-healing: an existing environment is
  * reused only when its interpreter both exists and actually runs (probed
- * with `--version`); a present-but-broken interpreter means a corrupt
- * environment, which is removed once — logging the repair — and rebuilt
- * through the same two tiers. Every failure degrades to the bundled
- * aliases and unpublished `pip` with one log line per degradation stage — the shared
- * environment is an enhancement, not a boot dependency.
+ * with `--version`) AND its `pip.exe` is present. A runnable tree without
+ * pip — the pip-less venvs earlier builds left across the fleet — gets ONE
+ * in-place repair through its own `ensurepip` (preserving every package
+ * already installed into it); only a failed repair, or a present-but-broken
+ * interpreter (a corrupt environment), removes the tree once — logging the
+ * repair — and rebuilds it through the same two tiers. Every failure
+ * degrades to the bundled aliases and unpublished `pip` with one log line
+ * per degradation stage — the shared environment is an enhancement, not a
+ * boot dependency.
  *
  * Concurrency (review P3): the whole decide/probe/provision cycle runs under
  * a cross-process mutex beside the shared root, so two desktop instances

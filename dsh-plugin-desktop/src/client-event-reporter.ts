@@ -273,12 +273,35 @@ export interface PluginResetEventDetail {
  * refusals report `available: false`; the version is omitted only when
  * unknown — a digest refusal on Windows still carries the pinned version
  * (the packaged manifest stays readable), so fleet adoption of
- * the bundled runtime stays observable from either state.
+ * the bundled runtime stays observable from either state. Since #033 the
+ * row also carries the shared-environment facts: `shared` says whether the
+ * desktop-wide `pyenv` interpreter is the published python surface and
+ * `pip` whether its `pip.exe` existed — i.e. `dsh-pip` was published — each
+ * omitted when the boot cannot vouch for it (non-Windows builds never
+ * resolve a shared environment; a refused bundled runtime aborts before
+ * the shared resolution runs), so pre-#033 rows stay comparable.
  */
 export interface PythonRuntimeEventDetail {
   readonly available: boolean
   /** Pinned CPython version (e.g. `3.12.10`); omitted when unknown. */
   readonly version?: string
+  /** The shared environment's interpreter is the published python surface; omitted when unknown. */
+  readonly shared?: boolean
+  /** The shared environment's pip exists, so `dsh-pip` was published; omitted when unknown. */
+  readonly pip?: boolean
+}
+
+/**
+ * Shared-environment state a boot threads into its `python_runtime` row
+ * (#033). Both facts come from the boot's shared-environment resolution and
+ * are omitted (`undefined`) whenever that resolution never ran or never
+ * answered — the projection then keeps the row's legacy shape.
+ */
+export interface PythonRuntimeEventSharedState {
+  /** The shared environment's interpreter is the published python surface. */
+  readonly shared?: boolean
+  /** The shared environment's pip exists, so `dsh-pip` was published. */
+  readonly pip?: boolean
 }
 
 /** How one sandbox-write-denial escalation ended (P16). */
@@ -770,11 +793,15 @@ export const SANDBOX_ESCALATION_HASH_PATTERN = /^[0-9a-z]{16}$/u
  * Project the boot's Python-surface state into a `python_runtime` detail.
  * The version comes from the packaged digest manifest (a build-time constant
  * in practice), but it is control-stripped and bounded anyway: a tampered
- * manifest must not smuggle arbitrary bytes into a telemetry row.
+ * manifest must not smuggle arbitrary bytes into a telemetry row. The
+ * shared-environment booleans (#033) pass through verbatim — a boolean
+ * carries nothing to bound or strip — and each stays omitted whenever the
+ * boot could not vouch for it.
  */
 export function pythonRuntimeEvent(
   available: boolean,
   version: string | undefined,
+  sharedState: PythonRuntimeEventSharedState = {},
 ): PythonRuntimeEventDetail {
   const bounded = version === undefined
     ? undefined
@@ -782,6 +809,8 @@ export function pythonRuntimeEvent(
   return {
     available,
     ...(bounded === undefined || bounded.length === 0 ? {} : { version: bounded }),
+    ...(sharedState.shared === undefined ? {} : { shared: sharedState.shared }),
+    ...(sharedState.pip === undefined ? {} : { pip: sharedState.pip }),
   }
 }
 

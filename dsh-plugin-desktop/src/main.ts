@@ -56,6 +56,7 @@ import { pythonPipAvailable, resolveDesktopLocalPythonExecutable, resolveDesktop
 import {
   desktopSharedPythonEnvironmentRoot,
   ensureDesktopSharedPythonEnvironment,
+  type DesktopSharedPythonEnvironment,
 } from './desktop-shared-python-environment.ts'
 import { setDesktopSandboxEscalationSink } from './windows-pwsh-sandbox.ts'
 import {
@@ -981,13 +982,18 @@ async function start(): Promise<void> {
     // byte-identical and its packaged digest keeps verifying; any failure
     // logs once and keeps today's behavior (bundled aliases, no pip alias).
     let pythonRuntime: DesktopPythonRuntimeInstallation | undefined
+    // The resolved shared environment stays in scope past the try below: the
+    // python_runtime telemetry row (#033) reports its shared/pip state, which
+    // must stay omitted when the bundled resolution refused before the shared
+    // environment was ever consulted.
+    let sharedPythonEnvironment: DesktopSharedPythonEnvironment | undefined
     if (process.platform === 'win32') {
       try {
         const bundledPythonExecutable = resolveDesktopPythonExecutable(import.meta.url, {
           platform: process.platform,
           environment: process.env,
         })
-        const sharedPythonEnvironment = await ensureDesktopSharedPythonEnvironment({
+        sharedPythonEnvironment = await ensureDesktopSharedPythonEnvironment({
           platform: process.platform,
           localPythonExecutable: resolveDesktopLocalPythonExecutable({
             platform: process.platform,
@@ -1028,10 +1034,21 @@ async function start(): Promise<void> {
     // digest refusal keeps it; dev and non-Windows omit the version).
     // The spawn-free pip probe supplies that version, so
     // fleet adoption of the bundled runtime stays observable from both
-    // states without ever running the interpreter for telemetry.
+    // states without ever running the interpreter for telemetry. Since #033
+    // the row also carries the shared-environment facts: `shared` (the
+    // desktop-wide pyenv interpreter is the published surface) and `pip`
+    // (`pip.exe` existed, so `dsh-pip` was published) — the server-side
+    // visibility the pip-less-venv strand of #033 lacked; both stay omitted
+    // when this boot resolved no shared environment at all.
     clientEvents?.pythonRuntime(pythonRuntimeEvent(
       pythonRuntime !== undefined,
       pythonPipAvailable(import.meta.url, { platform: process.platform }).pythonVersion,
+      sharedPythonEnvironment === undefined
+        ? {}
+        : {
+            shared: sharedPythonEnvironment.shared,
+            pip: sharedPythonEnvironment.pipExecutable !== undefined,
+          },
     ))
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')
     const pluginManagementStatePath = join(app.getPath('userData'), 'plugin-management', 'state.json')

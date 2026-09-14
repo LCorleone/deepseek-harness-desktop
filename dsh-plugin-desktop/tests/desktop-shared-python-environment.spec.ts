@@ -220,6 +220,200 @@ describe('ensureDesktopSharedPythonEnvironment', () => {
     }
   })
 
+  it('repairs a runnable pip-less environment in place through ensurepip without removing it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-repair-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      // Lucy's tree (#033): the interpreter exists and runs, pip.exe never
+      // did — an older build accepted this as provisioning success.
+      const existing = new Set<string>([paths.pythonExecutable])
+      const { calls: probeCalls, probe } = probeRecorder(true)
+      const calls: Array<{ command: string, args: readonly string[], environment: NodeJS.ProcessEnv | undefined }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args, provisionOptions) => {
+        calls.push({ command, args, environment: provisionOptions.environment })
+        expect(args).toEqual(['-m', 'ensurepip', '--upgrade'])
+        existing.add(paths.pipExecutable)
+        return { exitCode: 0, diagnostic: '' }
+      }
+      const removals: string[] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        probe,
+        removeAll: directory => { removals.push(directory) },
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // Exactly one spawn — the tree's own interpreter running ensurepip —
+      // bytecode-blind like every other spawn of this module; the tree is
+      // kept (no removal, no reseed), pip gets published, one log line.
+      expect(calls.map(call => ({ command: call.command, args: call.args }))).toEqual([{
+        command: paths.pythonExecutable,
+        args: ['-m', 'ensurepip', '--upgrade'],
+      }])
+      expect(calls[0]?.environment?.PYTHONDONTWRITEBYTECODE).toBe('1')
+      expect(probeCalls.map(call => call.pythonExecutable)).toEqual([paths.pythonExecutable])
+      expect(removals).toEqual([])
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('ran without pip')
+      expect(logs[0]).toContain('repaired it in place through ensurepip')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('removes and rebuilds a pip-less environment whose ensurepip repair fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-rebuild-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      const existing = new Set<string>([paths.pythonExecutable])
+      const { probe } = probeRecorder(true)
+      const calls: Array<{ command: string, args: readonly string[] }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args) => {
+        calls.push({ command, args })
+        if (args[1] === 'ensurepip') {
+          return { exitCode: 1, diagnostic: 'No module named ensurepip' }
+        }
+        existing.add(paths.pythonExecutable)
+        existing.add(paths.pipExecutable)
+        return { exitCode: 0, diagnostic: '' }
+      }
+      const removals: string[] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        probe,
+        removeAll: directory => { removals.push(directory) },
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // One bounded repair attempt, then the same removal-once + two-tier
+      // reseed the corrupt tree takes — with the pip-less defect and the
+      // ensurepip diagnostic named in the removal log line.
+      expect(calls.map(call => ({ command: call.command, args: call.args }))).toEqual([
+        { command: paths.pythonExecutable, args: ['-m', 'ensurepip', '--upgrade'] },
+        { command: LOCAL_PYTHON, args: ['-m', 'venv', '--copies', paths.root] },
+      ])
+      expect(removals).toEqual([paths.root])
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('held a runnable interpreter but no pip')
+      expect(logs[0]).toContain('the ensurepip repair failed: No module named ensurepip')
+      expect(logs[0]).toContain('removed it and reprovisioning from scratch')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('degrades to the bundled aliases when an unrepairable pip-less environment cannot be removed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-stuck-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      const { probe } = probeRecorder(true)
+      const calls: Array<{ command: string, args: readonly string[] }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args) => {
+        calls.push({ command, args })
+        return { exitCode: 1, diagnostic: 'No module named ensurepip' }
+      }
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        probe,
+        removeAll: () => { throw new Error('EBUSY: locked by another process') },
+        exists: filename => filename === paths.pythonExecutable,
+        log: message => { logs.push(message) },
+      })
+
+      // Boot is never blocked: one repair attempt, one degradation line.
+      expect(calls.map(call => call.args[1])).toEqual(['ensurepip'])
+      expect(environment).toEqual({ pythonExecutable: BUNDLED_PYTHON, pipExecutable: undefined, shared: false })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('holds a runnable interpreter but no pip')
+      expect(logs[0]).toContain('could not be removed')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('heals an existing pip-less tree on one boot and reuses the healed tree on the next', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-boots-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      // The fleet's pre-fix state: a pip-less tree an older build left
+      // behind (python runs, pip.exe never existed).
+      const existing = new Set<string>([paths.pythonExecutable])
+      const removals: string[] = []
+      const provisionCalls: Array<{ command: string, args: readonly string[] }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args) => {
+        provisionCalls.push({ command, args })
+        expect(args[1]).toBe('ensurepip')
+        existing.add(paths.pipExecutable)
+        return { exitCode: 0, diagnostic: '' }
+      }
+      const { calls: probeCalls, probe } = probeRecorder(true)
+      // main.ts runs the provisioning flow on EVERY boot (not first boot
+      // only), so the exported seam stands in for two successive boots.
+      const boot = () => ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        probe,
+        removeAll: directory => { removals.push(directory) },
+        exists: filename => existing.has(filename),
+      })
+
+      const first = await boot()
+      const second = await boot()
+
+      // Boot 1 re-entered the pip-less tree instead of reusing it and
+      // repaired it in place; boot 2 found python AND pip and reused the
+      // healed tree without spawning anything or removing anything.
+      expect(first).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(second).toEqual(first)
+      expect(provisionCalls).toHaveLength(1)
+      expect(provisionCalls[0]).toEqual({
+        command: paths.pythonExecutable,
+        args: ['-m', 'ensurepip', '--upgrade'],
+      })
+      expect(probeCalls.map(call => call.pythonExecutable)).toEqual([paths.pythonExecutable, paths.pythonExecutable])
+      expect(removals).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('degrades to the bundled aliases when a corrupt environment cannot be removed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-unremovable-'))
     try {
@@ -321,6 +515,82 @@ describe('ensureDesktopSharedPythonEnvironment', () => {
         pipExecutable: join(root, DESKTOP_SHARED_PYTHON_DIRECTORY_NAME, 'Scripts', 'pip.exe'),
         shared: true,
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls through to the bundled base when the local venv produces no pip', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-tier-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      const existing = new Set<string>()
+      const calls: Array<{ command: string, args: readonly string[] }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args) => {
+        calls.push({ command, args })
+        if (command === LOCAL_PYTHON) {
+          // Issue #033's producer: a base Python without the ensurepip
+          // wheels exits 0 yet never writes pip.exe into the venv.
+          existing.add(paths.pythonExecutable)
+          return { exitCode: 0, diagnostic: '' }
+        }
+        existing.add(paths.pythonExecutable)
+        existing.add(paths.pipExecutable)
+        return { exitCode: 0, diagnostic: '' }
+      }
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        exists: filename => existing.has(filename),
+      })
+
+      // The pip-less tier-1 tree is a failure now, not a success: tier 2
+      // (bundled virtualenv, which ships pip by construction) takes over.
+      expect(calls.map(call => ({ command: call.command, args: call.args }))).toEqual([
+        { command: LOCAL_PYTHON, args: ['-m', 'venv', '--copies', paths.root] },
+        { command: BUNDLED_PYTHON, args: ['-m', 'virtualenv', '--always-copy', paths.root] },
+      ])
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('degrades with the pip-less reason when every tier produces no pip', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-pipless-all-'))
+    try {
+      const existing = new Set<string>()
+      const provision: DesktopSharedPythonProvision = async (_command, args) => {
+        // Every seeding run lands a pip-less tree.
+        existing.add(join(args[3] ?? '', 'Scripts', 'python.exe'))
+        return { exitCode: 0, diagnostic: '' }
+      }
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // Both tiers produced no pip: one degradation line naming the
+      // ensurepip-wheels cause, bundled aliases, no pip published.
+      expect(environment).toEqual({ pythonExecutable: BUNDLED_PYTHON, pipExecutable: undefined, shared: false })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('produced no pip')
+      expect(logs[0]).toContain('base Python without ensurepip wheels')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -596,6 +596,56 @@ describe('python runtime projection', () => {
     })
     expect('version' in pythonRuntimeEvent(true, ' \t ')).toBe(false)
   })
+
+  it('projects the shared-environment and pip facts a boot resolved (#033)', () => {
+    // The healthy shared surface: pyenv interpreter published and pip.exe
+    // present, so dsh-pip went up alongside python.
+    expect(pythonRuntimeEvent(true, '3.12.10', { shared: true, pip: true })).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: true,
+      pip: true,
+    })
+    // A degraded Windows boot still resolved the shared surface and can
+    // vouch for both absences — the fleet state the pip-less-venv strand
+    // of #033 made invisible server-side.
+    expect(pythonRuntimeEvent(true, '3.12.10', { shared: false, pip: false })).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: false,
+      pip: false,
+    })
+  })
+
+  it('omits the shared/pip facts a boot cannot vouch for', () => {
+    // Non-Windows builds and refused bundled runtimes never resolve a
+    // shared environment: the row keeps its exact pre-#033 shape so old and
+    // new rows stay comparable server-side.
+    const detail = pythonRuntimeEvent(false, undefined)
+    expect(detail).toEqual({ available: false })
+    expect('shared' in detail).toBe(false)
+    expect('pip' in detail).toBe(false)
+    expect(pythonRuntimeEvent(true, '3.12.10', {})).toEqual({ available: true, version: '3.12.10' })
+  })
+
+  it('round-trips python_runtime details of both generations through the row projection', () => {
+    const legacy = clientEventRowValues(row({
+      eventType: 'python_runtime',
+      detail: pythonRuntimeEvent(true, '3.12.10'),
+    }))
+    expect(JSON.parse(legacy[3] as string)).toEqual({ available: true, version: '3.12.10' })
+
+    const current = clientEventRowValues(row({
+      eventType: 'python_runtime',
+      detail: pythonRuntimeEvent(true, '3.12.10', { shared: true, pip: false }),
+    }))
+    expect(JSON.parse(current[3] as string)).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: true,
+      pip: false,
+    })
+  })
 })
 
 describe('sandbox escalation projection', () => {
