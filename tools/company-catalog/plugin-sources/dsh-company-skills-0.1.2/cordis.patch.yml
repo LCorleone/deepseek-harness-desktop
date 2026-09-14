@@ -1,0 +1,7 @@
+# The dsh-company-skills bundle patch: one row, inserted over whatever layers
+# came before it. One provider publishes every skill the container asset
+# carries, so the row needs no config; adding a skill is a re-pack of
+# `assets/skills.bundle`, not a composition change.
+- insert:
+    - id: company-skills
+      name: dsh-company-skills
