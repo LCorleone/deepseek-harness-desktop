@@ -57,7 +57,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -203,6 +203,10 @@ function main() {
 
     if (!check) {
       const jsonBytes = Buffer.byteLength(decodeShippedBundle(packerArtifact), 'utf8')
+      // The assets/ dir may be absent on a fresh checkout (#011 untracked the
+      // only file it ever held, so git creates no directory) — writeFileSync
+      // cannot create parents; make the dir explicitly.
+      mkdirSync(dirname(ASSET_PATH), { recursive: true })
       writeFileSync(ASSET_PATH, artifact, 'utf8')
       process.stdout.write(
         `build-bundle-asset: wrote assets/skills.bundle (${String(artifact.length)} bytes, v2 wire) from skills/\n`
@@ -218,6 +222,9 @@ function main() {
       // Checking an absent asset means building it: write what skills/ packs
       // (loudly — never a silent skip) so this run passes because the tree
       // just produced the asset, and later runs compare against real bytes.
+      // The assets/ dir itself may be absent too (the untracked bundle was its
+      // only file, so a fresh checkout creates no directory) — create it.
+      mkdirSync(dirname(ASSET_PATH), { recursive: true })
       writeFileSync(ASSET_PATH, artifact, 'utf8')
       process.stdout.write(
         'build-bundle-asset: assets/skills.bundle was absent (untracked build output, issue #011) '
