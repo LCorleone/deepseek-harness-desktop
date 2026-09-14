@@ -1248,7 +1248,7 @@ describe('boot splash wiring (#035: the dead zone gets a visible face)', () => {
     // stays reachable.
     const guard = main.indexOf('if (bootSplash !== undefined && bootSplash.alive) return')
     const constructor = main.indexOf('new DesktopBootSplashWindow(')
-    const recreateBranch = main.indexOf('else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
+    const recreateBranch = main.indexOf('else if (app.isReady() && !bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
     const whenReadyCreate = main.indexOf('if (!bootSplashDisclaimerDue) createBootSplash()')
     expect(guard).toBeGreaterThan(0)
     expect(constructor).toBeGreaterThan(guard)
@@ -1294,11 +1294,14 @@ describe('boot splash wiring (#035: the dead zone gets a visible face)', () => {
       main.indexOf('app.on(\'second-instance\''),
       main.indexOf('try {', main.indexOf("app.on('second-instance'")),
     )
-    const splashShow = chain.indexOf('else if (bootSplash !== undefined && bootSplash.alive) bootSplash.show()')
-    const splashRecreate = chain.indexOf('else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
+    const splashShow = chain.indexOf('else if (app.isReady() && bootSplash !== undefined && bootSplash.alive) bootSplash.show()')
+    const splashRecreate = chain.indexOf('else if (app.isReady() && !bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
     const runtimeShow = chain.indexOf('else runtime.show()')
     // Real surfaces keep precedence; the splash branches sit before the
-    // runtime fallback, and recreation respects BOTH skip conditions.
+    // runtime fallback, recreation respects BOTH skip conditions, and both
+    // splash branches are gated on app.isReady() — a pre-whenReady second
+    // click cannot construct a BrowserWindow (final-review P3) and the
+    // post-whenReady create happens moments later anyway.
     expect(splashShow).toBeGreaterThan(chain.indexOf('startupRecoveryWindow !== undefined) startupRecoveryWindow.show()'))
     expect(splashRecreate).toBeGreaterThan(splashShow)
     expect(runtimeShow).toBeGreaterThan(splashRecreate)

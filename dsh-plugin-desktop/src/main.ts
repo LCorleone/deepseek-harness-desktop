@@ -749,8 +749,15 @@ async function start(): Promise<void> {
     // the splash (re-creating it when the user closed the first one), so a
     // second double-click gets feedback instead of nothing (#035). Once a
     // first face retired the splash this boot, the shell owns reveals.
-    else if (bootSplash !== undefined && bootSplash.alive) bootSplash.show()
-    else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()
+    // Pre-whenReady, none of the splash branches may run: a BrowserWindow
+    // cannot be constructed before app ready, and the post-whenReady
+    // createBootSplash below creates the splash moments later anyway — so
+    // a pre-ready second click simply falls through to runtime.show()
+    // (final-review P3: the re-create branch used to throw here, self-heal
+    // into a misleading log line, and no-op in exactly the rapid-
+    // double-click scenario it exists for).
+    else if (app.isReady() && bootSplash !== undefined && bootSplash.alive) bootSplash.show()
+    else if (app.isReady() && !bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()
     else runtime.show()
   })
   try {
