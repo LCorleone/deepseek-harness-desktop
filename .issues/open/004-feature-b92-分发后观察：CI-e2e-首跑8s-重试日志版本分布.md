@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-14
+- 版本分布✓全员b93（09-14）。CI e2e 首跑绿（run 34747131652 前 yarn check 含 e2e 6/6）。剩：deferredUpdates 真机观察 + 持续盯 8s 重试日志。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析

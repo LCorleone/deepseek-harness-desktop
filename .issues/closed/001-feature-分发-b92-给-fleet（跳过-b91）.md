@@ -1,11 +1,12 @@
 # [Feature] #001 分发 b92 给 fleet（跳过 b91）
 
 **Issue ID**: #001
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: High
 **Type**: feature
 **Created**: 2026-09-12
 **Updated**: 2026-09-14
+**Closed**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -123,3 +124,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+完成（升级为分发 b93）：8/8 同事+julu 全员 b93（09-14 遥测），安装流全绿；mzhuo 完整链一次过；sebtang 反馈的 intent-expired 已立 #031 修复关卡。b91 如计划跳过。

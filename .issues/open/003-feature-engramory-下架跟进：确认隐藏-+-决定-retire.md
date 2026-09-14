@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-14
+- sebtang 09-14 已在 b93+beta seq30（engramory revoked 客户端侧实证✓）。剩：lizywu 未露面（近24h无事件），下次活跃核对后即可决策 retire。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析
