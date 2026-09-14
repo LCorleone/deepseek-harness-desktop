@@ -5,7 +5,7 @@
 **Priority**: High
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-14
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-14
+- b93 真机验收✓（2026-09-14 09:35 遥测实证：覆盖升级无损/目录双刷 seq30+27/卸载有事件/重装 tarball 直过/重启 8 秒回来）。分发包=b93（sha256 00580774…，tag v2.0.4-b93）。剩：发同事。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析
