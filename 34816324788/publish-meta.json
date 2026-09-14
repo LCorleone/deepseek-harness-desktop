@@ -1,9 +1,9 @@
 {
   "channel": "beta",
-  "sequence": 29,
+  "sequence": 34,
   "keyId": "company-catalog-2026-08",
   "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
-  "manifestSha256": "0400a3dcf0ae1e1d20005c811368be42ae6a5c6f638a4100543c111af0764da1",
+  "manifestSha256": "dee01cecea8096421a69c34b1f906335e979f4283b3157e0a6be3211fcc69dba",
   "testers": [
     "julu@deloittecn.com.cn",
     "sebtang@deloittecn.com.cn",
@@ -37,6 +37,13 @@
       "measured": true
     },
     {
+      "packageName": "dsh-company-skills",
+      "version": "0.1.2",
+      "treeDigest": "2564a943593c2cafbaa5d6e96a1fd306ad8ac0d413bc4a37afbd35207e154d7b",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
       "packageName": "dsh-dai-agent-teams",
       "version": "0.1.16",
       "treeDigest": "1e0caabe6f304fb91cbf32e815c2a2cbe93c7548b0433dce2a21a6f8754d1a83",
@@ -51,9 +58,16 @@
       "measured": true
     },
     {
-      "packageName": "dsh-dai-engramory",
-      "version": "0.2.4",
-      "treeDigest": "f7e59d72e906198bf1e56357170708653cf9e65408a036bb528ba1eb26e9cc59",
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.0",
+      "treeDigest": "0da75ae88fe1c4feb7516f4a8bd203cea36001ed1b352d67ebcc86ee6eb3cce5",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-office-tools",
+      "version": "1.0.3",
+      "treeDigest": "c057f19152b0ef2a7c474af242901bc86630a744dc556571be91c7867ba86503",
       "sourceKind": "tarball",
       "measured": true
     },
@@ -65,8 +79,8 @@
       "measured": true
     }
   ],
-  "generatedAt": "2026-09-11T06:49:36.462Z",
-  "gitSha": "de95cb4c3194b77ef0bd6e472702a7ae9c71eaab",
-  "runId": "34571253734",
-  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34571253734"
+  "generatedAt": "2026-09-14T07:11:36.451Z",
+  "gitSha": "fb13e0badb552579b24fd6218c97a5eed4ce986a",
+  "runId": "34816324788",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34816324788"
 }
