@@ -58,5 +58,5 @@
 
 ## 新实例注意事项
 
-- 本仓在新的 GitLab 实例 **10.173.59.30:9080**：同事（及 sebtang / lizywu）需先在该实例有账号（找 pluginpuller 管理员开通）；旧实例 `gitlab.s.dai.deloitte.cn` 的账号与 token 在新实例**无效**。
+- 本仓在新的 GitLab 实例 **10.173.59.30:9080**：同事（及 sebtang / lizywu）需先在该实例有账号（找 pluginpuller 管理员开通）；旧实例的账号与 token 在新实例**无效**。
 - 新实例走 **HTTP（内网明文）**：clone 地址 `http://10.173.59.30:9080/pluginpuller/dsh-desktop-plugins.git`；个人 token 注意保管，避免明文渠道外泄。

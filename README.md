@@ -1,10 +1,9 @@
 # DSH Desktop
 
-**公司内部（Deloitte）的 DSH 桌面客户端产品**：围绕一个固定 pin 的上游 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 子模块，加上公司自有的桌面壳、锁定策略与签名插件目录，面向 fleet（员工 Windows 装机）分发。本仓库是产品的唯一源；不开源、不对外发布，也没有社区渠道。
+**公司内部的 DSH 桌面客户端产品**：围绕一个固定 pin 的上游 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 子模块，加上公司自有的桌面壳、锁定策略与签名插件目录，面向 fleet（员工 Windows 装机）分发。本仓库是产品的唯一源；不开源、不对外发布，也没有社区渠道。
 
 中文 · [English](README.en.md)
 
-- 插件市场门户：<https://plugin-market.s.dai.deloitte.cn/>
 - 想改代码：先看[开发](#开发)与 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - 想上架插件：看[插件如何上架](#插件如何上架)。
 

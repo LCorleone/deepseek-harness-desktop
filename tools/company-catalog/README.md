@@ -175,8 +175,8 @@ tarball 安装与今天逐字节一致）。
 The mechanics:
 
 - **Roster** — `state/beta-testers.json` (missing file = the initial first
-  test group: `julu@deloittecn.com.cn`, `sebtang@deloittecn.com.cn`,
-  `lizywu@deloittecn.com.cn`). `beta-roster -f add=<email>` /
+  test group; the accounts live in `state/beta-testers.json`).
+  `beta-roster -f add=<email>` /
   `-f remove=<email>` validates, lowercases, re-signs the beta manifest with
   the entries verbatim, and advances the shared ratchet — roster changes
   reach testers without a client release (the roster lives in the signed
@@ -197,7 +197,7 @@ The mechanics:
 - **Client consumption** — field-aware builds fetch the beta file next to
   the stable manifest on every scan (404/corrupt/bad-signature = silently
   stable-only), verify it under the same trust roots, and check the roster
-  against the local SSO identity (`deloittecn.com.cn` ↔ `deloitte.com.cn`
+  against the local SSO identity (the two corporate SSO domains
   alias spellings match). One diagnostic line per outcome; the roster
   contents and the identity never appear in logs. Known, kept cost: every
   machine — roster or not — makes that one extra beta request per scan

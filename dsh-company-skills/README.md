@@ -184,7 +184,7 @@ dsh-company-skills/
 skills hub (`/opt/july/skills-hub/skills` — never written to):
 
 - **ppt-designer** — 33 MiB of resources ride along (the offline neo-ppt editor
-  mirror, the Deloitte PPTD template, design references, and the export
+  mirror, the company PPTD template, design references, and the export
   scripts). Its frontmatter description is trimmed to the 500-character
   catalog bound in this copy; everything else is byte-identical to the source.
 - **skill-creator** — shipped verbatim (its `references/` guide and its

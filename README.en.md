@@ -1,10 +1,9 @@
 # DSH Desktop
 
-**The company-internal (Deloitte) DSH desktop client product**: a locked-down desktop application built around a pinned upstream [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) submodule, plus company-owned desktop shell, lockdown policy, and signed plugin catalog, distributed to the fleet (employee Windows machines). This repository is the single source of the product; it is not open source, is not published externally, and has no community channels.
+**The company-internal DSH desktop client product**: a locked-down desktop application built around a pinned upstream [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) submodule, plus company-owned desktop shell, lockdown policy, and signed plugin catalog, distributed to the fleet (employee Windows machines). This repository is the single source of the product; it is not open source, is not published externally, and has no community channels.
 
 [中文](README.md) · English
 
-- Plugin market portal: <https://plugin-market.s.dai.deloitte.cn/>
 - Want to change code: start with [Development](#development) and [CONTRIBUTING.en.md](CONTRIBUTING.en.md).
 - Want to ship a plugin: see [How plugins ship](#how-plugins-ship).
 

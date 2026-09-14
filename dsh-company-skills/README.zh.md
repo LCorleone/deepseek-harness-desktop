@@ -268,7 +268,7 @@ dsh-company-skills/
 
 `skills/` 是本包的发布集，从 skills hub（`/opt/july/skills-hub/skills`，**只读、绝不写入**）收编：
 
-- **ppt-designer**：33 MiB 资源全部随包（离线 neo-ppt 编辑器镜像、Deloitte PPTD 模板、设计参考、
+- **ppt-designer**：33 MiB 资源全部随包（离线 neo-ppt 编辑器镜像、公司 PPTD 模板、设计参考、
   导出脚本）。其 frontmatter description 在本副本里裁剪到 500 字符 catalog 上限，其余与源逐字节一致。
 - **skill-creator**：逐字发布（其 `references/` 指南与上游 Apache-2.0 `LICENSE.txt` 保持各自根相对路径）。
 
