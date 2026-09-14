@@ -48,12 +48,16 @@
      预制回执、调包回执、别台机器验证过的回执一律拒（换机器受理前先在本机重跑 ②）
    → 自动校验 PASS+防陈旧（tgz sha 复核）→ 写 allowlist.json → 生成 commit
    （缺 repository 字段必须补 --repository；同版本不同字节会被拒——不可变红线）
-   **repository 惯例（2026-09-08 定）**：tarball 通道必填 https URL。插件 package.json
-   自带 repository 就用它（free-search 先例）；没有（本地构建常见）→ 统一填
-   config 仓包页地址：
-   `https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
-   （语义=本包由公司目录托管；桌面端只对签名值做规范化比对，不访问该 URL。
-   MR 里可顺口问同事有无真实源码仓，有则优先用真实的）
+   **repository 惯例（2026-09-14 终版，July 拍板）**：tarball 通道必填 https URL，
+   同事 MR 受理的插件条目**一律**填市场源地址：
+   `https://plugin-market.s.dai.deloitte.cn/packages/<name>`
+   ——即使插件 package.json 自带 repository（如 mobius 自带 sebtang 的 gitlab
+   源码仓）也不用自带值，统一指向市场（语义=本包由公司插件市场分发）。
+   桌面端只对签名值做规范化比对，不访问该 URL。
+   **存量不回填**：dai-context/agent-teams/engramory 三条仍是 2026-09-08~10
+   旧惯例的 config 仓包页 URL（已签条目不可变，该字段仅市场卡片链接，
+   无回填价值）；company-skills 0.1.0–0.1.2 已是市场地址。旧惯例原文
+   （package.json 自带则用其值、否则 config 仓包页）已于 09-14 废止。
    然后：合并同事的 MR（GitLab 上点），push desktop 仓的 accept commit。
 
 ⑤ 签名发布——先 beta 灰度（名单：你+sebtang+lizywu）
@@ -134,7 +138,10 @@ desktop 仓（你）
 - 2026-09-08：evidence/checks 定性为自报字段——闸门只验枚举，人审不核验
   真实性不索要证明（含理由：安全边界在所有者侧审计+安装链三验）
 - 2026-09-08：repository 惯例定案（无源码仓的本地构建件统一指 config 仓包页
-  URL，见 ④）
+  URL，见 ④；**已于 09-14 废止并替换**）
+- 2026-09-14：repository 惯例终版（July 拍板）：同事 MR 受理条目一律填
+  `https://plugin-market.s.dai.deloitte.cn/packages/<name>`，package.json 自带
+  源码仓也不用；存量三条旧 config 仓 URL 不回填（见 ④）
 - 2026-09-10：allowlist 条目新增可选 `description`（一句话中文，市场卡片显示，
   原样签名/无则键不出现）；顺序雷=fleet 全员 b89 前不得发 seq26（详见
   MR-HANDLING §4 与 tools/company-catalog/README.md「Entry descriptions」）

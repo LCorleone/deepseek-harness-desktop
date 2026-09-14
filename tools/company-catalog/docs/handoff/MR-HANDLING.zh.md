@@ -73,9 +73,10 @@ node tools/company-catalog/cli.mjs accept-handoff <名>@<版本>
 
 accept 产出：out/packages/ 的 tgz + allowlist 条目片段（贴入
 tools/company-catalog/allowlist.json，同版本字节闸自动核对）。
-repository 惯例：插件 package.json 自带则用其值；否则统一填 config 仓包页
-`https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/blob/master/packages/<名>-<版本>.tgz`
-（2026-09-08 定，详见 SOP ④）。
+repository 惯例（2026-09-14 终版）：同事 MR 受理的条目一律填市场源地址
+`https://plugin-market.s.dai.deloitte.cn/packages/<name>`——package.json 自带
+repository（如 mobius 自带 sebtang 的 gitlab 源码仓）也不用自带值；存量三条
+旧 config 仓包页 URL 不回填（详见 SOP ④）。
 条目描述（2026-09-10 18:26 起必填，机械强制）：新条目必须带一句话中文
 `description`——verify-handoff 必带 `--description "一句话中文"`（非空，trim 后
 不得为空白），片段原样带进 allowlist 条目，管线签进目录、市场卡片直接显示；
