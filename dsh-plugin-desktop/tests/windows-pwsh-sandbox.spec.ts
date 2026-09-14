@@ -190,63 +190,70 @@ class ThrowingSubprocessRuntime extends Service {
   }
 }
 
-/** The adapter under test with every escalation seam recorded and faked. */
-class RecordingEscalationSandbox extends DesktopWindowsPwshSandbox {
-  readonly runArgvCalls: Array<{ spec: ShellExecSpec, argv: readonly string[] }> = []
-  readonly prompts: string[] = []
-  readonly reports: SandboxEscalationTelemetryEvent[] = []
-  letPromptApprove = true
-  letPromptCanAsk = true
-  /** Hold prompts open until {@link answerPrompt} instead of answering at once. */
-  letPromptDefer = false
-  private letDenied = true
-  private pendingAnswer: ((approved: boolean) => void) | undefined
+/** The adapter under test with every escalation seam recorded and faked.
+ * Parameterized by the module instance the base class comes from, so the
+ * dual-instance regression tests can drive the loader-loaded face (a second
+ * module record of the same source) through the same harness. */
+function recordingEscalationSandbox(base: typeof DesktopWindowsPwshSandbox) {
+  return class RecordingEscalationSandbox extends base {
+    readonly runArgvCalls: Array<{ spec: ShellExecSpec, argv: readonly string[] }> = []
+    readonly prompts: string[] = []
+    readonly reports: SandboxEscalationTelemetryEvent[] = []
+    letPromptApprove = true
+    letPromptCanAsk = true
+    /** Hold prompts open until {@link answerPrompt} instead of answering at once. */
+    letPromptDefer = false
+    private letDenied = true
+    private pendingAnswer: ((approved: boolean) => void) | undefined
 
-  /** Force every confined run denied (or not) for one scenario. */
-  denyEveryRun(denied: boolean): void {
-    this.letDenied = denied
-  }
+    /** Force every confined run denied (or not) for one scenario. */
+    denyEveryRun(denied: boolean): void {
+      this.letDenied = denied
+    }
 
-  /** Answer the deferred prompt (also used to prove a late reply is ignored). */
-  answerPrompt(approved: boolean): void {
-    const answer = this.pendingAnswer
-    this.pendingAnswer = undefined
-    answer?.(approved)
-  }
+    /** Answer the deferred prompt (also used to prove a late reply is ignored). */
+    answerPrompt(approved: boolean): void {
+      const answer = this.pendingAnswer
+      this.pendingAnswer = undefined
+      answer?.(approved)
+    }
 
-  protected override async runArgv(spec: ShellExecSpec, argv: readonly string[]): Promise<ShellRunResult> {
-    this.runArgvCalls.push({ spec, argv: [...argv] })
-    const confined = spec.sandboxPolicy?.mode !== 'danger-full-access'
-    return fakeRunResult(confined && this.letDenied)
-  }
+    protected override async runArgv(spec: ShellExecSpec, argv: readonly string[]): Promise<ShellRunResult> {
+      this.runArgvCalls.push({ spec, argv: [...argv] })
+      const confined = spec.sandboxPolicy?.mode !== 'danger-full-access'
+      return fakeRunResult(confined && this.letDenied)
+    }
 
-  protected override startArgv(spec: ShellExecSpec, argv: readonly string[]): ShellProcess {
-    this.runArgvCalls.push({ spec, argv: [...argv] })
-    return {
-      status: 'running',
-      exitCode: null,
-      signal: null,
-      done: Promise.resolve(),
-      readOutput: () => ({ delta: '', lossy: false }),
-      kill: () => false,
+    protected override startArgv(spec: ShellExecSpec, argv: readonly string[]): ShellProcess {
+      this.runArgvCalls.push({ spec, argv: [...argv] })
+      return {
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        done: Promise.resolve(),
+        readOutput: () => ({ delta: '', lossy: false }),
+        kill: () => false,
+      }
+    }
+
+    protected override canPromptSandboxEscalation(): boolean {
+      return this.letPromptCanAsk
+    }
+
+    protected override async promptSandboxEscalation(command: string): Promise<boolean> {
+      this.prompts.push(command)
+      if (!this.letPromptDefer) return this.letPromptApprove
+      return await new Promise<boolean>(resolve => { this.pendingAnswer = resolve })
+    }
+
+    protected override reportSandboxEscalation(event: SandboxEscalationTelemetryEvent): void {
+      this.reports.push(event)
+      super.reportSandboxEscalation(event)
     }
   }
-
-  protected override canPromptSandboxEscalation(): boolean {
-    return this.letPromptCanAsk
-  }
-
-  protected override async promptSandboxEscalation(command: string): Promise<boolean> {
-    this.prompts.push(command)
-    if (!this.letPromptDefer) return this.letPromptApprove
-    return await new Promise<boolean>(resolve => { this.pendingAnswer = resolve })
-  }
-
-  protected override reportSandboxEscalation(event: SandboxEscalationTelemetryEvent): void {
-    this.reports.push(event)
-    super.reportSandboxEscalation(event)
-  }
 }
+
+type RecordingEscalationSandbox = InstanceType<ReturnType<typeof recordingEscalationSandbox>>
 
 interface EscalationHarness {
   executor: RecordingEscalationSandbox
@@ -257,7 +264,7 @@ interface EscalationHarness {
 
 const escalationContexts: Context[] = []
 
-async function escalationHarness(): Promise<EscalationHarness> {
+async function escalationHarness(base: typeof DesktopWindowsPwshSandbox = DesktopWindowsPwshSandbox): Promise<EscalationHarness> {
   const workdir = mkdtempSync(join(tmpdir(), 'dsh-desktop-escalation-'))
   const confineCalls: Array<{ argv: string[], policy: SandboxPolicy }> = []
   class FakeSandboxProvider extends SandboxProvider {
@@ -277,7 +284,7 @@ async function escalationHarness(): Promise<EscalationHarness> {
   await ctx.plugin(FakeSandboxProvider)
   await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workdir })
   await ctx.plugin(ThrowingSubprocessRuntime)
-  await ctx.plugin(RecordingEscalationSandbox, { cwd: workdir, graceMs: 200 })
+  await ctx.plugin(recordingEscalationSandbox(base), { cwd: workdir, graceMs: 200 })
   return {
     executor: ctx.shell as unknown as RecordingEscalationSandbox,
     confineCalls,
@@ -607,6 +614,52 @@ describe('sandbox write-denial escalation', () => {
 // ---------------------------------------------------------------------------
 // P16 abort safety: a tool timeout during a pending dialog is not a decision
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// #034 build-time dual module instance: bundled main.js copy vs the
+// loader-loaded lib/windows-pwsh-sandbox.js exports face
+// ---------------------------------------------------------------------------
+
+describe('sandbox escalation sink across module instances', () => {
+  // RED-GREEN: this test fails against the pre-#034 implementation, where
+  // `setDesktopSandboxEscalationSink`/`reportSandboxEscalation` were backed
+  // by a module-local `let`. tsdown inlines this module into lib/main.js while
+  // the Cordis loader loads the adapter face from
+  // lib/windows-pwsh-sandbox.js — two module instances whose module-locals
+  // cannot see each other, so the bundled main's registration never reached
+  // the loader-loaded adapter's reports and every telemetry row was dropped
+  // while the popups kept working (verified by temporarily reverting the
+  // globalThis slot to a module-local `let`: this test goes red, the rest of
+  // the suite stays green — single-instance unit tests cannot catch it).
+  it('delivers to the sink registered through the other module instance', async () => {
+    // The query string makes vite/vitest treat the specifier as a distinct
+    // module record, simulating the loader-loaded exports face; the plain
+    // static import above stands in for the copy inlined into lib/main.js.
+    const loaderFace = await import('../src/windows-pwsh-sandbox.ts?loader-instance' as string) as typeof import('../src/windows-pwsh-sandbox.ts')
+    // Guard: the query must have produced a genuinely distinct module
+    // instance (fresh class object) — otherwise this test would prove nothing.
+    expect(loaderFace.DesktopWindowsPwshSandbox).not.toBe(DesktopWindowsPwshSandbox)
+
+    const events: SandboxEscalationTelemetryEvent[] = []
+    // Instance A (bundled-main face): the Electron launcher registers the
+    // collector through THIS module copy, exactly like src/main.ts does.
+    setDesktopSandboxEscalationSink(event => { events.push(event) })
+    // Instance B (loader face): a denied run reported through the OTHER
+    // module copy must still reach instance A's registration.
+    const harness = await escalationHarness(loaderFace.DesktopWindowsPwshSandbox)
+    try {
+      await harness.executor.run(harness.executor.resolve(harness.request()))
+
+      expect(events).toEqual([{
+        commandHash: sandboxEscalationCommandHash('pip install requests'),
+        outcome: 'approved',
+        mode: 'workspace-write',
+      }])
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
 
 describe('sandbox escalation abort safety', () => {
   it('returns the denied result and records nothing when the caller aborts while the dialog is pending', async () => {

@@ -203,15 +203,45 @@ export async function withSandboxEscalationParentWindow<Answer>(
   return await ask(parent)
 }
 
-let sandboxEscalationSink: DesktopSandboxEscalationSink | undefined
+/**
+ * Process-global slot carrying the escalation telemetry sink. #034: this
+ * module exists TWICE in a packaged desktop — tsdown inlines it into
+ * lib/main.js (the Electron launcher's entry bundle, which calls
+ * `setDesktopSandboxEscalationSink` after boot), while the Cordis loader
+ * separately loads the adapter face from lib/windows-pwsh-sandbox.js
+ * through the package exports map (the copy whose `reportSandboxEscalation`
+ * fires on every denial). A module-local `let` gave each copy its own
+ * binding, so the loader-loaded copy always read `undefined` and every
+ * `sandbox_escalation` telemetry row was silently dropped while the popups
+ * kept working. `Symbol.for` returns the SAME registry symbol to every
+ * module instance of this process, so the setter and the reporter always
+ * meet on globalThis. The adapter runs only in the Electron main process
+ * (its prompt path calls Electron main-process APIs in-process), so
+ * globalThis is the correct shared channel — not IPC, and NOT a module-local
+ * variable however tempting: unit tests import src once and cannot catch a
+ * bundle-inline vs exports-entry split that only exists in the build.
+ */
+const DESKTOP_SANDBOX_ESCALATION_SINK_SLOT: unique symbol = Symbol.for('dsh.desktopSandboxEscalationSink')
+
+/** globalThis narrowed to the sink slot; the slot is only touched through the helpers below. */
+const escalationSinkGlobals = globalThis as unknown as {
+  [DESKTOP_SANDBOX_ESCALATION_SINK_SLOT]: DesktopSandboxEscalationSink | undefined
+}
+
+/** Read the process-wide escalation sink, whichever module instance wrote it. */
+function desktopSandboxEscalationSink(): DesktopSandboxEscalationSink | undefined {
+  return escalationSinkGlobals[DESKTOP_SANDBOX_ESCALATION_SINK_SLOT]
+}
 
 /**
  * Wire (or clear) the process-wide escalation telemetry sink. The Cordis
  * loader constructs this executor from composition data, so the Electron
- * launcher hands the collector in through this module seam after boot.
+ * launcher hands the collector in through this module seam after boot; the
+ * slot lives on globalThis so the seam also crosses module instances (see
+ * `DESKTOP_SANDBOX_ESCALATION_SINK_SLOT` above).
  */
 export function setDesktopSandboxEscalationSink(sink: DesktopSandboxEscalationSink | undefined): void {
-  sandboxEscalationSink = sink
+  escalationSinkGlobals[DESKTOP_SANDBOX_ESCALATION_SINK_SLOT] = sink
 }
 
 /** Normalize one command for dedupe keys and telemetry hashes: CRLF-safe
@@ -355,9 +385,10 @@ export class DesktopWindowsPwshSandbox extends SandboxPwshExecutor {
     return await electronSandboxEscalationPrompt(command)
   }
 
-  /** Deliver one escalation decision to the telemetry sink. */
+  /** Deliver one escalation decision to the telemetry sink (process-global:
+   * the loader-loaded module instance reads what the bundled main wrote). */
   protected reportSandboxEscalation(event: SandboxEscalationTelemetryEvent): void {
-    sandboxEscalationSink?.(event)
+    desktopSandboxEscalationSink()?.(event)
   }
 
   /**
