@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The boot splash (#035): a zero-script, zero-asset document. Everything
+      it needs is this inline style block, so the CSP can be stricter than
+      disclaimer.html's — there is no script, no font, no image, and no
+      network fetch to allow, only inline CSS (`style-src 'unsafe-inline'`);
+      `default-src 'none'` refuses every other load class, and the navigation
+      anchors (base-uri / form-action / frame-ancestors) stay closed exactly
+      like the disclaimer's.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <title>正在启动 DSH Desktop - Deloitte DSH Desktop</title>
+    <style>
+      /*
+       * Dark literals only: the window is created with the same
+       * backgroundColor (#202124), so the first paint is seamless and the
+       * body never flashes. Tokens mirror the disclaimer loading surface
+       * (brand green DSH + neutral Desktop wordmark, muted spinner).
+       */
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        background: #202124;
+        color: #e8eaed;
+        font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        padding: 24px;
+        text-align: center;
+      }
+
+      /* Wordmark: the disclaimer's two-tone text mark — brand-green DSH
+         leading the neutral Desktop, no image asset. */
+      .wordmark {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        line-height: 24px;
+      }
+
+      .wordmark-brand {
+        color: #86bc25;
+      }
+
+      /* CSS-only spinner (the static-document stand-in for the disclaimer
+         loading surface's RefreshCw): a muted ring with one lit quadrant. */
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(232, 234, 237, 0.18);
+        border-top-color: #9aa0a6;
+        border-radius: 50%;
+        animation: dsh-splash-spin 0.9s linear infinite;
+      }
+
+      @keyframes dsh-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* The disclaimer loading copy, both languages: a script-free document
+         cannot pick a locale, so zh (the fleet's primary) leads and the en
+         line rides muted beneath it. */
+      h1 {
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      p {
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #9aa0a6;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation-duration: 2.4s;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main role="status" aria-label="正在启动 DSH Desktop">
+      <span class="wordmark"><span class="wordmark-brand">DSH</span> Desktop</span>
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>正在启动 DSH Desktop…</h1>
+      <p>Starting DSH Desktop…</p>
+    </main>
+  </body>
+</html>

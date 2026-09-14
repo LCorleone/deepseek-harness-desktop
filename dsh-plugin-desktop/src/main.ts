@@ -101,8 +101,9 @@ import {
 } from './company-sso.ts'
 import { DesktopSsoGateWindow } from './sso-gate-window.ts'
 import { DesktopDisclaimerWindow } from './disclaimer-window.ts'
-import { runDisclaimerGate } from './disclaimer-gate.ts'
+import { needsDisclaimer, readDisclaimerAck, runDisclaimerGate } from './disclaimer-gate.ts'
 import { disclaimerTextHash } from './disclaimer-text.ts'
+import { DesktopBootSplashWindow } from './boot-splash-window.ts'
 import { desktopPolicyEnvironmentEntries, readDesktopPolicy } from './desktop-policy.ts'
 import {
   betaCatalogRefreshEvent,
@@ -220,13 +221,39 @@ const PRODUCT_NAME = 'DSH Desktop'
  */
 let disclaimerWindow: DesktopDisclaimerWindow | undefined
 /**
- * Retire the loading surface once the first successor face is visible:
- * the shell window's first show, the startup recovery window, the Profile
- * creator, or the SSO gate window. Idempotent — safe before the prompt
- * even opened (a silent-SSO or everyday boot) and after the user closed
- * the loading window themselves.
+ * The boot splash window (#035): the earliest visible face of a launch,
+ * created right after `app.whenReady()` and retired by the same
+ * first-successor-face signal that retires the disclaimer loading surface.
+ */
+let bootSplash: DesktopBootSplashWindow | undefined
+/**
+ * Once true a first real face (or an error surface) already fired and the
+ * splash never comes back this boot — the second-instance handler uses
+ * this to fall through to `runtime.show()` instead of resurrecting a
+ * splash behind a running shell.
+ */
+let bootSplashRetired = false
+/**
+ * Retire the boot splash alone — used when another LOADING surface (the
+ * P14 deferred-retry window) takes over the zone, where the disclaimer
+ * window it reuses must live on.
+ */
+const disposeBootSplash = (): void => {
+  bootSplash?.dispose()
+  bootSplash = undefined
+  bootSplashRetired = true
+}
+/**
+ * Retire the boot's early loading faces once the first successor face is
+ * visible: the shell window's first show, the startup recovery window, the
+ * Profile creator, or the SSO gate window — and every error surface that
+ * opens its own window. Owns BOTH faces since #035: the disclaimer window
+ * in its post-agree loading life and the boot splash (a boot holds at most
+ * one of them). Idempotent — safe before either surface even opened and
+ * after the user closed the loading window themselves.
  */
 const disposeDisclaimerLoading = (): void => {
+  disposeBootSplash()
   disclaimerWindow?.dispose()
   disclaimerWindow = undefined
 }
@@ -675,6 +702,41 @@ async function start(): Promise<void> {
     }
   }
 
+  // Boot splash (#035): the dead zone's visible face. One admission
+  // decision up front — a boot whose disclaimer gate will prompt opens no
+  // splash, because the disclaimer window itself covers the zone from its
+  // own ready-to-show (two loading faces would fight for the same screen
+  // zone and the same retire signal). The prediction judges the exact
+  // facts `runDisclaimerGate` will judge a moment later, so within one
+  // boot (single-instance locked) the two reads cannot disagree.
+  const disclaimerCurrent = {
+    clientVersion: appBuildVersion,
+    textHash: disclaimerTextHash(),
+  }
+  const bootSplashDisclaimerDue = needsDisclaimer(
+    disclaimerCurrent,
+    readDisclaimerAck(app.getPath('userData')),
+  )
+  const createBootSplash = (): void => {
+    // At most one LIVE splash per boot (#035 review P1): the second-instance
+    // handler below can fire BEFORE whenReady resolves (the rapid
+    // double-click this feature targets) and create a splash that the
+    // post-whenReady call below would otherwise overwrite — leaking an
+    // orphan spinner nothing ever disposes. A DEAD reference (the user
+    // X-closed it) falls through and is replaced, keeping the re-create
+    // branch of the second-instance chain reachable.
+    if (bootSplash !== undefined && bootSplash.alive) return
+    const splash = new DesktopBootSplashWindow({
+      logError: message => { electronLogger.error(maskSecrets(message)) },
+    })
+    bootSplash = splash
+    void splash.open().catch((cause: unknown) => {
+      electronLogger.error(
+        `${BIN_NAME}: the boot splash window could not open: ${maskSecrets(cause instanceof Error ? cause.message : String(cause))}`,
+      )
+      if (bootSplash === splash) bootSplash = undefined
+    })
+  }
   app.on('second-instance', (_event, argv) => {
     if (isDesktopInstallerQuitRequest(argv, process.platform)) {
       requestQuit(0)
@@ -683,6 +745,12 @@ async function start(): Promise<void> {
     if (ssoGateWindow !== undefined) ssoGateWindow.show()
     else if (disclaimerWindow !== undefined) disclaimerWindow.show()
     else if (startupRecoveryWindow !== undefined) startupRecoveryWindow.show()
+    // No real surface yet: the boot is still inside its dead zone — reveal
+    // the splash (re-creating it when the user closed the first one), so a
+    // second double-click gets feedback instead of nothing (#035). Once a
+    // first face retired the splash this boot, the shell owns reveals.
+    else if (bootSplash !== undefined && bootSplash.alive) bootSplash.show()
+    else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()
     else runtime.show()
   })
   try {
@@ -696,6 +764,15 @@ async function start(): Promise<void> {
     lifecycleRecorder.transitionStartupStage(startupStage)
     if (process.platform === 'win32') app.setAppUserModelId('ai.deepseek.dsh.desktop')
     if (app.isPackaged && process.cwd() === '/') process.chdir(app.getPath('home'))
+    // The splash is the dead zone's face (#035): created here — after the
+    // window-lifetime guard (a destroyed splash must never decide process
+    // lifetime, the #66 stance) and after the Windows AppUserModelId (so
+    // it groups with the shell in the taskbar) — and BEFORE the SSO silent
+    // probe below, the boot's first long no-window stretch. Everything the
+    // splash does is local and inert (wordmark + spinner, no preload), so
+    // it leaks nothing about the company environment the SSO block is
+    // still keeping unreachable.
+    if (!bootSplashDisclaimerDue) createBootSplash()
     // SSO startup gate (locked + requireSso): the whole authentication runs
     // BEFORE any window, Host boot, market composition, or CLI shim exists,
     // so nothing company-controlled is reachable while unauthenticated. The
@@ -783,7 +860,6 @@ async function start(): Promise<void> {
     // and the boot continues; disagree — or closing the window, which is the
     // same refusal — reports the decision and runs the same graceful quit
     // chain the shell's X-close quit uses (dispose teardown, then exit).
-    const disclaimerCurrent = { clientVersion: appBuildVersion, textHash: disclaimerTextHash() }
     const disclaimerOutcome = await runDisclaimerGate(disclaimerCurrent, {
       userDataDir: app.getPath('userData'),
       openWindow: () => {
@@ -1353,7 +1429,11 @@ async function start(): Promise<void> {
       // has no other window (an everyday cold start whose disclaimer was
       // already acked). Hold a visible loading face for the wait: the
       // disclaimer window's post-agree surface, already on screen when this
-      // boot asked the disclaimer, or a fresh one opened here.
+      // boot asked the disclaimer, or a fresh one opened here. Either way
+      // the boot splash retires first — the retry surface replaces it in
+      // the same zone (a boot that predicted "no disclaimer prompt" opened
+      // one), and only the surface this layer opens is retired below.
+      disposeBootSplash()
       const retrySurfaceOwned = disclaimerWindow === undefined
       const retrySurface = retrySurfaceOwned
         ? new DesktopDisclaimerWindow({

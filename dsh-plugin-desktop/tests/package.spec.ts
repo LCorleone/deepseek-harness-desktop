@@ -1199,3 +1199,122 @@ describe('disclaimer loading surface wiring (agree morphs the window into a star
     }
   })
 })
+
+describe('boot splash wiring (#035: the dead zone gets a visible face)', () => {
+  // main.ts boots Electron at import time, so its wiring is asserted
+  // structurally — the same discipline as the disclaimer loading surface
+  // pins above. The window's own behavior (hardening, anti-flash gating,
+  // dispose idempotence) is unit-tested for real in
+  // boot-splash-window.spec.ts against a fake Electron.
+
+  it('creates the splash after the lifetime guard and before the SSO silent probe', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const ready = main.indexOf('await app.whenReady()')
+    const guard = main.indexOf('installWindowLifetimeGuard(app)')
+    const userModel = main.indexOf("app.setAppUserModelId('ai.deepseek.dsh.desktop')")
+    const splash = main.indexOf('if (!bootSplashDisclaimerDue) createBootSplash()')
+    const silentProbe = main.indexOf('const silent = await silentSsoLogin(')
+
+    expect(ready).toBeGreaterThan(0)
+    expect(guard).toBeGreaterThan(ready)
+    expect(userModel).toBeGreaterThan(guard)
+    expect(splash).toBeGreaterThan(userModel)
+    expect(silentProbe).toBeGreaterThan(splash)
+  })
+
+  it('admits the splash only when the disclaimer gate will NOT open its own window', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    // The prediction judges exactly the facts the gate judges below — one
+    // hoisted disclaimerCurrent feeds both the prediction and the gate.
+    expect(main).toContain('const disclaimerCurrent = {')
+    expect(main).toContain('clientVersion: appBuildVersion,')
+    expect(main).toContain('textHash: disclaimerTextHash(),')
+    expect(main).toContain('const bootSplashDisclaimerDue = needsDisclaimer(')
+    expect(main).toContain('readDisclaimerAck(app.getPath(\'userData\'))')
+    expect(main).toContain('if (!bootSplashDisclaimerDue) createBootSplash()')
+    expect(main).toContain('const disclaimerOutcome = await runDisclaimerGate(disclaimerCurrent, {')
+    // The gate still reads its own ack (the prediction must never replace
+    // the gate's judgment — only precede it).
+    expect(main).toContain("userDataDir: app.getPath('userData'),")
+  })
+
+  it('cannot double-create the splash when second-instance fires before whenReady (#035 review P1)', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    // The second-instance handler is registered BEFORE `await app.whenReady()`
+    // resolves, so its re-create branch can run first; the post-whenReady
+    // create must then be a no-op — the guard is idempotence, ordering
+    // cannot save us. One LIVE splash per boot (no orphan spinner), while a
+    // dead reference (user X-close) still re-creates — the re-create branch
+    // stays reachable.
+    const guard = main.indexOf('if (bootSplash !== undefined && bootSplash.alive) return')
+    const constructor = main.indexOf('new DesktopBootSplashWindow(')
+    const recreateBranch = main.indexOf('else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
+    const whenReadyCreate = main.indexOf('if (!bootSplashDisclaimerDue) createBootSplash()')
+    expect(guard).toBeGreaterThan(0)
+    expect(constructor).toBeGreaterThan(guard)
+    expect(recreateBranch).toBeGreaterThan(0)
+    expect(whenReadyCreate).toBeGreaterThan(0)
+    // Both call sites go through the guarded helper (no raw constructor
+    // call escapes it).
+    const rawCreates = main.split('new DesktopBootSplashWindow(').length - 1
+    expect(rawCreates).toBe(1)
+  })
+
+  it('retires the splash through the same first-successor-face chain as the disclaimer surface', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    // The generalized disposer owns BOTH faces: splash first, then the
+    // disclaimer loading window.
+    const disposer = main.slice(
+      main.indexOf('const disposeDisclaimerLoading = (): void => {'),
+      main.indexOf('const disposeDisclaimerLoading = (): void => {') + 400,
+    )
+    expect(disposer.indexOf('disposeBootSplash()')).toBeGreaterThan(0)
+    expect(disposer.indexOf('disclaimerWindow?.dispose()')).toBeGreaterThan(disposer.indexOf('disposeBootSplash()'))
+    // The runtime's first-visible signal is still the same seam.
+    expect(main).toContain('}, electronLogger, undefined, policy.locked, disposeDisclaimerLoading)')
+  })
+
+  it('replaces the splash when the deferred-retry loading surface takes over the zone', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    // The P14 retry seam retires the splash BEFORE deciding whether to reuse
+    // the disclaimer surface — two loading faces must never coexist.
+    const retrySurface = main.indexOf('const retrySurfaceOwned = disclaimerWindow === undefined')
+    expect(retrySurface).toBeGreaterThan(0)
+    const dispose = main.lastIndexOf('disposeBootSplash()', retrySurface)
+    expect(dispose).toBeGreaterThan(0)
+    expect(retrySurface - dispose).toBeLessThan(400)
+    // Only the surface the retry layer opened is retired in its finally —
+    // the splash's own dispose is not the retry layer's to spend.
+    expect(main).toContain('if (retrySurfaceOwned) disposeDisclaimerLoading()')
+  })
+
+  it('re-shows or re-creates the splash on second-instance when no real surface exists', () => {
+    const main = readFileSync(new URL('src/main.ts', packageRoot), 'utf8')
+    const chain = main.slice(
+      main.indexOf('app.on(\'second-instance\''),
+      main.indexOf('try {', main.indexOf("app.on('second-instance'")),
+    )
+    const splashShow = chain.indexOf('else if (bootSplash !== undefined && bootSplash.alive) bootSplash.show()')
+    const splashRecreate = chain.indexOf('else if (!bootSplashDisclaimerDue && !bootSplashRetired) createBootSplash()')
+    const runtimeShow = chain.indexOf('else runtime.show()')
+    // Real surfaces keep precedence; the splash branches sit before the
+    // runtime fallback, and recreation respects BOTH skip conditions.
+    expect(splashShow).toBeGreaterThan(chain.indexOf('startupRecoveryWindow !== undefined) startupRecoveryWindow.show()'))
+    expect(splashRecreate).toBeGreaterThan(splashShow)
+    expect(runtimeShow).toBeGreaterThan(splashRecreate)
+  })
+
+  it('ships the static splash document through the native-ui build inputs', () => {
+    const config = readFileSync(new URL('vite.native-ui.config.ts', packageRoot), 'utf8')
+    const document = readFileSync(new URL('src/native-ui/splash.html', packageRoot), 'utf8')
+
+    expect(config).toContain("'splash': resolve(uiRoot, 'splash.html'),")
+    // The document is inert by construction: no script element, and a CSP
+    // stricter than the disclaimer's (only inline style is allowed).
+    expect(document).not.toContain('<script')
+    expect(document).toContain("content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\"")
+    // The bilingual loading copy matches the disclaimer loading surface.
+    expect(document).toContain('正在启动 DSH Desktop…')
+    expect(document).toContain('Starting DSH Desktop…')
+  })
+})

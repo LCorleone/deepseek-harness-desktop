@@ -49,6 +49,11 @@ export default defineConfig({
         // same-subtree references stay least-privilege and guard-checked.
         'agent-browser': resolve(uiRoot, 'agent-browser.html'),
         'disclaimer': resolve(uiRoot, 'disclaimer.html'),
+        // The boot splash (#035) is a zero-script static document — vite
+        // copies it through unchanged — but it still needs this entry: only
+        // input documents are emitted into lib/native-ui, and the window
+        // loads the unpacked mirror beside the others.
+        'splash': resolve(uiRoot, 'splash.html'),
       },
     },
   },
