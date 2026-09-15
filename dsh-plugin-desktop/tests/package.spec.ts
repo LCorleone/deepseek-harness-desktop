@@ -87,6 +87,10 @@ describe('published package surface', () => {
       types: './lib/types/windows-pwsh-sandbox.d.ts',
       default: './lib/windows-pwsh-sandbox.js',
     })
+    expect(manifest.exports).toHaveProperty('./approval-mirror', {
+      types: './lib/types/approval-mirror.d.ts',
+      default: './lib/approval-mirror.js',
+    })
     expect(manifest.exports).toHaveProperty('./windows-agent-presets', {
       types: './lib/types/windows-agent-presets.d.ts',
       default: './lib/windows-agent-presets.js',
@@ -481,6 +485,7 @@ describe('published package surface', () => {
     const config = readFileSync(new URL('tsdown.config.ts', packageRoot), 'utf8')
 
     expect(config).toContain("'windows-pwsh-sandbox': 'src/windows-pwsh-sandbox.ts'")
+    expect(config).toContain("'approval-mirror': 'src/approval-mirror.ts'")
     expect(config).toContain("'windows-agent-presets': 'src/windows-agent-presets.ts'")
     expect(config).toContain("'company-agent-presets': 'src/company-agent-presets.ts'")
     expect(config).toContain("'desktop-node-runtime': 'src/desktop-node-runtime.ts'")

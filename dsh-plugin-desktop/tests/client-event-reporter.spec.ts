@@ -11,6 +11,7 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
+import { DESKTOP_FULL_ACCESS_APPROVAL_SINK_SLOT } from '../src/approval-mirror.ts'
 import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
 import {
   betaCatalogRefreshEvent,
@@ -25,6 +26,7 @@ import {
   clientEventRowValues,
   createClientEventCollector,
   disclaimerEvent,
+  fullAccessApprovalEvent,
   pluginInstallEvent,
   pluginResetEvent,
   PYTHON_RUNTIME_VERSION_LIMIT,
@@ -141,7 +143,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation', 'restart_request'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation', 'restart_request', 'full_access_approval'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -316,13 +318,14 @@ describe('client event collector', () => {
     collector.disclaimer({ decision: 'agree', clientVersion: '9.9.9-test', textHash: 'a'.repeat(64) })
     collector.pythonRuntime({ available: true, version: '3.12.10' })
     collector.sandboxEscalation({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
+    collector.fullAccessApproval({ commandHash: '0123456789abcdef', outcome: 'allowed-once', mode: 'danger-full-access' })
     collector.restartRequest({ outcome: 'accepted' })
     collector.restartRequest({ outcome: 'rejected', reason: 'intent-expired' })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
       'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
-      'python_runtime', 'sandbox_escalation', 'restart_request', 'restart_request',
+      'python_runtime', 'sandbox_escalation', 'full_access_approval', 'restart_request', 'restart_request',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -332,8 +335,9 @@ describe('client event collector', () => {
     expect(rows[1]?.detail).toEqual({ result: 'failure', reason: 'the portal rejected the token', mode: 'browser' })
     expect(rows[7]?.detail).toEqual({ available: true, version: '3.12.10' })
     expect(rows[8]?.detail).toEqual({ commandHash: '0123456789abcdef', outcome: 'approved', mode: 'workspace-write' })
-    expect(rows[9]?.detail).toEqual({ outcome: 'accepted' })
-    expect(rows[10]?.detail).toEqual({ outcome: 'rejected', reason: 'intent-expired' })
+    expect(rows[9]?.detail).toEqual({ commandHash: '0123456789abcdef', outcome: 'allowed-once', mode: 'danger-full-access' })
+    expect(rows[10]?.detail).toEqual({ outcome: 'accepted' })
+    expect(rows[11]?.detail).toEqual({ outcome: 'rejected', reason: 'intent-expired' })
   })
 
   it('carries a null email when no SSO session exists', async () => {
@@ -667,6 +671,42 @@ describe('sandbox escalation projection', () => {
     expect(sandboxEscalationEvent('0123-4567-89ab-cdef', 'approved', 'read-only').commandHash).toBe('0123456789abcdef')
     expect(sandboxEscalationEvent('pip install requests', 'approved', 'read-only').commandHash).toBe('0000000000000000')
     expect(sandboxEscalationEvent('deadbeef', 'approved', 'read-only').commandHash).toBe('0000000000000000')
+  })
+})
+
+describe('full access approval projection', () => {
+  it('projects every decided outcome with the asked target mode', () => {
+    for (const outcome of ['allowed-once', 'rejected', 'cancelled', 'unavailable'] as const) {
+      expect(fullAccessApprovalEvent('0123456789abcdef', outcome, 'danger-full-access')).toEqual({
+        commandHash: '0123456789abcdef',
+        outcome,
+        mode: 'danger-full-access',
+      })
+    }
+    expect(fullAccessApprovalEvent('0123456789abcdef', 'allowed-once', 'workspace-write').mode).toBe('workspace-write')
+  })
+
+  it('bounds the hash exactly like the sandbox escalation projection', () => {
+    expect(fullAccessApprovalEvent('0123456789ABCDEF', 'allowed-once', 'workspace-write').commandHash).toBe('0123456789abcdef')
+    expect(fullAccessApprovalEvent('0123-4567-89ab-cdef', 'rejected', 'workspace-write').commandHash).toBe('0123456789abcdef')
+    expect(fullAccessApprovalEvent('curl https://internal.example/secret', 'allowed-once', 'workspace-write').commandHash).toBe('0000000000000000')
+    expect(fullAccessApprovalEvent('deadbeef', 'cancelled', 'workspace-write').commandHash).toBe('0000000000000000')
+  })
+
+  it('degrades rogue outcomes and modes to the fail-closed vocabulary', () => {
+    // A future caller's unknown outcome normalizes to upstream's own
+    // fail-closed outcome; an unrecognized escalation target buckets with the
+    // maximum-exposure asks instead of throwing or vanishing.
+    expect(fullAccessApprovalEvent('0123456789abcdef', 'granted' as never, 'danger-full-access').outcome).toBe('unavailable')
+    expect(fullAccessApprovalEvent('0123456789abcdef', 'allowed-once', 'ultra-access' as never).mode).toBe('danger-full-access')
+  })
+
+  it('occupies a process-global sink slot distinct from the sandbox escalation sink', () => {
+    // Dual-instance safety is structural (the Symbol.for slot pattern from
+    // #034): the pin here guards against the registry key drifting onto the
+    // sandbox escalation slot, which would make one sink shadow the other.
+    expect(Symbol.keyFor(DESKTOP_FULL_ACCESS_APPROVAL_SINK_SLOT)).toBe('dsh.desktopFullAccessApprovalSink')
+    expect(Symbol.keyFor(DESKTOP_FULL_ACCESS_APPROVAL_SINK_SLOT)).not.toBe('dsh.desktopSandboxEscalationSink')
   })
 })
 

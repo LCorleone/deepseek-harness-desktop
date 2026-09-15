@@ -86,6 +86,8 @@ const PWSH_SANDBOX_ROW_ID = 'pwsh-sandbox'
 const UPSTREAM_PWSH_SANDBOX_PACKAGE = '@deepseek-ai/dsh-pwsh-sandbox'
 const DESKTOP_WINDOWS_PWSH_SANDBOX_ROW_ID = 'desktop-windows-pwsh-sandbox'
 const DESKTOP_WINDOWS_PWSH_SANDBOX_PACKAGE = 'dsh-plugin-desktop/windows-pwsh-sandbox'
+const DESKTOP_FULL_ACCESS_APPROVAL_MIRROR_ROW_ID = 'desktop-full-access-approval-mirror'
+const DESKTOP_FULL_ACCESS_APPROVAL_MIRROR_PACKAGE = 'dsh-plugin-desktop/approval-mirror'
 const AGENT_PRESETS_ROW_ID = 'agent-presets'
 const UPSTREAM_AGENT_PRESETS_PACKAGE = '@deepseek-ai/dsh-agent-presets'
 const DESKTOP_WINDOWS_AGENT_PRESETS_ROW_ID = 'desktop-windows-agent-presets'
@@ -1321,6 +1323,20 @@ export function prepareDesktopProfile(
       )
     }
   }
+  // #039 upstream-approval telemetry: the executor's own full-access consent
+  // flow (the client-UI approval waterfall) never passes through the desktop's
+  // PowerShell escalation adapter, so its decisions were invisible to the
+  // collector exactly when the widest permissions were granted. The mirror is
+  // a pure desktop addition — no upstream row to replace — on every platform
+  // (the upstream approval service is cross-platform); it only reads the
+  // session log and degrades to a warn line, so telemetry never breaks a
+  // session.
+  patches.push({
+    insert: [{
+      id: DESKTOP_FULL_ACCESS_APPROVAL_MIRROR_ROW_ID,
+      name: DESKTOP_FULL_ACCESS_APPROVAL_MIRROR_PACKAGE,
+    }],
+  })
   // Loader patches cannot change an existing row's package identity. Disable the
   // profile row by its current identity and insert the Desktop-owned provider.
   // Loopback-only binding is a launcher security invariant, not user config.

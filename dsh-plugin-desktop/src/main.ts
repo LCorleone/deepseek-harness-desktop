@@ -59,6 +59,7 @@ import {
   type DesktopSharedPythonEnvironment,
 } from './desktop-shared-python-environment.ts'
 import { setDesktopSandboxEscalationSink } from './windows-pwsh-sandbox.ts'
+import { setDesktopFullAccessApprovalSink } from './approval-mirror.ts'
 import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
@@ -111,6 +112,7 @@ import {
   bootVerifyEvent,
   createClientEventCollector,
   disclaimerEvent,
+  fullAccessApprovalEvent,
   pluginInstallEvent,
   pluginResetEvent,
   pythonRuntimeEvent,
@@ -615,7 +617,22 @@ async function start(): Promise<void> {
   setDesktopSandboxEscalationSink(event => {
     clientEvents?.sandboxEscalation(sandboxEscalationEvent(event.commandHash, event.outcome, event.mode))
   })
+  // #039 upstream-approval telemetry: the executor's own full-access consent
+  // (the client-UI approval waterfall) never passes through the pwsh adapter,
+  // so its decisions ride a SECOND process-global sink, fed by the
+  // Cordis-loaded approval mirror plugin that pairs the session log's
+  // approval/asked + approval/decided audit events. Same seam shape as the
+  // escalation sink above (the loader loads the plugin face as its own module
+  // instance; Symbol.for is the only channel that crosses the copies), and
+  // the same privacy line — only the command HASH travels.
+  setDesktopFullAccessApprovalSink(event => {
+    clientEvents?.fullAccessApproval(fullAccessApprovalEvent(event.commandHash, event.outcome, event.mode))
+  })
   generation.own(() => { void clientEvents?.dispose() })
+  // Reverse-order release: the sink clears before the collector disposes, so
+  // a straggling mirror event in the release window cannot land on the
+  // disposed collector (it would drop harmlessly, but the slot stays clean).
+  generation.own(() => { setDesktopFullAccessApprovalSink(undefined) })
   // Launcher-environment hygiene (review guard-clamp P2-1): the locked GUI
   // evaluates the base rows' `!!js` sandbox/approval expressions in THIS
   // process, and the locked restatement deliberately leaves those two rows

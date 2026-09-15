@@ -298,6 +298,12 @@ describe('desktop profile composition', {
     expect(rows.find(row => row.id === 'desktop-model-usage-report')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/model-usage-reporter',
     }))
+    // #039: the upstream-approval mirror is a pure desktop insert on every
+    // platform (no upstream row to replace), so it must compose on darwin too.
+    expect(inserted).toContainEqual(expect.objectContaining({
+      id: 'desktop-full-access-approval-mirror',
+      name: 'dsh-plugin-desktop/approval-mirror',
+    }))
     expect(rows.find(row => row.id === 'desktop-profiles')).toEqual(expect.objectContaining({
       name: 'dsh-plugin-desktop/profiles',
     }))

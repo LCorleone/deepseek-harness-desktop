@@ -79,6 +79,10 @@
       "types": "./lib/types/model-usage-reporter.d.ts",
       "default": "./lib/model-usage-reporter.js"
     },
+    "./approval-mirror": {
+      "types": "./lib/types/approval-mirror.d.ts",
+      "default": "./lib/approval-mirror.js"
+    },
     "./updates": {
       "types": "./lib/types/updates.d.ts",
       "default": "./lib/updates.js"

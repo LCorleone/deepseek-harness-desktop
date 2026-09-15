@@ -64,6 +64,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   pythonRuntime: 'python_runtime',
   sandboxEscalation: 'sandbox_escalation',
   restartRequest: 'restart_request',
+  fullAccessApproval: 'full_access_approval',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -324,6 +325,30 @@ export interface SandboxEscalationEventDetail {
   readonly commandHash: string
   readonly outcome: SandboxEscalationOutcome
   /** Sandbox mode the denied run executed under. */
+  readonly mode: SandboxEscalationMode
+}
+
+/** How one upstream executor sandbox-escalation approval ended — the upstream `ApprovalOutcome` vocabulary verbatim: `allowed-once` is the only grant, `rejected` kept the confined mode, `cancelled` aborted the question mid-decision, and `unavailable` is the fail-closed no-answer-channel outcome. */
+export type FullAccessApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+/**
+ * `full_access_approval` (#039): one row per sandbox-escalation approval the
+ * UPSTREAM executor asked through its own approval waterfall (the client-UI
+ * consent for a `danger-full-access` or `workspace-write` rerun) — the flow
+ * that never touches the desktop's PowerShell escalation popup, so before
+ * this event type those consents were the telemetry blind spot exactly when
+ * the widest permissions were granted (Lucy, b94: zero `sandbox_escalation`
+ * rows on a fully approved session even with the #034 fix). The command
+ * itself NEVER enters a row — only the 16-hex-character sha256 prefix of
+ * its normalized text, the same hash pipeline as `sandbox_escalation`;
+ * `outcome` is the upstream approval outcome verbatim, and `mode` is the
+ * target mode the escalation ask named.
+ */
+export interface FullAccessApprovalEventDetail {
+  /** sha256 of the normalized command text, first 16 hex characters. */
+  readonly commandHash: string
+  readonly outcome: FullAccessApprovalOutcome
+  /** Sandbox mode the approved ask escalated this call to. */
   readonly mode: SandboxEscalationMode
 }
 
@@ -834,6 +859,42 @@ export function sandboxEscalationEvent(
   }
 }
 
+/** Closed outcome vocabulary of a `full_access_approval` detail. */
+const FULL_ACCESS_APPROVAL_OUTCOMES: readonly FullAccessApprovalOutcome[] = [
+  'allowed-once',
+  'rejected',
+  'cancelled',
+  'unavailable',
+]
+
+/** Closed sandbox-mode vocabulary shared with `sandbox_escalation` rows. */
+const SANDBOX_ESCALATION_MODES: readonly SandboxEscalationMode[] = ['read-only', 'workspace-write', 'danger-full-access']
+
+/**
+ * Project one upstream approval decision into a `full_access_approval`
+ * detail. The bounds mirror `sandboxEscalationEvent`: the hash arrives from
+ * the mirror's own sha256 pipeline but is lowercased, control-stripped, and
+ * pattern-checked anyway so a future caller cannot smuggle command text
+ * into the telemetry column (a malformed hash drops to the zeros constant),
+ * and a rogue outcome or mode degrades to the fail-closed vocabulary —
+ * `'unavailable'` (upstream's own rogue-value normalization) and
+ * `'danger-full-access'` (an unrecognized escalation target is bucketed with
+ * the maximum-exposure asks so the row stays countable) — instead of
+ * throwing or vanishing.
+ */
+export function fullAccessApprovalEvent(
+  commandHash: string,
+  outcome: FullAccessApprovalOutcome,
+  mode: SandboxEscalationMode,
+): FullAccessApprovalEventDetail {
+  const bounded = commandHash.toLowerCase().replace(/[^0-9a-f]/gu, '').slice(0, 16)
+  return {
+    commandHash: SANDBOX_ESCALATION_HASH_PATTERN.test(bounded) ? bounded : '0000000000000000',
+    outcome: FULL_ACCESS_APPROVAL_OUTCOMES.includes(outcome) ? outcome : 'unavailable',
+    mode: SANDBOX_ESCALATION_MODES.includes(mode) ? mode : 'danger-full-access',
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collector (typed facade over the reporter) and desktop wiring
 // ---------------------------------------------------------------------------
@@ -901,6 +962,10 @@ export class ClientEventCollector {
 
   sandboxEscalation(detail: SandboxEscalationEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.sandboxEscalation, detail)
+  }
+
+  fullAccessApproval(detail: FullAccessApprovalEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.fullAccessApproval, detail)
   }
 
   restartRequest(detail: RestartRequestEventDetail): void {
