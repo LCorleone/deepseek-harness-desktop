@@ -1317,7 +1317,7 @@ describe('boot splash wiring (#035: the dead zone gets a visible face)', () => {
     expect(document).not.toContain('<script')
     expect(document).toContain("content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\"")
     // The bilingual loading copy matches the disclaimer loading surface.
-    expect(document).toContain('正在启动 DSH Desktop…')
-    expect(document).toContain('Starting DSH Desktop…')
+    expect(document).toContain('正在启动 Deloitte DSH Desktop…')
+    expect(document).toContain('Starting Deloitte DSH Desktop…')
   })
 })
