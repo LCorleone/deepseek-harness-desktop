@@ -1,9 +1,9 @@
 {
   "channel": "beta",
-  "sequence": 31,
+  "sequence": 36,
   "keyId": "company-catalog-2026-08",
   "fingerprint": "c46940234dc854ad3964d561ee4e52adf20dc73cb578e26b98f120aec1049af6",
-  "manifestSha256": "459929bdd45f42ac48d358bd0b7148457da621c61bd36f8532d498be3aa0b9df",
+  "manifestSha256": "90946fcaa8d450921e4e3b7fb273eabfb4da7d41e52aeb1cb878c07621637919",
   "testers": [
     "julu@deloittecn.com.cn",
     "sebtang@deloittecn.com.cn",
@@ -58,9 +58,23 @@
       "measured": true
     },
     {
-      "packageName": "dsh-dai-engramory",
-      "version": "0.2.4",
-      "treeDigest": "f7e59d72e906198bf1e56357170708653cf9e65408a036bb528ba1eb26e9cc59",
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.0",
+      "treeDigest": "0da75ae88fe1c4feb7516f4a8bd203cea36001ed1b352d67ebcc86ee6eb3cce5",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-mobius",
+      "version": "0.1.1",
+      "treeDigest": "227368ad3fb966153122f03aac73741555f7b6244c1939878174a885f01bd539",
+      "sourceKind": "tarball",
+      "measured": true
+    },
+    {
+      "packageName": "dsh-dai-office-tools",
+      "version": "1.0.3",
+      "treeDigest": "c057f19152b0ef2a7c474af242901bc86630a744dc556571be91c7867ba86503",
       "sourceKind": "tarball",
       "measured": true
     },
@@ -72,8 +86,8 @@
       "measured": true
     }
   ],
-  "generatedAt": "2026-09-14T04:15:15.661Z",
-  "gitSha": "bfef3b766175c104e91ee6dbc9b784dfe9061d1f",
-  "runId": "34805106437",
-  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/34805106437"
+  "generatedAt": "2026-09-15T23:25:25.678Z",
+  "gitSha": "3cc0c4c7dc9afbbb3162b6c973b8a00c41eea5b2",
+  "runId": "35035204377",
+  "runUrl": "https://github.com/LCorleone/deepseek-harness-desktop/actions/runs/35035204377"
 }
