@@ -65,6 +65,7 @@ export const CLIENT_EVENT_TYPES = Object.freeze({
   sandboxEscalation: 'sandbox_escalation',
   restartRequest: 'restart_request',
   fullAccessApproval: 'full_access_approval',
+  bootPhase: 'boot_phase',
 } as const)
 
 /** Target table (company MySQL, database `DSH_LOG`; DDL is owned upstream). */
@@ -184,6 +185,46 @@ export interface BootVerifyEventDetail {
   readonly loaded: number
   /** Present only when at least one bundle deferred onto its install receipt (P15). */
   readonly deferredUpdates?: readonly BootVerifyDeferredUpdateEntry[]
+}
+
+/**
+ * `boot_phase` (#042): the closed vocabulary of instrumented boot-chain
+ * anchors. One row per anchor per boot segments the machine-only stretch
+ * between the disclaimer gate and first paint, so a fleet dashboard can
+ * subtract anchor-to-anchor instead of guessing inside the aggregate. The
+ * list is deliberately the Phase-1 instrumentation set — a new anchor is a
+ * code change, not a free-form field.
+ */
+export const BOOT_PHASES = Object.freeze([
+  'process_start',
+  'boot_verify_start',
+  'boot_verify_end',
+  'gate_shown',
+  'disclaimer_agreed',
+  'profile_boot_start',
+  'profile_boot_end',
+  'host_composed',
+  'window_ready',
+  'python_check',
+  'catalog_fetch_start',
+  'catalog_fetch_end',
+] as const)
+
+/** One anchor of {@link BOOT_PHASES}. */
+export type BootPhase = (typeof BOOT_PHASES)[number]
+
+/**
+ * `boot_phase` detail: which anchor fired and when. `elapsedMs` counts from
+ * process start (the recorder's origin, `performance.timeOrigin`); `durMs`
+ * carries the duration of a measurable stretch and is omitted for pure
+ * point anchors. Both stay whole non-negative milliseconds.
+ */
+export interface BootPhaseEventDetail {
+  readonly phase: BootPhase
+  /** Milliseconds from process start to this anchor. */
+  readonly elapsedMs: number
+  /** Duration of the measured stretch; present only on `_end` anchors and other measurable phases. */
+  readonly durMs?: number
 }
 
 /** `plugin_install`: what happened to one market install attempt. */
@@ -648,6 +689,31 @@ export function bootVerifyEvent(
   }
 }
 
+/** Clamp one boot-phase millisecond reading to a whole non-negative number. */
+function bootPhaseMillis(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return 0
+  return Math.round(value)
+}
+
+/**
+ * Project one boot-chain anchor into a `boot_phase` detail (#042). The
+ * phase vocabulary is compile-time closed (`BootPhase`), so unlike the
+ * externally-fed projections this one only clamps its two numeric fields:
+ * a non-finite or negative reading degrades to 0 rather than throwing or
+ * dropping the anchor.
+ */
+export function bootPhaseEvent(
+  phase: BootPhase,
+  elapsedMs: number,
+  durMs?: number,
+): BootPhaseEventDetail {
+  return {
+    phase,
+    elapsedMs: bootPhaseMillis(elapsedMs),
+    ...(durMs === undefined ? {} : { durMs: bootPhaseMillis(durMs) }),
+  }
+}
+
 /** Narrow install-event view that the market sink adapter satisfies. */
 export interface MarketInstallEventView {
   readonly packageName: string
@@ -946,6 +1012,10 @@ export class ClientEventCollector {
 
   bootVerify(detail: BootVerifyEventDetail): void {
     this.#emit(CLIENT_EVENT_TYPES.bootVerify, detail)
+  }
+
+  bootPhase(detail: BootPhaseEventDetail): void {
+    this.#emit(CLIENT_EVENT_TYPES.bootPhase, detail)
   }
 
   disclaimer(detail: DisclaimerEventDetail): void {

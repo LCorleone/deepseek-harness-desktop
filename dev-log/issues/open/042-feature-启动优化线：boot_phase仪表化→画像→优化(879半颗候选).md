@@ -115,6 +115,7 @@ T2 #879 前半适配（scout 划定移植范围）：①client-modules 补丁 ne
 T3（需 July 安全拍板，默认不做）：node.exe/python digest 的跨启动 stat 指纹缓存——同 receipt 缓存 tradeoff（本地写者可伪 mtime+size），tamper-evidence 弱化，等画像数据确认 T1+T2 不够再议。
 
 【pnpm 澄清】正常启动不跑 pnpm（仅 fresh-profile 重建/恢复时 materializeProfileWithRetry）——排除嫌疑。
+- Phase1 完成（2026-09-15）：boot_phase 仪表化落地——boot-phase-recorder.ts（缓冲式相位计时器，timeOrigin 基准）+ 12 锚点（process_start/gate_shown/disclaimer_agreed/python_check[dur]/boot_verify[dur]/catalog_fetch[dur]/profile_boot[dur]/host_composed/window_ready）+ 日志 ISO 时间戳前缀（desktop-logger 单点）。reviewer APPROVED（typecheck 5 tsconfig 0 错、72/72 spec 绿、零启动行为变更实证：锚点全同步 fire-and-forget，flush 落点非抛出）；P3×2——①注释措辞 offline=静默丢弃（已修）②process_start 锚点位置在 start() 顶部而非字面 t=0（elapsedMs 用 timeOrigin 所以数值仍真，仅提示勿误读锚点位置，无需改）。语义注记：gate_shown 静默 SSO 成功靴缺席；catalog_fetch 仅 origin-mode；disclaimer_agreed 每靴都发（已 ack 秒过）=统一时间线边界；boot_verify_end 含 beta-overlay await 尾巴。fleet DDL 无需变更（~12 行/靴）。
 
 ## 验收标准
 

@@ -71,6 +71,22 @@ export function installDesktopUncaughtExceptionLogging(
   return () => { proc.off('uncaughtException', handler) }
 }
 
+/**
+ * Render one desktop log line's timestamp prefix (#042): a compact ISO-8601
+ * local stamp in brackets — `[2026-09-15T11:49:00.123+08:00]`. Desktop
+ * main-process lines carried no per-line time (the fleet measurement blind
+ * spot this closes); the bracketed local-offset form stays greppable next
+ * to the Cordis exporter's own `YYYY-MM-DD HH:mm:ss.SSS` prefix and parses
+ * back to the exact instant.
+ */
+export function desktopLogTimestamp(date: Date): string {
+  const pad = (value: number, width = 2): string => String(value).padStart(width, '0')
+  const offsetMinutes = -date.getTimezoneOffset()
+  const offset = `${offsetMinutes < 0 ? '-' : '+'}${pad(Math.floor(Math.abs(offsetMinutes) / 60))}:${pad(Math.abs(offsetMinutes) % 60)}`
+  return `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${offset}`
+}
+
 /** DesktopLogger that writes to the shared sink and mirrors to process.stderr. */
 export class ElectronStderrLogger implements DesktopLogger {
   constructor(private readonly sink: LogFileSink | undefined) {}
@@ -83,12 +99,13 @@ export class ElectronStderrLogger implements DesktopLogger {
 
   error(message: string): void {
     const masked = maskSecrets(message)
+    const line = `[${desktopLogTimestamp(new Date())}] ${masked}`
     try {
-      this.sink?.write('error', masked)
+      this.sink?.write('error', line)
     } catch {
       // Persistent diagnostics are best-effort; stderr must remain available.
     }
-    process.stderr.write(`${masked}\n`)
+    process.stderr.write(`${line}\n`)
   }
 
   errorCause(cause: unknown): void {

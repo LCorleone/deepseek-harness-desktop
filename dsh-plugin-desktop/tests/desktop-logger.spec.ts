@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  desktopLogTimestamp,
   ElectronStderrLogger,
   installDesktopChildProcessLogging,
   installDesktopUncaughtExceptionLogging,
@@ -22,6 +23,9 @@ function sink(): { s: LogFileSink; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-log-'))
   return { s: new LogFileSink(dir, { maxFileBytes: 1e6, maxDirectoryBytes: 1e7 }), dir }
 }
+
+/** The compact ISO-8601 local stamp every desktop log line is prefixed with (#042). */
+const ISO_PREFIX = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})\] /u
 
 describe('ElectronStderrLogger', () => {
   it('logs Electron child process crashes with the Windows exception code', () => {
@@ -80,7 +84,32 @@ describe('ElectronStderrLogger', () => {
     const text = readFileSync(join(dir, `dsh-${day}.log`), 'utf8')
     expect(text).toContain('Bearer ****')
     expect(text).not.toContain('abc.def.secret')
-    expect(stderrSpy).toHaveBeenCalledWith('request failed with Bearer ****\n')
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})\] request failed with Bearer \*\*\*\*\n$/u))
+    stderrSpy.mockRestore()
+  })
+
+  it('prefixes every desktop log line with a compact ISO timestamp (#042)', () => {
+    // The prefix format itself: bracketed local ISO-8601 with milliseconds
+    // and a numeric offset, which parses back to the exact instant — the
+    // per-line time the fleet measurement blind spot (lucy.log) lacked.
+    const instant = 1_789_431_000_123
+    const stamp = desktopLogTimestamp(new Date(instant))
+    expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})$/u)
+    expect(new Date(stamp).getTime()).toBe(instant)
+
+    // Both surfaces carry it: the persistent file sink and the stderr mirror.
+    const { s, dir } = sink()
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const logger = new ElectronStderrLogger(s)
+    logger.error('dsh-plugin-desktop: boot line without its own timestamp')
+    logger.write('dsh-plugin-desktop: fail-loud chunk\n')
+
+    const day = todaySuffix()
+    for (const line of readFileSync(join(dir, `dsh-${day}.log`), 'utf8').trimEnd().split('\n')) {
+      expect(line).toMatch(ISO_PREFIX)
+    }
+    expect(stderrSpy.mock.calls[0]?.[0]).toMatch(ISO_PREFIX)
+    expect(stderrSpy.mock.calls[1]?.[0]).toMatch(ISO_PREFIX)
     stderrSpy.mockRestore()
   })
 
@@ -95,7 +124,7 @@ describe('ElectronStderrLogger', () => {
     const text = readFileSync(join(dir, `dsh-${day}.log`), 'utf8')
     expect(text).toContain('fatal load failure: Bearer ****\n')
     expect(text).not.toContain('abc.def.secret')
-    expect(stderrSpy).toHaveBeenCalledWith('dsh-plugin-desktop: fatal load failure: Bearer ****\n')
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})\] dsh-plugin-desktop: fatal load failure: Bearer \*\*\*\*\n$/u))
     stderrSpy.mockRestore()
   })
 
@@ -129,7 +158,7 @@ describe('ElectronStderrLogger', () => {
     const logger = new ElectronStderrLogger(s)
 
     expect(() => { logger.error('failed with Bearer abc.def.secret') }).not.toThrow()
-    expect(stderrSpy).toHaveBeenCalledWith('failed with Bearer ****\n')
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:Z|[+-]\d{2}:\d{2})\] failed with Bearer \*\*\*\*\n$/u))
     stderrSpy.mockRestore()
   })
 })

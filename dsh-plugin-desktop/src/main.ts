@@ -39,6 +39,7 @@ import {
 } from './crash-evidence.ts'
 import { exportDesktopDiagnostics } from './diagnostic-export.ts'
 import { createDesktopLifecycleRecorder } from './lifecycle-events.ts'
+import { createBootPhaseRecorder } from './boot-phase-recorder.ts'
 import type {
   DesktopLifecycleFailureReason,
   DesktopLifecycleRendererFailureReason,
@@ -514,6 +515,11 @@ async function start(): Promise<void> {
   let profileRollbackPrepared = false
   let protectedInstallVerificationActive = false
   let startupStage: DesktopStartupFailureStage = 'electron-ready'
+  // Boot-phase telemetry (#042, Phase 1): the phase-timer anchors the boot
+  // chain from the first statement of real boot work. The collector sink only
+  // exists later (below), so this first anchor buffers until then.
+  const bootPhases = createBootPhaseRecorder()
+  bootPhases.emit('process_start')
   const appVersion = desktopProductVersion()
   // Build-distinguishing identity for telemetry, the disclaimer gate, and the
   // log header; the installer/updater faces keep the plain appVersion.
@@ -609,6 +615,11 @@ async function start(): Promise<void> {
     logInfo: message => { electronLogger.error(`${message}`) },
     logError: message => { electronLogger.error(`${message}`) },
   })
+  // Boot-phase telemetry sink (#042): everything anchored before the
+  // collector existed (process_start) flushes through here in order; an
+  // offline policy drops the buffered anchors silently, exactly the
+  // degradation posture of every other event kind.
+  bootPhases.attach(detail => { clientEvents?.bootPhase(detail) })
   // P16 sandbox-escalation telemetry: the Windows PowerShell sandbox adapter
   // is constructed by the Cordis loader from composition data, so the
   // collector reaches it through the adapter's module seam instead of a
@@ -861,6 +872,9 @@ async function start(): Promise<void> {
           },
         })
         ssoGateWindow = gate
+        // Boot-phase anchor (#042): the gate window's visible moment — the
+        // closest seam to "shown" without reaching into the window class.
+        bootPhases.emit('gate_shown')
         const verdict = await gate.run()
         ssoGateWindow = undefined
         if (verdict !== 'authenticated') {
@@ -910,6 +924,10 @@ async function start(): Promise<void> {
       disclaimerWindow = undefined
       return
     }
+    // Boot-phase anchor (#042): the boot passed the disclaimer gate. Fires on
+    // everyday boots too (an existing ack agrees instantly), so the fleet
+    // timeline keeps one common boundary whether or not the prompt appeared.
+    bootPhases.emit('disclaimer_agreed')
     // Agreed: the window stays alive as the startup loading surface — no
     // empty gap between the prompt and the first successor face. The SSO
     // silent path has no intermediate window, so the loading surface simply
@@ -1087,6 +1105,10 @@ async function start(): Promise<void> {
     // must stay omitted when the bundled resolution refused before the shared
     // environment was ever consulted.
     let sharedPythonEnvironment: DesktopSharedPythonEnvironment | undefined
+    // Boot-phase anchor (#042): the python-surface decision (resolution plus
+    // shared-environment provisioning on Windows; instant elsewhere) — the
+    // duration rides the same anchor emitted beside the python_runtime row.
+    const pythonCheckStartedAt = bootPhases.now()
     if (process.platform === 'win32') {
       try {
         const bundledPythonExecutable = resolveDesktopPythonExecutable(import.meta.url, {
@@ -1125,6 +1147,7 @@ async function start(): Promise<void> {
       }
     }
     const releasePythonRuntime = generation.own(() => { pythonRuntime?.dispose() })
+    bootPhases.emit('python_check', pythonCheckStartedAt)
     // Client event telemetry (P11): one `python_runtime` row per boot reports
     // whether the bundled Python command surface came up — installation
     // covers the fail-closed digest gate, and every disabled surface
@@ -1691,13 +1714,27 @@ async function start(): Promise<void> {
     // a market install of an overlay-only `name@version` is a beta-channel
     // delivery. Non-roster and origin-less boots keep it undefined.
     let bootBetaOverlay: DesktopBetaChannelOverlay | undefined
+    // Boot-phase anchors (#042): the locked boot-verification input assembly
+    // (receipts + manifest fetch + tree measurement; the concurrent beta
+    // overlay await resolves inside it, so its tail is part of this stretch).
+    // Unlocked boots skip the assembly but keep both anchors, so the fleet
+    // timeline stays uniform (a ~0 ms stretch). The origin-mode manifest
+    // fetch rides the injected boundary below as its own catalog_fetch pair.
+    const bootVerifyStartedAt = bootPhases.emit('boot_verify_start')
     const bootVerificationInputs = policy.locked
       ? await desktopBootVerificationInputs(
         policy,
         join(homeDir, 'settings.yaml'),
         import.meta.url,
         {
-          fetchManifestText: fetchCompanyManifestTextOverElectronNet,
+          fetchManifestText: async manifestPolicy => {
+            const catalogFetchStartedAt = bootPhases.emit('catalog_fetch_start')
+            try {
+              return await fetchCompanyManifestTextOverElectronNet(manifestPolicy)
+            } finally {
+              bootPhases.emit('catalog_fetch_end', catalogFetchStartedAt)
+            }
+          },
           measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(
             join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME),
           ),
@@ -1713,6 +1750,7 @@ async function start(): Promise<void> {
         },
       )
       : undefined
+    bootPhases.emit('boot_verify_end', bootVerifyStartedAt)
     // Origin-mode CLI byte hand-off: the bundled-Node desktop-cli children
     // (market installs, terminal adds) cannot reach a corporate-CA origin
     // with their own fetch, so stage the exact bytes boot verification just
@@ -1752,6 +1790,10 @@ async function start(): Promise<void> {
       ...(companyManifestHandoff?.environment ?? {}),
     }
     await healDesktopProfileModuleFallback(homeDir)
+    // Boot-phase anchors (#042): the Profile composition itself — settings
+    // resolution, market selection, and the boot-verification reconciliation
+    // over the installed bundles (stage 'profile-composition').
+    const profileBootStartedAt = bootPhases.emit('profile_boot_start')
     const prepared = prepareDesktopProfile(
       process.env.DSH_TELEMETRY_DISABLED,
       homeDir,
@@ -1772,6 +1814,7 @@ async function start(): Promise<void> {
       policy,
       bootVerificationInputs,
     )
+    bootPhases.emit('profile_boot_end', profileBootStartedAt)
     await healDesktopProfileModuleFallback(homeDir, prepared.profile)
     // P4-1: persist this boot's verification decision so every diagnostic
     // export — tray, recovery window, or headless CLI — can embed the exact
@@ -2445,6 +2488,9 @@ async function start(): Promise<void> {
       releasePackageResolver()
       throw cause
     })
+    // Boot-phase anchor (#042): the Cordis Host tree finished composing —
+    // plugins mounted, capabilities provided, the shell generation bound.
+    bootPhases.emit('host_composed')
     generation.bindHost(ctx)
     fileExporter?.setThreshold((ctx.settings.get(DESKTOP_SETTINGS_NAMESPACE) as DesktopSettings | undefined)?.logLevel ?? 'info')
     ctx.on('settings/updated', (namespace, next) => {
@@ -2473,6 +2519,9 @@ async function start(): Promise<void> {
       runtime.mountScheduled(),
       rendererBoot,
     ])
+    // Boot-phase anchor (#042): the shell window mounted and the renderer
+    // reported healthy — the boot's last machine-side boundary.
+    bootPhases.emit('window_ready')
     const rendererReport = rendererVerdict.report
     if (!('failureReason' in rendererVerdict)) {
       if (rolledBackInstallToNotify !== undefined) {

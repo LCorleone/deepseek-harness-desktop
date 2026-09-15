@@ -143,7 +143,7 @@ describe('client event insert statement shape', () => {
       `INSERT INTO \`${CLIENT_EVENTS_TABLE}\` (\`event_type\`, \`user_email\`, \`client_version\`, \`detail\`, \`created_at\`) VALUES (?, ?, ?, ?, ?)`,
     )
     expect(CLIENT_EVENT_COLUMNS).toEqual(['event_type', 'user_email', 'client_version', 'detail', 'created_at'])
-    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation', 'restart_request', 'full_access_approval'])
+    expect(Object.values(CLIENT_EVENT_TYPES)).toEqual(['sso_login', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer', 'plugin_reset', 'python_runtime', 'sandbox_escalation', 'restart_request', 'full_access_approval', 'boot_phase'])
   })
 
   it('flattens the row in column order with the detail serialized', () => {
@@ -321,11 +321,12 @@ describe('client event collector', () => {
     collector.fullAccessApproval({ commandHash: '0123456789abcdef', outcome: 'allowed-once', mode: 'danger-full-access' })
     collector.restartRequest({ outcome: 'accepted' })
     collector.restartRequest({ outcome: 'rejected', reason: 'intent-expired' })
+    collector.bootPhase({ phase: 'window_ready', elapsedMs: 42_000 })
     await settle()
 
     expect(rows.map(row => row.eventType)).toEqual([
       'sso_login', 'sso_login', 'catalog_refresh', 'catalog_refresh', 'plugin_install', 'boot_verify', 'disclaimer',
-      'python_runtime', 'sandbox_escalation', 'full_access_approval', 'restart_request', 'restart_request',
+      'python_runtime', 'sandbox_escalation', 'full_access_approval', 'restart_request', 'restart_request', 'boot_phase',
     ])
     for (const captured of rows) {
       expect(captured.userEmail).toBe('user@company.example')
@@ -338,6 +339,7 @@ describe('client event collector', () => {
     expect(rows[9]?.detail).toEqual({ commandHash: '0123456789abcdef', outcome: 'allowed-once', mode: 'danger-full-access' })
     expect(rows[10]?.detail).toEqual({ outcome: 'accepted' })
     expect(rows[11]?.detail).toEqual({ outcome: 'rejected', reason: 'intent-expired' })
+    expect(rows[12]?.detail).toEqual({ phase: 'window_ready', elapsedMs: 42_000 })
   })
 
   it('carries a null email when no SSO session exists', async () => {
