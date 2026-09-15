@@ -1,11 +1,12 @@
-# [Feature] #019 free-search rebase 上游 v0.4.19+
+# [Feature] #020 sso-gate 浏览器路径主动测
 
-**Issue ID**: #019
-**Status**: Open
+**Issue ID**: #020
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-15
+**Closed**: 2026-09-15
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -97,8 +98,8 @@ impl NewFeature {
 - [ ] 实现高级功能
 - [ ] 编写测试
 - [ ] 更新文档
-- 摆脱 dsh-settings shim；上游 v0.4.19+。
-- July 09-12 拍板：目前能用，hold（不 rebase）。
+- 清 portal 票触发静默失败→登录窗→浏览器流程，~10min。
+- July 09-12 拍板：hold。
 
 ## 验收标准
 
@@ -120,3 +121,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+关闭（July 2026-09-15）：低价值——sso-gate 浏览器路径已随 b93-b96 多轮真机 SSO 验证间接覆盖，无主动测必要。

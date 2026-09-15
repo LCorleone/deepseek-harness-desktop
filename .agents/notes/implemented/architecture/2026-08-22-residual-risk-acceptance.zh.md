@@ -27,6 +27,7 @@
 | R7 | 自建魔改客户端不可检测 | 无 OS 级强制则无法覆盖 | 见升级路径 |
 | R8 | 全新 Profile 换新（P14）：外部进程持有 profile 内目录句柄，靠边改名被拒（Windows `EBUSY`） | 该次启动不换新；版本变更保持 pending | 已签收：换新改为 deferred 而非失败（六步退避后写 `fresh-profile-pending.json` 标记 + `plugin_reset.outcome=deferred`），现有 profile 照常启动（不砖），下次启动在任何组件打开 profile 前重试改名。根因已实证——用户编辑器打开 profile 内文件会对目录持 watcher 句柄：子项逐个可改、目录本身不可改。罕见；手动恢复窗提示重启后自动完成 |
 | R9 | 外部手工删改 profile 目录不受支持 | 同事手删 `profiles\desktop` 后市场安装回执仍指向它，使市场已装清单卡死在错误态、重启不清 | 已降级、不承诺：record 分支在启动时无 profile manifest 时清掉该 profile 残留回执（`fresh-profile.ts` `clearFreshProfileRecordReceipts`）。手工改 profile 内容仍不在支持面内 |
+| R10 | boot 校验 deferral 窗口（`client-update-required`，P15）收窄信任锚：常规路径钉签名 manifest `treeDigest`，deferral 路径凭用户可写市场安装回执的 `rootDigest` 放行——用户 settings 里的回执仅形状校验、从不做密码学验证（`boot-verification.ts:92-110` deferral 文档、`:679-703` 仅形状校验的回执归一化）。这收窄了 v2 计划「receipt 永不作放行依据」的承重决策 | 本地写者三步伪造放行——改已装插件树、按文档算法重算摘要、改写回执——篡改插件内容即在窗口开启期间通过 boot 校验（2026-09-10 评审 P2-2） | 已签收（2026-09-15 文档-only 决定）：窗口窄——仅当已装条目离开 manifest 且无运行时兼容同名条目时开启，无可用回执即 fail closed，`revoked:true` 条目仍拒载；P4-2 检测锚继续生效（报告缺失加内容比对）。可选加固「回执根摘要镜像到 Desktop-private 追加文件」已评估、按文档-only 决定未实施——诚实标注：只抬伪造成本，仍非密码学锚 |
 
 ## 未来 IT 升级点（客户端零改动）
 
