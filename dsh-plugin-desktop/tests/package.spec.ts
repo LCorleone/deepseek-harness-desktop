@@ -206,6 +206,23 @@ describe('published package surface', () => {
     }
   })
 
+  it('scans client-modules newline counts with indexOf instead of a character loop', () => {
+    const patchPath = './patches/dsh-client-modules@0.1.2-rc.1.patch'
+    expect(workspaceManifest.resolutions).toMatchObject({
+      '@deepseek-ai/dsh-client-modules@npm:0.1.2-rc.1': expect.stringContaining(patchPath),
+      '@deepseek-ai/dsh-client-modules@npm:^0.1.2-rc.1': expect.stringContaining(patchPath),
+    })
+    const marker = 'for (let offset = value.indexOf("\\n"); offset !== -1; offset = value.indexOf("\\n", offset + 1)) count += 1;'
+    const patch = readFileSync(new URL(patchPath, workspaceRoot), 'utf8')
+    const installedModules = readFileSync(new URL(
+      'node_modules/@deepseek-ai/dsh-client-modules/lib/index.js',
+      packageRoot,
+    ), 'utf8')
+    expect(patch).toContain(marker)
+    expect(installedModules).toContain(marker)
+    expect(installedModules).not.toContain('for (const char of value) if (char === "\\n") count += 1;')
+  })
+
   it('patches the browse panel with the Windows native-picker icon bridge', () => {
     const patchPath = './patches/dsh-client-ui-directory-picker-browse@0.1.2-rc.1.patch'
     expect(workspaceManifest.resolutions).toMatchObject({

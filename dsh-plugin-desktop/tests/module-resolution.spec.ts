@@ -185,6 +185,31 @@ describe('installProfilePackageResolver', () => {
     expect(harness.overlay).not.toHaveBeenCalled()
   })
 
+  it('passes node: builtin specifiers through without consulting the overlay', () => {
+    const profileBaseUrl = 'file:///tmp/dsh-profile/package.json'
+    installProfilePackageResolver(profileBaseUrl)
+    const nextResolve = vi.fn((specifier: string, context: { parentURL?: string }) => ({ specifier, context }))
+    const loaderEntryUrl = import.meta.resolve('@deepseek-ai/cordis-plugin-loader')
+    const pluginUrl = 'file:///D:/workspace/plugins/dsh-linked/lib/index.js'
+
+    expect(harness.resolve?.('node:fs', { parentURL: loaderEntryUrl }, nextResolve)).toEqual({
+      specifier: 'node:fs',
+      context: { parentURL: loaderEntryUrl },
+    })
+    expect(harness.resolve?.('node:path', { parentURL: pluginUrl }, nextResolve)).toEqual({
+      specifier: 'node:path',
+      context: { parentURL: pluginUrl },
+    })
+    expect(nextResolve).toHaveBeenCalledTimes(2)
+    expect(harness.cjsModule._resolveFilename(
+      'node:fs',
+      { filename: '/tmp/dsh-profile/package.json' },
+      false,
+    )).toBe('ordinary:node:fs')
+
+    expect(harness.overlay).not.toHaveBeenCalled()
+  })
+
   it('keeps package-local dependencies and Profile fallback across linked relative modules', () => {
     const profileBaseUrl = 'file:///C:/Users/test/profile/package.json'
     const linkedPluginUrl = 'file:///D:/workspace/plugins/dsh-linked/lib/index.js'

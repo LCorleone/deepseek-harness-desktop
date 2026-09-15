@@ -1660,12 +1660,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@deepseek-ai/dsh-client-modules@npm:0.1.2-rc.1, @deepseek-ai/dsh-client-modules@npm:^0.1.2-rc.1":
+"@deepseek-ai/dsh-client-modules@npm:0.1.2-rc.1":
   version: 0.1.2-rc.1
   resolution: "@deepseek-ai/dsh-client-modules@npm:0.1.2-rc.1"
   peerDependencies:
     "@deepseek-ai/cordis": ^4.0.2
   checksum: 10c0/69b8ce5ef00e833148776212cf9ab5162ef96db3fbed703e3fd367aef1861afaf12a79d2062cfcd06978133340b1816e35224c6e76ab39e8c2e1a7388ece78b7
+  languageName: node
+  linkType: hard
+
+"@deepseek-ai/dsh-client-modules@patch:@deepseek-ai/dsh-client-modules@npm%3A0.1.2-rc.1#./patches/dsh-client-modules@0.1.2-rc.1.patch::locator=deepseek-harness-desktop%40workspace%3A.":
+  version: 0.1.2-rc.1
+  resolution: "@deepseek-ai/dsh-client-modules@patch:@deepseek-ai/dsh-client-modules@npm%3A0.1.2-rc.1#./patches/dsh-client-modules@0.1.2-rc.1.patch::version=0.1.2-rc.1&hash=3e66d0&locator=deepseek-harness-desktop%40workspace%3A."
+  peerDependencies:
+    "@deepseek-ai/cordis": ^4.0.2
+  checksum: 10c0/2e09b2487687833a835e0b3ac4c4a669e5ed8143b8dda3248e05c910dea658d4adc10c2578c20d17569fd22088686a1c3605a7e4d86d24ac7a55f43cf4b109c5
   languageName: node
   linkType: hard
 

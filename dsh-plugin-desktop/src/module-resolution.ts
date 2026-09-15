@@ -87,6 +87,9 @@ export function installProfilePackageResolver(profileBaseUrl: string): () => voi
     isMain,
     options,
   ) {
+    if (request.startsWith('node:')) {
+      return previousResolveFilename.call(this, request, parent, isMain, options)
+    }
     const packageName = parent?.filename === profileManifestPath
       ? packageNameFromManifestSpecifier(request)
       : undefined
@@ -102,6 +105,8 @@ export function installProfilePackageResolver(profileBaseUrl: string): () => voi
   const overlayModuleUrls = new Set<string>()
   const hooks = registerHooks({
     resolve(specifier, context, nextResolve) {
+      // Builtins cannot be overlaid by a Profile and have no filesystem owner.
+      if (specifier.startsWith('node:')) return nextResolve(specifier, context)
       const fromLoader = context.parentURL === LOADER_ENTRY_URL
       const packageName = fromLoader ? packageNameFromSpecifier(specifier) : undefined
       if (packageName !== undefined) {

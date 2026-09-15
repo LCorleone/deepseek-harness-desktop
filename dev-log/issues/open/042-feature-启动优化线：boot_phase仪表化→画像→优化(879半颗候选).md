@@ -116,6 +116,7 @@ T3（需 July 安全拍板，默认不做）：node.exe/python digest 的跨启�
 
 【pnpm 澄清】正常启动不跑 pnpm（仅 fresh-profile 重建/恢复时 materializeProfileWithRetry）——排除嫌疑。
 - Phase1 完成（2026-09-15）：boot_phase 仪表化落地——boot-phase-recorder.ts（缓冲式相位计时器，timeOrigin 基准）+ 12 锚点（process_start/gate_shown/disclaimer_agreed/python_check[dur]/boot_verify[dur]/catalog_fetch[dur]/profile_boot[dur]/host_composed/window_ready）+ 日志 ISO 时间戳前缀（desktop-logger 单点）。reviewer APPROVED（typecheck 5 tsconfig 0 错、72/72 spec 绿、零启动行为变更实证：锚点全同步 fire-and-forget，flush 落点非抛出）；P3×2——①注释措辞 offline=静默丢弃（已修）②process_start 锚点位置在 start() 顶部而非字面 t=0（elapsedMs 用 timeOrigin 所以数值仍真，仅提示勿误读锚点位置，无需改）。语义注记：gate_shown 静默 SSO 成功靴缺席；catalog_fetch 仅 origin-mode；disclaimer_agreed 每靴都发（已 ack 秒过）=统一时间线边界；boot_verify_end 含 beta-overlay await 尾巴。fleet DDL 无需变更（~12 行/靴）。
+- T2 完成（2026-09-15）：#879 前半移植——①patches/dsh-client-modules@0.1.2-rc.1.patch 字节级对齐上游（xxd 校验含尾字节），resolutions 双键走兄弟补丁的 npm%3A 形（上游 file%3A vendored 形已适配性改写），yarn.lock 条目形状与 dsh-app-boot 同款（hash=3e66d0），安装产物实证 indexOf 形在/旧循环不在；②module-resolution.ts node: 快路径——reviewer 深验行为保持：URL.canParse('node:fs')=true 故 packageNameFromSpecifier 本就返回 undefined，新旧路径都直通 previousResolveFilename/nextResolve；':' 非法字符故无包名碰撞；CJS 测试用 profile-manifest parent（唯一可能走 overlay 的父）钉死『永不咨询 overlay』。reviewer APPROVED 零 P0-P2（P3=dist 陈旧产物，打包时自刷）。门禁：typecheck 5 tsconfig/桌面全套 2476/touched specs 63/check:layout 全绿。未取部分（有意）：canonicalModuleKeys 缓存（我们文件已分叉）、bare 内建名覆盖（按 scout 范围）、LAN-HTTPS 全部、0.1.3-alpha.2 孪生补丁、electron-runtime 翻搅。
 
 ## 验收标准
 

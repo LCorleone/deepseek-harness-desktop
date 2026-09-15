@@ -21,6 +21,8 @@
     "@deepseek-ai/dsh-api-session-controller@npm:^0.1.2-rc.1": "patch:@deepseek-ai/dsh-api-session-controller@npm%3A0.1.2-rc.1#./patches/dsh-api-session-controller@0.1.2-rc.1.patch",
     "@deepseek-ai/dsh-app-boot@npm:0.1.2-rc.1": "patch:@deepseek-ai/dsh-app-boot@npm%3A0.1.2-rc.1#./patches/dsh-app-boot@0.1.2-rc.1.patch",
     "@deepseek-ai/dsh-app-boot@npm:^0.1.2-rc.1": "patch:@deepseek-ai/dsh-app-boot@npm%3A0.1.2-rc.1#./patches/dsh-app-boot@0.1.2-rc.1.patch",
+    "@deepseek-ai/dsh-client-modules@npm:0.1.2-rc.1": "patch:@deepseek-ai/dsh-client-modules@npm%3A0.1.2-rc.1#./patches/dsh-client-modules@0.1.2-rc.1.patch",
+    "@deepseek-ai/dsh-client-modules@npm:^0.1.2-rc.1": "patch:@deepseek-ai/dsh-client-modules@npm%3A0.1.2-rc.1#./patches/dsh-client-modules@0.1.2-rc.1.patch",
     "@deepseek-ai/dsh-client-ui-attachment@npm:0.1.2-rc.1": "patch:@deepseek-ai/dsh-client-ui-attachment@npm%3A0.1.2-rc.1#./patches/dsh-client-ui-attachment@0.1.2-rc.1.patch",
     "@deepseek-ai/dsh-client-ui-attachment@npm:^0.1.2-rc.1": "patch:@deepseek-ai/dsh-client-ui-attachment@npm%3A0.1.2-rc.1#./patches/dsh-client-ui-attachment@0.1.2-rc.1.patch",
     "@deepseek-ai/dsh-client-ui-conversation@npm:0.1.2-rc.1": "patch:@deepseek-ai/dsh-client-ui-conversation@npm%3A0.1.2-rc.1#./patches/dsh-client-ui-conversation@0.1.2-rc.1.patch",
