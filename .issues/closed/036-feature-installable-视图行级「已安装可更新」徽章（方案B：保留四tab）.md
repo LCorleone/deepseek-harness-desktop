@@ -100,6 +100,8 @@ impl NewFeature {
 - [ ] 更新文档
 - July 拍板方案B（2026-09-15）：保留四 tab，installable 网格行加徽章——已装插件显示「已安装 vX.Y.Z」、目录版本高于已装时显示「可更新 →vA.B.C」；discover/installed/sources 不动，顶部更新横幅保留。积木现成：matchingInstallation(:109-128 按行匹配 managed→external/immutable 回退) + pendingUpdates(:592-619) 的 compareStableVersions 方向闸——下放到 PluginCard 行渲染。注意 exactOptionalPropertyTypes、双语 locales、market-settings-tab.spec 既有渲染断言模式。
 - 已实现+评审 APPROVED（P3×2 记档：跨源横幅/行徽章分歧=诚实设计；行级重算开销可忽略）。commit 2bcf40ea69，攒 b95。
+- 追加（July 2026-09-15 UI 反馈）：已装徽章与 Install 按钮同显违和。定案：已装同版本→无按钮（徽章即状态，卡片进详情管理）；已装有新版→「更新」按钮（复用横幅 replaces 预览流）；外部/不可变→无按钮。b95 已出，本改动攒下版。
+- 追加闭环：行按钮态从徽章单一推导（同版无钮/新版更新钮复用 openItem 横幅处理器/外部不可变无钮），评审 APPROVED。commit f9ac0260c9，攒下版（b95 已出不含）。
 
 ## 验收标准
 
