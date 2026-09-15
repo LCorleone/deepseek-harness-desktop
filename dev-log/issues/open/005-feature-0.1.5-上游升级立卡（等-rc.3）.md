@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-12
+**Updated**: 2026-09-15
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,28 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-15
+- 目标与破坏性面终版（2026-09-15，scout-f20b098d，fetch-only）：
+
+【目标钉死】dsh-v0.1.2-rc.1（现 pin a66e470204）→ dsh-v0.1.5-rc.2（rc 线现役唯一；rc.3 不存在，0.1.6-alpha 按 July 规矩排除）。规模=1490 commits/6774 文件/+208k−58k。估算维持 8-12 批但按上限排——三个全新子系统各踩我们的接缝。
+
+【BLOCKER×2（编译级碎）】
+B1 session V3：assistant/chunk→assistant/attempt 改名 + 事件强制 surfaceOp 字段——model-usage-reporter.ts:399 'assistant/chunk' case 直接编译碎（TTFT 统计）；approval-mirror 类型名幸存但需对 V3 信封+磁盘 .jsonl 迁移重验。新增 session-format{,-catalog,-v0..v2-to-v3} 包族。
+B2 UI：ui-layout 'details' 槽位在 rc.2 被删除（sidebar 重做=新 ui-dockkit+ui-sidebar-right）——AdvancedFrame.tsx:21 PropsRenderSlots<'details'> 碎。幸存槽：sidebar.brand.name/sidebar.footer.action/shell.overlay（市场设置卡、品牌、桌面设置面都在幸存槽上）。
+
+【ADAPT×4】
+A1 补丁重基底：11/14 语义补丁需重放（ui-primitives +1592/−90、ui-conversation、api-session-controller、agent-loop 等）；3 个可干净应用（dsh-settings、两个 directory-picker-browse）。
+A2 NO_PROXY 匹配缺口（安全相关！）：新 packages/util/http-proxy 全局接管出站（模型调用/web_fetch/MCP-HTTP/web search），其 bypassesProxy() 不匹配 CIDR 且 10.* 无后缀匹配——我们注入的 10.*/10.0.0.0/8 条目【静默失效】，RFC1918 直连对上游发起的 fetch 死亡（精确域名后缀如 *.deloitte.cn 仍活）。升级时改写条目为后缀形或接受 10.x 走代理。另 NODE_USE_ENV_PROXY=1 变冗余。回环恒绕过、遥测刻意直连——与我们 corporate-network-env.ts 语义需逐条重对（也影响 #040 的 #8 出网面结论：升级后上游 fetch 的内网可达性变【经代理】，是收紧不是放松）。
+A3 上游官方桌面应用现身：apps/desktop（Electron ^44、electron-builder、自动更新→腾讯 COS——正是我们禁用的面）+ apps/desktop-host 进 workspace——与 dsh-plugin-desktop 打包共存关系需一个决策批。
+A4 ui-conversation 补丁上下文漂移 + token-meter usage-projection（我们补丁触碰）重构。
+
+【CLEAN×4】preset schema 字节级未变（includeShippedRoot:z.boolean().default(true) 两侧一致，无新默认泄漏）；CLI 钳制面 plugin.ts 未动；Cordis 接缝编译级稳定（agent/pre-step 载荷一致、AgentCancelCause hook 一致、tools/post-execute、concludesTurn、registerProvider 全在）；engines/pnpm 未变。沙箱判据（mkdtempSync/TEMP rewrite）原样幸存。
+
+【批次构成修正】~1 批=11 个补丁重放；专用批=model-usage-reporter V3 适配、AdvancedFrame details 槽迁移、NO_PROXY 条目改写、上游桌面共存决策；其余按活清单 dev-log/upstream-upgrade-replay-checklist.md 逐项。
+
+【触发时机不变】b96 fleet 稳定 + #032 收尾后开批。
 
 ### 2026-09-12 HH:MM
 - [ ] 完成需求分析
