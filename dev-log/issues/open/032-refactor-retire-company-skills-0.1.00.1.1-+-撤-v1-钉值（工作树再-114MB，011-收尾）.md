@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: refactor
 **Created**: 2026-09-14
-**Updated**: 2026-09-14
+**Updated**: 2026-09-16
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -128,6 +128,11 @@ pub struct NewDesign {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-16
+- 前置查证 PASS（2026-09-16 07:16）：全史 company-skills 事件 12 条——0.1.0×2 / 0.1.1×3 全部是 julu 测试机（最后一条 09-12 07:00），0.1.2×7 为其后全部；同事零旧版安装。升级路径安全性：已装旧版者 boot 校验会看到同名 runtime 兼容条目 0.1.2 → 走正常更新非 deferral。放行执行。
+- 执行中（2026-09-16 07:30）：①前置 PASS；②revoke 0.1.0/0.1.1 → beta seq36 已签发上线（publish-local --confirm-fleet-upgraded——beta 读者仅名单三人 julu/sebtang b96 + lizywu b93 全 field-aware，安全）；③无钥 retire 照 #003 先例（fb13e0badb，RELEASE.zh.md §1.D）：allowlist 手工摘两 entry（11→9， skills 仅剩 0.1.2）+ ratchet 置 36，待 CI 重签 seq37。
 
 ### 2026-09-14 HH:MM
 - [ ] 完成现有代码分析
