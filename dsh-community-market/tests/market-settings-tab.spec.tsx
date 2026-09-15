@@ -28,7 +28,7 @@ import {
   readMoreMarketCatalog,
   requestMarketRestart,
 } from '../src/client/api.js'
-import { en, type MarketLocaleKey } from '../src/client/locales.js'
+import { en, zh, type MarketLocaleKey } from '../src/client/locales.js'
 
 vi.mock('../src/client/api.js', () => ({
   executeMarketOperation: vi.fn(),
@@ -1954,6 +1954,139 @@ describe('MarketSettingsTab', () => {
       expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
     })
     expect(readMarketInstallations).toHaveBeenCalledTimes(2)
+  })
+
+  it('badges installable rows from the verified inventory: installed for equal pins, update for strictly newer, none for absent or older pins (#036)', async () => {
+    const samePin = makeInstallableItem(firstSource, 'badge-same', 'Badge Same Plugin', 'dsh-plugin-badge-same', '1.2.3')
+    const newerPin = makeInstallableItem(firstSource, 'badge-update', 'Badge Update Plugin', 'dsh-plugin-badge-update', '1.3.0')
+    const olderPin = makeInstallableItem(firstSource, 'badge-older', 'Badge Older Plugin', 'dsh-plugin-badge-older', '1.0.0')
+    const fresh = makeInstallableItem(firstSource, 'badge-fresh', 'Badge Fresh Plugin', 'dsh-plugin-badge-fresh', '2.0.0')
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([samePin, newerPin, olderPin, fresh]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [
+        // Equal pin: the receipt version is proven, and no update may be
+        // advertised (the banner's tamper shape, per row).
+        { kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+          packageName: samePin.package!.name,
+          version: '1.2.3',
+          itemId: samePin.id,
+          displayName: samePin.displayName,
+        }) },
+        // Strictly newer pin: both versions surface — the installed pill
+        // carries the receipt's `from`, the update pill the pin's `to`.
+        { kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+          packageName: newerPin.package!.name,
+          version: '1.2.3',
+          itemId: newerPin.id,
+          displayName: newerPin.displayName,
+        }) },
+        // Older pin: a roster-exit alignment, never an update (P2-2 gate).
+        { kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+          packageName: olderPin.package!.name,
+          version: '1.2.3',
+          itemId: olderPin.id,
+          displayName: olderPin.displayName,
+        }) },
+        // `fresh` has no installation at all: no badge, only the action.
+      ],
+    })
+    render(<MarketSettingsTab {...({ t, readLocale: () => 'en' } as MarketSettingsTabProps)} />)
+
+    const sameCard = await screen.findByRole('button', { name: `${en.install}: ${samePin.displayName}` })
+    await waitFor(() => expect(within(sameCard).getByText('Installed 1.2.3')).toBeTruthy())
+    expect(within(sameCard).queryByText(/Update available/u)).toBeNull()
+
+    const updateCard = screen.getByRole('button', { name: `${en.install}: ${newerPin.displayName}` })
+    expect(within(updateCard).getByText('Installed 1.2.3')).toBeTruthy()
+    expect(within(updateCard).getByText('Update available → 1.3.0')).toBeTruthy()
+    // The Install action stays as-is: the badge is informational, the modal
+    // flow still owns the replacement (see the P10 tests above).
+    expect(within(updateCard).getByText(en.install)).toBeTruthy()
+
+    const olderCard = screen.getByRole('button', { name: `${en.install}: ${olderPin.displayName}` })
+    expect(within(olderCard).getByText('Installed 1.2.3')).toBeTruthy()
+    expect(within(olderCard).queryByText(/Update available/u)).toBeNull()
+
+    const freshCard = screen.getByRole('button', { name: `${en.install}: ${fresh.displayName}` })
+    expect(within(freshCard).queryByText(/Installed/u)).toBeNull()
+    expect(within(freshCard).queryByText(/Update available/u)).toBeNull()
+  })
+
+  it('badges external and immutable matches as installed only, never as updateable (#036)', async () => {
+    const external = makeInstallableItem(firstSource, 'badge-external', 'Badge External Plugin', 'dsh-plugin-badge-external', '9.9.9')
+    const immutable = makeInstallableItem(firstSource, 'badge-immutable', 'Badge Immutable Plugin', 'dsh-plugin-badge-immutable', '9.9.9')
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([external, immutable]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [
+        { kind: 'external', status: 'active', action: 'disable', bundleId: 'opaque-badge-external-bundle', packageName: external.package!.name },
+        { kind: 'immutable', status: 'active', action: 'none', packageName: immutable.package!.name },
+      ],
+    })
+    render(<MarketSettingsTab {...({ t, readLocale: () => 'en' } as MarketSettingsTabProps)} />)
+
+    // The catalog pins 9.9.9 far above anything installed, yet these are
+    // non-managed installs: honest badges say installed (no version — the
+    // Host view carries none) and never promise a replacement.
+    const externalCard = await screen.findByRole('button', { name: `${en.install}: ${external.displayName}` })
+    await waitFor(() => expect(within(externalCard).getByText(en.installed)).toBeTruthy())
+    expect(within(externalCard).queryByText(/^Installed /u)).toBeNull()
+    expect(within(externalCard).queryByText(/Update available/u)).toBeNull()
+
+    const immutableCard = screen.getByRole('button', { name: `${en.install}: ${immutable.displayName}` })
+    await waitFor(() => expect(within(immutableCard).getByText(en.installed)).toBeTruthy())
+    expect(within(immutableCard).queryByText(/Update available/u)).toBeNull()
+    expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
+  })
+
+  it('keeps Discover rows free of badges even with the verified inventory loaded (#036 non-regression)', async () => {
+    const item = makeInstallableItem(firstSource, 'badge-discover', 'Badge Discover Plugin', 'dsh-plugin-badge-discover', '1.3.0')
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+        packageName: item.package!.name,
+        version: '1.2.3',
+        itemId: item.id,
+        displayName: item.displayName,
+      }) }],
+    })
+    render(<MarketSettingsTab {...({ t, readLocale: () => 'en' } as MarketSettingsTabProps)} />)
+
+    // The same row badges on Installable...
+    const installableCard = await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` })
+    await waitFor(() => expect(within(installableCard).getByText('Update available → 1.3.0')).toBeTruthy())
+
+    // ...and stays bare on Discover even though the verified inventory is
+    // still in memory: the badges are an Installable-grid feature only.
+    fireEvent.click(screen.getByRole('button', { name: en.discover }))
+    const discoverCard = await screen.findByRole('button', { name: new RegExp(item.displayName, 'u') })
+    expect(within(discoverCard).queryByText(/Installed/u)).toBeNull()
+    expect(within(discoverCard).queryByText(/Update available/u)).toBeNull()
+  })
+
+  it('renders the zh badge strings beside the type-enforced en record (#036 locale parity)', async () => {
+    const item = makeInstallableItem(firstSource, 'badge-zh', 'Badge Locale Plugin', 'dsh-plugin-badge-zh', '1.3.0')
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt: makeReceipt({
+        packageName: item.package!.name,
+        version: '1.2.4',
+        itemId: item.id,
+        displayName: item.displayName,
+      }) }],
+    })
+    const zhT = ((key: MarketLocaleKey): string => zh[key]) as MarketSettingsTabProps['t']
+    render(<MarketSettingsTab {...({ t: zhT, readLocale: () => 'zh' } as MarketSettingsTabProps)} />)
+
+    // `Record<MarketLocaleKey, string>` keeps both languages keyed alike;
+    // this pins the interpolated zh rendering itself.
+    const card = await screen.findByRole('button', { name: `安装: ${item.displayName}` })
+    await waitFor(() => expect(within(card).getByText('已安装 1.2.4')).toBeTruthy())
+    expect(within(card).getByText('可更新 → 1.3.0')).toBeTruthy()
   })
 
   it('opens and closes the shared Market surface from the sidebar launcher', async () => {

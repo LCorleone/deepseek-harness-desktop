@@ -128,6 +128,34 @@ function matchingInstallation(
   return immutable.length === 1 ? immutable[0] : undefined
 }
 
+/**
+ * Row-level install-state badge for the Installable grid (#036, plan B).
+ * Reuses `matchingInstallation` so a row never claims more than the detail
+ * modal's inventory rules prove. A managed match badges with the receipt
+ * version and applies the same direction gate as `pendingUpdates`
+ * (`compareStableVersions(pinned, installed) <= 0` is an alignment, never
+ * an update); an external/immutable fallback badges as installed only —
+ * the Host view carries no version for those installs and this flow cannot
+ * replace them, so advertising an update would be dishonest.
+ */
+type InstallableRowBadge =
+  | { readonly kind: 'installed'; readonly version: string | undefined }
+  | { readonly kind: 'update-available'; readonly from: string; readonly to: string }
+
+function installableRowBadge(
+  value: VisibleItem,
+  installations: readonly MarketInstallationView[],
+): InstallableRowBadge | undefined {
+  const installation = matchingInstallation(value, installations)
+  if (installation === undefined) return undefined
+  if (installation.kind !== 'managed') return { kind: 'installed', version: undefined }
+  const installedVersion = installation.receipt.version
+  const pinnedVersion = value.item.latestVersion
+  return pinnedVersion !== undefined && compareStableVersions(pinnedVersion, installedVersion) > 0
+    ? { kind: 'update-available', from: installedVersion, to: pinnedVersion }
+    : { kind: 'installed', version: installedVersion }
+}
+
 function isDesktopUnavailable(cause: unknown): boolean {
   return cause !== null
     && typeof cause === 'object'
@@ -1140,6 +1168,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           <InstallableView
             state={state}
             items={installableItems}
+            installations={installations}
             totalItems={filteredInstallableItems.length}
             query={installableQuery}
             categoryOptions={installableCategoryOptions}
@@ -1438,6 +1467,7 @@ function DiscoverView(props: {
 function InstallableView(props: {
   state?: MarketStateResponse | undefined
   items: readonly VisibleItem[]
+  installations: readonly MarketInstallationView[]
   totalItems: number
   query: string
   categoryOptions: readonly string[]
@@ -1554,6 +1584,7 @@ function InstallableView(props: {
             key={`${value.source.sourceRecordId}:${value.item.id}`}
             value={value}
             actionLabel={props.t('install')}
+            badge={installableRowBadge(value, props.installations)}
             disabled={props.operationPending}
             onClick={() => props.onInstall(value)}
             t={props.t}
@@ -1743,15 +1774,29 @@ function safeHttpsExternalHref(value: string | undefined): string | undefined {
   }
 }
 
-function PluginCard({ value, actionLabel, disabled = false, onClick, t }: {
+function PluginCard({ value, actionLabel, badge, disabled = false, onClick, t }: {
   value: VisibleItem
   actionLabel?: string | undefined
+  badge?: InstallableRowBadge | undefined
   disabled?: boolean
   onClick: () => void
   t: MarketSettingsTabProps['t']
 }) {
   const publisher = value.item.publisher?.name ?? value.source.name
   const sourceLabel = sourceDisplayLabel(value.source)
+  // #036: the installed pill states what the verified inventory proves — the
+  // receipt version for a managed match, the plain label for the
+  // external/immutable fallbacks (their version is unknown to the Host
+  // view). The update pill rides beside it only when the catalog pins a
+  // strictly newer version of a managed install, mirroring the update
+  // banner's direction gate per row. Discover rows pass no badge at all.
+  const installedLabel = badge === undefined
+    ? undefined
+    : badge.kind === 'update-available'
+      ? t('installedBadge').replace('{version}', badge.from)
+      : badge.version === undefined
+        ? t('installed')
+        : t('installedBadge').replace('{version}', badge.version)
   return (
     <button
       type="button"
@@ -1768,6 +1813,10 @@ function PluginCard({ value, actionLabel, disabled = false, onClick, t }: {
       <p className="dshMarketSummary">{value.item.summary}</p>
       <div className="dshMarketTags">
         <Pill>{t('source')}: {sourceLabel}</Pill>
+        {installedLabel !== undefined && <Pill>{installedLabel}</Pill>}
+        {badge?.kind === 'update-available' && (
+          <Pill>{t('updateAvailableBadge').replace('{version}', badge.to)}</Pill>
+        )}
         {actionLabel !== undefined && <Pill>{actionLabel}</Pill>}
         {value.stale && <Pill>{t('stale')}</Pill>}
         {value.item.categories?.slice(0, 2).map(category => <Pill key={category}>{category}</Pill>)}
