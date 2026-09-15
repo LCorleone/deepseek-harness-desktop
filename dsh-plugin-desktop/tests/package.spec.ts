@@ -1316,7 +1316,10 @@ describe('boot splash wiring (#035: the dead zone gets a visible face)', () => {
     // stricter than the disclaimer's (only inline style is allowed).
     expect(document).not.toContain('<script')
     expect(document).toContain("content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\"")
-    // The bilingual loading copy matches the disclaimer loading surface.
+    // The bilingual loading copy leads with the Deloitte brand (2026-09-15);
+    // the disclaimer's own loading line still reads bare "DSH Desktop" —
+    // a known cosmetic divergence, deliberate until the disclaimer copy is
+    // aligned.
     expect(document).toContain('正在启动 Deloitte DSH Desktop…')
     expect(document).toContain('Starting Deloitte DSH Desktop…')
   })
