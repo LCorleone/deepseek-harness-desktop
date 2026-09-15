@@ -1,11 +1,12 @@
 # [Feature] #036 installable 视图行级「已安装/可更新」徽章（方案B：保留四tab）
 
 **Issue ID**: #036
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-15
 **Updated**: 2026-09-15
+**Closed**: 2026-09-15
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -98,6 +99,7 @@ impl NewFeature {
 - [ ] 编写测试
 - [ ] 更新文档
 - July 拍板方案B（2026-09-15）：保留四 tab，installable 网格行加徽章——已装插件显示「已安装 vX.Y.Z」、目录版本高于已装时显示「可更新 →vA.B.C」；discover/installed/sources 不动，顶部更新横幅保留。积木现成：matchingInstallation(:109-128 按行匹配 managed→external/immutable 回退) + pendingUpdates(:592-619) 的 compareStableVersions 方向闸——下放到 PluginCard 行渲染。注意 exactOptionalPropertyTypes、双语 locales、market-settings-tab.spec 既有渲染断言模式。
+- 已实现+评审 APPROVED（P3×2 记档：跨源横幅/行徽章分歧=诚实设计；行级重算开销可忽略）。commit 2bcf40ea69，攒 b95。
 
 ## 验收标准
 
