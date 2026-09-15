@@ -1,11 +1,12 @@
 # [Refactor] #032 retire company-skills 0.1.0/0.1.1 + 撤 v1 钉值（工作树再 -114MB，#011 收尾）
 
 **Issue ID**: #032
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: refactor
 **Created**: 2026-09-14
 **Updated**: 2026-09-16
+**Closed**: 2026-09-16
 **Assignee**: Unassigned
 **Labels**: refactor
 
@@ -133,6 +134,7 @@ pub struct NewDesign {
 ### 2026-09-16
 - 前置查证 PASS（2026-09-16 07:16）：全史 company-skills 事件 12 条——0.1.0×2 / 0.1.1×3 全部是 julu 测试机（最后一条 09-12 07:00），0.1.2×7 为其后全部；同事零旧版安装。升级路径安全性：已装旧版者 boot 校验会看到同名 runtime 兼容条目 0.1.2 → 走正常更新非 deferral。放行执行。
 - 执行中（2026-09-16 07:30）：①前置 PASS；②revoke 0.1.0/0.1.1 → beta seq36 已签发上线（publish-local --confirm-fleet-upgraded——beta 读者仅名单三人 julu/sebtang b96 + lizywu b93 全 field-aware，安全）；③无钥 retire 照 #003 先例（fb13e0badb，RELEASE.zh.md §1.D）：allowlist 手工摘两 entry（11→9， skills 仅剩 0.1.2）+ ratchet 置 36，待 CI 重签 seq37。
+- 完成（2026-09-16 07:40）：revoke→beta seq36 上线（--confirm-fleet-upgraded，beta 读者=名单三人全 field-aware）→ 无钥 retire（#003 先例路径）→ CI 重签 beta seq37（9 entries，skills 仅 0.1.2）→ publish-local 上线 → 验证回读 tarballs 7 hosted（旧两包已不在托管清单）→ ratchet 37。本地 out/packages 删 0.1.0/0.1.1 tgz+pack.json（−82MB，gitignored 本地产物；#011 台账的『工作树 -114MB』口径含 git 历史快照与 v1 bundle 工件，实际可删部分即此 82MB——v1 bundle 22MB×2 版本生产物已随 CI 不再产出）。stable 清单全程未动（0.1.0/0.1.1 从未进 stable），内嵌兜底 seq35 无需刷新。验收：beta 窗 9 entries 与 stable 对齐、skills 0.1.2 唯一在窗、fleet 零旧版在装。
 
 ### 2026-09-14 HH:MM
 - [ ] 完成现有代码分析
@@ -167,3 +169,7 @@ pub struct NewDesign {
 ### 讨论记录
 
 [记录技术讨论要点]
+
+## 解决总结
+
+完成于 2026-09-16：revoke+retire 双版本经 beta seq36/37 两轮签发上线（keyless retire 先例复用），本地产物清理 −82MB，stable/内嵌清单零扰动。
