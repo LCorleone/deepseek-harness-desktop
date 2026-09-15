@@ -376,6 +376,7 @@ export const REQUIRED_UNPACKED_PACKAGE_SPECIFIERS = [
   'dsh-plugin-desktop/windows-agent-presets',
   'dsh-plugin-desktop/company-agent-presets',
   'dsh-plugin-desktop/windows-pwsh-sandbox',
+  'dsh-plugin-desktop/approval-mirror',
   'dsh-plugin-desktop/package.json',
   '@deepseek-ai/dsh-base/package.json',
   '@deepseek-ai/schemastery/package.json',
