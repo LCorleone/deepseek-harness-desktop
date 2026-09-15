@@ -1,9 +1,9 @@
 /** Shared desktop-wide Python environment provisioned once under `%LOCALAPPDATA%`. */
 
 import { spawn } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { stat, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 
 /** Directory name of the shared environment below its parent. */
@@ -46,6 +46,26 @@ const SHARED_PYTHON_PROVISION_LOCK_WAIT_MS
  * waiting the full bounded turn for an owner that will never return.
  */
 const SHARED_PYTHON_PROVISION_LOCK_STALE_MS = 10 * 60 * 1000
+
+/**
+ * Lock-layer failures worth exactly one bounded retry (issue #038): real
+ * `fs` errors carry an errno `code`, and these are the codes the
+ * atomic-write package itself treats as transient Windows interference
+ * (`EACCES`, `EPERM`, `EBUSY` around file creation) plus `ENOENT` — the
+ * missing-parent signature pinned below. The mutex's defined
+ * contention-timeout failure stays out on purpose: it is a plain `Error`
+ * without a `code`, and its degrade-with-log semantics must not turn into a
+ * second full bounded wait.
+ */
+const SHARED_PYTHON_LOCK_RETRYABLE_CODES: ReadonlySet<string>
+  = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY'])
+
+/**
+ * Pause before the single lock-acquisition retry: long enough for antivirus
+ * or indexer interference around the exclusive-create open to clear, short
+ * enough to stay invisible in the boot.
+ */
+const SHARED_PYTHON_LOCK_RETRY_DELAY_MS = 250
 
 /** Absolute locations inside the shared Python environment. */
 export interface DesktopSharedPythonEnvironmentPaths {
@@ -249,6 +269,17 @@ function sharedEnvironment(
 /** The lock-file name of the shared environment's provisioning mutex. */
 function sharedPythonProvisionLockPath(rootDirectory: string): string {
   return join(rootDirectory, `${DESKTOP_SHARED_PYTHON_DIRECTORY_NAME}.provision`)
+}
+
+/**
+ * Whether a lock-layer failure is a transient filesystem error worth the
+ * single bounded retry of issue #038: real `fs` failures carry an errno
+ * `code`, while the mutex's contention-timeout failure is a plain `Error`
+ * without one and keeps its degrade-with-log semantics instead.
+ */
+function isRetryableLockFailure(cause: unknown): boolean {
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code
+  return typeof code === 'string' && SHARED_PYTHON_LOCK_RETRYABLE_CODES.has(code)
 }
 
 /**
@@ -465,7 +496,17 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * the second instance waits its bounded turn and then reuses the winner's
  * result (or rebuilds when the winner failed). A wait that outlasts the
  * bound degrades to the bundled aliases with one log line instead of
- * blocking the boot behind a stuck holder.
+ * blocking the boot behind a stuck holder. The lock layer itself is
+ * fail-open in three steps (issue #038): the lock parent directory is
+ * created before the acquisition (the mutex cannot create it itself), a
+ * transient filesystem failure of the acquisition gets exactly one bounded
+ * retry, and a retry that fails too proceeds WITHOUT the lock under a loud
+ * warning — the mutex guards a rare double-instance race whose damage the
+ * once-semantics of the repair and reseed steps already bound, so a lock
+ * layer that is down must never cost the provisioning itself (the pre-#038
+ * behavior: any lock failure skipped the whole body, pip stayed unpublished
+ * forever, and the #033 self-heal never ran). Only the defined
+ * contention-timeout failure keeps its degrade-to-bundled semantics.
  */
 export async function ensureDesktopSharedPythonEnvironment(
   inputs: DesktopSharedPythonEnvironmentInputs,
@@ -483,21 +524,82 @@ export async function ensureDesktopSharedPythonEnvironment(
   const runLocked: DesktopSharedPythonProvisionLock = inputs.provisionLock
     ?? ((lockMarkerPath, operation) =>
       withSharedPythonProvisionLock(lockMarkerPath, operation, inputs.now ?? Date.now))
+  const provision = (): Promise<DesktopSharedPythonEnvironment> =>
+    provisionSharedPythonEnvironment(inputs, paths)
+  // Issue #038, pinned cause — the mutex opens `<pyenv.provision>.lock`
+  // through `writeFile(..., { flag: 'wx' })` and, unlike the same package's
+  // `writeFileAtomic`, creates NO parent directory (its documented contract:
+  // the parent must exist). An exclusive-create race is NOT the source: a
+  // `wx` open onto an existing lock surfaces as `EEXIST`/`EPERM` contention
+  // inside the bounded wait, and the only `ENOENT` escape anywhere in the
+  // lock layer is that initial open hitting a MISSING PATH COMPONENT. The
+  // component is `%LOCALAPPDATA%\\DSH Desktop` itself: nothing creates it
+  // before this point — the directory is born as a side effect of the
+  // provisioning that runs INSIDE the lock — so every first-ever provision
+  // (a fresh install, a new Windows profile, a cleaner wiping LOCALAPPDATA)
+  // hit Lucy's `ENOENT: ... open '...\\DSH Desktop\\pyenv.provision.lock'`
+  // and skipped the whole provisioning body; antivirus removing the
+  // just-created directory or lock file between operations is the same
+  // failure in transient form. Layer 1 kills the missing-parent class:
+  // a recursive mkdir before the acquisition is idempotent and cheap.
   try {
-    return await runLocked(lockPath, () => provisionSharedPythonEnvironment(inputs, paths))
+    mkdirSync(dirname(lockPath), { recursive: true })
+  } catch {
+    // An uncreatable parent resurfaces as the acquisition failure below,
+    // which retries and then degrades to lock-less provisioning — this
+    // guard must never crash the boot itself.
+  }
+  try {
+    return await runLocked(lockPath, provision)
   } catch (cause) {
     // Only the mutex reaches here — the operation itself never throws. A
     // refused or expired wait is the defined loser path: degrade exactly
     // like a failed provisioning tier, never block the boot.
-    log(
-      `dsh-plugin-desktop: could not serialize the shared python environment provisioning at ${lockPath}`
-        + ` (${cause instanceof Error ? cause.message : String(cause)}); `
-        + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
-    )
-    return {
-      pythonExecutable: inputs.bundledPythonExecutable,
-      pipExecutable: undefined,
-      shared: false,
+    if (!isRetryableLockFailure(cause)) {
+      log(
+        `dsh-plugin-desktop: could not serialize the shared python environment provisioning at ${lockPath}`
+          + ` (${cause instanceof Error ? cause.message : String(cause)}); `
+          + 'python aliases keep targeting the bundled runtime and pip stays unpublished',
+      )
+      return {
+        pythonExecutable: inputs.bundledPythonExecutable,
+        pipExecutable: undefined,
+        shared: false,
+      }
+    }
+    // Issue #038, layer 2 — one bounded retry for transient filesystem
+    // interference (antivirus quarantining the just-created lock file or
+    // its parent directory): the failure left the operation unstarted or
+    // left an idempotent probe-then-act cycle behind, so re-entering the
+    // lock is safe.
+    await new Promise(resolve => { setTimeout(resolve, SHARED_PYTHON_LOCK_RETRY_DELAY_MS) })
+    try {
+      const environment = await runLocked(lockPath, provision)
+      log(
+        `dsh-plugin-desktop: the shared python environment provisioning lock at ${lockPath}`
+          + ` failed once (${cause instanceof Error ? cause.message : String(cause)}); `
+          + 'the retry acquired it, so provisioning stayed serialized',
+      )
+      return environment
+    } catch (retryCause) {
+      // Issue #038, layer 3 — provision WITHOUT the cross-process lock. The
+      // worst outcome is no provisioning at all (pip unpublished forever,
+      // the #033 self-heal dead), while the mutex only protects a rare
+      // double-instance race whose failure mode — both instances
+      // provisioning the same tree — is bounded by the once-semantics the
+      // body already carries (ONE in-place ensurepip repair, ONE removal,
+      // one full reseed per boot: see the removeAll-once paths above).
+      // The once-semantics are per-process, not cross-process: two unlocked
+      // instances CAN interleave removal/reseed (a torn tree this boot) —
+      // convergence lands on the NEXT boot through the corrupt-branch heal
+      // (review P3: the honest wording).
+      log(
+        `dsh-plugin-desktop: could not acquire the shared python environment provisioning lock at ${lockPath}`
+          + ` (${retryCause instanceof Error ? retryCause.message : String(retryCause)}) even after one retry; `
+          + 'provisioning WITHOUT the cross-process lock — concurrently starting desktop instances may '
+          + 'rebuild the same tree, though every step keeps its once-semantics and the tree converges on the next boot',
+      )
+      return await provision()
     }
   }
 }

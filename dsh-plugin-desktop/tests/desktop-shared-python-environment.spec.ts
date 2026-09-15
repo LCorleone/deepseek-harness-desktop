@@ -794,7 +794,11 @@ describe('shared python environment provisioning mutex (review P3)', () => {
     try {
       const logs: string[] = []
       const provision = vi.fn(async () => ({ exitCode: 0, diagnostic: '' }))
+      let refusals = 0
       const refused: DesktopSharedPythonProvisionLock = async () => {
+        // The defined contention-timeout failure: a plain `Error` with no
+        // errno `code`, so the #038 retry must not apply to it.
+        refusals += 1
         throw new Error('atomic-write: timed out waiting for the writer lock')
       }
 
@@ -815,10 +819,160 @@ describe('shared python environment provisioning mutex (review P3)', () => {
         shared: false,
       })
       expect(provision).not.toHaveBeenCalled()
+      // The timeout path degrades immediately — exactly one refusal, no
+      // retry, no lock-less second attempt.
+      expect(refusals).toBe(1)
       expect(logs).toHaveLength(1)
       expect(logs[0]).toContain('could not serialize the shared python environment provisioning')
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /** Lucy's lock-layer failure (#038): an errno-coded ENOENT from the mutex's exclusive-create open. */
+  function enoentLockFailure(lockPath: string): NodeJS.ErrnoException {
+    return Object.assign(
+      new Error(`ENOENT: no such file or directory, open '${lockPath}.lock'`),
+      { code: 'ENOENT' },
+    )
+  }
+
+  it('still heals a pip-less tree when the lock layer fails once with ENOENT (#038)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-lock-enoent-once-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      // The #033 fleet state (a runnable tree without pip) behind a lock
+      // layer whose first acquisition throws ENOENT: pre-#038 this skipped
+      // the whole body and the self-heal never ran.
+      const existing = new Set<string>([paths.pythonExecutable])
+      const { probe } = probeRecorder(true)
+      const provisionCalls: Array<{ command: string, args: readonly string[] }> = []
+      const provision: DesktopSharedPythonProvision = async (command, args) => {
+        provisionCalls.push({ command, args })
+        existing.add(paths.pipExecutable)
+        return { exitCode: 0, diagnostic: '' }
+      }
+      const lockPaths: string[] = []
+      const flaky: DesktopSharedPythonProvisionLock = async (lockMarkerPath, operation) => {
+        lockPaths.push(lockMarkerPath)
+        if (lockPaths.length === 1) throw enoentLockFailure(lockMarkerPath)
+        return await operation()
+      }
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        probe,
+        provisionLock: flaky,
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // One bounded retry reacquired the mutex, the ensurepip repair ran
+      // inside it, and exactly one line notes the transient failure.
+      expect(lockPaths).toHaveLength(2)
+      expect(provisionCalls.map(call => ({ command: call.command, args: call.args }))).toEqual([{
+        command: paths.pythonExecutable,
+        args: ['-m', 'ensurepip', '--upgrade'],
+      }])
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      // Two lines: the repair log of the provisioning body itself, then
+      // the retry note (logged once the reacquired lock released).
+      expect(logs).toHaveLength(2)
+      expect(logs[0]).toContain('repaired it in place through ensurepip')
+      expect(logs[1]).toContain('failed once')
+      expect(logs[1]).toContain('ENOENT')
+      expect(logs[1]).toContain('the retry acquired it')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('provisions without the cross-process lock when ENOENT outlasts the retry (#038)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-lock-enoent-always-'))
+    try {
+      // Every acquisition fails with ENOENT: the first attempt, then the
+      // single retry — the cycle must still provision, unlocked.
+      const existing = new Set<string>()
+      const { calls, provision } = provisionRecorder(existing)
+      let lockCalls = 0
+      const enoent: DesktopSharedPythonProvisionLock = async (lockMarkerPath) => {
+        lockCalls += 1
+        throw enoentLockFailure(lockMarkerPath)
+      }
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        provisionLock: enoent,
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // First attempt plus exactly one retry, then the lock-less run built
+      // the tree anyway under one loud warning naming the lock error.
+      expect(lockCalls).toBe(2)
+      expect(calls.map(call => call.command)).toEqual([BUNDLED_PYTHON])
+      expect(environment.shared).toBe(true)
+      expect(environment.pipExecutable).toBe(join(root, DESKTOP_SHARED_PYTHON_DIRECTORY_NAME, 'Scripts', 'pip.exe'))
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('could not acquire the shared python environment provisioning lock')
+      expect(logs[0]).toContain('ENOENT')
+      expect(logs[0]).toContain('even after one retry')
+      expect(logs[0]).toContain('WITHOUT the cross-process lock')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('creates the lock parent directory before acquiring, so a missing parent cannot fail the first acquisition (#038)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'dsh-pyenv-lock-parent-'))
+    try {
+      // The first-boot shape: `%LOCALAPPDATA%\DSH Desktop` does not exist
+      // yet, and only the provisioning INSIDE the lock would create it. The
+      // default lock (the real withFileLock) must acquire against the
+      // mkdir'd parent instead of failing the open with ENOENT.
+      const root = join(base, 'DSH Desktop')
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      const existing = new Set<string>()
+      const { calls, provision } = provisionRecorder(existing)
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        exists: filename => existing.has(filename),
+        log: message => { logs.push(message) },
+      })
+
+      // First acquisition succeeded (no lock-layer line — a lock failure
+      // would have logged on the retry path), the tree was seeded once,
+      // and the parent now exists.
+      expect(calls.map(call => call.command)).toEqual([BUNDLED_PYTHON])
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+      expect(logs).toEqual([])
+      expect(existsSync(root)).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
     }
   })
 
