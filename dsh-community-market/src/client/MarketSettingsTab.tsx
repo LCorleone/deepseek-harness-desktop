@@ -156,6 +156,32 @@ function installableRowBadge(
     : { kind: 'installed', version: installedVersion }
 }
 
+/**
+ * The installable row's action pill beside its badge (#036 follow-up),
+ * derived from the same `installableRowBadge` result so the two can never
+ * disagree: no badge is the not-installed state and keeps the Install pill;
+ * a strictly newer pin swaps the pill to the update banner's Update label —
+ * the click still rides the row's `openItem` seam, the exact action the
+ * banner's Update button performs, so the replacement-preview chain
+ * (`replaces` → confirmUpdate) is shared, not duplicated; every other
+ * installed match — managed same-version or the external/immutable
+ * fallbacks — renders no pill at all: the badge is the state and the row
+ * click opens the detail modal's local controls, never an install flow.
+ */
+function installableRowPresentation(
+  value: VisibleItem,
+  installations: readonly MarketInstallationView[],
+  t: MarketSettingsTabProps['t'],
+): { readonly badge: InstallableRowBadge | undefined; readonly actionLabel: string | undefined } {
+  const badge = installableRowBadge(value, installations)
+  return {
+    badge,
+    actionLabel: badge === undefined
+      ? t('install')
+      : badge.kind === 'update-available' ? t('updateAction') : undefined,
+  }
+}
+
 function isDesktopUnavailable(cause: unknown): boolean {
   return cause !== null
     && typeof cause === 'object'
@@ -883,8 +909,17 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       if (selectedKeyRef.current !== selectionKey) return
       const installation = matchingInstallation(value, current)
       setSelectedInventoryLoading(false)
-      if (installation !== undefined) setSelectedInstallation(installation)
-      else beginInstallPreview()
+      // #036 follow-up: an update-available match opens the replacement
+      // preview the update banner's Update button targets — decided by the
+      // same badge gate the row renders, so the banner button, the row's
+      // Update pill, and the opened detail can never disagree. Every other
+      // match (managed same-version, external, immutable) keeps the
+      // local-controls detail.
+      if (installation !== undefined && installableRowBadge(value, current)?.kind !== 'update-available') {
+        setSelectedInstallation(installation)
+      } else {
+        beginInstallPreview()
+      }
     }
     if (installationsLoaded) {
       resolveInventory(installations)
@@ -1579,17 +1614,20 @@ function InstallableView(props: {
         <div className="dshMarketEmpty"><h2>{props.t('noInstallable')}</h2><p>{props.t('noInstallableBody')}</p></div>
       )}
       <div className="dshMarketGrid">
-        {props.items.map(value => (
-          <PluginCard
-            key={`${value.source.sourceRecordId}:${value.item.id}`}
-            value={value}
-            actionLabel={props.t('install')}
-            badge={installableRowBadge(value, props.installations)}
-            disabled={props.operationPending}
-            onClick={() => props.onInstall(value)}
-            t={props.t}
-          />
-        ))}
+        {props.items.map(value => {
+          const { badge, actionLabel } = installableRowPresentation(value, props.installations, props.t)
+          return (
+            <PluginCard
+              key={`${value.source.sourceRecordId}:${value.item.id}`}
+              value={value}
+              actionLabel={actionLabel}
+              badge={badge}
+              disabled={props.operationPending}
+              onClick={() => props.onInstall(value)}
+              t={props.t}
+            />
+          )
+        })}
       </div>
       {props.items.length < props.totalItems && (
         <div className="dshMarketPagination">
@@ -1789,7 +1827,11 @@ function PluginCard({ value, actionLabel, badge, disabled = false, onClick, t }:
   // external/immutable fallbacks (their version is unknown to the Host
   // view). The update pill rides beside it only when the catalog pins a
   // strictly newer version of a managed install, mirroring the update
-  // banner's direction gate per row. Discover rows pass no badge at all.
+  // banner's direction gate per row. The action pill comes from the same
+  // badge (`installableRowPresentation`): Install only for not-installed
+  // rows, Update for update-available rows, and none at all once the badge
+  // says installed — the badge is the state, the row click opens the
+  // detail modal. Discover rows pass neither badge nor action.
   const installedLabel = badge === undefined
     ? undefined
     : badge.kind === 'update-available'

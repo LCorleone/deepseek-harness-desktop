@@ -1871,6 +1871,10 @@ describe('MarketSettingsTab', () => {
     render(<MarketSettingsTab {...props} />)
 
     fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    // The banner stays empty (no downgrade peddled as an update), and the
+    // row keeps its Install pill: the beta receipt points at a different
+    // catalog row, so the row-level inventory match — unlike the banner's
+    // package-level one — cannot prove this row installed (#036 honesty).
     await screen.findByRole('button', { name: `${en.install}: ${repinned.displayName}` })
     expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
   })
@@ -1902,7 +1906,12 @@ describe('MarketSettingsTab', () => {
     render(<MarketSettingsTab {...props} />)
 
     fireEvent.click(await screen.findByRole('button', { name: en.installable }))
-    await screen.findByRole('button', { name: `${en.install}: ${pinnedSame.displayName}` })
+    // Matching versions: the installed badge is the whole row state — no
+    // Install pill (nothing to install) and no Update pill (nothing newer).
+    const sameCard = await screen.findByRole('button', { name: new RegExp(pinnedSame.displayName, 'u') })
+    await waitFor(() => expect(within(sameCard).getByText('Installed 1.2.3')).toBeTruthy())
+    expect(within(sameCard).queryByText(en.install)).toBeNull()
+    expect(within(sameCard).queryByText(en.updateAction)).toBeNull()
     expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
   })
 
@@ -1993,24 +2002,112 @@ describe('MarketSettingsTab', () => {
     })
     render(<MarketSettingsTab {...({ t, readLocale: () => 'en' } as MarketSettingsTabProps)} />)
 
-    const sameCard = await screen.findByRole('button', { name: `${en.install}: ${samePin.displayName}` })
+    // Equal pin: the badge is the whole state — no Install pill (the row
+    // click opens the detail modal's local controls instead) and no Update.
+    const sameCard = await screen.findByRole('button', { name: new RegExp(samePin.displayName, 'u') })
     await waitFor(() => expect(within(sameCard).getByText('Installed 1.2.3')).toBeTruthy())
     expect(within(sameCard).queryByText(/Update available/u)).toBeNull()
+    expect(within(sameCard).queryByText(en.install)).toBeNull()
+    expect(within(sameCard).queryByText(en.updateAction)).toBeNull()
 
-    const updateCard = screen.getByRole('button', { name: `${en.install}: ${newerPin.displayName}` })
+    // Strictly newer pin: both versions surface — the installed pill carries
+    // the receipt's `from`, the update pill the pin's `to` — and the action
+    // pill flips from Install to the banner's Update label.
+    const updateCard = screen.getByRole('button', { name: `${en.updateAction}: ${newerPin.displayName}` })
     expect(within(updateCard).getByText('Installed 1.2.3')).toBeTruthy()
     expect(within(updateCard).getByText('Update available → 1.3.0')).toBeTruthy()
-    // The Install action stays as-is: the badge is informational, the modal
-    // flow still owns the replacement (see the P10 tests above).
-    expect(within(updateCard).getByText(en.install)).toBeTruthy()
+    expect(within(updateCard).getByText(en.updateAction)).toBeTruthy()
+    expect(within(updateCard).queryByText(en.install)).toBeNull()
 
-    const olderCard = screen.getByRole('button', { name: `${en.install}: ${olderPin.displayName}` })
+    // Older pin: a roster-exit alignment, never an update (P2-2 gate) — and
+    // still no Install pill over a proven install.
+    const olderCard = screen.getByRole('button', { name: new RegExp(olderPin.displayName, 'u') })
     expect(within(olderCard).getByText('Installed 1.2.3')).toBeTruthy()
     expect(within(olderCard).queryByText(/Update available/u)).toBeNull()
+    expect(within(olderCard).queryByText(en.install)).toBeNull()
 
+    // `fresh` has no installation at all: no badge, only the Install action.
     const freshCard = screen.getByRole('button', { name: `${en.install}: ${fresh.displayName}` })
     expect(within(freshCard).queryByText(/Installed/u)).toBeNull()
     expect(within(freshCard).queryByText(/Update available/u)).toBeNull()
+    expect(within(freshCard).getByText(en.install)).toBeTruthy()
+
+    // The badge is the state, but an installed row still opens its detail
+    // modal on click — with the install's local controls, no install preview.
+    fireEvent.click(sameCard)
+    const dialog = await screen.findByRole('dialog', { name: samePin.displayName })
+    expect(within(dialog).getByRole('button', { name: `${en.uninstall}: ${samePin.displayName}` })).toBeTruthy()
+  })
+
+  it('rides the banner update flow from an update-available row: the Update pill opens the same replacement preview (#036 follow-up)', async () => {
+    const item = makeInstallableItem(firstSource, 'row-update', 'Row Update Plugin', 'dsh-plugin-row-update', '1.3.0')
+    // The receipt points at the same catalog row (an in-place re-pin) with
+    // the older version: the row badges update-available, so its action
+    // pill is the banner's Update label — never an Install pill.
+    const receipt = makeReceipt({
+      packageName: item.package!.name,
+      version: '1.2.3',
+      itemId: item.id,
+      displayName: item.displayName,
+    })
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({
+      installations: [{ kind: 'managed', status: 'active', action: 'uninstall', receipt }],
+    })
+    let resolvePreview: ((value: MarketOperationPreviewResponse) => void) | undefined
+    vi.mocked(previewMarketOperation).mockImplementation(() => new Promise(resolve => { resolvePreview = resolve }))
+    render(<MarketSettingsTab {...props} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.installable }))
+    expect(await screen.findByRole('heading', { name: en.updateBannerTitle })).toBeTruthy()
+    const card = await screen.findByRole('button', { name: `${en.updateAction}: ${item.displayName}` })
+    await waitFor(() => expect(within(card).getByText('Installed 1.2.3')).toBeTruthy())
+    expect(within(card).getByText('Update available → 1.3.0')).toBeTruthy()
+    expect(within(card).queryByText(en.install)).toBeNull()
+
+    const replacementPreview = {
+      action: 'install',
+      profileName: 'web',
+      packageName: item.package!.name,
+      version: item.latestVersion!,
+      displayName: item.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-row-update-preview',
+      replaces: '1.2.3',
+    } as const
+
+    // The banner's Update button rides the replacement preview...
+    const banner = document.querySelector('.dshMarketUpdateBanner') as HTMLElement
+    const bannerEntry = within(banner).getByText(item.displayName).closest('li')!
+    fireEvent.click(within(bannerEntry).getByRole('button', { name: `${en.updateAction}: ${item.displayName} 1.3.0` }))
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenCalledWith({
+        action: 'install',
+        sourceRecordId: firstSource.sourceRecordId,
+        itemId: item.id,
+      }, expect.any(AbortSignal))
+    })
+    await act(async () => { resolvePreview?.(replacementPreview) })
+    const bannerDialog = await screen.findByRole('dialog', { name: en.confirmUpdateTitle })
+    fireEvent.click(within(bannerDialog).getByRole('button', { name: en.cancel }))
+
+    // ...and the row's Update pill performs the identical action: the same
+    // preview request, resolving into the same `replaces` confirmation
+    // chain — one shared flow, not a parallel one.
+    fireEvent.click(screen.getByRole('button', { name: `${en.updateAction}: ${item.displayName}` }))
+    await waitFor(() => expect(previewMarketOperation).toHaveBeenCalledTimes(2))
+    expect(previewMarketOperation).toHaveBeenLastCalledWith({
+      action: 'install',
+      sourceRecordId: firstSource.sourceRecordId,
+      itemId: item.id,
+    }, expect.any(AbortSignal))
+    await act(async () => { resolvePreview?.(replacementPreview) })
+    const confirmDialog = await screen.findByRole('dialog', { name: en.confirmUpdateTitle })
+    expect(within(confirmDialog).getByText(en.replacesVersion)).toBeTruthy()
+    expect(within(confirmDialog).getByText('1.2.3')).toBeTruthy()
+    expect(within(confirmDialog).getByRole('button', { name: en.confirmUpdate })).toBeTruthy()
   })
 
   it('badges external and immutable matches as installed only, never as updateable (#036)', async () => {
@@ -2028,15 +2125,21 @@ describe('MarketSettingsTab', () => {
 
     // The catalog pins 9.9.9 far above anything installed, yet these are
     // non-managed installs: honest badges say installed (no version — the
-    // Host view carries none) and never promise a replacement.
-    const externalCard = await screen.findByRole('button', { name: `${en.install}: ${external.displayName}` })
+    // Host view carries none) and never promise a replacement. Nor is there
+    // any action pill — this flow cannot replace them, so the row offers
+    // neither Install nor Update; the badge is the whole state.
+    const externalCard = await screen.findByRole('button', { name: new RegExp(external.displayName, 'u') })
     await waitFor(() => expect(within(externalCard).getByText(en.installed)).toBeTruthy())
     expect(within(externalCard).queryByText(/^Installed /u)).toBeNull()
     expect(within(externalCard).queryByText(/Update available/u)).toBeNull()
+    expect(within(externalCard).queryByText(en.install)).toBeNull()
+    expect(within(externalCard).queryByText(en.updateAction)).toBeNull()
 
-    const immutableCard = screen.getByRole('button', { name: `${en.install}: ${immutable.displayName}` })
+    const immutableCard = screen.getByRole('button', { name: new RegExp(immutable.displayName, 'u') })
     await waitFor(() => expect(within(immutableCard).getByText(en.installed)).toBeTruthy())
     expect(within(immutableCard).queryByText(/Update available/u)).toBeNull()
+    expect(within(immutableCard).queryByText(en.install)).toBeNull()
+    expect(within(immutableCard).queryByText(en.updateAction)).toBeNull()
     expect(screen.queryByRole('heading', { name: en.updateBannerTitle })).toBeNull()
   })
 
@@ -2055,8 +2158,9 @@ describe('MarketSettingsTab', () => {
     })
     render(<MarketSettingsTab {...({ t, readLocale: () => 'en' } as MarketSettingsTabProps)} />)
 
-    // The same row badges on Installable...
-    const installableCard = await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` })
+    // The same row badges on Installable — and, with the pin strictly
+    // newer, swaps its action pill to the banner's Update label...
+    const installableCard = await screen.findByRole('button', { name: `${en.updateAction}: ${item.displayName}` })
     await waitFor(() => expect(within(installableCard).getByText('Update available → 1.3.0')).toBeTruthy())
 
     // ...and stays bare on Discover even though the verified inventory is
@@ -2084,9 +2188,13 @@ describe('MarketSettingsTab', () => {
 
     // `Record<MarketLocaleKey, string>` keeps both languages keyed alike;
     // this pins the interpolated zh rendering itself.
-    const card = await screen.findByRole('button', { name: `安装: ${item.displayName}` })
+    const card = await screen.findByRole('button', { name: `${zh.updateAction}: ${item.displayName}` })
     await waitFor(() => expect(within(card).getByText('已安装 1.2.4')).toBeTruthy())
     expect(within(card).getByText('可更新 → 1.3.0')).toBeTruthy()
+    // The update-available row trades its 安装 pill for 更新 — the same
+    // key the banner's Update button renders.
+    expect(within(card).getByText(zh.updateAction)).toBeTruthy()
+    expect(within(card).queryByText(zh.install)).toBeNull()
   })
 
   it('opens and closes the shared Market surface from the sidebar launcher', async () => {
