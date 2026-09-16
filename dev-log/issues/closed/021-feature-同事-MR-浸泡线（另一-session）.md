@@ -1,11 +1,12 @@
 # [Feature] #021 同事 MR 浸泡线（另一 session）
 
 **Issue ID**: #021
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Low
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-14
+**Updated**: 2026-09-16
+**Closed**: 2026-09-16
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -127,3 +128,7 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## 解决总结
+
+关闭（July 2026-09-16）：归属另一 session 管理，本账本不再跟踪。
