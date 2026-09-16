@@ -131,6 +131,7 @@ Python 面：dsh-plugin-desktop/src/desktop-shared-python-environment.ts（provi
 ① wheel Windows py3.12 全量可得性（本机 Linux 估的体积，Windows 轮子 ±20%）②安装包 +60-90MB 后 NSIS 时长回归（A/B 实验室可量化，见 #041）③30MB 棘轮余量 ④ensure-present 与用户自装版本共存的最低版本声明 ⑤bundled 技能排名低于用户同名技能（pdf/docx/xlsx，by design 记档）⑥ ROUTER 网关本身的可用性/配额（外部依赖，同 #040 D 线）
 
 【批次建议】批A=离线四件(docx/xlsx/pdf/pptx)+D4 打包修复；批B=API 五件+D1 注入+D5 vendor+D6 deadline；批C=共享环境预装清单（动 P11 面，独立评审）；0.1.3 一次发版收口。
+- D3 决策修订（2026-09-16 11:21，July）：静态标注不可用【废弃】→ 动态能力探测三段式：①SKILL.md 指导 agent 先检查环境（soffice/pandoc/playwright 在不在 PATH 或已知位置）②缺失则尝试下载安装（pandoc=独立二进制、playwright=npx playwright install chromium 用户级、soffice=便携版/官方安装器，走企业代理+现有审批门）③安装失败才降级为该功能不可用并给替代路径。批A四技能的静态标注需按此返工（docx/pdf/xlsx 三个副本的 SKILL.md；pptx 本无此类依赖）。安全性注记：下载执行走既有沙箱/审批面，不新增通道——与 #040 批准门一致。
 
 ## 验收标准
 
