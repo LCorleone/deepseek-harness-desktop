@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-15
-**Updated**: 2026-09-15
+**Updated**: 2026-09-16
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-16
+- Phase2 定向更新（2026-09-16）：b97 相位图实证 host 组装=19.5-22s 主菜（60%）→主修=#879 之后的 #829 选择性 ASAR，已立 #044 观察模式卡（July 谨慎重：先盯上游 v2.0.11+ 变动，三步闸门方案冻结待解冻）。本卡剩余活跃项=T1 并行化（python_check 3.7s+渲染 2.8s 可重叠，预期-4~5s，零打包风险）。仪表化遗留小bug：process_start 事件未入库（两靴均缺，缓冲flush待查）随下批修。
 
 ### 2026-09-15 HH:MM
 - [ ] 完成需求分析
