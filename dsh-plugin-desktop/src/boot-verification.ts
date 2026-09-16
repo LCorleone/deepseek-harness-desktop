@@ -1569,8 +1569,14 @@ export function collectDesktopBootBundles(
  * All signed entries the boot classification may consider for one package
  * name (P15): when a verified beta overlay carries the name, its entries
  * wholly replace the stable ones — the same per-name merge rule the market
- * catalog applies — with revocation sticky by name, so a stale beta
- * publication can never resurrect a package any stable entry revoked.
+ * catalog applies — with revocation sticky at the exact name@version pin
+ * (the P15 phase 0 key, the same one
+ * `findDesktopCompanyManifestPackageWithBeta` uses): a stale beta
+ * publication can never resurrect the version it retired, while a retired
+ * older version of the name never shadows the live pins (the pre-P15
+ * name-level key here forced revoked:true onto every beta entry of a name
+ * whose stable manifest also carried a retired 0.15.2 — the 2026-09-16
+ * sidebar incident's twin).
  */
 function bootClassificationCandidates(
   manifest: DesktopCompanyManifest,
@@ -1581,12 +1587,14 @@ function bootClassificationCandidates(
   if (beta.length === 0) {
     return manifest.packages.filter(entry => entry.packageName === packageName)
   }
-  const stableRevoked = manifest.packages.some(
-    entry => entry.packageName === packageName && entry.revoked === true,
+  const stableRevokedVersions = new Set(
+    manifest.packages
+      .filter(entry => entry.packageName === packageName && entry.revoked === true)
+      .map(entry => entry.version),
   )
-  return stableRevoked
-    ? beta.map(entry => entry.revoked ? entry : { ...entry, revoked: true })
-    : beta
+  return beta.map(entry => stableRevokedVersions.has(entry.version) && entry.revoked !== true
+    ? { ...entry, revoked: true }
+    : entry)
 }
 
 /**

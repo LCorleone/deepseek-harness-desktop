@@ -368,11 +368,15 @@ const companyPackageKey = (entry: Pick<CompanyManifestPackage, 'packageName'>): 
  * byte-identical overlay entry (the post-promote steady state) therefore
  * changes nothing — except that a stable manifest carrying two versions of
  * one package (not the published shape, but schema-legal) converges to the
- * overlay's single pin, same as any other overlay re-pin of that package. One field never flips back: revocation is sticky — a
- * package any stable entry pins as revoked:true stays revoked in the merge
- * even when a stale beta entry still says false, so a pre-revocation beta
- * publication can never resurrect a revoked package on a roster machine
- * (the client-side half of the pipeline's sign-time alignment). Every beta
+ * overlay's single pin, same as any other overlay re-pin of that package. One field never flips back: revocation is sticky — keyed by
+ * exact name@version (the P15 phase 0 key, the same one
+ * `findDesktopCompanyManifestPackageWithBeta` uses), so a stale beta
+ * publication can never resurrect the version it retired — while a
+ * revoked OLDER version must not shadow the live pin of the same name
+ * (the pre-P15 name-level key did exactly that: stable carrying the
+ * retired 0.15.2 beside a live 0.18.1 forced revoked:true onto the
+ * overlay's 0.18.1 and hid dsh-better-sidebar from every roster
+ * machine's market, 2026-09-16). Every beta
  * entry must be representable in the v1 catalog contract before it may
  * enter the merge: one that cannot be is a publish fault, and the caller
  * drops the whole overlay rather than partially adopting signed content.
@@ -394,6 +398,18 @@ export function mergeCompanyBetaPackages(
     assertRepresentableEntry(entry)
     overlayByPackage.set(companyPackageKey(entry), entry)
   }
+  // Revocation is sticky at the exact name@version pin (P15 phase 0):
+  // only the stable pin of the SAME version a stale overlay still claims
+  // installable keeps its revoked:true. A retired older version of the
+  // name (0.15.2 beside a live 0.18.1) shadows nothing — the name-level
+  // pre-P15 key here hid every such package from roster machines.
+  // (`companyPackageKey` is the NAME alone for the per-name replace below,
+  // so the sticky set needs its own version-pinned key.)
+  const stableRevokedPins = new Set(
+    stablePackages
+      .filter(entry => entry.revoked === true)
+      .map(entry => `${entry.packageName}@${entry.version}`),
+  )
   const merged: CompanyManifestPackage[] = []
   const replaced = new Set<string>()
   for (const entry of stablePackages) {
@@ -408,7 +424,7 @@ export function mergeCompanyBetaPackages(
     if (replaced.has(companyPackageKey(entry))) continue
     replaced.add(companyPackageKey(entry))
     merged.push(
-      entry.revoked === true && overlayEntry.revoked !== true
+      stableRevokedPins.has(`${overlayEntry.packageName}@${overlayEntry.version}`) && overlayEntry.revoked !== true
         ? { ...overlayEntry, revoked: true }
         : overlayEntry,
     )

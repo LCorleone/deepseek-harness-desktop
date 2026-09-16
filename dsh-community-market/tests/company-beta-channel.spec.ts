@@ -393,6 +393,36 @@ describe('mergeCompanyBetaPackages (P9)', () => {
     expect(merged).toHaveLength(2)
   })
 
+  it('a retired older version never shadows the live pin: revocation sticky at exact name@version (2026-09-16 sidebar incident, red)', () => {
+    // The incident shape, verbatim from the deployed catalog: stable pins
+    // dsh-better-sidebar@0.15.2 revoked:true (the retire record from the
+    // 0.18.1 promote) BESIDE the live 0.18.1, and the beta overlay pins
+    // 0.18.1. The pre-P15 name-level sticky key forced revoked:true onto
+    // the merged 0.18.1 — the market row vanished on every roster machine
+    // (stable-only machines were fine). Keyed by exact name@version the
+    // 0.15.2 retire shadows nothing and the live pin rides its own flag.
+    const stable = betaPackagesOf(unsignedManifest({
+      packages: [
+        packageEntry(),
+        packageEntry({ packageName: 'dsh-better-sidebar', version: '0.15.2', revoked: true }),
+        packageEntry({ packageName: 'dsh-better-sidebar', version: '0.18.1', revoked: false }),
+      ],
+    }))
+    const beta = betaPackagesOf(unsignedManifest({
+      sequence: 37,
+      packages: [
+        packageEntry(),
+        packageEntry({ packageName: 'dsh-better-sidebar', version: '0.18.1', revoked: false }),
+      ],
+    }))
+    const merged = mergeCompanyBetaPackages(stable, beta)
+    const sidebar = merged.filter(entry => entry.packageName === 'dsh-better-sidebar')
+    expect(sidebar).toHaveLength(1)
+    expect(sidebar[0]?.version).toBe('0.18.1')
+    expect(sidebar[0]?.revoked).toBe(false)
+    expect(merged).toHaveLength(2)
+  })
+
   it('a re-pinned package replaces the stable entry by name — never a second version row (P10 red)', () => {
     // The real-machine bug shape: dedup by name@version kept both versions,
     // so the roster machine's catalog showed 0.4.183 and 0.4.184 side by
@@ -412,7 +442,15 @@ describe('mergeCompanyBetaPackages (P9)', () => {
       .toBe(`sha512-${Buffer.alloc(64, 13).toString('base64')}`)
   })
 
-  it('revocation stays sticky across a re-pin: a stable-revoked package cannot be un-revoked by a newer beta version', () => {
+  it('revocation is sticky at the same pin only: a newer beta re-pin of a retired name is a fresh pin (P15 phase 0)', () => {
+    // Aligning with the desktop beta-aware lookup's P15 phase 0 key: a
+    // retire record (stable 2.0.0 revoked:true) retires THAT version, not
+    // the name — exactly how the stable-only view already behaves (a
+    // revoked 0.15.2 never hid the newer 0.18.1 there). A newer beta
+    // version rides its own signed revoked flag; banning a name outright
+    // means revoking every pin of it in stable, which still hides it here.
+    // (The pre-P15 name-level sticky this test used to pin forced
+    // revoked:true onto the re-pin — the 2026-09-16 sidebar incident.)
     const stable = betaPackagesOf(unsignedManifest()) // pins @deepseek-ai/cool-plugin@2.0.0 revoked:true
     const beta = betaPackagesOf(unsignedManifest({
       sequence: 53,
@@ -423,7 +461,7 @@ describe('mergeCompanyBetaPackages (P9)', () => {
     const merged = mergeCompanyBetaPackages(stable, beta)
     const resurrected = merged.find(entry => entry.packageName === '@deepseek-ai/cool-plugin')
     expect(resurrected?.version).toBe('2.1.0')
-    expect(resurrected?.revoked).toBe(true)
+    expect(resurrected?.revoked).toBe(false)
     // The untouched stable plugin survives beside the re-pinned one.
     expect(merged).toHaveLength(2)
   })
