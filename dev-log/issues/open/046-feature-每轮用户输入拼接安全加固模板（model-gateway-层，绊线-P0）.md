@@ -141,6 +141,12 @@ impl NewFeature {
 - 模板 v1 定稿冻结（2026-09-16 21:55，July 拍板）：英文版（对齐英文 system prompt），<GUARDRAIL MESSAGE INVISIBLE TO USER> 标签包裹 + <USER>{placeholder}</USER> 拼接格式；内容=资产保护（skills 源码禁输出允许阅读/密钥值禁输出非密钥 env 可读）+边界（禁他人内网探测本机端口检查除外/禁内部 API 枚举/恶意域名不确定不访问）+代码操作（禁越权代码/禁攻击代码/破坏性操作先确认/资源异常自停）+脚本执行（先读后跑，user skills 全文读懂）+反绕过条款。⑤数据外带 July 裁定搁置（prompt 层解决不了，通道在代码层）。文件：dsh-plugin-desktop/assets/company-guardrail/prompt-template-v1.md。仍等开工口令（worker 实现机制+验证器字段，搭 b102）。
 - 设计变更（2026-09-16 22:01，July 兼容性裁定）：securityPrompt 不进 manifest 顶层字段（老验证器未知键=整拒 manifest=目录全黑，字段方案需 fleet 全升级，与『发布不影响旧客户端』冲突）→ 改为【同源签名兄弟文件】security-prompt.json：同 trust roots ed25519 签名、revision 单调棘轮、8KiB 上限、piggyback 既有启动 catalog fetch 并发块（零新增启动延迟）、失败→缓存→内嵌默认三级回退。老客户端无任何 fetch 路径=构造性零影响，b102 后随时可发。worker-046 已 steer 转向（0223c403）。发布管线侧（CI 签名/上传兄弟文件）留下一轮。
 - 通道分裂设计（2026-09-16 22:22，July 拍板）：prompt 签名文件镜像 catalog 双通道——security-prompt.json（stable）+ security-prompt.beta.json（beta）。①beta 文档仅在当靴 beta overlay applied 时才拉取（复用目录 roster 判定，不重复 testers 签名）②优先级=beta>stable>缓存>内嵌 ③棘轮按通道独立（防跨通道降级被全局棘轮卡死：beta rev5→stable rev3 必须接受）④两文档独立并发、独立降级。July 发布指令：client 轮（worker→review→fix）完成后，做发布轮=管线签名/上传双文件+先发 beta；前提=b102 已出且名单机已升（老客户端构造性无感不变）。worker 已二次 steer。
+- client 轮 worker 完成（2026-09-16 22:35，worker-046 0223c403，147 工具调用，未提交）：
+【改动面】model-gateway.ts +208（fetch 包装+rewrite+install）、main.ts +138（T1 块并发预取双文档+受管靴激活）、desktop-market.ts +14（仅导出共享密码学原语，无验证器键变更）、company-guardrail.ts 新 724 行（URL 派生/自验证器/按通道缓存/优先级判定/启动解析）、embed 脚本+package.json 打包链；51 新测试；desktop 2580 绿/typecheck 0/layout 绿/build+closure+loader 预飞全过；冻结资产字节不动（cmp 验证）。
+【关键决策】①接线缝=Electron 主进程 globalThis.fetch 包装（URL 集合精确匹配+POST+JSON 串；其余字节透传；解析失败透传=绊线永不弄断请求）②幂等=模板前缀标记（startsWith），适配器内重试/宿主层重试各至多一拼③状态=独立 company-guardrail/state.json（0o700+文件锁+原子写，按通道独立棘轮，读合并写防跨通道踩踏）④优先级=beta>stable>缓存>内嵌；通道内 replay==/回滚<均拒；跨通道降级接受⑤beta 门控复用靴内 beta-overlay 结果（零重复 roster）⑥老客户端构造性无感⑦密码学复用不 fork（market 方向合法+desktop-market 导出 DER/验签）⑧不阻塞启动（8s 各自上限，落地即重判优先级）⑨模板文本零进日志/遥测（测试钉死）。
+【worker 标记的跟进项】①终端 CLI 子进程绕过包装（Host 外进程做受管调用不经 wrapper）——需 July 拍：后续轮 patch dsh-llm-pi-ai onPayload 或接受 Host-only 范围 ②发布侧（CI 签名双文件）留下轮 ③供应商前缀缓存尾巴每轮一交换重烤（无 harness 配合不可避免，informational） ④离线+摘名单机器持有上次 beta 模板直到 stable 文档可验（可接受权衡）。
+→ reviewer 待派（全循环已授权）。
+- July 裁定（2026-09-16 22:37）：CLI 子进程绕过=选 B，接受 Host-only 覆盖范围（先上先测）；patch dsh-llm-pi-ai 穿钩子记为未来项，不入本轮。
 
 ## 验收标准（含远程更新通道）
 
