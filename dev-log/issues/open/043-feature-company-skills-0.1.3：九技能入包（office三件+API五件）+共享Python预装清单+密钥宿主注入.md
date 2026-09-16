@@ -152,6 +152,7 @@ Python 面：dsh-plugin-desktop/src/desktop-shared-python-environment.ts（provi
 【P3-a 记档】deferred 装腿与活着的 dsh-pip 别名窗口不互斥（首启窄窗、可变环境；再探保护的是「用户版本优先」语义）——后续观察项
 门禁：typecheck 0、company-skills-env+bundled-python-wheels 29 测试绿、check:layout 绿。
 - b98 首次构建失败 → 根因+修复（2026-09-16 17:55）：CI 烘焙真 blob 后，company-skills-env.spec.ts 三处断言『嵌入式默认 blob 为空』失败——测试依赖了构建期注入状态（检查点在 secret 生效时必然红）。修=spec 改用显式 EMPTY 夹具（encode/decode 往返+密钥无明文迹），不再读嵌入式常量；仓库卫生由 CI 步骤的空载荷 throw 兜底。本地模拟 CI（真 blob 烘焙后跑全套）2528 全绿，随后恢复空默认提交。【副作用】失败的 run #98 消耗了构建号 → 下次成功构建 = b99。
+- b99 构建第二次失败 → 修复（2026-09-16 18:00）：新入 Windows 门禁的 bundled-python-wheels.spec.ts:310 用手写 POSIX 风格 file:///workspace/... URL → Windows 上 fileURLToPath 抛 ERR_INVALID_FILE_URL_PATH（仓内已知同款坑：上游 module-resolution.spec 因此不能进 Windows 门禁）。修=改用 pathToFileURL(join(cwd,'lib','main.js')) 生成平台正确 URL。预防性扫描三个新 spec：无 file:/// 残留、无路径分隔符断言（59 处 join 构建期望），判定 Windows-safe。【构建号】#98/#99 两次失败已消耗 → 下次 = b100。
 
 ## 验收标准
 

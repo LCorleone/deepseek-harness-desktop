@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   BUNDLED_PYTHON_WHEELS_LOCK_NAME,
@@ -307,7 +307,10 @@ describe('packaged wheel-set directory resolution', () => {
     // is its sibling resource directory.
     const packaged = packagedPythonWheelsDirectory('file:///C:/install/resources/app.asar.unpacked/lib/main.js')
     expect(packaged.endsWith(join('resources', 'python-wheels'))).toBe(true)
-    expect(packagedPythonWheelsDirectory(new URL('file:///workspace/lib/main.js').href)
-      .endsWith(join('python-wheels'))).toBe(true)
+    // A platform-built absolute URL keeps this case runnable on the Windows
+    // gate too: a hand-written POSIX-style `file:///workspace/...` URL throws
+    // ERR_INVALID_FILE_URL_PATH under fileURLToPath on Windows.
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'lib', 'main.js')).href
+    expect(packagedPythonWheelsDirectory(moduleUrl).endsWith(join('python-wheels'))).toBe(true)
   })
 })
