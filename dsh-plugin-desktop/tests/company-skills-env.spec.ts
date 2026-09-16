@@ -22,7 +22,6 @@ import {
   managedCompanySkillsEnvironment,
   setCompanySkillsExecutionEnvironment,
 } from '../src/company-skills-env.ts'
-import { COMPANY_SKILLS_ENV_BLOB } from '../src/company-skills-env-blob.ts'
 
 afterEach(() => {
   setCompanySkillsExecutionEnvironment(undefined)
@@ -45,6 +44,7 @@ function policy(locked: boolean): DesktopPolicy {
 }
 
 const LIVE = { routerUrl: 'http://10.173.109.204:8080', routerApiKey: 'synthetic-router-key' }
+const EMPTY = { routerUrl: '', routerApiKey: '' }
 
 describe('the generator reads ROUTER_* from the invoking environment', () => {
   it('yields the empty payload when neither variable is set (the committed default)', () => {
@@ -114,8 +114,11 @@ describe('the policy gate: locked builds only, fail closed on corruption', () =>
     expect(managedCompanySkillsEnvironment(undefined, 'not base64 !!!')).toBeUndefined()
   })
 
-  it('a locked build with the empty committed blob injects nothing', () => {
-    expect(managedCompanySkillsEnvironment(policy(true))).toBeUndefined()
+  it('a locked build with an empty payload injects nothing', () => {
+    // Explicit empty payload, not the embedded constant: the release pipeline
+    // bakes real values into the embedded blob (#043), so these assertions
+    // must not depend on the checkout's build state.
+    expect(managedCompanySkillsEnvironment(policy(true), encodeCompanySkillsEnvBlob(EMPTY))).toBeUndefined()
   })
 
   it('a locked build with a live blob decodes it', () => {
@@ -156,13 +159,18 @@ describe('the process-global slot the plugin reads', () => {
   })
 })
 
-describe('the committed blob', () => {
-  it('decodes, and equals what a secret-free environment regenerates (no plaintext committed)', () => {
-    expect(decodeCompanySkillsEnvBlob(COMPANY_SKILLS_ENV_BLOB))
-      .toEqual(companySkillsEnvFromEnvironment({}))
-    expect(isEmptyCompanySkillsEnvPayload(decodeCompanySkillsEnvBlob(COMPANY_SKILLS_ENV_BLOB))).toBe(true)
+describe('the empty payload shape', () => {
+  it('round-trips, equals what a secret-free environment produces, and carries no plaintext trace', () => {
+    // The EMPTY fixture stands in for the committed default. The release
+    // pipeline overwrites the embedded constant with real values (#043), so
+    // asserting on the constant would fail exactly when the secret wiring
+    // works — the property under test is the encoding, not the build state.
+    const empty = encodeCompanySkillsEnvBlob(EMPTY)
+    expect(decodeCompanySkillsEnvBlob(empty)).toEqual(EMPTY)
+    expect(decodeCompanySkillsEnvBlob(empty)).toEqual(companySkillsEnvFromEnvironment({}))
+    expect(isEmptyCompanySkillsEnvPayload(decodeCompanySkillsEnvBlob(empty))).toBe(true)
     // The obfuscated bytes carry no plaintext trace of a router secret.
-    expect(COMPANY_SKILLS_ENV_BLOB).not.toContain(LIVE.routerApiKey)
-    expect(/sk-[A-Za-z0-9_-]{8,}/u.test(COMPANY_SKILLS_ENV_BLOB)).toBe(false)
+    expect(empty).not.toContain(LIVE.routerApiKey)
+    expect(/sk-[A-Za-z0-9_-]{8,}/u.test(empty)).toBe(false)
   })
 })
