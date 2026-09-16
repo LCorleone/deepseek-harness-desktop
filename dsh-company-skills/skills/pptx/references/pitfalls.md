@@ -6,6 +6,8 @@
 
 Your first render is almost never correct. Approach QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you weren't looking hard enough.
 
+> **markitdown is not preinstalled** — run the [Python Tools three-stage check/install](../SKILL.md#reading-content) before this QA pass; if it stays missing, read the slide XML from the unpacked tree (see [editing.md](editing.md)) instead of the markdown extraction below.
+
 ### Content QA
 
 ```bash

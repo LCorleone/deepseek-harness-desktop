@@ -25,6 +25,15 @@ import { archivedAsarPath, isPackagedApplicationPath } from './packaged-runtime-
 const BUNDLED_PYTHON_DIRECTORY = 'python-runtime'
 
 /**
+ * Directory extraResources places the preinstall wheel set into (issue #043,
+ * decision D2): the locked wheels plus their lockfile the shared desktop
+ * Python environment installs whatever is missing of, locally, at first
+ * provisioning. Build inputs to a mutable environment — deliberately OUTSIDE
+ * the bundled tree's digest manifest (see `scripts/bundled-python-wheels.ts`).
+ */
+const BUNDLED_PYTHON_WHEELS_DIRECTORY = 'python-wheels'
+
+/**
  * Build-time digest manifest shipped at `lib/python-runtime-sha256.json`.
  *
  * `beforePack` generates it from the staged tree (see
@@ -115,6 +124,21 @@ function relativePosix(from: string, to: string): string {
 export function packagedBundledPythonDirectory(moduleUrl: string): string {
   const moduleDirectory = dirname(fileURLToPath(new URL(moduleUrl)))
   return join(dirname(dirname(moduleDirectory)), BUNDLED_PYTHON_DIRECTORY)
+}
+
+/**
+ * Resolve the packaged wheel-set directory beside this module's packaged
+ * tree — the same layout computation as
+ * {@link packagedBundledPythonDirectory}, one sibling over. In an unpackaged
+ * checkout the path points at a directory that does not exist, and the
+ * shared environment's library-repair check skips on the unreadable
+ * lockfile there (the wheel set is a packaged-only resource).
+ * @param moduleUrl - URL of a module emitted below the package's `lib` directory.
+ * @returns the packaged wheel-set directory for this application layout.
+ */
+export function packagedPythonWheelsDirectory(moduleUrl: string): string {
+  const moduleDirectory = dirname(fileURLToPath(new URL(moduleUrl)))
+  return join(dirname(dirname(moduleDirectory)), BUNDLED_PYTHON_WHEELS_DIRECTORY)
 }
 
 /**

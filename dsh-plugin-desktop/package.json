@@ -339,6 +339,10 @@
       {
         "from": "build/python-runtime",
         "to": "python-runtime"
+      },
+      {
+        "from": "build/python-wheels",
+        "to": "python-wheels"
       }
     ],
     "beforePack": "./scripts/prepare-bundled-runtimes.ts",

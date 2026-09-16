@@ -784,6 +784,7 @@ describe('published package surface', () => {
     expect(manifest.build?.extraResources).toEqual([
       { from: 'build/node-runtime', to: 'node-runtime' },
       { from: 'build/python-runtime', to: 'python-runtime' },
+      { from: 'build/python-wheels', to: 'python-wheels' },
     ])
     expect(manifest.build?.beforePack).toBe('./scripts/prepare-bundled-runtimes.ts')
     expect(manifest.build?.toolsets).toEqual({ nsis: '1.2.1' })

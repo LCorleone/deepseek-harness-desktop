@@ -4,6 +4,8 @@
 
 > **🔑 The Preservation Contract — styling locked, content free.** Two layers, opposite rules. **Visual styling is locked** — colors, fonts, decorative graphics/图案, images, charts, icons: reuse the template's as-is; change none, invent none. **Content and structure are yours** — digest the user's material and **write the actual slide text yourself** (don't paste placeholders/source verbatim; compose proper copy), and freely **organize the deck**: add/remove/reorder slides, pick layouts per page, drop a slot you don't need. The line: *you decide what each slide says and how the deck flows; the template decides how every element looks.* Do not pull colors/fonts from `design-system.md` to restyle, and do not introduce visual elements the template doesn't already use.
 
+> **markitdown is not preinstalled** — the `python -m markitdown` steps below need the [Python Tools three-stage check/install](../SKILL.md#reading-content); if it stays missing, analyze `template.pptx` by unpacking its slide XML (steps 3+ below need no converter).
+
 When using an existing presentation as a template:
 
 1. **Copy and analyze**:

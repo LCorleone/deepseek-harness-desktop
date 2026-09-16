@@ -55,7 +55,7 @@ function fakeDsn(overrides: Partial<ClientEventDbDsn> = {}): ClientEventDbDsn {
     host: 'db.telemetry.example',
     port: 3307,
     user: 'report_writer',
-    password: 's3cret-event-pw',
+    password: 'example-event-placeholder',
     database: 'dsh_usage_test',
     ...overrides,
   }
@@ -204,7 +204,7 @@ describe('client event reporter', () => {
     // The failure line carries the event type and counters but no DSN
     // fragments (account, host, password) and no detail content.
     expect(errors[0]).toContain('type=boot_verify')
-    expect(errors[0]).not.toContain('s3cret-event-pw')
+    expect(errors[0]).not.toContain('example-event-placeholder')
     expect(errors[0]).not.toContain('report_writer')
     expect(errors[0]).not.toContain('db.telemetry.example')
 
@@ -229,7 +229,7 @@ describe('client event reporter', () => {
     await settle(3)
 
     expect(reporter.stats()).toMatchObject({ recorded: 1, written: 0, dropped: 1, errors: 1, connected: false })
-    expect(errors[0]).not.toContain('s3cret-event-pw')
+    expect(errors[0]).not.toContain('example-event-placeholder')
   })
 
   it('never throws from a rejecting boundary factory', async () => {
@@ -243,7 +243,7 @@ describe('client event reporter', () => {
     expect(() => reporter.record(row())).not.toThrow()
     await settle(3)
     expect(reporter.stats()).toMatchObject({ dropped: 1, errors: 1 })
-    expect(errors[0]).not.toContain('s3cret-event-pw')
+    expect(errors[0]).not.toContain('example-event-placeholder')
   })
 
   it('counts records after disposal as drops', async () => {
@@ -632,6 +632,48 @@ describe('python runtime projection', () => {
     expect('shared' in detail).toBe(false)
     expect('pip' in detail).toBe(false)
     expect(pythonRuntimeEvent(true, '3.12.10', {})).toEqual({ available: true, version: '3.12.10' })
+  })
+
+  it('projects the preinstall wheel-set coverage a boot can vouch for (#043)', () => {
+    // Fixture counts follow the shipped lock's 48 distributions so they do
+    // not read as a second, contradicting pin count next to the wheel-lock
+    // tests (this spec does not import the lock).
+    // A healthy repaired tree reports full coverage of the pinned set.
+    expect(pythonRuntimeEvent(true, '3.12.10', { shared: true, pip: true, libs: { pinned: 48, installed: 48 } })).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: true,
+      pip: true,
+      libs: { pinned: 48, installed: 48 },
+    })
+    // A partially repaired tree (pip half-succeeded, or a checksum refused
+    // a wheel) still reports an honest count.
+    expect(pythonRuntimeEvent(true, '3.12.10', { shared: true, pip: true, libs: { pinned: 48, installed: 41 } })).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: true,
+      pip: true,
+      libs: { pinned: 48, installed: 41 },
+    })
+  })
+
+  it('drops the libs fact when the counts are not vouchable numbers', () => {
+    for (const libs of [
+      { pinned: -1, installed: 0 },
+      { pinned: 48, installed: Number.NaN },
+      { pinned: 1.5, installed: 1 },
+      { pinned: Number.POSITIVE_INFINITY, installed: 1 },
+    ] as const) {
+      const detail = pythonRuntimeEvent(true, '3.12.10', { libs })
+      expect('libs' in detail).toBe(false)
+    }
+    // And a boot that never resolved coverage (no wheel set, unreadable
+    // lock, failed probe) omits the field entirely — legacy-shape rows.
+    expect(pythonRuntimeEvent(true, '3.12.10', { shared: true })).toEqual({
+      available: true,
+      version: '3.12.10',
+      shared: true,
+    })
   })
 
   it('round-trips python_runtime details of both generations through the row projection', () => {

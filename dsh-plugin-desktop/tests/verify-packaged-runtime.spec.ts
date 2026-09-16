@@ -37,6 +37,7 @@ import {
   verifyArchiveOnlyPartition,
   verifyBundledNodeRuntime,
   verifyBundledPythonRuntime,
+  verifyBundledPythonWheels,
   verifyCompanyReleaseChecklist,
   verifyElectronFuseStage,
   verifyElectronFuseWire,
@@ -54,6 +55,18 @@ import {
   type PackagedDiagnosticWorkerLauncher,
 } from '../scripts/verify-packaged-runtime.ts'
 import { FORBIDDEN_MACOS_UNIVERSAL_ENTRIES } from '../scripts/mac-universal.ts'
+
+/** Minimal one-entry wheel lock for afterPack probes exercising other gates. */
+function wheelsLockText(): string {
+  return `${JSON.stringify({
+    version: 1,
+    python: '3.12',
+    platform: 'win_amd64',
+    distributions: [
+      { name: 'pyyaml', version: '6.0.3', filename: 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl', sha256: 'b'.repeat(64), size: 20 },
+    ],
+  })}\n`
+}
 
 function context(
   appOutDir: string,
@@ -236,6 +249,15 @@ describe('packaged desktop runtime verification', () => {
           calls.push(filename)
           return true
         },
+        readFile: () => `${JSON.stringify({
+          version: 1,
+          python: '3.12',
+          platform: 'win_amd64',
+          distributions: [
+            { name: 'pyyaml', version: '6.0.3', filename: 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl', sha256: 'b'.repeat(64), size: 20 },
+          ],
+        })}\n`,
+        listFiles: () => ['pyyaml-6.0.3-cp312-cp312-win_amd64.whl', 'python-wheels-lock.json'],
         readFuses: () => {
           calls.push('fuse')
           return REQUIRED_ELECTRON_FUSES
@@ -256,6 +278,8 @@ describe('packaged desktop runtime verification', () => {
       'static',
       join('/build', 'resources', BUNDLED_NODE_RESOURCE_DIRECTORY, 'node.exe'),
       join('/build', 'resources', 'python-runtime', 'python.exe'),
+      join('/build', 'resources', 'python-wheels', 'python-wheels-lock.json'),
+      join('/build', 'resources', 'python-wheels', 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl'),
       'fuse',
       `flip:${join('/build', 'DSH Desktop.exe')}`,
       `wire:${join('/build', 'DSH Desktop.exe')}`,
@@ -272,7 +296,14 @@ describe('packaged desktop runtime verification', () => {
       runtimeContext,
       () => {},
       async () => {},
-      { exists: () => true, readFuses: () => REQUIRED_ELECTRON_FUSES, flipFuseWire: async () => 0, readFuseWire: async () => requiredFuseWire() },
+      {
+        exists: () => true,
+        readFile: () => wheelsLockText(),
+        listFiles: () => ['pyyaml-6.0.3-cp312-cp312-win_amd64.whl', 'python-wheels-lock.json'],
+        readFuses: () => REQUIRED_ELECTRON_FUSES,
+        flipFuseWire: async () => 0,
+        readFuseWire: async () => requiredFuseWire(),
+      },
       failing,
     )).rejects.toThrow('checklist rejected this build')
   })
@@ -286,6 +317,8 @@ describe('packaged desktop runtime verification', () => {
       async () => {},
       {
         exists: () => true,
+        readFile: () => wheelsLockText(),
+        listFiles: () => ['pyyaml-6.0.3-cp312-cp312-win_amd64.whl', 'python-wheels-lock.json'],
         readFuses: () => REQUIRED_ELECTRON_FUSES,
         flipFuseWire: async () => 0,
         readFuseWire: async () => ({
@@ -362,6 +395,59 @@ describe('packaged desktop runtime verification', () => {
     // packages carry no python.exe to probe: the check is a skip there, not
     // a failure.
     expect(verifyBundledPythonRuntime(context('/build', 'darwin'), () => false)).toBeUndefined()
+  })
+
+  it('requires the packaged preinstall wheel set to match its lock exactly on Windows only', () => {
+    const runtimeContext = context('/build', 'win32')
+    const wheelsDirectory = join('/build', 'resources', 'python-wheels')
+    const lockPath = join(wheelsDirectory, 'python-wheels-lock.json')
+    const lockText = `${JSON.stringify({
+      version: 1,
+      python: '3.12',
+      platform: 'win_amd64',
+      distributions: [
+        { name: 'pyyaml', version: '6.0.3', filename: 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl', sha256: 'b'.repeat(64), size: 20 },
+        { name: 'requests', version: '2.34.2', filename: 'requests-2.34.2-py3-none-any.whl', sha256: 'a'.repeat(64), size: 10 },
+      ],
+    })}\n`
+    const probe = (files: readonly string[]): {
+      readonly exists: (filename: string) => boolean
+      readonly readFile: (filename: string) => string
+      readonly listFiles: (directory: string) => readonly string[]
+    } => ({
+      exists: filename => files.includes(filename),
+      readFile: filename => filename === lockPath ? lockText : '',
+      listFiles: directory => directory === wheelsDirectory
+        ? [...files.filter(file => file !== lockPath).map(file => file.slice(wheelsDirectory.length + 1)), 'python-wheels-lock.json']
+        : [],
+    })
+
+    // The complete set passes and answers the lock path.
+    const complete = probe([
+      lockPath,
+      join(wheelsDirectory, 'requests-2.34.2-py3-none-any.whl'),
+      join(wheelsDirectory, 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl'),
+    ])
+    expect(verifyBundledPythonWheels(runtimeContext, complete)).toBe(lockPath)
+
+    // A missing lock, a missing pinned wheel, or a stray wheel fails the
+    // package before it is signed.
+    expect(() => verifyBundledPythonWheels(runtimeContext, probe([
+      join(wheelsDirectory, 'requests-2.34.2-py3-none-any.whl'),
+    ]))).toThrow(/missing the preinstall wheel lock/)
+    expect(() => verifyBundledPythonWheels(runtimeContext, probe([
+      lockPath,
+      join(wheelsDirectory, 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl'),
+    ]))).toThrow(/missing the pinned wheel requests-2.34.2-py3-none-any.whl/)
+    expect(() => verifyBundledPythonWheels(runtimeContext, probe([
+      lockPath,
+      join(wheelsDirectory, 'requests-2.34.2-py3-none-any.whl'),
+      join(wheelsDirectory, 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl'),
+      join(wheelsDirectory, 'stray-1.0-py3-none-any.whl'),
+    ]))).toThrow(/does not hold exactly the locked wheel set/)
+
+    // The wheel set is Windows-only: non-Windows packages skip the gate.
+    expect(verifyBundledPythonWheels(context('/build', 'darwin'), probe([]))).toBeUndefined()
   })
 
   it('reads and enforces the staged Electron fuse map', () => {

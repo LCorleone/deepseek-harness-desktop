@@ -331,6 +331,22 @@ export interface PythonRuntimeEventDetail {
   readonly shared?: boolean
   /** The shared environment's pip exists, so `dsh-pip` was published; omitted when unknown. */
   readonly pip?: boolean
+  /**
+   * Coverage of the pinned preinstall wheel set (issue #043, decision D2):
+   * how many of the locked distributions the shared environment held at
+   * any version when this boot probed or repaired the tree (the pip leg may
+   * still be installing in the background after boot). Omitted when the boot
+   * cannot vouch for the count (no wheel set, unreadable lock, failed probe).
+   */
+  readonly libs?: PythonRuntimeLibrariesState
+}
+
+/** Pinned-versus-installed coverage of the preinstall wheel set (#043). */
+export interface PythonRuntimeLibrariesState {
+  /** Distributions the wheel lock pins. */
+  readonly pinned: number
+  /** Pinned distributions installed at any version when this boot probed or repaired the tree. */
+  readonly installed: number
 }
 
 /**
@@ -344,6 +360,8 @@ export interface PythonRuntimeEventSharedState {
   readonly shared?: boolean
   /** The shared environment's pip exists, so `dsh-pip` was published. */
   readonly pip?: boolean
+  /** Coverage of the pinned preinstall wheel set (#043); omitted when unknown. */
+  readonly libs?: PythonRuntimeLibrariesState
 }
 
 /** How one sandbox-write-denial escalation ended (P16). */
@@ -887,7 +905,9 @@ export const SANDBOX_ESCALATION_HASH_PATTERN = /^[0-9a-z]{16}$/u
  * manifest must not smuggle arbitrary bytes into a telemetry row. The
  * shared-environment booleans (#033) pass through verbatim — a boolean
  * carries nothing to bound or strip — and each stays omitted whenever the
- * boot could not vouch for it.
+ * boot could not vouch for it. The `libs` coverage counts (#043) pass
+ * through only when both are safe non-negative integers, so a broken probe
+ * pipeline cannot smuggle a bogus number into the row.
  */
 export function pythonRuntimeEvent(
   available: boolean,
@@ -897,11 +917,19 @@ export function pythonRuntimeEvent(
   const bounded = version === undefined
     ? undefined
     : version.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, PYTHON_RUNTIME_VERSION_LIMIT)
+  const libs = sharedState.libs === undefined
+    || !Number.isSafeInteger(sharedState.libs.pinned)
+    || !Number.isSafeInteger(sharedState.libs.installed)
+    || sharedState.libs.pinned < 0
+    || sharedState.libs.installed < 0
+    ? undefined
+    : sharedState.libs
   return {
     available,
     ...(bounded === undefined || bounded.length === 0 ? {} : { version: bounded }),
     ...(sharedState.shared === undefined ? {} : { shared: sharedState.shared }),
     ...(sharedState.pip === undefined ? {} : { pip: sharedState.pip }),
+    ...(libs === undefined ? {} : { libs }),
   }
 }
 

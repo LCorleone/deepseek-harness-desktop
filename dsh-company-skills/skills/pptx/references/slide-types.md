@@ -2,6 +2,8 @@
 
 Classify **every slide** as **exactly one** of these 5 types:
 
+> **markitdown is not preinstalled** — the per-type "extract text with markitdown" verify steps below need the [Python Tools three-stage check/install](../SKILL.md#reading-content); if it stays missing, verify against the unpacked slide XML instead.
+
 ## 1. Cover Page
 
 - **Use for**: Opening + tone setting

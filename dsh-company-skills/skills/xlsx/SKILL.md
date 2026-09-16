@@ -22,6 +22,11 @@ Handle the request directly. Do NOT spawn sub-agents. Always write the output fi
 
 Start with `xlsx_reader.py` for structure discovery, then pandas for custom analysis. Never modify the source file.
 
+> **Python Tools — three-stage rule** (`pandas` is NOT preinstalled with the desktop's shared Python environment; `openpyxl` is). `xlsx_reader.py` — structure discovery and every custom-DataFrame step — needs pandas:
+> 1. **Check first:** `python -c "import pandas"` (the reader reports the same itself: `pandas is not installed. Run: pip install pandas openpyxl`).
+> 2. **If missing, try install:** `dsh-pip install pandas openpyxl` — the desktop's managed pip channel into the shared Python environment; corporate proxy and sandbox escalation approval apply as usual.
+> 3. **Only on install failure:** read the workbook through the XML path instead — `xlsx_unpack.py` + `sharedStrings.xml`/worksheet nodes (the CREATE/EDIT/VALIDATE routes never need pandas), and parse `.csv`/`.tsv` with the stdlib `csv` module.
+
 **Formatting rule**: When the user specifies decimal places (e.g. "2 decimal places"), apply that format to ALL numeric values — use `f'{v:.2f}'` on every number. Never output `12875` when `12875.00` is required.
 
 **Aggregation rule**: Always compute sums/means/counts directly from the DataFrame column — e.g. `df['Revenue'].sum()`. Never re-derive column values before aggregation.

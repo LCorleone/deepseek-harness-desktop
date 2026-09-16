@@ -53,7 +53,7 @@ import { resolveDesktopShellEnvironment, scrubInheritedPermissionModeOverride } 
 import { installProfilePackageResolver } from './module-resolution.ts'
 import { packagedDependencyPath, unpackedAsarPath } from './packaged-runtime-path.ts'
 import { resolveDesktopNodeExecutable } from './desktop-node-runtime.ts'
-import { pythonPipAvailable, resolveDesktopLocalPythonExecutable, resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
+import { packagedPythonWheelsDirectory, pythonPipAvailable, resolveDesktopLocalPythonExecutable, resolveDesktopPythonExecutable } from './desktop-python-runtime.ts'
 import {
   desktopSharedPythonEnvironmentRoot,
   ensureDesktopSharedPythonEnvironment,
@@ -1249,6 +1249,16 @@ async function start(): Promise<void> {
           bundledPythonExecutable,
           rootDirectory: desktopSharedPythonEnvironmentRoot(process.env, app.getPath('userData')),
           environment: process.env,
+          wheelsDirectory: packagedPythonWheelsDirectory(import.meta.url),
+          // Review P2-b: the cheap wheel probe rides the boot path (so the
+          // python_runtime row still reports `libs` coverage), but the pip
+          // install leg — up to its 5-minute deadline — runs as a
+          // fire-and-forget background repair behind the same cross-process
+          // mutex. Skills without a library degrade gracefully and a
+          // partial/failed install heals on a later boot, so the first-run
+          // boot never waits on a disk-bound pip run before publishing the
+          // aliases and starting the profile.
+          deferLibraryInstall: true,
           log: message => { electronLogger.error(`${BIN_NAME}: ${message}`) },
         })
         pythonRuntime = installDesktopPythonRuntime({
@@ -1287,7 +1297,11 @@ async function start(): Promise<void> {
     // desktop-wide pyenv interpreter is the published surface) and `pip`
     // (`pip.exe` existed, so `dsh-pip` was published) — the server-side
     // visibility the pip-less-venv strand of #033 lacked; both stay omitted
-    // when this boot resolved no shared environment at all.
+    // when this boot resolved no shared environment at all. Since #043 the
+    // row also carries `libs` (pinned-versus-installed coverage of the
+    // preinstall wheel set) — produced by the boot-path probe, so it reports
+    // the pre-install count while the fire-and-forget pip leg is still
+    // running, and stays omitted when this boot cannot vouch for it.
     clientEvents?.pythonRuntime(pythonRuntimeEvent(
       pythonRuntime !== undefined,
       pythonPipAvailable(import.meta.url, { platform: process.platform }).pythonVersion,
@@ -1296,6 +1310,9 @@ async function start(): Promise<void> {
         : {
             shared: sharedPythonEnvironment.shared,
             pip: sharedPythonEnvironment.pipExecutable !== undefined,
+            ...(sharedPythonEnvironment.libraries === undefined
+              ? {}
+              : { libs: sharedPythonEnvironment.libraries }),
           },
     ))
     const selectionStatePath = join(app.getPath('userData'), 'profile-selection', 'state.json')

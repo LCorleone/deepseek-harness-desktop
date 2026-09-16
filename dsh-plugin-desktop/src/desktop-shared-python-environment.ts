@@ -1,13 +1,24 @@
 /** Shared desktop-wide Python environment provisioned once under `%LOCALAPPDATA%`. */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { stat, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 
 /** Directory name of the shared environment below its parent. */
 export const DESKTOP_SHARED_PYTHON_DIRECTORY_NAME = 'pyenv'
+
+/**
+ * Filename of the preinstall wheel lock beside the staged wheels (issue #043,
+ * decision D2). The committed source is `assets/python-wheels-lock.json`
+ * (see `scripts/bundled-python-wheels.ts`); `extraResources` ships the staged
+ * copy at `resources/python-wheels/python-wheels-lock.json`, and this module
+ * reads it there — one file pins the names, versions, and sha256s the
+ * ensure-present step installs and verifies.
+ */
+export const SHARED_PYTHON_WHEELS_LOCK_NAME = 'python-wheels-lock.json'
 
 /** Parent directory name the shared environment lives in. */
 const DESKTOP_SHARED_PYTHON_PARENT_NAME = 'DSH Desktop'
@@ -40,12 +51,26 @@ const SHARED_PYTHON_PROVISION_LOCK_WAIT_MS
 // (the stale-break threshold below still clears any live worst case).
 
 /**
- * A lock file older than this can no longer belong to a live holder (the
- * worst case above is ~6.5 minutes) — a crash between acquiring and
- * releasing left it behind, and the next boot breaks it by mtime instead of
- * waiting the full bounded turn for an owner that will never return.
+ * A lock file older than this can no longer belong to a live holder. The
+ * wait above is only ~6.5 minutes, but since #043 batch C the locked cycle
+ * runs more legs than that wait covers, so the stale gate cannot reuse it.
+ * Worst live holder, all deadlines at their bound: one liveness probe (30 s)
+ * + both provision tiers (2 × 180 s) + one ensurepip repair (180 s) + the
+ * plan's pre-install distributions probe (30 s) + the install leg's in-lock
+ * revalidation probe (30 s, review P3-1) + the library install deadline
+ * (300 s) + the post-install recount probe (30 s) ≈ 16 minutes. (The
+ * production boot defers the install leg, making it a second, shorter
+ * lock hold; the non-deferred sum is the bound this gate must cover.) This
+ * 20 minute threshold covers that worst case with margin, so a second
+ * instance never deletes the lock of a holder that is still installing —
+ * it only breaks a file a crash left behind instead of waiting the full
+ * bounded turn for an owner that will never return. A crash-left lock is
+ * usually reclaimed long before the threshold: the file records its
+ * holder's PID, so one that {@link sharedPythonLockHolderGone} proves gone is
+ * reclaimed on sight (review P3-2), and this age gate only decides the
+ * cases that leave doubt (an unreadable or unparseable PID, or a live one).
  */
-const SHARED_PYTHON_PROVISION_LOCK_STALE_MS = 10 * 60 * 1000
+const SHARED_PYTHON_PROVISION_LOCK_STALE_MS = 20 * 60 * 1000
 
 /**
  * Lock-layer failures worth exactly one bounded retry (issue #038): real
@@ -66,6 +91,19 @@ const SHARED_PYTHON_LOCK_RETRYABLE_CODES: ReadonlySet<string>
  * enough to stay invisible in the boot.
  */
 const SHARED_PYTHON_LOCK_RETRY_DELAY_MS = 250
+
+/**
+ * Library-repair pip deadline: the first provisioning installs the whole
+ * pinned wheel set (~48 wheels, ~52 MB) from the local verified wheel files,
+ * which on an antivirus-throttled disk outlasts the seeding deadline — 5
+ * minutes bounds it. Since #043 batch C the install runs on a background leg
+ * after boot (see `deferLibraryInstall`), so this deadline no longer rides
+ * the boot path.
+ */
+const SHARED_PYTHON_LIBRARY_INSTALL_TIMEOUT_MS = 300_000
+
+/** Upper bound on the installed-distributions probe's JSON answer. */
+const SHARED_PYTHON_DISTRIBUTIONS_PROBE_OUTPUT_LIMIT = 256 * 1024
 
 /** Absolute locations inside the shared Python environment. */
 export interface DesktopSharedPythonEnvironmentPaths {
@@ -104,6 +142,33 @@ export interface DesktopSharedPythonEnvironmentInputs {
   /** Provisioning runner; production spawns a Python command — the base interpreter seeding the tree (stdlib `venv` for a local base, bundled `virtualenv` otherwise) or the tree's own interpreter repairing a missing pip through `ensurepip`. */
   readonly provision?: DesktopSharedPythonProvision
   /**
+   * Directory the packaged preinstall wheel set lives in (issue #043, D2:
+   * `resources/python-wheels`). Absent — non-Windows platforms, unpackaged
+   * development checkouts — skips the library repair entirely.
+   */
+  readonly wheelsDirectory?: string
+  /** Wheel-lock reader; production reads `<directory>/python-wheels-lock.json`. */
+  readonly readWheelsLock?: DesktopSharedPythonWheelsLockReader
+  /** Installed-distributions probe; production runs a one-shot importlib.metadata script. */
+  readonly probeDistributions?: DesktopSharedPythonDistributionsProbe
+  /** Library-install runner; production spawns the tree's pip once, strictly offline. */
+  readonly installDistributions?: DesktopSharedPythonProvision
+  /**
+   * Run the library install on a fire-and-forget background leg instead of
+   * the boot path (issue #043 batch C, review P2-b): the cheap read-only
+   * probe still runs while provisioning is locked, so the resolved
+   * environment carries the pre-install coverage counts, but the pip leg
+   * (up to {@link SHARED_PYTHON_LIBRARY_INSTALL_TIMEOUT_MS}) is scheduled
+   * after boot behind the SAME cross-process mutex — an unverified wheel set
+   * therefore never races a concurrent provisioning, while the aliases and
+   * profile start as soon as the tree is up (a missing library degrades the
+   * skill gracefully until the background leg or a later boot heals it).
+   * Defaults to `false` (the boot awaits the full repair).
+   */
+  readonly deferLibraryInstall?: boolean
+  /** sha256 seam over one wheel file; production hashes with node:crypto. */
+  readonly digestFile?: (filename: string) => string
+  /**
    * Cross-process provisioning mutex (review P3): production serializes the
    * whole decide/probe/provision cycle through an exclusive lock file beside
    * the shared root, so two desktop instances never write the same `pyenv`
@@ -125,6 +190,46 @@ export interface DesktopSharedPythonEnvironment {
   readonly pipExecutable: string | undefined
   /** Whether the shared environment is the published command surface. */
   readonly shared: boolean
+  /**
+   * How much of the pinned preinstall wheel set this boot verified installed
+   * (issue #043, decision D2): `pinned` counts the lock, `installed` counts
+   * the pinned names present at ANY version when this boot probed or
+   * repaired the tree (the pre-install probe on the deferred background
+   * leg — a later boot reports the healed count). Omitted whenever the boot
+   * cannot vouch for the count (no wheel set, unreadable lock, failed
+   * probe) — the row keeps its legacy shape.
+   */
+  readonly libraries?: DesktopSharedPythonLibraries
+}
+
+/** Coverage of the pinned preinstall wheel set in the shared environment. */
+export interface DesktopSharedPythonLibraries {
+  /** Distributions the wheel lock pins. */
+  readonly pinned: number
+  /** Pinned distributions installed at any version when this boot probed or repaired the tree. */
+  readonly installed: number
+}
+
+/** One pinned distribution of the preinstall wheel lock. */
+export interface DesktopSharedPythonWheelsLockEntry {
+  /** Canonical (PEP 503) distribution name, lowercase with single dashes. */
+  readonly name: string
+  /** Exact pinned version. */
+  readonly version: string
+  /** Exact wheel filename whose sha256 is pinned below. */
+  readonly filename: string
+  /** sha256 of the wheel bytes the install step verifies before running pip. */
+  readonly sha256: string
+}
+
+/** Parsed contents of the packaged `python-wheels-lock.json`. */
+export interface DesktopSharedPythonWheelsLock {
+  /** Interpreter minor the wheels target (the shared environment's CPython). */
+  readonly python: string
+  /** Wheel platform tag the set targets. */
+  readonly platform: string
+  /** Every pinned distribution, in lock order. */
+  readonly distributions: readonly DesktopSharedPythonWheelsLockEntry[]
 }
 
 /**
@@ -159,6 +264,109 @@ export type DesktopSharedPythonProbe = (
   pythonExecutable: string,
   options: { readonly environment?: NodeJS.ProcessEnv },
 ) => Promise<boolean>
+
+/** Wheel-lock reader returning the raw lockfile text, or `undefined` when unreadable. */
+export type DesktopSharedPythonWheelsLockReader = (directory: string) => string | undefined
+
+/**
+ * Installed-distributions probe: resolves the shared tree's installed
+ * distributions as a name→version record (names exactly as the interpreter
+ * reports them — both sides normalize through
+ * {@link canonicalDistributionName}), or `undefined` when the probe cannot
+ * answer (a failed spawn, a timeout, an unparsable answer) — the caller then
+ * skips this boot's repair check instead of guessing.
+ */
+export type DesktopSharedPythonDistributionsProbe = (
+  pythonExecutable: string,
+  options: { readonly environment?: NodeJS.ProcessEnv },
+) => Promise<Readonly<Record<string, string>> | undefined>
+
+/** Canonicalize one distribution name the way Python normalizes project names (PEP 503). */
+export function canonicalDistributionName(name: string): string {
+  return name.toLowerCase().replace(/[-_.]+/gu, '-')
+}
+
+/** Whether one string is a 64-character lowercase-hex sha256. */
+function isSha256Hex(value: string): boolean {
+  return /^[0-9a-f]{64}$/u.test(value)
+}
+
+/**
+ * Parse the packaged wheel lock (lenient sibling of the build-time strict
+ * parser in `scripts/bundled-python-wheels.ts`, which fails the build loud):
+ * runtime malformed input must degrade — skip this boot's repair check —
+ * never block the boot, so every drift resolves to `undefined`.
+ */
+export function parseSharedPythonWheelsLock(
+  text: string,
+): DesktopSharedPythonWheelsLock | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const document = parsed as Record<string, unknown>
+  if (typeof document.python !== 'string' || typeof document.platform !== 'string') return undefined
+  if (!Array.isArray(document.distributions) || document.distributions.length === 0) return undefined
+  const distributions: DesktopSharedPythonWheelsLockEntry[] = []
+  const seen = new Set<string>()
+  for (const entry of document.distributions) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
+    const { name, version, filename, sha256 } = entry as Record<string, unknown>
+    if (typeof name !== 'string' || name.length === 0
+      || typeof version !== 'string' || version.length === 0
+      || typeof filename !== 'string' || !filename.endsWith('.whl')) return undefined
+    if (typeof sha256 !== 'string' || !isSha256Hex(sha256)) return undefined
+    const canonical = canonicalDistributionName(name)
+    if (seen.has(canonical)) return undefined
+    seen.add(canonical)
+    distributions.push({ name, version, filename, sha256 })
+  }
+  return { python: document.python, platform: document.platform, distributions }
+}
+
+/**
+ * The locked distributions absent from an installed name→version record —
+ * the ensure-present core of decision D2: a name counts as present at ANY
+ * version (a user's or agent's own install is never touched, never upgraded,
+ * never downgraded), and names compare after PEP 503 normalization so the
+ * interpreter's `PyYAML`/`python_dateutil` spellings match the lock's
+ * canonical `pyyaml`/`python-dateutil`.
+ */
+export function missingSharedPythonDistributions(
+  pinned: readonly DesktopSharedPythonWheelsLockEntry[],
+  installed: Readonly<Record<string, string>>,
+): readonly DesktopSharedPythonWheelsLockEntry[] {
+  const installedNames = new Set(Object.keys(installed).map(canonicalDistributionName))
+  return pinned.filter(entry => !installedNames.has(canonicalDistributionName(entry.name)))
+}
+
+/**
+ * The pip arguments that install exactly the missing pinned distributions
+ * from their VERIFIED wheel files by absolute path (issue #043 batch C,
+ * review P2-a): the sha256 gate above verifies each wheel, and naming the
+ * wheel itself leaves pip no directory to scan — a differently-named
+ * same-version wheel planted beside the set can never win the resolution.
+ * `--no-index` keeps the run strictly on the packaged wheels, `--no-deps`
+ * trusts the lock's pre-resolved closure, and `--no-compile` keeps bytecode
+ * (whose mtimes embed build noise) out of the fresh tree.
+ */
+export function sharedPythonLibraryInstallArguments(
+  wheelsDirectory: string,
+  missing: readonly DesktopSharedPythonWheelsLockEntry[],
+): readonly string[] {
+  return [
+    '-m', 'pip', 'install',
+    '--disable-pip-version-check',
+    '--no-index',
+    '--no-deps',
+    '--no-warn-script-location',
+    '--no-compile',
+    ...missing.map(entry => join(wheelsDirectory, entry.filename)),
+  ]
+}
 
 /** Locate the shared environment below one parent directory. */
 export function desktopSharedPythonEnvironmentPaths(
@@ -213,13 +421,14 @@ async function spawnSharedPythonVirtualenv(
   command: string,
   args: readonly string[],
   options: { readonly environment?: NodeJS.ProcessEnv },
+  timeoutMs: number = SHARED_PYTHON_PROVISION_TIMEOUT_MS,
 ): Promise<{ exitCode: number | null, diagnostic: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       env: sharedPythonSpawnEnvironment(options.environment),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      timeout: SHARED_PYTHON_PROVISION_TIMEOUT_MS,
+      timeout: timeoutMs,
     })
     let output = ''
     const capture = (stream: NodeJS.ReadableStream): void => {
@@ -254,6 +463,331 @@ async function spawnSharedPythonProbe(
   })
 }
 
+/**
+ * Installed-distributions probe script: one `importlib.metadata` walk that
+ * answers as JSON on stdout. Per-distribution failures (a broken dist-info)
+ * skip that entry instead of failing the whole probe, and the interpreter's
+ * original name spellings pass through — normalization happens on this side.
+ */
+const SHARED_PYTHON_DISTRIBUTIONS_PROBE_SCRIPT = [
+  'import json, sys',
+  'from importlib.metadata import distributions',
+  'installed = {}',
+  'for distribution in distributions():',
+  '    try:',
+  '        installed[distribution.metadata["Name"]] = distribution.version',
+  '    except Exception:',
+  '        pass',
+  'json.dump(installed, sys.stdout)',
+].join('\n')
+
+/** Default installed-distributions probe: one spawn of the shared tree's interpreter. */
+async function spawnSharedPythonDistributionsProbe(
+  pythonExecutable: string,
+  options: { readonly environment?: NodeJS.ProcessEnv },
+): Promise<Readonly<Record<string, string>> | undefined> {
+  return await new Promise(resolve => {
+    const child = spawn(pythonExecutable, ['-c', SHARED_PYTHON_DISTRIBUTIONS_PROBE_SCRIPT], {
+      env: sharedPythonSpawnEnvironment(options.environment),
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: SHARED_PYTHON_PROBE_TIMEOUT_MS,
+    })
+    let output = ''
+    let answered = false
+    const answer = (value: Readonly<Record<string, string>> | undefined): void => {
+      if (answered) return
+      answered = true
+      resolve(value)
+    }
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      if (output.length < SHARED_PYTHON_DISTRIBUTIONS_PROBE_OUTPUT_LIMIT) output += chunk
+    })
+    child.once('error', () => { answer(undefined) })
+    child.once('close', exitCode => {
+      if (exitCode !== 0) {
+        answer(undefined)
+        return
+      }
+      try {
+        const parsed: unknown = JSON.parse(output.trim())
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          answer(undefined)
+          return
+        }
+        const installed: Record<string, string> = {}
+        for (const [name, version] of Object.entries(parsed)) {
+          if (typeof name === 'string' && typeof version === 'string') installed[name] = version
+        }
+        answer(installed)
+      } catch {
+        answer(undefined)
+      }
+    })
+  })
+}
+
+/** Default wheel-lock reader: `<directory>/python-wheels-lock.json`, `undefined` on any error. */
+function readSharedPythonWheelsLock(directory: string): string | undefined {
+  try {
+    return readFileSync(join(directory, SHARED_PYTHON_WHEELS_LOCK_NAME), 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+/** Default wheel hashing: sha256 hex over one file's bytes. */
+function digestSharedPythonWheel(filename: string): string {
+  return createHash('sha256').update(readFileSync(filename)).digest('hex')
+}
+
+/**
+ * How many pinned distributions an installed name→version record covers, at
+ * any version: the coverage count the `python_runtime` telemetry row reports
+ * and the repair verdict after pip, so both sides agree on the semantics.
+ */
+function countPinnedSharedPythonDistributions(
+  lock: DesktopSharedPythonWheelsLock,
+  installed: Readonly<Record<string, string>>,
+): number {
+  const present = new Set(Object.keys(installed).map(canonicalDistributionName))
+  return lock.distributions.reduce(
+    (sum, entry) => sum + (present.has(canonicalDistributionName(entry.name)) ? 1 : 0),
+    0,
+  )
+}
+
+/** Attach this boot's pinned-versus-installed coverage to the resolved environment. */
+function withSharedPythonLibraries(
+  environment: DesktopSharedPythonEnvironment,
+  pinned: number,
+  installed: number,
+): DesktopSharedPythonEnvironment {
+  return { ...environment, libraries: { pinned, installed } }
+}
+
+/** One boot's ensure-present plan over the pinned wheel set. */
+interface DesktopSharedPythonLibraryRepair {
+  /** The parsed lock this plan was computed against. */
+  readonly lock: DesktopSharedPythonWheelsLock
+  /** Distributions installed in the tree (any version) when the plan was made. */
+  readonly installed: Readonly<Record<string, string>>
+  /**
+   * Pinned distributions absent from `installed` when the plan was made, in
+   * lock order. This is the boot's verdict, not pip's argv: the install leg
+   * re-derives the set from a fresh in-lock probe before building its
+   * arguments (review P3-1).
+   */
+  readonly missing: readonly DesktopSharedPythonWheelsLockEntry[]
+}
+
+/**
+ * Cheap read-only half of the ensure-present step: read the lock, probe the
+ * tree's installed distributions, and name what is missing. `undefined` means
+ * this boot cannot vouch for the set (no wheel set wired, unreadable or
+ * malformed lock, failed probe) — the caller then skips its repair and omits
+ * the `libraries` fact. Never throws.
+ */
+async function probeSharedPythonLibraries(
+  inputs: DesktopSharedPythonEnvironmentInputs,
+  paths: DesktopSharedPythonEnvironmentPaths,
+): Promise<DesktopSharedPythonLibraryRepair | undefined> {
+  const log = inputs.log ?? (() => {})
+  const wheelsDirectory = inputs.wheelsDirectory
+  if (wheelsDirectory === undefined) return undefined
+  const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
+  try {
+    const readWheelsLock = inputs.readWheelsLock ?? readSharedPythonWheelsLock
+    const lockText = readWheelsLock(wheelsDirectory)
+    const lock = lockText === undefined ? undefined : parseSharedPythonWheelsLock(lockText)
+    if (lock === undefined) {
+      log(
+        `dsh-plugin-desktop: the shared python environment's preinstalled wheel lock at ${join(wheelsDirectory, SHARED_PYTHON_WHEELS_LOCK_NAME)} is unavailable; `
+          + 'skipping this boot\'s library repair check',
+      )
+      return undefined
+    }
+    const probeDistributions = inputs.probeDistributions ?? spawnSharedPythonDistributionsProbe
+    let installed: Readonly<Record<string, string>> | undefined
+    try {
+      installed = await probeDistributions(paths.pythonExecutable, { environment: spawnEnvironment })
+    } catch {
+      installed = undefined
+    }
+    if (installed === undefined) {
+      log(
+        `dsh-plugin-desktop: the installed libraries of the shared python environment at ${paths.root} could not be probed; `
+          + 'skipping this boot\'s library repair check',
+      )
+      return undefined
+    }
+    return {
+      lock,
+      installed,
+      missing: missingSharedPythonDistributions(lock.distributions, installed),
+    }
+  } catch (cause) {
+    log(
+      `dsh-plugin-desktop: the shared python environment's library probe at ${wheelsDirectory} failed unexpectedly (${cause instanceof Error ? cause.message : String(cause)}); `
+        + 'skipping this boot\'s library repair check',
+    )
+    return undefined
+  }
+}
+
+/**
+ * Install the missing pinned distributions of one probed repair plan into the
+ * shared tree. This is the mutating half of the ensure-present step: each
+ * wheel is verified against the lock's sha256 before pip consumes it (a
+ * tampered wheel never reaches pip — the wheels are build inputs outside the
+ * bundled tree's digest manifest, and this check is their integrity gate),
+ * the pip run names exactly those verified wheel files, and a fresh probe
+ * reports the resulting coverage. Ensure-present semantics: a pinned name
+ * installed at ANY version counts as present and is never upgraded or
+ * downgraded — the shared environment is the user's mutable surface, and
+ * whatever they installed into it wins. Every failure degrades with one log
+ * line and never throws; the result carries the `libraries` coverage counts
+ * when this boot can vouch for them, and omits the field when it cannot.
+ *
+ * The plan is revalidated immediately before pip runs (review P3-1): this leg
+ * can start minutes after the boot that planned it (see
+ * `deferLibraryInstall`), and a user's own `dsh-pip install
+ * <pinned>==<other version>` in that window must keep winning, so a fresh
+ * in-lock probe re-derives the missing set and pip receives only the wheels
+ * still absent. A re-probe that cannot answer leaves the tree untouched —
+ * installing blind could overwrite a pin this boot cannot see — and the next
+ * boot retries.
+ */
+async function installSharedPythonLibraries(
+  inputs: DesktopSharedPythonEnvironmentInputs,
+  paths: DesktopSharedPythonEnvironmentPaths,
+  environment: DesktopSharedPythonEnvironment,
+  repair: DesktopSharedPythonLibraryRepair,
+): Promise<DesktopSharedPythonEnvironment> {
+  const log = inputs.log ?? (() => {})
+  const wheelsDirectory = inputs.wheelsDirectory
+  if (wheelsDirectory === undefined) return environment
+  const { lock, installed } = repair
+  const pinned = lock.distributions.length
+  const spawnEnvironment = sharedPythonSpawnEnvironment(inputs.environment)
+  const probeDistributions = inputs.probeDistributions ?? spawnSharedPythonDistributionsProbe
+  try {
+    // Revalidate the plan where it is about to be consumed — inside the same
+    // lock hold that runs pip (review P3-1). The boot's `installed` record
+    // may be minutes old, and between the two probes a user (or their agent)
+    // can `dsh-pip install` any pinned name at another version; pip would
+    // then silently replace it. A missing set re-derived from THIS probe can
+    // only shrink, so whatever the user installed in the window wins.
+    let present: Readonly<Record<string, string>> | undefined
+    try {
+      present = await probeDistributions(paths.pythonExecutable, { environment: spawnEnvironment })
+    } catch {
+      present = undefined
+    }
+    if (present === undefined) {
+      log(
+        `dsh-plugin-desktop: the installed libraries of the shared python environment at ${paths.root} could not be probed again before installing; `
+          + 'skipping this boot\'s library repair rather than installing over libraries it cannot see',
+      )
+      return withSharedPythonLibraries(environment, pinned, countPinnedSharedPythonDistributions(lock, installed))
+    }
+    const missing = missingSharedPythonDistributions(lock.distributions, present)
+    if (missing.length === 0) {
+      // The window's own installs (or a finished sibling leg) already
+      // satisfied every pin: pip has nothing to do, and the fresh probe is
+      // this boot's coverage verdict.
+      return withSharedPythonLibraries(environment, pinned, countPinnedSharedPythonDistributions(lock, present))
+    }
+    // Integrity gate before pip consumes anything: every wheel this run
+    // would install must hash to its pinned sha256 (an unreadable file
+    // counts as unverified too — a swapped wheel must never execute).
+    const digestFile = inputs.digestFile ?? digestSharedPythonWheel
+    const unverified: string[] = []
+    for (const entry of missing) {
+      let digest: string | undefined
+      try {
+        digest = digestFile(join(wheelsDirectory, entry.filename))
+      } catch {
+        digest = undefined
+      }
+      if (digest !== entry.sha256) unverified.push(entry.filename)
+    }
+    if (unverified.length > 0) {
+      log(
+        `dsh-plugin-desktop: the shared python environment's preinstalled wheels at ${wheelsDirectory} failed their pinned checksums (${unverified.join(', ')}); `
+          + 'skipping this boot\'s library repair — the next boot retries once the wheels match the lock again',
+      )
+      return withSharedPythonLibraries(environment, pinned, countPinnedSharedPythonDistributions(lock, present))
+    }
+    const installDistributions = inputs.installDistributions ?? ((command, args, installOptions) =>
+      spawnSharedPythonVirtualenv(command, args, installOptions, SHARED_PYTHON_LIBRARY_INSTALL_TIMEOUT_MS))
+    const outcome = await installDistributions(
+      paths.pythonExecutable,
+      sharedPythonLibraryInstallArguments(wheelsDirectory, missing),
+      { environment: spawnEnvironment },
+    )
+    if (outcome.exitCode !== 0) {
+      log(
+        `dsh-plugin-desktop: pip could not install the ${String(missing.length)} missing preinstalled python libraries into the shared python environment at ${paths.root}`
+          + `${outcome.diagnostic === '' ? '' : ` (${outcome.diagnostic})`}; `
+          + 'they stay missing until the next boot retries them',
+      )
+    } else {
+      log(
+        `dsh-plugin-desktop: installed ${String(missing.length)} missing preinstalled python libraries into the shared python environment at ${paths.root} from ${wheelsDirectory}`,
+      )
+    }
+    // The repair verdict comes from a fresh probe — pip may have partially
+    // succeeded (or partially failed), and the count must describe the tree.
+    let recount: Readonly<Record<string, string>> | undefined
+    try {
+      recount = await probeDistributions(paths.pythonExecutable, { environment: spawnEnvironment })
+    } catch {
+      recount = undefined
+    }
+    const installedAfter = recount === undefined ? countPinnedSharedPythonDistributions(lock, present) : countPinnedSharedPythonDistributions(lock, recount)
+    return withSharedPythonLibraries(environment, pinned, installedAfter)
+  } catch (cause) {
+    log(
+      `dsh-plugin-desktop: the shared python environment's library repair check at ${wheelsDirectory} failed unexpectedly (${cause instanceof Error ? cause.message : String(cause)}); `
+        + 'python aliases stay published and the check retries on the next boot',
+    )
+    return environment
+  }
+}
+
+/**
+ * Ensure-present step over the pinned preinstall wheel set (issue #043,
+ * decision D2). Runs on the provisioning path — inside the same
+ * cross-process mutex, so two instances never pip-install into the same
+ * tree at once — and as a repair check on every later boot: one cheap
+ * read-only probe names the missing pinned distributions, the install leg
+ * re-derives that set from a second probe immediately before pip runs
+ * (review P3-1: the leg can start minutes after the probe), pip runs only
+ * when the re-derived set is non-empty, and each wheel the run would consume
+ * is verified against the lock's sha256 first (see
+ * {@link installSharedPythonLibraries}).
+ *
+ * Every failure degrades with one log line and never blocks the boot; the
+ * result carries the `libraries` coverage counts when this boot can vouch
+ * for them, and omits the field when it cannot.
+ */
+async function ensureSharedPythonLibraries(
+  inputs: DesktopSharedPythonEnvironmentInputs,
+  paths: DesktopSharedPythonEnvironmentPaths,
+  environment: DesktopSharedPythonEnvironment,
+): Promise<DesktopSharedPythonEnvironment> {
+  if (inputs.wheelsDirectory === undefined || !environment.shared) return environment
+  const repair = await probeSharedPythonLibraries(inputs, paths)
+  if (repair === undefined) return environment
+  const pinned = repair.lock.distributions.length
+  if (repair.missing.length === 0) {
+    return withSharedPythonLibraries(environment, pinned, pinned)
+  }
+  return await installSharedPythonLibraries(inputs, paths, environment, repair)
+}
+
 /** The shared environment's command surface when its interpreter is present. */
 function sharedEnvironment(
   paths: DesktopSharedPythonEnvironmentPaths,
@@ -283,13 +817,49 @@ function isRetryableLockFailure(cause: unknown): boolean {
 }
 
 /**
+ * Whether one provisioning lock file records a holder process that is
+ * provably gone (review P3-2). The age gate is twenty minutes, so without
+ * this check a relaunch within that window of a mid-provision crash — the
+ * case the lock exists for — would wait the whole bounded turn (~390 s)
+ * before degrading, even though the holder died minutes ago. The lock file
+ * records its holder's PID (the atomic-write package writes `<pid>\n`), and
+ * `process.kill(pid, 0)` settles what mtime cannot: `ESRCH` proves the holder
+ * no longer exists, while `EPERM` means the PID belongs to a live process
+ * owned by someone else (and any other failure is doubt). Unreadable or
+ * unparseable content — including the empty file a `wx` create leaves before
+ * its write lands — is no proof either way, so both the "alive" and the
+ * "no PID" answers leave the caller on the mtime gate.
+ */
+function sharedPythonLockHolderGone(lockFile: string): boolean {
+  let text: string
+  try {
+    text = readFileSync(lockFile, 'utf8')
+  } catch {
+    return false
+  }
+  const trimmed = text.trim()
+  if (!/^\d+$/u.test(trimmed)) return false
+  const pid = Number.parseInt(trimmed, 10)
+  // PID 0 addresses the whole process group on POSIX and is never a holder.
+  if (pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException | null)?.code === 'ESRCH'
+  }
+}
+
+/**
  * Default cross-process provisioning mutex: an exclusive `<pyenv.provision>.lock`
  * beside the shared root, waited for at most
  * {@link SHARED_PYTHON_PROVISION_LOCK_WAIT_MS} (a productive wait — the holder
- * is provisioning the very tree the waiter wants) and broken by mtime once
- * older than {@link SHARED_PYTHON_PROVISION_LOCK_STALE_MS}, because a crashed
- * holder will never release and the shared surface must not degrade forever
- * after one crash.
+ * is provisioning the very tree the waiter wants) and broken once the lock is
+ * provably dead or older than {@link SHARED_PYTHON_PROVISION_LOCK_STALE_MS},
+ * because a crashed holder will never release and the shared surface must not
+ * degrade forever after one crash. A holder whose recorded PID no longer
+ * exists is reclaimed on sight ({@link sharedPythonLockHolderGone}); the age
+ * gate backs that up for a lock that offers no liveness proof.
  */
 async function withSharedPythonProvisionLock<T>(
   lockPath: string,
@@ -297,9 +867,11 @@ async function withSharedPythonProvisionLock<T>(
   now: () => number,
 ): Promise<T> {
   try {
-    const info = await stat(`${lockPath}.lock`)
-    if (now() - info.mtimeMs > SHARED_PYTHON_PROVISION_LOCK_STALE_MS) {
-      await rm(`${lockPath}.lock`, { force: true })
+    const lockFile = `${lockPath}.lock`
+    const info = await stat(lockFile)
+    if (sharedPythonLockHolderGone(lockFile)
+      || now() - info.mtimeMs > SHARED_PYTHON_PROVISION_LOCK_STALE_MS) {
+      await rm(lockFile, { force: true })
     }
   } catch {
     // No lock file (the common case) or an unreadable one: the bounded
@@ -490,6 +1062,23 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * per degradation stage — the shared environment is an enhancement, not a
  * boot dependency.
  *
+ * Preinstalled libraries (issue #043, decision D2): once the shared tree is
+ * up, the same locked cycle runs the ensure-present step over the packaged
+ * wheel set (`resources/python-wheels` + its lockfile) — one cheap read-only
+ * probe names the missing pinned distributions, pip installs exactly those
+ * from the local verified wheel files (never the network, never an
+ * upgrade/downgrade of a name the user already installed — re-derived from a
+ * fresh in-lock probe right before pip runs, so an install that lands while
+ * the leg is deferred still wins: review P3-1), and each consumed
+ * wheel is verified against the lock's sha256 first. With
+ * `deferLibraryInstall` (the production boot, review P2-b) only the probe
+ * rides the boot path; the pip leg (up to its 5-minute deadline) is a
+ * fire-and-forget background repair behind the same mutex, so the aliases
+ * and profile start as soon as the tree is up and the skills degrade
+ * gracefully until the install heals them (this boot or a later one).
+ * Either way the result carries `libraries` coverage counts for the
+ * `python_runtime` telemetry row whenever this boot can vouch for them.
+ *
  * Concurrency (review P3): the whole decide/probe/provision cycle runs under
  * a cross-process mutex beside the shared root, so two desktop instances
  * sharing `%LOCALAPPDATA%\\DSH Desktop` never write the same tree at once —
@@ -524,8 +1113,47 @@ export async function ensureDesktopSharedPythonEnvironment(
   const runLocked: DesktopSharedPythonProvisionLock = inputs.provisionLock
     ?? ((lockMarkerPath, operation) =>
       withSharedPythonProvisionLock(lockMarkerPath, operation, inputs.now ?? Date.now))
-  const provision = (): Promise<DesktopSharedPythonEnvironment> =>
-    provisionSharedPythonEnvironment(inputs, paths)
+  // One boot's deferred library repair: the read-only probe runs on the boot
+  // path (so the resolved environment still carries the pre-install coverage
+  // counts) while the mutating pip leg is scheduled after the boot, behind
+  // the same cross-process mutex (review P2-b).
+  let deferredRepair: DesktopSharedPythonLibraryRepair | undefined
+  const provision = async (): Promise<DesktopSharedPythonEnvironment> => {
+    const environment = await provisionSharedPythonEnvironment(inputs, paths)
+    if (!environment.shared) return environment
+    if (inputs.deferLibraryInstall !== true) {
+      return await ensureSharedPythonLibraries(inputs, paths, environment)
+    }
+    const repair = await probeSharedPythonLibraries(inputs, paths)
+    if (repair === undefined) return environment
+    const pinned = repair.lock.distributions.length
+    if (repair.missing.length === 0) return withSharedPythonLibraries(environment, pinned, pinned)
+    deferredRepair = repair
+    return withSharedPythonLibraries(
+      environment,
+      pinned,
+      countPinnedSharedPythonDistributions(repair.lock, repair.installed),
+    )
+  }
+  // Schedule the deferred (or, on a healthy tree, already-complete) repair and
+  // hand the boot its environment. The background leg re-acquires the SAME
+  // cross-process mutex, so it can never race a concurrent provisioning —
+  // when the lock is unavailable it logs and skips instead of installing
+  // unsafely; a missing library then heals on a later boot.
+  const finalize = (environment: DesktopSharedPythonEnvironment): DesktopSharedPythonEnvironment => {
+    const repair = deferredRepair
+    deferredRepair = undefined
+    if (repair === undefined || !environment.shared) return environment
+    void runLocked(lockPath, () => installSharedPythonLibraries(inputs, paths, environment, repair))
+      .catch(cause => {
+        log(
+          `dsh-plugin-desktop: the background install of the shared python environment's preinstalled libraries at ${paths.root} did not run`
+            + ` (${cause instanceof Error ? cause.message : String(cause)}); `
+            + 'the libraries stay missing until the next boot retries them',
+        )
+      })
+    return environment
+  }
   // Issue #038, pinned cause — the mutex opens `<pyenv.provision>.lock`
   // through `writeFile(..., { flag: 'wx' })` and, unlike the same package's
   // `writeFileAtomic`, creates NO parent directory (its documented contract:
@@ -550,7 +1178,7 @@ export async function ensureDesktopSharedPythonEnvironment(
     // guard must never crash the boot itself.
   }
   try {
-    return await runLocked(lockPath, provision)
+    return finalize(await runLocked(lockPath, provision))
   } catch (cause) {
     // Only the mutex reaches here — the operation itself never throws. A
     // refused or expired wait is the defined loser path: degrade exactly
@@ -580,7 +1208,7 @@ export async function ensureDesktopSharedPythonEnvironment(
           + ` failed once (${cause instanceof Error ? cause.message : String(cause)}); `
           + 'the retry acquired it, so provisioning stayed serialized',
       )
-      return environment
+      return finalize(environment)
     } catch (retryCause) {
       // Issue #038, layer 3 — provision WITHOUT the cross-process lock. The
       // worst outcome is no provisioning at all (pip unpublished forever,
@@ -599,7 +1227,7 @@ export async function ensureDesktopSharedPythonEnvironment(
           + 'provisioning WITHOUT the cross-process lock — concurrently starting desktop instances may '
           + 'rebuild the same tree, though every step keeps its once-semantics and the tree converges on the next boot',
       )
-      return await provision()
+      return finalize(await provision())
     }
   }
 }

@@ -1,6 +1,6 @@
 /** Fail-loud verification of the runtime entries sealed into Electron's app.asar. */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
@@ -10,6 +10,7 @@ import { listPackage } from '@electron/asar'
 import { getCurrentFuseWire, flipFuses, FuseV1Options, FuseVersion, type FuseConfig } from '@electron/fuses'
 import AdmZip from 'adm-zip'
 import { verifyCompanyManifest } from 'dsh-community-market'
+import { BUNDLED_PYTHON_WHEELS_LOCK_NAME, parseBundledPythonWheelsLock } from './bundled-python-wheels.ts'
 import {
   FORBIDDEN_MACOS_UNIVERSAL_ENTRIES,
   MACOS_UNIVERSAL_NATIVE_ENTRIES,
@@ -249,6 +250,16 @@ export const BUNDLED_NODE_RESOURCE_DIRECTORY = 'node-runtime'
 
 /** Directory `extraResources` places the bundled Python distribution into. */
 export const BUNDLED_PYTHON_RESOURCE_DIRECTORY = 'python-runtime'
+
+/**
+ * Directory `extraResources` places the preinstall wheel set into (issue
+ * #043, decision D2): the locked wheels plus their lockfile that the shared
+ * desktop Python environment's ensure-present step consumes. Build inputs to
+ * a mutable environment, deliberately outside the bundled tree's digest
+ * manifest — `scripts/bundled-python-wheels.ts` documents why; this gate
+ * still verifies the packaged set matches its lock exactly.
+ */
+export const BUNDLED_PYTHON_WHEELS_RESOURCE_DIRECTORY = 'python-wheels'
 
 /** CPU-specific runtime assets that must coexist in a universal macOS application. */
 export const REQUIRED_MACOS_UNIVERSAL_ENTRIES = [
@@ -596,6 +607,63 @@ export function verifyBundledPythonRuntime(
     )
   }
   return pythonPath
+}
+
+/**
+ * Verify the packaged preinstall wheel set beside app.asar (win32 only).
+ *
+ * The set is Windows-only (`beforePack` stages nothing for other platforms,
+ * so the probe skips non-win32 packages instead of failing them), and the
+ * verification is lock-exact rather than digest-deep: the staged wheels were
+ * sha256-verified against the committed lock at staging time, so this gate
+ * only asserts the `extraResources` mapping delivered exactly that set — the
+ * lockfile parses (strict build-time schema), every pinned wheel file is
+ * present, and no stray wheel rode along.
+ * @param context - completed application directory and target platform.
+ * @param probe - physical-file probes over the packaged application tree.
+ * @returns the verified lockfile path, or `undefined` on the platforms that
+ * ship no wheel set.
+ */
+export function verifyBundledPythonWheels(
+  context: PackagedRuntimeContext,
+  probe: {
+    readonly exists?: FileProbe
+    readonly readFile?: (filename: string) => string
+    readonly listFiles?: (directory: string) => readonly string[]
+  } = {},
+): string | undefined {
+  if (context.electronPlatformName !== 'win32') return undefined
+  const exists = probe.exists ?? existsSync
+  const readFile = probe.readFile ?? ((filename: string) => readFileSync(filename, 'utf8'))
+  const listFiles = probe.listFiles ?? ((directory: string) => readdirSync(directory))
+  const wheelsDirectory = join(
+    resolvePackagedResourcesDirectory(context),
+    BUNDLED_PYTHON_WHEELS_RESOURCE_DIRECTORY,
+  )
+  const lockPath = join(wheelsDirectory, BUNDLED_PYTHON_WHEELS_LOCK_NAME)
+  if (!exists(lockPath)) {
+    throw new Error(
+      `dsh-plugin-desktop: packaged runtime at ${resolvePackagedResourcesDirectory(context)} is missing the preinstall wheel lock: ${lockPath}`,
+    )
+  }
+  const lock = parseBundledPythonWheelsLock(readFile(lockPath))
+  for (const entry of lock.distributions) {
+    const wheelPath = join(wheelsDirectory, entry.filename)
+    if (!exists(wheelPath)) {
+      throw new Error(
+        `dsh-plugin-desktop: packaged runtime at ${resolvePackagedResourcesDirectory(context)} is missing the pinned wheel ${entry.filename}: ${wheelPath}`,
+      )
+    }
+  }
+  const staged = [...listFiles(wheelsDirectory)].sort()
+  const expected = [...lock.distributions.map(entry => entry.filename), BUNDLED_PYTHON_WHEELS_LOCK_NAME].sort()
+  if (staged.length !== expected.length
+    || staged.some((filename: string, index: number) => filename !== expected[index])) {
+    throw new Error(
+      `dsh-plugin-desktop: the packaged wheel directory ${wheelsDirectory} does not hold exactly the locked wheel set`,
+    )
+  }
+  return lockPath
 }
 
 /** Read the Electron fuse values the shipped application configures. */
@@ -1292,6 +1360,10 @@ export function verifyPackagedRuntime(
 export interface PackagedRuntimeProbe {
   /** Physical-file probe for the bundled Node command; defaults to `existsSync`. */
   readonly exists?: FileProbe
+  /** Lockfile reader for the preinstall wheel set; defaults to `readFileSync`. */
+  readonly readFile?: (filename: string) => string
+  /** Directory lister for the preinstall wheel set; defaults to `readdirSync`. */
+  readonly listFiles?: (directory: string) => readonly string[]
   /** Fuse map the shipped application configures; defaults to the build configuration. */
   readonly readFuses?: () => Readonly<Record<string, unknown>>
   /** Fuse-wire reader for the packaged application binary; defaults to `@electron/fuses`. */
@@ -1328,6 +1400,7 @@ export async function afterPack(
   verify(context)
   verifyBundledNodeRuntime(context, probe.exists ?? existsSync)
   verifyBundledPythonRuntime(context, probe.exists ?? existsSync)
+  verifyBundledPythonWheels(context, probe)
   verifyElectronFuseStage(
     (probe.readFuses ?? (() => readPackagedElectronFuses(context.packager)))(),
   )

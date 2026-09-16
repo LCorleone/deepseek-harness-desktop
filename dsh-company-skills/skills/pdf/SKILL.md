@@ -168,6 +168,11 @@ bash scripts/make.sh reformat \
 > 2. **If missing, try install (user-level, no admin):** `npm i playwright && npx playwright install chromium`. `make.sh fix` tries the global npm route, which can fail without admin — prefer the user-level one. Downloads go through the corporate proxy; sandbox escalation approval applies as usual.
 > 3. **Only on install failure:** skip cover rendering and say so in the delivery — deliver `render_body.py`'s body-only output instead of a merged `--cover` PDF (the FILL route `fill_inspect.py`/`fill_write.py` needs no browser and always works).
 
+> **Python Tools — three-stage rule** (`matplotlib` is NOT preinstalled with the desktop's shared Python environment; `reportlab` and `pypdf` are). The `math`, `chart` and `flowchart` content blocks render through `render_body.py`'s matplotlib path:
+> 1. **Check first:** `python -c "import matplotlib"`.
+> 2. **If missing, try install:** `dsh-pip install matplotlib` — the desktop's managed pip channel into the shared Python environment; corporate proxy and sandbox escalation approval apply as usual.
+> 3. **Only on install failure:** drop those blocks from `content.json` and express the same content with blocks that need no matplotlib (`table`, `image`, `code`, text). The rest of CREATE/REFORMAT and the whole FILL route are unaffected.
+
 ```bash
 bash scripts/make.sh check   # verify all deps
 bash scripts/make.sh fix     # auto-install missing deps
@@ -179,5 +184,6 @@ bash scripts/make.sh demo    # build a sample PDF
 | Python 3.9+ | all `.py` scripts | system |
 | `reportlab` | `render_body.py` | `pip install reportlab` |
 | `pypdf` | fill, merge, reformat | `pip install pypdf` |
+| `matplotlib` | `math`/`chart`/`flowchart` blocks | checked at runtime; `dsh-pip install matplotlib`; fallback on failure |
 | Node.js 18+ | `render_cover.js` | system |
 | `playwright` + Chromium | `render_cover.js` | checked at runtime; auto-install attempt; fallback on failure |

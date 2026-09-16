@@ -39,7 +39,7 @@ Present both options. **Recommend the Deloitte template.**
 | Task | Approach |
 |------|----------|
 | **Generate a deck (default)** | Use the Deloitte template via the [Editing workflow](references/editing.md) |
-| Read/analyze content | `python -m markitdown presentation.pptx` |
+| Read/analyze content | `python -m markitdown presentation.pptx` (check/install first — see [Python Tools](#reading-content) below) |
 | Use a user-provided template | See [Editing Presentations](references/editing.md) |
 | Create from scratch (fallback) | See [Creating from Scratch](#creating-from-scratch-workflow) below |
 
@@ -69,9 +69,17 @@ Present both options. **Recommend the Deloitte template.**
 
 ## Reading Content
 
+> **Python Tools — three-stage rule** (`markitdown` is NOT preinstalled with the desktop's shared Python environment). Every pptx→markdown extraction in this skill needs it:
+> 1. **Check first:** `python -c "import markitdown"` (or `markitdown --version` on PATH).
+> 2. **If missing, try install:** `dsh-pip install "markitdown[pptx]"` — the desktop's managed pip channel into the shared Python environment; corporate proxy and sandbox escalation approval apply as usual. Heads-up: this pulls a ~42 MB dependency chain (magika/onnxruntime/numpy/sympy).
+> 3. **Only on install failure:** fall back to the native python-pptx read path — `python-pptx` IS preinstalled, and the OOXML unpack/edit/pack workflow ([references/editing.md](references/editing.md)) needs no converter at all; only the pptx→markdown convenience degrades.
+
 ```bash
 # Text extraction
 python -m markitdown presentation.pptx
+
+# Native fallback if markitdown stays missing (python-pptx is preinstalled, no install needed)
+python -c "import sys; from pptx import Presentation; p = Presentation(sys.argv[1]); print('\n\n'.join('\n'.join(s.text_frame.text for s in slide.shapes if s.has_text_frame) for slide in p.slides))" presentation.pptx
 ```
 
 ---
@@ -101,7 +109,7 @@ Workflow:
    ```bash
    cp deloitte-template/deloitte-template.pptx template.pptx
    ```
-2. **Analyze the template's styling vocabulary** with `markitdown` (`python -m markitdown template.pptx > template.md`) — see its colors, fonts, and the layout patterns each slide offers. You'll reuse these visuals and adapt structure to your content.
+2. **Analyze the template's styling vocabulary** with `markitdown` (`python -m markitdown template.pptx > template.md`) — see its colors, fonts, and the layout patterns each slide offers. You'll reuse these visuals and adapt structure to your content. Run the [Python Tools](#reading-content) check/install first; if markitdown stays missing, read the slide XML from the unpacked tree instead (see [references/editing.md](references/editing.md)).
 3. Follow the **Template-Based Workflow** in [editing.md](references/editing.md) — unpack, build the deck structure (add/remove/reorder slides), **write the slide text yourself** from the user's material, clean, pack. Reuse the template's styling throughout; obey the Preservation Contract above.
 4. Run the [QA Process](references/pitfalls.md#qa-process) before declaring success.
 
@@ -301,6 +309,6 @@ slide.addText("03", {
 
 ## Dependencies
 
-- `pip install "markitdown[pptx]"` — text extraction
+- **markitdown**: pptx→markdown text extraction — NOT preinstalled; checked at runtime; self-install attempt via dsh-pip; python-pptx fallback on failure (see [Python Tools](#reading-content))
 - `npm install -g pptxgenjs` — creating from scratch
 - `npm install -g react-icons react react-dom sharp` — icons (optional)

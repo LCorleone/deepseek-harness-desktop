@@ -1,16 +1,24 @@
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_SHARED_PYTHON_DIRECTORY_NAME,
+  SHARED_PYTHON_WHEELS_LOCK_NAME,
+  canonicalDistributionName,
   desktopSharedPythonEnvironmentPaths,
   desktopSharedPythonEnvironmentRoot,
   ensureDesktopSharedPythonEnvironment,
+  missingSharedPythonDistributions,
+  parseSharedPythonWheelsLock,
   resolveDesktopSharedPythonEnvironment,
-  type DesktopSharedPythonProbe,
+  sharedPythonLibraryInstallArguments,
+  type DesktopSharedPythonDistributionsProbe,
   type DesktopSharedPythonProvision,
+  type DesktopSharedPythonProbe,
   type DesktopSharedPythonProvisionLock,
+  type DesktopSharedPythonWheelsLockEntry,
 } from '../src/desktop-shared-python-environment.ts'
 import { resolveDesktopLocalPythonExecutable } from '../src/desktop-python-runtime.ts'
 
@@ -976,18 +984,63 @@ describe('shared python environment provisioning mutex (review P3)', () => {
     }
   })
 
-  it('breaks a crash-left default lock by age instead of waiting the whole bounded turn', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-stale-'))
+  it('breaks a crash-left default lock by age when its PID offers no liveness proof (review P3-2)', async () => {
+    // An unparseable PID (an interrupted write) and an empty file (a `wx`
+    // create whose write has not landed) prove nothing either way, so the
+    // mtime gate still decides for them.
+    for (const content of ['1234x\n', '']) {
+      const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-stale-'))
+      try {
+        const paths = desktopSharedPythonEnvironmentPaths(root)
+        // A lock file 21 minutes old: no live holder can still own it (the
+        // worst legitimate hold is ~16 minutes since the #043 batch C wheel
+        // install and its revalidation probe joined the cycle, so the stale
+        // gate is 20 minutes), so the next boot must break it and provision
+        // rather than degrade behind a ghost.
+        const lockPath = join(root, 'pyenv.provision.lock')
+        writeFileSync(lockPath, content)
+        const now = Date.parse('2026-09-11T01:00:00.000Z')
+        const stale = new Date(now - 21 * 60 * 1000)
+        utimesSync(lockPath, stale, stale)
+        const existing = new Set<string>()
+        const { calls, provision } = provisionRecorder(existing)
+
+        const environment = await ensureDesktopSharedPythonEnvironment({
+          platform: 'win32',
+          localPythonExecutable: undefined,
+          bundledPythonExecutable: BUNDLED_PYTHON,
+          rootDirectory: root,
+          provision,
+          now: () => now,
+          exists: filename => existing.has(filename),
+        })
+
+        expect(calls, content).toHaveLength(1)
+        expect(environment).toEqual({
+          pythonExecutable: paths.pythonExecutable,
+          pipExecutable: paths.pipExecutable,
+          shared: true,
+        })
+        // The broken ghost lock itself is gone after the cycle.
+        expect(existsSync(lockPath)).toBe(false)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('reclaims a crash-left lock on sight when its recorded holder PID is dead (review P3-2)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-dead-'))
     try {
       const paths = desktopSharedPythonEnvironmentPaths(root)
-      // A lock file 11 minutes old: no live holder can still own it (the
-      // worst legitimate hold is ~6.5 minutes), so the next boot must break
-      // it and provision rather than degrade behind a ghost.
+      // The lock is FRESH (just written), so the age gate has not passed and
+      // only the liveness check can reclaim it — the shape a relaunch within
+      // 20 minutes of a mid-provision crash finds. The PID belongs to a child
+      // this test already reaped, so it is provably gone.
       const lockPath = join(root, 'pyenv.provision.lock')
-      writeFileSync(lockPath, '1234\n')
-      const now = Date.parse('2026-09-11T01:00:00.000Z')
-      const stale = new Date(now - 11 * 60 * 1000)
-      utimesSync(lockPath, stale, stale)
+      const deadHolder = spawnSync(process.execPath, ['-e', '']).pid ?? -1
+      expect(deadHolder).toBeGreaterThan(0)
+      writeFileSync(lockPath, `${deadHolder}\n`)
       const existing = new Set<string>()
       const { calls, provision } = provisionRecorder(existing)
 
@@ -997,7 +1050,6 @@ describe('shared python environment provisioning mutex (review P3)', () => {
         bundledPythonExecutable: BUNDLED_PYTHON,
         rootDirectory: root,
         provision,
-        now: () => now,
         exists: filename => existing.has(filename),
       })
 
@@ -1007,10 +1059,658 @@ describe('shared python environment provisioning mutex (review P3)', () => {
         pipExecutable: paths.pipExecutable,
         shared: true,
       })
-      // The broken ghost lock itself is gone after the cycle.
       expect(existsSync(lockPath)).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves an alive holder\u2019s fresh lock to the age gate (review P3-2)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-mutex-live-'))
+    try {
+      const paths = desktopSharedPythonEnvironmentPaths(root)
+      // This process is trivially alive and the lock is fresh: the liveness
+      // check must NOT reclaim it (only ESRCH proves death), so the boot
+      // contends on the lock exactly as before.
+      const lockPath = join(root, 'pyenv.provision.lock')
+      writeFileSync(lockPath, `${process.pid}\n`)
+      const existing = new Set<string>()
+      const { calls, provision } = provisionRecorder(existing)
+
+      const boot = ensureDesktopSharedPythonEnvironment({
+        platform: 'win32',
+        localPythonExecutable: undefined,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        provision,
+        exists: filename => existing.has(filename),
+      })
+      // The boot is blocked on the live holder: no provisioning started and
+      // the holder's lock file is still in place.
+      await new Promise(resolve => { setTimeout(resolve, 150) })
+      expect(calls).toEqual([])
+      expect(existsSync(lockPath)).toBe(true)
+
+      // The holder then exits; the next bounded acquisition retry proceeds.
+      rmSync(lockPath, { force: true })
+      const environment = await boot
+      expect(calls).toHaveLength(1)
+      expect(environment).toEqual({
+        pythonExecutable: paths.pythonExecutable,
+        pipExecutable: paths.pipExecutable,
+        shared: true,
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('shared python environment preinstalled library set (issue #043 batch C)', () => {
+  /** Three pinned entries with valid-shape 64-hex checksums. */
+  const LOCK_ENTRIES: readonly DesktopSharedPythonWheelsLockEntry[] = [
+    { name: 'pdfplumber', version: '0.11.10', filename: 'pdfplumber-0.11.10-py3-none-any.whl', sha256: 'a'.repeat(64) },
+    { name: 'pyyaml', version: '6.0.3', filename: 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl', sha256: 'b'.repeat(64) },
+    { name: 'requests', version: '2.34.2', filename: 'requests-2.34.2-py3-none-any.whl', sha256: 'c'.repeat(64) },
+  ]
+  const LOCK_TEXT = `${JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: LOCK_ENTRIES })}\n`
+  const WHEELS_DIRECTORY = 'C:\\Program Files\\DSH Desktop\\resources\\python-wheels'
+
+  /** Digest seam answering each wheel's own pinned sha256. */
+  const lockDigest = (filename: string): string =>
+    LOCK_ENTRIES.find(entry => join(WHEELS_DIRECTORY, entry.filename) === filename)?.sha256 ?? '0'.repeat(64)
+
+  /** Answer queue for the installed-distributions probe: one answer per spawn. */
+  function distributionsProbeRecorder(answers: ReadonlyArray<Record<string, string> | undefined>) {
+    const calls: Array<{ pythonExecutable: string, environment: NodeJS.ProcessEnv | undefined }> = []
+    let index = 0
+    const probeDistributions: DesktopSharedPythonDistributionsProbe = async (pythonExecutable, options) => {
+      calls.push({ pythonExecutable, environment: options.environment })
+      const answer = answers[Math.min(index, answers.length - 1)]
+      index += 1
+      return answer === undefined ? undefined : { ...answer }
+    }
+    return { calls, probeDistributions }
+  }
+
+  /** Recording library-install seam answering a fixed outcome. */
+  function installRecorder(outcome: { exitCode: number | null, diagnostic?: string } = { exitCode: 0 }) {
+    const calls: Array<{ command: string, args: readonly string[], environment: NodeJS.ProcessEnv | undefined }> = []
+    const installDistributions: DesktopSharedPythonProvision = async (command, args, options) => {
+      calls.push({ command, args, environment: options.environment })
+      return { exitCode: outcome.exitCode, diagnostic: outcome.diagnostic ?? '' }
+    }
+    return { calls, installDistributions }
+  }
+
+  /** A healthy shared tree plus the full library-repair input set. */
+  function libraryFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-libs-'))
+    const paths = desktopSharedPythonEnvironmentPaths(root)
+    const existing = new Set<string>([paths.pythonExecutable, paths.pipExecutable])
+    const { calls: probeCalls, probe } = probeRecorder(true)
+    return {
+      root,
+      paths,
+      existing,
+      probe,
+      probeCalls,
+      baseInputs: () => ({
+        platform: 'win32' as const,
+        localPythonExecutable: LOCAL_PYTHON,
+        bundledPythonExecutable: BUNDLED_PYTHON,
+        rootDirectory: root,
+        probe,
+        exists: (filename: string) => existing.has(filename),
+      }),
+    }
+  }
+
+  it('parses a well-formed lock and degrades every malformed input to undefined', () => {
+    expect(parseSharedPythonWheelsLock(LOCK_TEXT)?.distributions.map(entry => entry.name))
+      .toEqual(['pdfplumber', 'pyyaml', 'requests'])
+    const malformed = [
+      '{',
+      '[]',
+      JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: [] }),
+      JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: [{ name: 'x' }] }),
+      JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: [{ name: 'x', version: '1', filename: 'x.tar.gz', sha256: 'a'.repeat(64) }] }),
+      JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: [{ name: 'x', version: '1', filename: 'x-1-py3-none-any.whl', sha256: 'short' }] }),
+      // Duplicate names after canonicalization are ambiguous input.
+      JSON.stringify({
+        version: 1,
+        python: '3.12',
+        platform: 'win_amd64',
+        distributions: [
+          { name: 'x', version: '1', filename: 'x-1-py3-none-any.whl', sha256: 'a'.repeat(64) },
+          { name: 'X', version: '2', filename: 'X-2-py3-none-any.whl', sha256: 'b'.repeat(64) },
+        ],
+      }),
+    ]
+    for (const text of malformed) expect(parseSharedPythonWheelsLock(text), text).toBeUndefined()
+  })
+
+  it('computes the missing set ensure-present style: any version counts, names normalize', () => {
+    expect(canonicalDistributionName('PyYAML')).toBe('pyyaml')
+    expect(canonicalDistributionName('python_dateutil')).toBe('python-dateutil')
+    const installed = { PyYAML: '5.3', requests: '2.25.0 (user-downgraded)' }
+    const missing = missingSharedPythonDistributions(LOCK_ENTRIES, installed)
+    // pyyaml (different case) and requests (any version, even an odd one)
+    // count as present; only the truly absent name is missing.
+    expect(missing.map(entry => entry.name)).toEqual(['pdfplumber'])
+    expect(missingSharedPythonDistributions(LOCK_ENTRIES, {
+      pdfplumber: '0.11.0',
+      pyyaml: '6.0.3',
+      requests: '2.34.2',
+    })).toEqual([])
+  })
+
+  it('builds the strictly offline pip invocation over the missing set', () => {
+    const missing = LOCK_ENTRIES.slice(0, 2)
+    expect(sharedPythonLibraryInstallArguments(WHEELS_DIRECTORY, missing)).toEqual([
+      '-m', 'pip', 'install',
+      '--disable-pip-version-check',
+      '--no-index',
+      '--no-deps',
+      '--no-warn-script-location',
+      '--no-compile',
+      join(WHEELS_DIRECTORY, 'pdfplumber-0.11.10-py3-none-any.whl'),
+      join(WHEELS_DIRECTORY, 'pyyaml-6.0.3-cp312-cp312-win_amd64.whl'),
+    ])
+  })
+
+  it('names verified wheel files by absolute path so pip never scans the directory', () => {
+    const missing = LOCK_ENTRIES.slice(0, 2)
+    const args = sharedPythonLibraryInstallArguments(WHEELS_DIRECTORY, missing)
+    // Review P2-a: a directory argument (e.g. `--find-links <dir>`) would let
+    // pip resolve a differently-named same-version wheel planted beside the
+    // verified set (x-1.0-99-py3-none-any.whl wins for x==1.0). Passing the
+    // verified wheel files themselves leaves pip no directory to scan, so the
+    // ONLY wheel-shaped arguments are the locked filenames.
+    expect(args).not.toContain('--find-links')
+    expect(args).not.toContain(WHEELS_DIRECTORY)
+    expect(args.filter(argument => argument.endsWith('.whl'))).toEqual(missing.map(
+      entry => join(WHEELS_DIRECTORY, entry.filename),
+    ))
+  })
+
+  it('installs only the missing pinned libraries on first provisioning, verified against the lock', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { calls: probeCalls, probeDistributions } = distributionsProbeRecorder([
+        { PyYAML: '6.0.3' },
+        // The install leg re-runs the probe inside its own lock hold before
+        // building pip's argv (review P3-1); nothing changed in between.
+        { PyYAML: '6.0.3' },
+        { pdfplumber: '0.11.10', pyyaml: '6.0.3', requests: '2.34.2' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const digested: string[] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: filename => {
+          digested.push(filename)
+          return lockDigest(filename)
+        },
+        log: message => { logs.push(message) },
+      })
+
+      // One probe named the missing set, the install leg revalidated it, every
+      // consumed wheel was verified against its pinned sha256, one strictly
+      // offline pip run installed exactly the missing pins, and a fresh probe
+      // set the coverage counts.
+      expect(probeCalls.map(call => call.pythonExecutable)).toEqual([
+        fixture.paths.pythonExecutable,
+        fixture.paths.pythonExecutable,
+        fixture.paths.pythonExecutable,
+      ])
+      for (const call of probeCalls) expect(call.environment?.PYTHONDONTWRITEBYTECODE).toBe('1')
+      expect(digested).toEqual([join(WHEELS_DIRECTORY, 'pdfplumber-0.11.10-py3-none-any.whl'), join(WHEELS_DIRECTORY, 'requests-2.34.2-py3-none-any.whl')])
+      expect(installCalls).toEqual([{
+        command: fixture.paths.pythonExecutable,
+        args: sharedPythonLibraryInstallArguments(WHEELS_DIRECTORY, LOCK_ENTRIES.filter((_, index) => index !== 1)),
+        environment: installCalls[0]?.environment,
+      }])
+      expect(installCalls[0]?.environment?.PYTHONDONTWRITEBYTECODE).toBe('1')
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 3 })
+      expect(logs).toEqual([
+        `dsh-plugin-desktop: installed 2 missing preinstalled python libraries into the shared python environment at ${fixture.paths.root} from ${WHEELS_DIRECTORY}`,
+      ])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('is idempotent: a healthy second boot probes once and never runs pip', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { calls: probeCalls, probeDistributions } = distributionsProbeRecorder([
+        { pdfplumber: '0.11.10', PyYAML: '6.0.3', requests: '2.34.2' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+      const inputs = () => ({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: () => { throw new Error('a healthy boot hashes nothing') },
+        log: (message: string) => { logs.push(message) },
+      })
+
+      const first = await ensureDesktopSharedPythonEnvironment(inputs())
+      const second = await ensureDesktopSharedPythonEnvironment(inputs())
+
+      expect(first.libraries).toEqual({ pinned: 3, installed: 3 })
+      expect(second.libraries).toEqual({ pinned: 3, installed: 3 })
+      expect(probeCalls).toHaveLength(2)
+      expect(installCalls).toEqual([])
+      expect(logs).toEqual([])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('skips pip entirely when a wheel fails its pinned checksum', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([{ pyyaml: '6.0.3' }])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: () => 'f'.repeat(64),
+        log: message => { logs.push(message) },
+      })
+
+      // A tampered wheel must never reach pip — the repair skips with the
+      // coverage counts of the untouched tree and one log line.
+      expect(installCalls).toEqual([])
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 1 })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('failed their pinned checksums')
+      expect(logs[0]).toContain('pdfplumber-0.11.10-py3-none-any.whl')
+      expect(logs[0]).toContain('requests-2.34.2-py3-none-any.whl')
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('degrades with a recount when pip itself fails, and never blocks the boot', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([
+        { pyyaml: '6.0.3' },
+        // The install leg's revalidation sees the same pre-pip tree (P3-1).
+        { pyyaml: '6.0.3' },
+        // pip half-succeeded before dying: pdfplumber landed, requests did not.
+        { pdfplumber: '0.11.10', pyyaml: '6.0.3' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder({ exitCode: 1, diagnostic: 'disk full' })
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: lockDigest,
+        log: message => { logs.push(message) },
+      })
+
+      expect(installCalls).toHaveLength(1)
+      expect(environment.shared).toBe(true)
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 2 })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('pip could not install the 2 missing')
+      expect(logs[0]).toContain('disk full')
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits the libraries fact when the probe or the lock cannot answer', async () => {
+    const fixture = libraryFixture()
+    try {
+      const logs: string[] = []
+      const { calls: installCalls, installDistributions } = installRecorder()
+
+      const probed = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions: async () => undefined,
+        installDistributions,
+        log: message => { logs.push(message) },
+      })
+      expect(probed.libraries).toBeUndefined()
+      expect(installCalls).toEqual([])
+
+      const unlocked = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => undefined,
+        log: message => { logs.push(message) },
+      })
+      expect(unlocked.libraries).toBeUndefined()
+
+      const malformed = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => '{',
+        log: message => { logs.push(message) },
+      })
+      expect(malformed.libraries).toBeUndefined()
+      expect(logs).toHaveLength(3)
+      expect(logs[0]).toContain('could not be probed')
+      expect(logs[1]).toContain(`${join(WHEELS_DIRECTORY, SHARED_PYTHON_WHEELS_LOCK_NAME)} is unavailable`)
+      expect(logs[2]).toContain(`${join(WHEELS_DIRECTORY, SHARED_PYTHON_WHEELS_LOCK_NAME)} is unavailable`)
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('never consults the wheel set when no wheels directory is wired', async () => {
+    const fixture = libraryFixture()
+    try {
+      const probeDistributions: DesktopSharedPythonDistributionsProbe = async () => {
+        throw new Error('the probe must not run without a wheel set')
+      }
+      const { calls: installCalls, installDistributions } = installRecorder()
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        probeDistributions,
+        installDistributions,
+      })
+
+      expect(environment.libraries).toBeUndefined()
+      expect(installCalls).toEqual([])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('runs the library repair inside the provisioning mutex', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([{}])
+      const installHeldLock: boolean[] = []
+      let lockHeld = false
+      const lock: DesktopSharedPythonProvisionLock = async (_lockPath, operation) => {
+        lockHeld = true
+        try {
+          return await operation()
+        } finally {
+          lockHeld = false
+        }
+      }
+
+      await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        provisionLock: lock,
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions: async (_command, _args) => {
+          installHeldLock.push(lockHeld)
+          return { exitCode: 0, diagnostic: '' }
+        },
+        digestFile: lockDigest,
+      })
+
+      // pip only ever ran while the cross-process mutex was held, so two
+      // desktop instances can never install into the same tree at once.
+      expect(installHeldLock).toEqual([true])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('defers the pip leg to a background repair behind the same mutex (review P2-b)', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([
+        { pyyaml: '6.0.3' },
+        // The background leg re-probes the plan before pip runs (review P3-1).
+        { pyyaml: '6.0.3' },
+        { pdfplumber: '0.11.10', pyyaml: '6.0.3', requests: '2.34.2' },
+      ])
+      const installHeldLock: boolean[] = []
+      let lockHeld = false
+      const lock: DesktopSharedPythonProvisionLock = async (_lockPath, operation) => {
+        lockHeld = true
+        try {
+          return await operation()
+        } finally {
+          lockHeld = false
+        }
+      }
+      let releaseInstall: (() => void) | undefined
+      let installCompleted = false
+      const installCalls: string[][] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        provisionLock: lock,
+        deferLibraryInstall: true,
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions: async (_command, args) => {
+          installCalls.push([...args])
+          installHeldLock.push(lockHeld)
+          await new Promise<void>(resolve => { releaseInstall = resolve })
+          installCompleted = true
+          return { exitCode: 0, diagnostic: '' }
+        },
+        digestFile: lockDigest,
+        log: message => { logs.push(message) },
+      })
+
+      // Boot resolved with the PRE-install coverage after only the cheap
+      // read-only probe: the background pip leg has started but is still
+      // blocked, proving the boot never awaited it.
+      expect(environment.shared).toBe(true)
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 1 })
+      await vi.waitFor(() => { expect(installCalls).toHaveLength(1) })
+      expect(installCompleted).toBe(false)
+
+      // The background leg then finishes, holding the same cross-process mutex.
+      expect(installHeldLock).toEqual([true])
+      releaseInstall?.()
+      await vi.waitFor(() => {
+        expect(logs.some(message => message.includes('installed 2 missing preinstalled python libraries'))).toBe(true)
+      })
+      expect(installCompleted).toBe(true)
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('revalidates a deferred plan inside the lock, so a pin the user installed is never overwritten (review P3-1)', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { calls: probeCalls, probeDistributions: recorded } = distributionsProbeRecorder([
+        // The boot's probe: pdfplumber and requests are missing.
+        { pyyaml: '6.0.3' },
+        // While the pip leg sat deferred, the user (or their agent) ran
+        // `dsh-pip install pdfplumber` — the boot's plan is now stale.
+        { pyyaml: '6.0.3', pdfplumber: '0.11.10' },
+        // The post-install recount.
+        { pdfplumber: '0.11.10', pyyaml: '6.0.3', requests: '2.34.2' },
+      ])
+      const probeHeldLock: boolean[] = []
+      let lockHeld = false
+      const lock: DesktopSharedPythonProvisionLock = async (_lockPath, operation) => {
+        lockHeld = true
+        try {
+          return await operation()
+        } finally {
+          lockHeld = false
+        }
+      }
+      const probeDistributions: DesktopSharedPythonDistributionsProbe = async (pythonExecutable, options) => {
+        probeHeldLock.push(lockHeld)
+        return await recorded(pythonExecutable, options)
+      }
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const digested: string[] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        provisionLock: lock,
+        deferLibraryInstall: true,
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: filename => {
+          digested.push(filename)
+          return lockDigest(filename)
+        },
+        log: message => { logs.push(message) },
+      })
+
+      // The boot still reports the pre-install coverage it probed.
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 1 })
+      await vi.waitFor(() => { expect(probeCalls).toHaveLength(3) })
+      // Only the wheel still absent when the leg actually ran reaches pip —
+      // the user's own pdfplumber keeps winning — and only that wheel is
+      // hashed. Both the revalidation and the pip run sit inside the mutex.
+      expect(installCalls).toHaveLength(1)
+      expect(installCalls[0]?.args.filter(argument => argument.endsWith('.whl'))).toEqual([
+        join(WHEELS_DIRECTORY, 'requests-2.34.2-py3-none-any.whl'),
+      ])
+      expect(digested).toEqual([join(WHEELS_DIRECTORY, 'requests-2.34.2-py3-none-any.whl')])
+      expect(probeHeldLock).toEqual([true, true, true])
+      expect(logs).toEqual([
+        `dsh-plugin-desktop: installed 1 missing preinstalled python libraries into the shared python environment at ${fixture.paths.root} from ${WHEELS_DIRECTORY}`,
+      ])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('skips pip when the deferred window already satisfied every pin (review P3-1)', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { calls: probeCalls, probeDistributions } = distributionsProbeRecorder([
+        { pyyaml: '6.0.3' },
+        // The whole set landed while the leg was deferred.
+        { pdfplumber: '0.11.10', pyyaml: '6.0.3', requests: '2.34.2' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        deferLibraryInstall: true,
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: () => { throw new Error('a satisfied set hashes nothing') },
+        log: message => { logs.push(message) },
+      })
+
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 1 })
+      // The revalidation probe is the leg's last probe (no recount follows a
+      // skipped pip), and nothing was installed or logged.
+      await vi.waitFor(() => { expect(probeCalls).toHaveLength(2) })
+      expect(installCalls).toEqual([])
+      expect(logs).toEqual([])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('never installs blindly when the pre-install re-probe cannot answer (review P3-1)', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([
+        { pyyaml: '6.0.3' },
+        undefined,
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: () => { throw new Error('nothing to verify without a fresh plan') },
+        log: message => { logs.push(message) },
+      })
+
+      // Losing a boot to a re-probe that cannot see the tree beats installing
+      // over a pin this boot cannot vouch for; the counts describe the tree as
+      // the boot probed it, and the next boot retries.
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 1 })
+      expect(installCalls).toEqual([])
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('could not be probed again before installing')
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('logs and skips the background repair when the deferred lock cannot be acquired', async () => {
+    const fixture = libraryFixture()
+    try {
+      const { probeDistributions } = distributionsProbeRecorder([{ pyyaml: '6.0.3' }])
+      let lockAttempts = 0
+      const lock: DesktopSharedPythonProvisionLock = async (_lockPath, operation) => {
+        lockAttempts += 1
+        // The boot's provision succeeds; the background repair's re-acquire
+        // finds the mutex unavailable.
+        if (lockAttempts > 1) throw new Error('busy')
+        return await operation()
+      }
+      const installCalls: string[][] = []
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        provisionLock: lock,
+        deferLibraryInstall: true,
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => LOCK_TEXT,
+        probeDistributions,
+        installDistributions: async (_command, args) => {
+          installCalls.push([...args])
+          return { exitCode: 0, diagnostic: '' }
+        },
+        digestFile: lockDigest,
+        log: message => { logs.push(message) },
+      })
+
+      expect(environment.shared).toBe(true)
+      await vi.waitFor(() => {
+        expect(logs.some(message => message.includes('background install') && message.includes('busy'))).toBe(true)
+      })
+      // Without the mutex the pip leg never runs — it must not race a
+      // concurrent provisioning — and the missing libraries heal next boot.
+      expect(installCalls).toEqual([])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
     }
   })
 })
