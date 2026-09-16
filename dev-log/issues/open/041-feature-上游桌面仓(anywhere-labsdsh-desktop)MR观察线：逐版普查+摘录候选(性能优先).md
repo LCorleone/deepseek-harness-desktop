@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-15
-**Updated**: 2026-09-15
+**Updated**: 2026-09-16
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,16 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-16
+- 安装速度调研存档（2026-09-16，scout-fbe3e623）：
+【已天然在手的】v2.0.4『优化安装速度』=extract-in-place（app-builder-lib extractAppPackage.nsh 去 7z 暂存+CopyFiles，I/O 减半）——我们的 patches/app-builder-lib@26.15.7.patch:60-138 早已携带（a91a4de519/1a45b88827）+长路径 manifest+范围化进程杀。
+【大头=#829 选择性 ASAR（M，映射到 #042 启动优化）】动机=issue #804：v2.0.4 的 index-only asar 有 22,939 个散文件——host-boot 做 23k 次 open/read/close=5.2s（冷启 10-12s 的 76%）+Defender 首启逐文件扫描（profile 组合 459ms→7990ms，17 倍；3 条路径排除=整体 −40%）。#829 把 JS 模块真装进 asar+smartUnpack+窄 asarUnpack（pnpm/ripgrep/原生插件/presets），保留 integrity fuses，且修了自家回归（asar 图上同步 realpath 13.42s→移除；overlay 发现按 Profile 代缓存；CJS 不再重入 ESM 钩子）+附 NSIS A/B 安装计时实验室（scripts/build-windows-nsis-ab.ts+ps1+schema）可复用。
+【⚠我们同款病】package.json:326-333 asarUnpack 含 node_modules/**+lib/**+agent-presets/**=同 index-only 散文件形态——#042 静态拆解的 host 组装段若是大头即此因。b97 boot_phase 数据将证实。
+【S 级快赢】①移植 NSIS A/B 实验室（零风险，改布局前先拿数）②首启 Defender 排除指引（#804 实测 −40%；企业 GPO 归运维，可附 note）③核对我方更新交接无 #823 windowsHide 安装器隐身模式④compression 已是 normal，store 可 A/B 试验。
+【否决】#972/#973 取消 ASAR=正确性动机（ASAR Stats BigInt 崩）非性能且实测未做；与我们 asar-integrity 加固冲突，永不跟。教训保留：任何进 asar 的东西需要真 stat/lstat 时小心 ASAR Stats 语义。
+候选榜更新：#829 选择性 ASAR 升为 #042 Phase2 主候选（待 b97 相位图确认 host_composed 占比）。
 
 ### 2026-09-15 HH:MM
 - [ ] 完成需求分析
