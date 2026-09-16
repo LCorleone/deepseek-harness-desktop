@@ -59,7 +59,7 @@ function fakeDsn(overrides: Partial<UsageReportDbDsn> = {}): UsageReportDbDsn {
     host: 'db.telemetry.example',
     port: 3307,
     user: 'report_writer',
-    password: 's3cret-report-pw',
+    password: 'example-report-placeholder',
     database: 'dsh_usage_test',
     ...overrides,
   }
@@ -181,7 +181,7 @@ describe('usage report database blob codec', () => {
 
     expect(decodeUsageReportDbBlob(fakeBlob(dsn))).toEqual(dsn)
     expect(fakeBlob(dsn)).not.toContain('report_writer')
-    expect(fakeBlob(dsn)).not.toContain('s3cret-report-pw')
+    expect(fakeBlob(dsn)).not.toContain('example-report-placeholder')
   })
 
   it('decodes the committed blob to the pinned company destination', () => {
@@ -265,7 +265,7 @@ describe('usage report blob generator', () => {
       DSH_REPORT_DB_HOST: 'db.telemetry.example',
       DSH_REPORT_DB_PORT: '3306',
       DSH_REPORT_DB_USER: 'report_writer',
-      DSH_REPORT_DB_PASSWORD: 's3cret-report-pw',
+      DSH_REPORT_DB_PASSWORD: 'example-report-placeholder',
       DSH_REPORT_DB_DATABASE: 'dsh_usage_test',
       DSH_REPORT_DB_EXTRA: 'ignored',
     }
@@ -294,7 +294,7 @@ describe('usage report blob generator', () => {
         DSH_REPORT_DB_HOST: 'db.telemetry.example',
         DSH_REPORT_DB_PORT: '3307',
         DSH_REPORT_DB_USER: 'report_writer',
-        DSH_REPORT_DB_PASSWORD: 's3cret-report-pw',
+        DSH_REPORT_DB_PASSWORD: 'example-report-placeholder',
         DSH_REPORT_DB_DATABASE: 'dsh_usage_test',
       },
     })
@@ -304,7 +304,7 @@ describe('usage report blob generator', () => {
     expect(renderUsageReportDbBlobModule(fakeBlob())).toContain('export const USAGE_REPORT_DB_BLOB =')
     expect(text).toContain('export const USAGE_REPORT_DB_BLOB =')
     expect(text).not.toContain('report_writer')
-    expect(text).not.toContain('s3cret-report-pw')
+    expect(text).not.toContain('example-report-placeholder')
     expect(decodeUsageReportDbBlob(
       /USAGE_REPORT_DB_BLOB = ("(?:[^"\\]|\\.)*")/u.exec(text)?.[1]?.replaceAll('\\', '') ?? '',
     )).toEqual(fakeDsn())
@@ -759,7 +759,7 @@ describe('model usage sink queue', () => {
       host: 'db.telemetry.example',
       port: 3307,
       user: 'report_writer',
-      password: 's3cret-report-pw',
+      password: 'example-report-placeholder',
       database: 'dsh_usage_test',
       connectTimeout: 8_000,
     }])
