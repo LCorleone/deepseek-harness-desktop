@@ -1177,6 +1177,15 @@ async function start(): Promise<void> {
     // before anything boots, mirroring the gateway posture); the message
     // names only the validation failure — never a value.
     const skillsRouter = managedCompanySkillsEnvironment(policy)
+    // Review P2 (2026-09-16): an EMPTY payload is the committed default for
+    // checkouts without secrets, so it must not fail closed — but a locked
+    // build that ships without the router credentials hands five company
+    // skills an environment they cannot use, and nothing else at boot would
+    // say so. The CI release step refuses such a build; this line is the
+    // local/manual `dist:win` counterpart.
+    if (policy?.locked === true && skillsRouter === undefined) {
+      electronLogger.error(`${BIN_NAME}: company-skills router credentials are absent from this locked build — the five company API skills will fail on first use (release builds must bake the ROUTER_* secrets)`)
+    }
     setCompanySkillsExecutionEnvironment(
       skillsRouter === undefined ? undefined : companySkillsExecutionEnvironmentEntries(skillsRouter),
     )

@@ -144,6 +144,13 @@ Python 面：dsh-plugin-desktop/src/desktop-shared-python-environment.ts（provi
 【顺序铁则（July 确认）】0.1.3 技能包走目录分发，但技能依赖的 Python 库来自客户端构建 → 必须【先发 b98（含批A/B/C 客户端面）→ 测试组验证（遥测 python_runtime libs{pinned:48,installed:48} + 抽技能实跑）→ 才 bump/publish 0.1.3】，否则全 fleet 装了跑不动的技能。
 【CI 密钥通道（已完成）】gh secret set ROUTER_URL/ROUTER_API_KEY（不可读回）；windows-package workflow 在 bake build sequence 后新增步骤：导出两个 secret → 跑 make-company-skills-env-blob.mjs → 若摘要含『EMPTY payload』则构建失败（拒绝出厂无凭证包）。本地实证：真值生成非空 blob（65 明文字符），仓库默认仍为空 blob 不落密钥。
 【分发渠道确认】安装包走内部页面（非公开 GitHub）→ 密钥暴露面收敛到员工级，与模型网关 key 同级，接受（软屏障定位不变）。
+- b98 整体终审 = RELEASE-READY（2026-09-16 17:40，reviewer 007d49c8）+ 三项修完：
+【P1 目录流水线阻塞（跨 session）】skills/ 已 11 技能但包仍 0.1.2，allowlist 钉旧 bundleDocumentDigest → 新鲜 checkout 下 CI 从 skills/ 重建 → refuseBundleDocumentDrift 挡掉 publish/digest 两条链（另一 session 的 dsh-dai-notebook 同批受阻）。解法=顺序：b98 构建→验证→0.1.3 bump+verify+accept（accept 重新钉摘要）→一条 publish 同时带出 notebook+skills。禁止手改钉值。
+【P2-a 修复】locked+空 blob 静默 → main.ts 加 electronLogger.error（本地/手工 dist:win 也能看见；CI 侧 workflow 仍硬拒）
+【P2-b 修复】wheel 拉取未缓存 → windows-package 加 actions/cache（按锁清单哈希，命中仍逐个 sha256 校验，陈旧条目出不了货）
+【P3-b 修复】check:win-package 补 bundled-python-wheels/company-skills-env/desktop-shared-python-environment 三个 spec
+【P3-a 记档】deferred 装腿与活着的 dsh-pip 别名窗口不互斥（首启窄窗、可变环境；再探保护的是「用户版本优先」语义）——后续观察项
+门禁：typecheck 0、company-skills-env+bundled-python-wheels 29 测试绿、check:layout 绿。
 
 ## 验收标准
 

@@ -32,6 +32,15 @@ jobs:
         with:
           path: ${{ steps.yarn-cache.outputs.dir }}
           key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+      # Review P2 (2026-09-16): beforePack downloads the 48 pinned Python
+      # wheels from PyPI (~52 MB). Caching them by lock hash keeps a PyPI
+      # outage or rate limit from failing a release build; a cache miss still
+      # verifies every wheel's sha256 against the lock, so stale entries can
+      # never ship.
+      - uses: actions/cache@v6
+        with:
+          path: dsh-plugin-desktop/build/python-wheels-cache
+          key: python-wheels-${{ runner.os }}-${{ hashFiles('dsh-plugin-desktop/assets/python-wheels-lock.json') }}
       - run: yarn install --immutable
       # Bake the CI build number as semver build metadata (2.0.3+b<run>) —
       # telemetry client_version and the disclaimer gate distinguish builds
