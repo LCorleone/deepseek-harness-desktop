@@ -86,6 +86,8 @@
 3. 测试：新增事故形状红测试（stable[0.15.2 revoked,0.18.1 active]+overlay 钉 0.18.1 → 单条 0.18.1 活跃）；改写原名级语义测试 445（新版重钉=新鲜钉，注释写明事故与封名=撤全版本）
 门禁：market 500 / desktop 2528 / 双 typecheck 0 / 线上真数据复现带 overlay=7 行（sidebar 回归）
 待办：随 b101 出厂；July 实机确认市场行回归后关卡
+- 发作时间线补录（2026-09-16 19:00）：带病代码=P9 beta 通道（acad113c7e，早于 b90 全系）；发作条件②「stable 钉 [0.15.2 撤销+0.18.1 活跃]」自 b93 世代 stable 起——即 b93 起名单机（julu/sebtang/lizywu）市场就没 sidebar 行了，装门同视图也会拒。非名单机无感。旁证：liamzhong（b93/stable/非名单）09-15 安装失败=operation-failed 与本 bug 无关（npm 公共源瞬时抖动，09-16 18:45 已装成功）。July 口令：reviewer 绿后直接发 b101；0.1.3 发布链挂起等 July 验 b101。reviewer=93dfac71 后台跑中。
+- reviewer APPROVED（93dfac71，2026-09-16 19:10）：合并排序变体全迹、四路复活拦截确认、无第四处名级残留；P2=boot 侧缺同形状回归测试、P3×3（拼接键理论歧义/封名运维口径/卡面计数 500→499）。P2 已补：boot-verification.spec 新增「stable retire record never revokes the beta pin」（#045 incident twin），红绿验证（旧代码红 1/新代码 92 绿）。门禁：desktop 2529/8skip + tc 0。July 口令：直接发 b101。P3 拼接键与运维口径记档不修（理论性/文档项）。
 
 ## 验收标准
 

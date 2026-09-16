@@ -875,6 +875,37 @@ describe('runtime-aware update classification (P15 phase 1)', () => {
     expect(stableShadowed.rejected).toEqual([])
     expect(stableShadowed.allowed[0]?.updateVersion).toBeUndefined()
   })
+
+  it('a stable retire record never revokes the beta pin of the same name (#045 incident twin)', () => {
+    // The 2026-09-16 incident shape, boot side: stable carries the retire
+    // record (0.15.2 revoked) BESIDE the live 0.18.1, and the beta overlay
+    // carries the name with 0.18.1. Keyed by package name — the pre-P15
+    // key — the retire record forced revoked:true onto the beta candidate:
+    // a bogus 'revoked' rejection for a plugin whose live pin is fine.
+    // Keyed by exact name@version the candidate rides its own signed flag.
+    const result = verify(
+      signedManifestText([
+        windowEntry('0.15.2', oldLine, { revoked: true }),
+        windowEntry('0.18.1', oldLine),
+      ]),
+      [windowBundle('0.16.0')],
+      {
+        dshRuntimeVersion: oldRuntime,
+        betaPackages: [windowEntry('0.18.1', oldLine) as unknown as DesktopCompanyManifestPackage],
+        betaSequence: manifestSequence,
+      },
+    )
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        code: 'not-pinned-newer-pinned',
+        installedVersion: '0.16.0',
+        pinnedVersion: '0.18.1',
+      }),
+    ])
+    expect(pendingDesktopBootPluginUpdates(result)).toEqual([
+      { packageName: sidebar, installedVersion: '0.16.0', pinnedVersion: '0.18.1' },
+    ])
+  })
 })
 
 describe('dual-channel manifest source invariants (P7 wiring)', () => {
