@@ -607,8 +607,13 @@ function isMarketStrictTime(text: string): boolean {
   return (utcHour === 23 || utcHour === -1) && (utcMinute === 59 || utcMinute === -1) && second < 61
 }
 
-/** Faithful port of ajv-formats' full `date-time` — the market verifier's `expiresAt` format gate. */
-function isMarketDateTimeFormat(text: string): boolean {
+/**
+ * Faithful port of ajv-formats' full `date-time` — the market verifier's
+ * `expiresAt` format gate. Shared with the guardrail security-prompt
+ * sibling-document verifier (`company-guardrail.ts`), whose `expiresAt`
+ * carries the same RFC 3339 discipline as the company manifest's.
+ */
+export function isMarketDateTimeFormat(text: string): boolean {
   const parts = text.split(/t|\s/iu)
   if (parts.length !== 2) return false
   return isMarketDate(parts[0]!) && isMarketStrictTime(parts[1]!)
@@ -888,8 +893,13 @@ function parseDesktopCompanyManifestValue(
 /** DER SPKI prefix of a raw 32-byte ed25519 public key. */
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
 
-/** Import a raw 32-byte ed25519 public key as a verify-capable KeyObject. */
-function ed25519PublicKeyFromRaw(raw: Buffer): ReturnType<typeof createPublicKey> {
+/**
+ * Import a raw 32-byte ed25519 public key as a verify-capable KeyObject.
+ * Shared with the guardrail security-prompt sibling-document verifier
+ * (`company-guardrail.ts`) so the detached-signature verification below is
+ * the only ed25519 verify implementation in this package — never forked.
+ */
+export function ed25519PublicKeyFromRaw(raw: Buffer): ReturnType<typeof createPublicKey> {
   return createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' })
 }
 

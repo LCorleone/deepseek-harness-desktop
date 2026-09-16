@@ -97,6 +97,15 @@ import {
   type DesktopBetaChannelOptions,
 } from './beta-channel.ts'
 import {
+  companyGuardrailStatePath,
+  companyGuardrailTemplateDecision,
+  guardrailBetaPrefetchFromOverlay,
+  readCompanyGuardrailChannels,
+  readEmbeddedCompanyGuardrailTemplate,
+  resolveCompanySecurityPromptUpdate,
+  writeCompanyGuardrailChannel,
+} from './company-guardrail.ts'
+import {
   browserSsoLogin,
   desktopSsoGateRequired,
   getSsoSession,
@@ -128,6 +137,7 @@ import {
 } from './client-event-reporter.ts'
 import type { MarketInstallEventSink, MarketRestartRequestEventSink } from 'dsh-community-market'
 import {
+  installCompanyGatewayGuardrailFetch,
   managedModelGateway,
   managedModelsPresetGateEntry,
   readStoredCredentialNames,
@@ -1068,6 +1078,66 @@ async function start(): Promise<void> {
       // boot verification is still seconds away.
       void bootBetaOverlayPromise.catch(() => {})
     }
+    // Guardrail security prompt prefetch (#046, T1 overlap): the per-turn
+    // user-input hardening template's signed sibling documents
+    // (`security-prompt.json` stable, `security-prompt.beta.json` beta,
+    // hosted beside the stable manifest, verified under the same trust
+    // roots under their own minimal schema — see company-guardrail.ts) join
+    // the stable and beta catalog fetches as further concurrent network
+    // leads. Unlike those, their outcomes never join the boot critical
+    // path: the boot below installs the cached or embedded template
+    // immediately, and a resolution — each bounded by its own whole-request
+    // timeout — only upgrades the active template when it later lands
+    // verified with a channel-advancing revision. Every failure resolves to
+    // undefined (swallowed here so nothing surfaces as an unhandled
+    // rejection while the adoption at the gateway wiring is still seconds
+    // away), and the template text itself never reaches a log line.
+    // Origin-mode deployments only: the sibling URLs derive from the
+    // policy's absolute manifest URL, and content-mode policies keep the
+    // embedded frozen default alone. The beta document reuses the beta
+    // catalog overlay's own roster decision — fetched only when that
+    // overlay applied (a non-roster machine never asks for it), never a
+    // duplicated testers roster here.
+    const bootGuardrailCachePath = companyGuardrailStatePath(app.getPath('userData'))
+    const bootGuardrailChannels = readCompanyGuardrailChannels(bootGuardrailCachePath)
+    const bootGuardrailRequest = (url: string, init: RequestInit) => net.fetch(url, init)
+    // Diagnostic sink for the prompt-document prefetches: categories,
+    // channels, and revisions only — never the template text (the
+    // resolver's log lines are built that way by construction). The
+    // DesktopLogger surface is error-only; the one "verified (revision N)"
+    // line per boot doubles as a liveness marker for the mechanism.
+    // Without this sink a machine stuck on the embedded default has zero
+    // diagnostics (review #046 P3).
+    const bootGuardrailLog = (line: string): void => { electronLogger.error(line) }
+    const bootGuardrailStablePrefetch = policy.locked && policy.companyCatalogOrigin !== null
+      ? resolveCompanySecurityPromptUpdate({
+        policy,
+        channel: 'stable',
+        request: bootGuardrailRequest,
+        log: bootGuardrailLog,
+        ...(bootGuardrailChannels?.stable === undefined
+          ? {}
+          : { lastAcceptedRevision: bootGuardrailChannels.stable.revision }),
+      })
+      : undefined
+    if (bootGuardrailStablePrefetch !== undefined) {
+      void bootGuardrailStablePrefetch.catch(() => {})
+    }
+    const bootGuardrailBetaPrefetch = guardrailBetaPrefetchFromOverlay(
+      bootGuardrailStablePrefetch === undefined ? undefined : bootBetaOverlayPromise,
+      () => resolveCompanySecurityPromptUpdate({
+        policy,
+        channel: 'beta',
+        request: bootGuardrailRequest,
+        log: bootGuardrailLog,
+        ...(bootGuardrailChannels?.beta === undefined
+          ? {}
+          : { lastAcceptedRevision: bootGuardrailChannels.beta.revision }),
+      }),
+    )
+    if (bootGuardrailBetaPrefetch !== undefined) {
+      void bootGuardrailBetaPrefetch.catch(() => {})
+    }
     const homeDir = resolveDshHome()
     // Deferred fresh-Profile rebuild (P14, Windows EBUSY): a previous boot
     // could not set the Profile directory aside because the OS kept a handle
@@ -1158,6 +1228,88 @@ async function start(): Promise<void> {
       electronLogger.error(
         `${BIN_NAME}: skipping the company gateway token injection because the credentials document could not be probed: ${storedCredentials.reason}`,
       )
+    }
+
+    // Guardrail per-turn injection (#046): managed builds wrap the process
+    // fetch boundary so every managed-gateway chat-completions POST leaves
+    // with the active security-prompt template prepended to its LAST user
+    // message (model-gateway.ts owns the rewrite; only the last message
+    // changes, so the provider prefix cache keeps matching the prior
+    // context). The active template resolves before any Host composition:
+    // the per-channel cached documents, else the embedded frozen default
+    // v1; the boot-time sibling fetches started above only upgrade it after
+    // landing VERIFIED — a verified beta document beats a verified stable
+    // one (roster machines, mirroring the catalog overlay), each verified
+    // document must strictly advance its OWN channel's cached revision
+    // (replay/rollback refuse; the channels ratchet independently, so a
+    // lower verified stable revision still beats a higher cached beta
+    // one), and an accepted document persists its own channel's ratchet.
+    // An unreadable embedded asset leaves the guardrail inert behind one
+    // content-free diagnostic line — boot availability wins (tripwire, not
+    // gate). Non-locked and non-managed builds install nothing
+    // (installCompanyGatewayGuardrailFetch stays inert for an undefined
+    // gateway), so dev traffic keeps the untouched process fetch boundary.
+    if (managedGateway !== undefined) {
+      let embeddedGuardrailTemplate: string | undefined
+      try {
+        embeddedGuardrailTemplate = readEmbeddedCompanyGuardrailTemplate()
+      } catch (cause) {
+        electronLogger.error(
+          `${BIN_NAME}: the embedded guardrail template asset is unreadable; the per-turn guardrail stays inert (${cause instanceof Error ? cause.message : String(cause)})`,
+        )
+      }
+      let verifiedGuardrailBeta: { revision: number, template: string } | undefined
+      let verifiedGuardrailStable: { revision: number, template: string } | undefined
+      const bootGuardrailInputs = (): Parameters<typeof companyGuardrailTemplateDecision>[0] => ({
+        ...(verifiedGuardrailBeta === undefined ? {} : { betaDocument: verifiedGuardrailBeta }),
+        ...(verifiedGuardrailStable === undefined ? {} : { stableDocument: verifiedGuardrailStable }),
+        ...(bootGuardrailChannels === undefined ? {} : { cached: bootGuardrailChannels }),
+        ...(embeddedGuardrailTemplate === undefined ? {} : { embedded: embeddedGuardrailTemplate }),
+      })
+      let activeGuardrailTemplate = companyGuardrailTemplateDecision(bootGuardrailInputs()).template
+      // Install for every managed build, even before any template resolved:
+      // the accessor returns '' then and the boundary forwards untouched, so
+      // a document landing later goes live on its next request without a
+      // reinstall — and an unmanaged build above never reached this at all.
+      installCompanyGatewayGuardrailFetch(globalThis, managedGateway, () => activeGuardrailTemplate ?? '')
+      // Documents land late — never blocking boot — and each landing
+      // re-runs the precedence decision over the latest known documents, so
+      // arrival order cannot pin a stale winner.
+      const adoptGuardrailDocuments = (): void => {
+        const decision = companyGuardrailTemplateDecision(bootGuardrailInputs())
+        activeGuardrailTemplate = decision.template
+        if (decision.source !== 'document' || decision.channel === undefined || decision.acceptedRevision === undefined) return
+        const accepted = decision.channel === 'beta' ? verifiedGuardrailBeta : verifiedGuardrailStable
+        if (accepted === undefined) return
+        void writeCompanyGuardrailChannel(bootGuardrailCachePath, decision.channel, {
+          revision: decision.acceptedRevision,
+          template: accepted.template,
+        }).catch((cause: unknown) => {
+          // The in-memory template is already active; a failed cache write
+          // only costs the offline fallback layer.
+          electronLogger.error(
+            `${BIN_NAME}: persisting the accepted guardrail security prompt ${decision.channel} revision ${String(decision.acceptedRevision)} failed (${cause instanceof Error ? cause.message : String(cause)})`,
+          )
+        })
+      }
+      if (bootGuardrailStablePrefetch !== undefined) {
+        // The base promise's rejection is already swallowed at the prefetch
+        // site; this derived adoption chain must swallow its own too, or a
+        // contract-violating rejection becomes an unhandled rejection that
+        // installFailLoud turns into exit(1) (review #046 P2).
+        void bootGuardrailStablePrefetch.then((document) => {
+          if (document === undefined) return
+          verifiedGuardrailStable = document
+          adoptGuardrailDocuments()
+        }).catch(() => {})
+      }
+      if (bootGuardrailBetaPrefetch !== undefined) {
+        void bootGuardrailBetaPrefetch.then((document) => {
+          if (document === undefined) return
+          verifiedGuardrailBeta = document
+          adoptGuardrailDocuments()
+        }).catch(() => {})
+      }
     }
 
     // Company-skills router environment (#043 D1, batch B): the five API

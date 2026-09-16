@@ -147,6 +147,13 @@ impl NewFeature {
 【worker 标记的跟进项】①终端 CLI 子进程绕过包装（Host 外进程做受管调用不经 wrapper）——需 July 拍：后续轮 patch dsh-llm-pi-ai onPayload 或接受 Host-only 范围 ②发布侧（CI 签名双文件）留下轮 ③供应商前缀缓存尾巴每轮一交换重烤（无 harness 配合不可避免，informational） ④离线+摘名单机器持有上次 beta 模板直到 stable 文档可验（可接受权衡）。
 → reviewer 待派（全循环已授权）。
 - July 裁定（2026-09-16 22:37）：CLI 子进程绕过=选 B，接受 Host-only 覆盖范围（先上先测）；patch dsh-llm-pi-ai 穿钩子记为未来项，不入本轮。
+- reviewer 首轮 APPROVED（d9dbd143，2026-09-16 23:20）+ 2P2/4P3 全部修复：
+【P2-1】adoption .then 链未兜 rejection → 双链补 .catch(()=>{})（installFailLoud 会把 unhandled rejection 变 exit(1)）
+【P2-2】摘名单稳态回翻 bug：floor 改 <（等值=幂等再确认，对齐 manifest 验证器先例）+ decision 层 >=（等值文档赢过本通道缓存）；boot2 稳态留在 stable 不再翻回 cached beta
+【P3-1】URL 集改 new URL().href 构造（防 SDK 规范化 URL 静默脱靶）
+【P3-2】beta 门控提为 guardrailBetaPrefetchFromOverlay 纯函数 + 3 布线性质测试（无 overlay promise/overlay undefined=零网络请求/applied=恰一次）
+【P3-3】靴期预取接 log sink（error 级，行内仅类别/通道/revision）+ 误导性测试标题改名
+门禁：desktop 2584 绿(+4)/tc 0/layout 一致；冻结资产仍字节不动。补评轮（71818778）跑中——APPROVED 即 commit。
 
 ## 验收标准（含远程更新通道）
 

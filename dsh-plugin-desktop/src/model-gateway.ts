@@ -509,3 +509,218 @@ export function resolveManagedModelGatewayEnvironment(
 export function storedCredentialsPath(home: string): string {
   return resolveSpec({ dshHome: home }).filename
 }
+
+// ---------------------------------------------------------------------------
+// Guardrail per-turn injection (#046).
+//
+// Managed builds prepend a fixed security-policy template (the guardrail
+// security prompt, see `company-guardrail.ts` for the three resolution
+// layers) to the LAST `role: 'user'` message of every chat-completions
+// request the company gateway serves. The rewrite is a tripwire, not a
+// gate: it hardens against hand-slips, and it never touches non-locked or
+// development traffic — the fetch boundary below installs only on the
+// managed path (`managedModelGateway` decoded a locked, managedModels
+// policy), and every other fetch the process makes rides the wrapper
+// untouched (exact chat-completions URL match, nothing else).
+//
+// The seam is the process fetch boundary: the upstream `llm-pi-ai` adapter
+// builds provider requests through pi-ai's openai-completions client,
+// which resolves its fetch per request from `globalThis.fetch` in the Host
+// process — the process this launcher owns. Neither the pinned submodule
+// nor any upstream adapter is modified; the wrapper is installed before the
+// Host composition boots and rewrites the JSON body of exactly the managed
+// gateway chat-completions POSTs.
+//
+// Prefix-cache safety: ONLY the last user message is rewritten. Every
+// message before it stays the same object reference in the rebuilt body —
+// byte-identical on the wire — so the provider's prefix cache keeps
+// matching the conversation prefix turn over turn.
+// ---------------------------------------------------------------------------
+
+/** Separator between the frozen template text and the original user input. */
+const GUARDRAIL_ASSEMBLY_SEPARATOR = '\n\n'
+
+/**
+ * The per-turn assembly shape: the exact template bytes, one blank line,
+ * then the user's original input — `<template>\n\n<original>`. The frozen
+ * v1 template itself ends with a `<USER>` wrapper block, so the separator
+ * hands the model the original input as the block's continuation.
+ * @param template - the active guardrail template text.
+ * @param original - the user message's original content.
+ * @returns the assembled content.
+ */
+export function companyGatewayGuardrailAssembly(template: string, original: string): string {
+  return `${template}${GUARDRAIL_ASSEMBLY_SEPARATOR}${original}`
+}
+
+/** A multipart content part of a chat-completions message. */
+interface ChatCompletionsContentPart {
+  readonly type: unknown
+  readonly text?: unknown
+  [field: string]: unknown
+}
+
+/** Result of {@link applyCompanyGatewayGuardrail}. */
+export interface CompanyGatewayGuardrailRewrite {
+  /** Whether the rewrite changed the body (a template was prepended). */
+  readonly changed: boolean
+  /** The rewritten body; the input reference itself when unchanged. */
+  readonly body: unknown
+}
+
+/**
+ * Rewrite one PARSED chat-completions request body: find the LAST message
+ * with `role === 'user'` and prepend the active template to its content —
+ * a string content becomes `<template>\n\n<original>`, a multipart content
+ * gains one leading `text` part carrying the same assembly prefix. The
+ * rewrite is idempotent per request body: a content that already starts
+ * with the template text (the same body passing the boundary twice, an
+ * adapter-internal retry of the rewritten body) is returned unchanged, so
+ * the template is prepended at most once per request body. Harness-level
+ * retries re-send the ORIGINAL body (the session history never sees the
+ * wire rewrite), which the same guard then covers exactly once again.
+ *
+ * Every other message keeps its object reference inside the rebuilt
+ * messages array — the prior context stays byte-identical, which is what
+ * the provider prefix cache matches. A body without a user message, a last
+ * user message whose content shape carries no text, an empty template, or
+ * any non-object body returns unchanged: a tripwire must never break the
+ * request it rides on.
+ * @param body - the parsed chat-completions request body.
+ * @param template - the active guardrail template text.
+ * @returns the rewrite decision and body.
+ */
+export function applyCompanyGatewayGuardrail(body: unknown, template: string): CompanyGatewayGuardrailRewrite {
+  if (typeof template !== 'string' || template.length === 0) return { changed: false, body }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return { changed: false, body }
+  const request = body as Record<string, unknown>
+  if (!Array.isArray(request.messages)) return { changed: false, body }
+  const messages = request.messages as readonly unknown[]
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message === null || typeof message !== 'object' || Array.isArray(message)) continue
+    const record = message as Record<string, unknown>
+    if (record.role !== 'user') continue
+    // The LAST user message is the one and only injection point; a content
+    // shape that carries no text at all leaves the whole body unchanged
+    // rather than walking back to an earlier user message.
+    const content = record.content
+    if (typeof content === 'string') {
+      if (content.startsWith(template)) return { changed: false, body }
+      const rewritten: unknown[] = [...messages]
+      rewritten[index] = { ...record, content: companyGatewayGuardrailAssembly(template, content) }
+      return { changed: true, body: { ...request, messages: rewritten } }
+    }
+    if (Array.isArray(content)) {
+      const parts = content as readonly ChatCompletionsContentPart[]
+      const first = parts[0]
+      if (first !== undefined && first !== null && typeof first === 'object' && !Array.isArray(first)
+        && first.type === 'text' && typeof first.text === 'string' && first.text.startsWith(template)) {
+        return { changed: false, body }
+      }
+      const rewritten: unknown[] = [...messages]
+      const rewrittenContent: ChatCompletionsContentPart[] = [
+        { type: 'text', text: `${template}${GUARDRAIL_ASSEMBLY_SEPARATOR}` },
+        ...parts,
+      ]
+      rewritten[index] = { ...record, content: rewrittenContent }
+      return { changed: true, body: { ...request, messages: rewritten } }
+    }
+    return { changed: false, body }
+  }
+  return { changed: false, body }
+}
+
+/** Fetch boundary shape the guardrail wrapper wraps (`globalThis.fetch`). */
+export type CompanyGatewayFetchBoundary = typeof globalThis.fetch
+
+/**
+ * The exact chat-completions endpoint URLs of every managed provider: the
+ * provider's blob base URL with any trailing slash normalized away plus
+ * `/chat/completions` — the wire path pi-ai's openai-completions client
+ * posts model requests to. Matching is exact-set membership, the cheapest
+ * possible gate in front of every other fetch the process makes.
+ * @param gateway - decoded company gateway facts.
+ * @returns the chat-completions URL set.
+ */
+export function companyGatewayChatCompletionsUrls(gateway: CompanyModelGateway): ReadonlySet<string> {
+  // Built through `new URL(...).href` so the set entry carries exactly the
+  // normalizations the request URL will carry at request time (host
+  // lowercasing, explicit-`:443` stripping, punycode): a raw
+  // `baseUrl + '/chat/completions'` string would silently MISS those
+  // providers' requests and the tripwire would go inert with no error
+  // (review #046 P3).
+  const urls = new Set<string>()
+  for (const provider of gateway.providers) {
+    const base = new URL(provider.baseUrl)
+    urls.add(new URL('chat/completions', `${base.href.replace(/\/+$/u, '')}/`).href)
+  }
+  return urls
+}
+
+/**
+ * Wrap one fetch boundary with the guardrail rewrite: POSTs whose URL is
+ * exactly one of the managed gateway chat-completions endpoints and whose
+ * body is a JSON string get the active template prepended to their last
+ * user message; EVERYTHING else — other URLs, other methods, already-
+ * rewritten bodies, non-string bodies, unparseable JSON — rides the inner
+ * boundary byte for byte. Any parse or serialization failure forwards the
+ * original bytes: the tripwire never breaks the request it rides on. The
+ * active template is read per request through `template()`, so a
+ * boot-time resolution that lands after installation goes live on the
+ * next request without reinstalling.
+ * @param inner - the fetch boundary being wrapped.
+ * @param chatCompletionsUrls - the exact URLs to rewrite (see {@link companyGatewayChatCompletionsUrls}).
+ * @param template - accessor for the currently active template text.
+ * @returns the wrapping fetch boundary.
+ */
+export function companyGatewayGuardrailFetchBoundary(
+  inner: CompanyGatewayFetchBoundary,
+  chatCompletionsUrls: ReadonlySet<string>,
+  template: () => string,
+): CompanyGatewayFetchBoundary {
+  return (url, init) => {
+    const active = template()
+    if (active.length > 0 && typeof url === 'string' && chatCompletionsUrls.has(url)
+      && init !== null && typeof init === 'object' && init.method === 'POST' && typeof init.body === 'string') {
+      try {
+        const rewrite = applyCompanyGatewayGuardrail(JSON.parse(init.body) as unknown, active)
+        if (rewrite.changed) {
+          return inner(url, { ...init, body: JSON.stringify(rewrite.body) })
+        }
+      } catch {
+        // A body the rewrite cannot parse or re-serialize forwards untouched.
+      }
+    }
+    return inner(url, init)
+  }
+}
+
+/** Marker symbol identifying an installed guardrail fetch wrapper. */
+const INSTALLED_COMPANY_GATEWAY_GUARDRAIL_FETCH = Symbol('dsh-company-gateway-guardrail-fetch')
+
+/**
+ * Install the guardrail fetch wrapper on one target (the Electron main
+ * process's `globalThis`, whose Host composes the `llm-pi-ai` adapter).
+ * Managed path only: an `undefined` gateway (every non-locked, dev, or
+ * non-managed build) installs nothing and returns false, keeping the
+ * process fetch boundary exactly as upstream ships it. Installation is
+ * idempotent — a second call finds the marker and never stacks wrappers.
+ * @param target - the object whose `fetch` is replaced (globalThis).
+ * @param gateway - decoded company gateway facts; undefined stays inert.
+ * @param template - accessor for the currently active template text.
+ * @returns whether a wrapper is installed after the call.
+ */
+export function installCompanyGatewayGuardrailFetch(
+  target: { fetch: CompanyGatewayFetchBoundary },
+  gateway: CompanyModelGateway | undefined,
+  template: () => string,
+): boolean {
+  if (gateway === undefined) return false
+  const existing = target.fetch as CompanyGatewayFetchBoundary & { [INSTALLED_COMPANY_GATEWAY_GUARDRAIL_FETCH]?: boolean }
+  if (existing[INSTALLED_COMPANY_GATEWAY_GUARDRAIL_FETCH] === true) return true
+  const wrapper = companyGatewayGuardrailFetchBoundary(target.fetch, companyGatewayChatCompletionsUrls(gateway), template)
+  ;(wrapper as CompanyGatewayFetchBoundary & { [INSTALLED_COMPANY_GATEWAY_GUARDRAIL_FETCH]?: boolean })[INSTALLED_COMPANY_GATEWAY_GUARDRAIL_FETCH] = true
+  target.fetch = wrapper
+  return true
+}

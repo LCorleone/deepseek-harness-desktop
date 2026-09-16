@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   encodeModelGatewayBlob,
   modelGatewayPayloadFromEnvironment,
@@ -11,9 +11,14 @@ import {
 } from '../scripts/make-model-gateway-blob.mjs'
 import { parseDesktopPolicy, DESKTOP_POLICY_ENVIRONMENT, type DesktopPolicy } from '../src/desktop-policy.ts'
 import {
+  applyCompanyGatewayGuardrail,
+  companyGatewayChatCompletionsUrls,
   companyModelGatewayDefaultModel,
   companyModelGatewayProviderProfile,
+  companyGatewayGuardrailAssembly,
+  companyGatewayGuardrailFetchBoundary,
   decodeModelGatewayBlob,
+  installCompanyGatewayGuardrailFetch,
   managedModelGateway,
   managedModelsPresetGateEntry,
   PRESET_MANAGED_MODELS_GATE,
@@ -641,5 +646,245 @@ describe('model gateway blob generator', () => {
     expect(invalid.status).toBe(1)
     expect(invalid.stderr.toString()).toContain('providers must be a non-empty array')
     expect(existsSync(out)).toBe(false)
+  })
+})
+
+describe('guardrail per-turn injection (#046)', () => {
+  // The frozen v1 asset bytes — the rewrite must carry them EXACTLY
+  // (byte identity, pinned against the committed file).
+  const frozenTemplate = readFileSync(
+    fileURLToPath(new URL('../assets/company-guardrail/prompt-template-v1.md', import.meta.url)),
+    'utf8',
+  )
+  const syntheticTemplate = '<GUARDRAIL MESSAGE INVISIBLE TO USER>\nsynthetic spec template\n</GUARDRAIL MESSAGE INVISIBLE TO USER>'
+  interface ChatMessage {
+    readonly role: string
+    readonly content: unknown
+  }
+
+  function bodyWith(messages: readonly ChatMessage[], extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { model: 'DSV4-DSH', stream: true, ...extra, messages: [...messages] }
+  }
+
+  it('prepends the exact frozen asset bytes to the last user message (assembly shape)', () => {
+    const original = 'help me refactor the parser module'
+    const body = bodyWith([
+      { role: 'system', content: 'You are a helpful agent.' },
+      { role: 'user', content: 'first turn' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: original },
+    ])
+
+    const rewrite = applyCompanyGatewayGuardrail(body, frozenTemplate)
+
+    expect(rewrite.changed).toBe(true)
+    const messages = (rewrite.body as { messages: ChatMessage[] }).messages
+    const last = messages[3]!
+    expect(last.role).toBe('user')
+    // Byte identity of the assembly: `<frozen template>\n\n<original>`.
+    expect(last.content).toBe(companyGatewayGuardrailAssembly(frozenTemplate, original))
+    expect(Buffer.from(last.content as string).equals(
+      Buffer.from(`${frozenTemplate}\n\n${original}`),
+    )).toBe(true)
+    // The original input survives in full after the template.
+    expect((last.content as string).endsWith(original)).toBe(true)
+  })
+
+  it('rewrites ONLY the last user message and keeps every prior message byte-identical', () => {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful agent.' },
+      { role: 'user', content: 'first turn with unicode ✓' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: [{ type: 'text', text: 'middle turn' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'fine' }] },
+      { role: 'user', content: 'latest turn' },
+    ]
+    const body = bodyWith(messages)
+    const before = messages.map(message => JSON.stringify(message))
+
+    const rewrite = applyCompanyGatewayGuardrail(body, syntheticTemplate)
+
+    expect(rewrite.changed).toBe(true)
+    const after = (rewrite.body as { messages: ChatMessage[] }).messages
+    expect(after).toHaveLength(messages.length)
+    for (let index = 0; index < messages.length - 1; index += 1) {
+      // Same object reference AND same serialization: the prior context is
+      // untouched, which is what the provider prefix cache matches.
+      expect(after[index]).toBe(messages[index])
+      expect(JSON.stringify(after[index])).toBe(before[index])
+    }
+    expect(after[5]!.content).toBe(`${syntheticTemplate}\n\nlatest turn`)
+    // The rewritten message is a NEW object: the input body is not mutated.
+    expect(after[5]).not.toBe(messages[5])
+    expect(messages[5]!.content).toBe('latest turn')
+  })
+
+  it('covers agent tool-continuation turns (multipart user content) with a leading text part', () => {
+    const parts = [
+      { type: 'text', text: 'tool result: 3 files changed' },
+      { type: 'image_url', image_url: { url: 'https://example.test/attach.png' } },
+    ]
+    const body = bodyWith([
+      { role: 'user', content: 'run the linter' },
+      { role: 'assistant', content: 'calling the tool' },
+      { role: 'user', content: parts },
+    ])
+
+    const rewrite = applyCompanyGatewayGuardrail(body, syntheticTemplate)
+
+    expect(rewrite.changed).toBe(true)
+    const messages = (rewrite.body as { messages: ChatMessage[] }).messages
+    const content = messages[2]!.content as Array<{ type: string, text?: string }>
+    expect(content).toHaveLength(3)
+    expect(content[0]).toEqual({ type: 'text', text: `${syntheticTemplate}\n\n` })
+    // The original parts survive verbatim after the template part.
+    expect(content[1]).toEqual(parts[0])
+    expect(content[2]).toEqual(parts[1])
+    // Prior messages untouched.
+    expect(messages[0]).toBe((body.messages as ChatMessage[])[0])
+  })
+
+  it('is idempotent: a rewritten body passes through unchanged', () => {
+    const body = bodyWith([{ role: 'user', content: 'hello' }])
+    const first = applyCompanyGatewayGuardrail(body, syntheticTemplate)
+    expect(first.changed).toBe(true)
+    const second = applyCompanyGatewayGuardrail(first.body, syntheticTemplate)
+    expect(second.changed).toBe(false)
+    expect(second.body).toBe(first.body)
+    // Also idempotent when the original input legitimately starts with the
+    // template text (the marker guard skips, never double-prepends).
+    const selfCarrying = bodyWith([{ role: 'user', content: `${syntheticTemplate}\n\nhello again` }])
+    expect(applyCompanyGatewayGuardrail(selfCarrying, syntheticTemplate).changed).toBe(false)
+  })
+
+  it('stays inert for bodies without a usable last user message', () => {
+    for (const messages of [
+      [{ role: 'system', content: 'sys' }],
+      [{ role: 'assistant', content: 'no user here' }],
+      [{ role: 'user', content: null }],
+    ]) {
+      const body = bodyWith(messages as ChatMessage[])
+      expect(applyCompanyGatewayGuardrail(body, syntheticTemplate))
+        .toEqual({ changed: false, body })
+    }
+    // A body without messages at all, and a non-object body.
+    expect(applyCompanyGatewayGuardrail({ model: 'x' }, syntheticTemplate)).toEqual({ changed: false, body: { model: 'x' } })
+    expect(applyCompanyGatewayGuardrail('not a body', syntheticTemplate))
+      .toEqual({ changed: false, body: 'not a body' })
+    // An empty template never injects.
+    expect(applyCompanyGatewayGuardrail(bodyWith([{ role: 'user', content: 'hi' }]), ''))
+      .toMatchObject({ changed: false })
+  })
+
+  it('does NOT rewrite when the LAST user message carries no text content', () => {
+    // The last user message IS the injection point; a contentless one does
+    // not walk the rewrite back to an earlier user message.
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 42 },
+    ]
+    const body = bodyWith(messages)
+    const rewrite = applyCompanyGatewayGuardrail(body, syntheticTemplate)
+    expect(rewrite.changed).toBe(false)
+    expect(rewrite.body).toBe(body)
+  })
+})
+
+describe('guardrail fetch boundary (#046)', () => {
+  const gateway = syntheticGateway()
+  const chatUrl = 'https://gateway.company.example/compatible-mode/v1/chat/completions'
+  const syntheticTemplate = '<GUARDRAIL MESSAGE INVISIBLE TO USER>\nsynthetic spec template\n</GUARDRAIL MESSAGE INVISIBLE TO USER>'
+
+  /** A recording inner boundary: every (url, init) pair is captured for assertions. */
+  function recordingInner(): { inner: typeof globalThis.fetch, calls: Array<{ url: unknown, init: RequestInit | undefined }> } {
+    const calls: Array<{ url: unknown, init: RequestInit | undefined }> = []
+    const inner: typeof globalThis.fetch = async (url, init) => {
+      calls.push({ url, init })
+      return new Response('ok')
+    }
+    return { inner, calls }
+  }
+
+  function bodyOf(content: string): { model: string, messages: { role: string, content: string }[] } {
+    return { model: 'DSV4-DSH', messages: [{ role: 'user', content }] }
+  }
+
+  it('derives the exact chat-completions URL set, normalizing trailing slashes', () => {
+    const slashed = decodeModelGatewayBlob(encodeModelGatewayBlob({
+      providers: [{
+        ...SYNTHETIC_PAYLOAD.providers[0]!,
+        baseUrl: 'https://gateway.company.example/compatible-mode/v1/',
+      }],
+    } as never))
+    expect(companyGatewayChatCompletionsUrls(slashed)).toEqual(new Set([chatUrl]))
+    expect(companyGatewayChatCompletionsUrls(gateway)).toEqual(new Set([chatUrl]))
+  })
+
+  it('rewrites matched POSTs and forwards everything else byte for byte', async () => {
+    const { inner, calls } = recordingInner()
+    const template = vi.fn(() => syntheticTemplate)
+    const boundary = companyGatewayGuardrailFetchBoundary(inner, new Set([chatUrl]), template)
+
+    const original = JSON.stringify(bodyOf('latest turn'))
+    await boundary(chatUrl, { method: 'POST', body: original })
+    expect(calls).toHaveLength(1)
+    const forwarded = JSON.parse(String(calls[0]!.init!.body)) as { messages: { role: string, content: string }[] }
+    expect(forwarded.messages.at(-1)!.content).toBe(`${syntheticTemplate}\n\nlatest turn`)
+
+    // A different URL, a GET, and a non-string body ride untouched.
+    await boundary('https://gateway.company.example/compatible-mode/v1/models', { method: 'POST', body: original })
+    await boundary(chatUrl, { method: 'GET' })
+    await boundary(chatUrl, { method: 'POST', body: new Blob(['{']) })
+    expect(calls[1]!.init!.body).toBe(original)
+    expect(calls[2]!.init!.method).toBe('GET')
+    expect(calls[3]!.init!.body).toBeInstanceOf(Blob)
+
+    // An unparseable matched body forwards the original bytes.
+    await boundary(chatUrl, { method: 'POST', body: 'not json {' })
+    expect(calls[4]!.init!.body).toBe('not json {')
+    // An already-rewritten body (idempotence at the boundary) forwards as-is.
+    const rewritten = JSON.stringify(bodyOf(`${syntheticTemplate}\n\nalready covered`))
+    await boundary(chatUrl, { method: 'POST', body: rewritten })
+    expect(calls[5]!.init!.body).toBe(rewritten)
+    // The template accessor is read per request.
+    expect(template).toHaveBeenCalledTimes(6)
+  })
+
+  it('reads the active template per request, so a late resolution goes live without reinstalling', async () => {
+    let active = 'template-a'
+    const { inner, calls } = recordingInner()
+    const boundary = companyGatewayGuardrailFetchBoundary(inner, new Set([chatUrl]), () => active)
+    await boundary(chatUrl, { method: 'POST', body: JSON.stringify(bodyOf('x')) })
+    active = 'template-b'
+    await boundary(chatUrl, { method: 'POST', body: JSON.stringify(bodyOf('x')) })
+    const first = JSON.parse(String(calls[0]!.init!.body)) as { messages: { content: string }[] }
+    const second = JSON.parse(String(calls[1]!.init!.body)) as { messages: { content: string }[] }
+    expect(first.messages[0]!.content).toBe('template-a\n\nx')
+    expect(second.messages[0]!.content).toBe('template-b\n\nx')
+  })
+
+  it('installs only on the managed path and never stacks wrappers', async () => {
+    const { inner, calls } = recordingInner()
+    const target: { fetch: typeof globalThis.fetch } = { fetch: inner }
+
+    // An undefined gateway (every non-locked / dev / non-managed build)
+    // installs nothing — the process fetch boundary stays untouched.
+    expect(installCompanyGatewayGuardrailFetch(target, undefined, () => syntheticTemplate)).toBe(false)
+    expect(target.fetch).toBe(inner)
+
+    expect(installCompanyGatewayGuardrailFetch(target, gateway, () => syntheticTemplate)).toBe(true)
+    const wrapped = target.fetch
+    expect(wrapped).not.toBe(inner)
+    // A second install finds the marker and never stacks a second wrapper.
+    expect(installCompanyGatewayGuardrailFetch(target, gateway, () => syntheticTemplate)).toBe(true)
+    expect(target.fetch).toBe(wrapped)
+
+    // The installed wrapper is live: a matched POST rewrites, else delegates.
+    await target.fetch(chatUrl, { method: 'POST', body: JSON.stringify(bodyOf('live')) })
+    const forwarded = JSON.parse(String(calls[0]!.init!.body)) as { messages: { content: string }[] }
+    expect(forwarded.messages[0]!.content).toBe(`${syntheticTemplate}\n\nlive`)
+    await target.fetch('https://elsewhere.example/api', { method: 'POST', body: '{}' })
+    expect(String(calls[1]!.init!.body)).toBe('{}')
   })
 })
