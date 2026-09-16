@@ -43,6 +43,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createProvider } from './provider.js'
 import { loadCatalogFromFile } from './catalog.js'
 import { createScriptExecutor } from './execute.js'
+import { companySkillsExecutionEnvironment } from './host-env.js'
 import { createCompanySkillListTool, createCompanySkillReadTool, createCompanySkillRunTool } from './tool.js'
 
 /** Cordis plugin name. */
@@ -57,6 +58,26 @@ export const SKILLS_BUNDLE_URL = new URL('../assets/skills.bundle', import.meta.
 /** The catalog decoded from the shipped asset at module initialization. */
 export const catalog = loadCatalogFromFile(SKILLS_BUNDLE_URL)
 
+/**
+ * Per-skill run-deadline overrides, milliseconds (#043 D6). The OCR/VLM
+ * skills drive external APIs whose per-file processing runs to ~20 minutes
+ * (the skills' own SKILL.md instruct the caller to budget 20–60 minutes), so
+ * the executor's 120 s default would kill every real run. The map lives in
+ * this composition — not in the packer or the skill frontmatter — so a
+ * deadline stays an execution policy, not bundle metadata. Keys are kebab-
+ * case skill names and must match the catalog; an unknown name is inert (it
+ * simply never matches a run).
+ */
+export const SKILL_DEADLINE_OVERRIDES_MS: Readonly<Record<string, number>> = Object.freeze({
+  ocr: 1_200_000,
+  'vlm-image': 1_200_000,
+  // Review P2 (2026-09-16): this skill's SKILL.md budgets up to 10 minutes
+  // per page on multi-page parses (documented 1-hour ceiling) — the override
+  // must honor that budget or a real run dies mid-parse. The host backstop
+  // auto-sizes via maximumDeadlineMs.
+  'smart-pdf-parser': 3_600_000,
+})
+
 /** Register the company-skill provider and the script-execution tool on their seams. */
 export function apply(ctx: Context): void {
   const provider = createProvider(catalog, (message) => { ctx.logger.warn(message) })
@@ -64,11 +85,22 @@ export function apply(ctx: Context): void {
     inner.effect(() => inner.skills.registerProvider(() => provider))
   })
   ctx.inject(['tools', 'subprocess'], (inner) => {
+    // #043 D1: the desktop main process (a separate module instance of this
+    // process) publishes the API skills' ROUTER_URL/ROUTER_API_KEY through
+    // the process-global slot; read it at executor construction so a later
+    // hand-off needs a plugin reload rather than a silent per-run re-read.
+    const childEnv = companySkillsExecutionEnvironment()
     const executor = createScriptExecutor({
       catalog,
       // The host's subprocess seam is the only spawn path: the executor never
       // imports a desktop module, so the plugin stays independently installable.
       spawn: (spec) => inner.subprocess.spawn(spec),
+      // #043 D6: the long-queue OCR/VLM skills run under their own deadline.
+      deadlineBySkill: SKILL_DEADLINE_OVERRIDES_MS,
+      // #043 D1: undefined when the host injected nothing (an unpackaged or
+      // unmanaged launch), which keeps the executor fully functional for the
+      // offline skills.
+      ...(childEnv === undefined ? {} : { childEnv }),
       // A cleanup failure (e.g. a Windows EPERM while an exited child still
       // holds a handle) is a warning, never the run's outcome.
       logWarning: (message) => { ctx.logger.warn(message) },

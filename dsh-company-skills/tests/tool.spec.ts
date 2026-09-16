@@ -62,6 +62,7 @@ function stubExecutor(): {
       maxConcurrentPerSession: 1,
       maxReadBytes: 256 * 1024,
       maxListEntries: 1000,
+      deadlineBySkill: {},
     },
     run(request) {
       requests.push(request)

@@ -62,6 +62,11 @@ import {
 import { setDesktopSandboxEscalationSink } from './windows-pwsh-sandbox.ts'
 import { setDesktopFullAccessApprovalSink } from './approval-mirror.ts'
 import {
+  companySkillsExecutionEnvironmentEntries,
+  managedCompanySkillsEnvironment,
+  setCompanySkillsExecutionEnvironment,
+} from './company-skills-env.ts'
+import {
   DesktopInstallRecoveryStore,
   desktopInstallRecoveryStatePath,
   type DesktopInstallRecoveryFailureReason,
@@ -1154,6 +1159,28 @@ async function start(): Promise<void> {
         `${BIN_NAME}: skipping the company gateway token injection because the credentials document could not be probed: ${storedCredentials.reason}`,
       )
     }
+
+    // Company-skills router environment (#043 D1, batch B): the five API
+    // skills read ROUTER_URL/ROUTER_API_KEY through `load_dotenv()` → OS
+    // env, and their `.env` files are stripped at collection, so the values
+    // must reach the skill child's spawn environment some other way. Unlike
+    // the gateway keys above they are NOT written to `process.env` — the only
+    // consumer is the skills executor's spawn, and inheritance would hand
+    // them to every agent-side child (the subprocess scrub catches
+    // ROUTER_API_KEY but not ROUTER_URL). Instead the pair is decoded here
+    // (main process only, locked builds only, corrupt blob fails closed) and
+    // published on the process-global slot the Cordis-loaded
+    // dsh-company-skills plugin reads at executor construction
+    // (`src/company-skills-env.ts` ↔ dsh-company-skills `src/host-env.ts`).
+    // Never logged, never in the renderer, gone when the process exits.
+    // A corrupt blob in a locked build fails closed here (the decode throws
+    // before anything boots, mirroring the gateway posture); the message
+    // names only the validation failure — never a value.
+    const skillsRouter = managedCompanySkillsEnvironment(policy)
+    setCompanySkillsExecutionEnvironment(
+      skillsRouter === undefined ? undefined : companySkillsExecutionEnvironmentEntries(skillsRouter),
+    )
+    generation.own(() => { setCompanySkillsExecutionEnvironment(undefined) })
 
     startupStage = 'runtime-bootstrap'
     lifecycleRecorder.transitionStartupStage(startupStage)

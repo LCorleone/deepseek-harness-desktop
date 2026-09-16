@@ -948,3 +948,201 @@ describe('seam passthrough', () => {
     expect(spec?.signal).toBeInstanceOf(AbortSignal)
   })
 })
+
+describe('per-skill run deadline overrides (#043 D6)', () => {
+  /** A seam whose `done` settles with exit 0 after `ms`, or signal-facts when aborted first. */
+  function delayedSpawn(ms: number) {
+    const specs: SubprocessSpawnSpec[] = []
+    const spawn: ScriptSpawn = (spec) => {
+      specs.push(spec)
+      const done = new Promise<SubprocessOutcome>((resolve) => {
+        const timer = setTimeout(() => { resolve({ exitCode: 0, signal: null }) }, ms)
+        spec.signal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          resolve({ exitCode: null, signal: 'SIGKILL' })
+        }, { once: true })
+      })
+      return handleWith(done)
+    }
+    return { spawn, specs }
+  }
+
+  it('runs an overridden skill past the default deadline and keeps the default for every other skill', async () => {
+    // The child settles after 80 ms. The default deadline is 25 ms — a skill
+    // without an override must be killed at 25 ms, while the OCR-shaped
+    // override (250 ms) must let the very same run settle on its own.
+    const { spawn } = delayedSpawn(80)
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf(), bundleOf({ name: 'ocr' })),
+      spawn,
+      tempRoot,
+      timeoutMs: 25,
+      graceMs: 10,
+      deadlineBySkill: { ocr: 250 },
+    })
+    await expect(executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })).rejects.toThrow(/timed out after 25 ms/)
+    await expect(executor.run({
+      skill: 'ocr',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-b',
+      signal: callerSignal(),
+    })).resolves.toMatchObject({ exitCode: 0 })
+  }, 10_000)
+
+  it('defaults to an empty override map, so the shipped default deadline is unchanged', () => {
+    const { spawn } = immediateSpawn()
+    const executor = createScriptExecutor({ catalog: catalogOf(bundleOf()), spawn, tempRoot })
+    expect(executor.limits.deadlineBySkill).toEqual({})
+    expect(executor.limits.timeoutMs).toBe(120_000)
+  })
+
+  it('reports the OVERRIDE deadline in the timeout message, not the default', async () => {
+    // The override (250 ms) is distinct from the default (25 ms): the run of
+    // the overridden skill must outlive the default — proving the override is
+    // live — and the rejection must name the override value.
+    const { spawn } = abortTerminatedSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ name: 'vlm-image' })),
+      spawn,
+      tempRoot,
+      timeoutMs: 25,
+      deadlineBySkill: { 'vlm-image': 250 },
+    })
+    await expect(executor.run({
+      skill: 'vlm-image',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })).rejects.toThrow(/timed out after 250 ms/)
+  }, 10_000)
+
+  it('rejects a malformed override map at construction', () => {
+    for (const deadlineBySkill of [
+      { 'Not-A-Skill': 1000 },
+      { 'spaced name': 1000 },
+      { ocr: 0 },
+      { ocr: 1.5 },
+      { ocr: 2 ** 31 },
+    ] as Readonly<Record<string, number>>[]) {
+      expect(
+        () => createScriptExecutor({
+          catalog: catalogOf(bundleOf()),
+          spawn: immediateSpawn().spawn,
+          tempRoot,
+          deadlineBySkill,
+        }),
+        JSON.stringify(deadlineBySkill),
+      ).toThrow(/dsh-company-skills: deadlineBySkill/)
+    }
+  })
+})
+
+describe('host-injected child environment (#043 D1)', () => {
+  it('merges the injected fragment into the spawn env beside the staged root', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      childEnv: { ROUTER_URL: 'http://router.internal', ROUTER_API_KEY: 'sk-injected-secret' },
+      // Pin resolution to the host-executable fallback so the expected env is
+      // deterministic regardless of the machine running the suite.
+      interpreterResolution: { environment: {}, commandOnPath: () => false, execPath: '/opt/fake/node' },
+    })
+    await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(specs[0]?.env).toMatchObject({
+      ROUTER_URL: 'http://router.internal',
+      ROUTER_API_KEY: 'sk-injected-secret',
+      [ASSETS_ENV_VAR]: specs[0]?.cwd,
+      [ELECTRON_RUN_AS_NODE_ENV]: '1',
+    })
+  })
+
+  it('spawns no fragment at all when none was injected', async () => {
+    const { spawn, specs } = immediateSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      interpreterResolution: { environment: {}, commandOnPath: () => false, execPath: '/opt/fake/node' },
+    })
+    await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(Object.keys(specs[0]?.env ?? {})).toEqual([ELECTRON_RUN_AS_NODE_ENV, ASSETS_ENV_VAR])
+  })
+
+  it('the child process actually observes the injected variables (real node)', async () => {
+    const probe = [
+      "console.log('ROUTER-URL=' + (process.env.ROUTER_URL ?? 'unset'))",
+      "console.log('ROUTER-KEY=' + (process.env.ROUTER_API_KEY ?? 'unset'))",
+    ].join('\n')
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf({ scripts: [{ path: 'scripts/env_probe.mjs', text: probe }] })),
+      spawn: localSpawn,
+      tempRoot,
+      childEnv: { ROUTER_URL: 'http://router.internal', ROUTER_API_KEY: 'sk-injected-secret' },
+    })
+    const result = await executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/env_probe.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text).toContain('ROUTER-URL=http://router.internal')
+    expect(result.stdout.text).toContain('ROUTER-KEY=sk-injected-secret')
+  }, 30_000)
+
+  it('rejects a malformed fragment at construction, before anything can spawn', () => {
+    for (const childEnv of [
+      { router_url: 'x' },
+      { 'lower-case': 'x' },
+      { EMPTY: '' },
+    ] as Readonly<Record<string, string>>[]) {
+      expect(
+        () => createScriptExecutor({
+          catalog: catalogOf(bundleOf()),
+          spawn: immediateSpawn().spawn,
+          tempRoot,
+          childEnv,
+        }),
+        JSON.stringify(childEnv),
+      ).toThrow(/dsh-company-skills: childEnv/)
+    }
+  })
+
+  it('never carries an injected value into a rejection message', async () => {
+    const { spawn } = abortTerminatedSpawn()
+    const executor = createScriptExecutor({
+      catalog: catalogOf(bundleOf()),
+      spawn,
+      tempRoot,
+      timeoutMs: 25,
+      childEnv: { ROUTER_API_KEY: 'sk-never-in-a-message' },
+    })
+    const failure = executor.run({
+      skill: 'runner-demo',
+      script: 'scripts/demo.mjs',
+      sessionKey: 'session-a',
+      signal: callerSignal(),
+    })
+    await expect(failure).rejects.toThrow(/timed out after 25 ms/)
+    let message: string | undefined
+    await failure.catch((cause: unknown) => { message = (cause as Error).message })
+    expect(message).not.toContain('sk-never-in-a-message')
+  })
+})

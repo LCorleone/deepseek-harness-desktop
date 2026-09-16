@@ -91,10 +91,15 @@
  *
  * Per-stream output is retained as a bounded **tail** (default 64 KiB), a
  * resource read fits a separate bound (default 256 KiB), the run has its own
- * deadline (default 120 s) independent of the caller's cancellation, at most
+ * deadline (default 120 s, overridable per skill for the long-queue OCR/VLM
+ * skills — #043 D6) independent of the caller's cancellation, at most
  * one run per session may be in flight (configurable), and every failure is a
  * {@link SkillRunError} whose message names the skill and path but never a
- * byte of the body.
+ * byte of the body. A host-injected environment fragment (#043 D1) can ride
+ * along into every child's spawn environment — never into this process's own
+ * `process.env` — which is how the desktop hands the API skills their
+ * `ROUTER_URL`/`ROUTER_API_KEY` without either value ever touching a log
+ * line or an agent-side child.
  *
  * @module dsh-company-skills/execute
  */
@@ -110,7 +115,7 @@ import type {
   SubprocessSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import type { CompanySkillCatalog } from './catalog.js'
-import { compareCodePoints, type SkillBundle } from './bundle.js'
+import { compareCodePoints, SKILL_NAME_PATTERN, type SkillBundle } from './bundle.js'
 import { decodeCanonicalBase64 } from './codec.js'
 
 /** The subprocess seam the executor writes through; `ctx.subprocess.spawn` in the plugin. */
@@ -136,6 +141,15 @@ export const DEFAULT_MAX_CONCURRENT_PER_SESSION = 1
 
 /** Environment variable carrying the staged skill root (scripts + assets) to the child. */
 export const ASSETS_ENV_VAR = 'DSH_SKILL_ASSETS'
+
+/**
+ * The name shape every {@link ScriptExecutorOptions.childEnv} entry must
+ * match: an uppercase environment-style name (letters, digits, underscores,
+ * not starting with a digit), validated at construction so a malformed host
+ * injection rejects loudly before any run. (`deadlineBySkill` keys are
+ * validated separately against the registry's kebab-case skill grammar.)
+ */
+export const CHILD_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/u
 
 /** Prefix of the per-run staged-skill directory under the temp root. */
 export const ASSETS_TMP_PREFIX = 'dsh-skill-assets-'
@@ -172,6 +186,14 @@ export interface ScriptExecutorLimits {
   readonly maxReadBytes: number
   /** Most entry paths {@link ScriptExecutor.list} returns; the rest is a truncation fact. */
   readonly maxListEntries: number
+  /**
+   * Per-skill run-deadline overrides in milliseconds, keyed by skill name
+   * (#043 D6). A skill present here runs under its own deadline; every other
+   * skill keeps {@link timeoutMs}. Kept inside the limits record so the tool
+   * layer can size its host-side backstop (the longest deadline that can
+   * actually fire) without re-deriving the composition.
+   */
+  readonly deadlineBySkill: Readonly<Record<string, number>>
 }
 
 /** One run request: the addressed script plus the caller-owned execution context. */
@@ -293,6 +315,26 @@ export interface ScriptExecutorOptions {
   readonly maxReadBytes?: number
   /** Most entry paths one listing returns; defaults to 1000. */
   readonly maxListEntries?: number
+  /**
+   * Per-skill run-deadline overrides in milliseconds, keyed by skill name
+   * (#043 D6); a skill absent from the map keeps {@link timeoutMs}. Keys must
+   * match the registry's kebab-case skill grammar, values the same positive-
+   * integer bound as `timeoutMs`.
+   */
+  readonly deadlineBySkill?: Readonly<Record<string, number>>
+  /**
+   * Host-injected environment fragment merged into every skill child's spawn
+   * environment (#043 D1): the desktop main process decodes `ROUTER_URL` /
+   * `ROUTER_API_KEY` from its build-time blob and hands them to the executor
+   * through the process-global slot the plugin reads (see `src/index.ts`);
+   * the entries ride beside {@link ASSETS_ENV_VAR}, reach the child through
+   * the subprocess seam's explicit `env` layer (which merges after the
+   * credential scrub), and are never written to `process.env` of this process
+   * — so agent-side children cannot inherit them. Names must be uppercase
+   * environment-style names with non-empty values; a violation rejects at
+   * construction. Values are never logged and never persisted.
+   */
+  readonly childEnv?: Readonly<Record<string, string>>
   /** Temp root for the staged-skill directory; defaults to `os.tmpdir()`. */
   readonly tempRoot?: string
   /**
@@ -413,6 +455,19 @@ function assertPositiveInteger(name: string, value: number): void {
 }
 
 function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
+  const deadlineBySkill: Record<string, number> = {}
+  for (const [skill, deadline] of Object.entries(options.deadlineBySkill ?? {})) {
+    if (!SKILL_NAME_PATTERN.test(skill)) {
+      throw new Error(`dsh-company-skills: deadlineBySkill key ${JSON.stringify(skill)} must be a kebab-case skill name`)
+    }
+    // The same bounds as `timeoutMs`, checked per override: a malformed
+    // deadline must reject at construction, not at the first long run.
+    assertPositiveInteger(`deadlineBySkill[${JSON.stringify(skill)}]`, deadline)
+    if (deadline > MAX_TIMER_DELAY_MS) {
+      throw new Error(`dsh-company-skills: deadlineBySkill[${JSON.stringify(skill)}] must be no greater than ${String(MAX_TIMER_DELAY_MS)}`)
+    }
+    deadlineBySkill[skill] = deadline
+  }
   const limits: ScriptExecutorLimits = {
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     graceMs: options.graceMs ?? DEFAULT_GRACE_MS,
@@ -420,6 +475,7 @@ function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
     maxConcurrentPerSession: options.maxConcurrentPerSession ?? DEFAULT_MAX_CONCURRENT_PER_SESSION,
     maxReadBytes: options.maxReadBytes ?? DEFAULT_MAX_READ_BYTES,
     maxListEntries: options.maxListEntries ?? DEFAULT_MAX_LIST_ENTRIES,
+    deadlineBySkill,
   }
   assertPositiveInteger('timeoutMs', limits.timeoutMs)
   assertPositiveInteger('graceMs', limits.graceMs)
@@ -431,6 +487,28 @@ function resolveLimits(options: ScriptExecutorOptions): ScriptExecutorLimits {
     throw new Error(`dsh-company-skills: timeoutMs and graceMs must be no greater than ${String(MAX_TIMER_DELAY_MS)}`)
   }
   return limits
+}
+
+/**
+ * Validate and freeze a host-injected child-environment fragment (#043 D1).
+ * Names must be uppercase environment-style names and values non-empty
+ * strings, so a malformed host injection rejects at construction — before any
+ * run could spawn half an environment. The fragment is copied defensively:
+ * a later mutation of the caller's record cannot change what children see.
+ */
+function resolveChildEnv(fragment: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
+  if (fragment === undefined) return {}
+  const resolved: Record<string, string> = {}
+  for (const [name, value] of Object.entries(fragment)) {
+    if (!CHILD_ENV_NAME_PATTERN.test(name)) {
+      throw new Error(`dsh-company-skills: childEnv name ${JSON.stringify(name)} must be an uppercase environment name (letters, digits, underscores)`)
+    }
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`dsh-company-skills: childEnv ${JSON.stringify(name)} must carry a non-empty string value`)
+    }
+    resolved[name] = value
+  }
+  return Object.freeze(resolved)
 }
 
 /** Locate one declared script by exact path equality — never by path arithmetic. */
@@ -565,6 +643,7 @@ function collectOutput(reader: SubprocessOutputReader | undefined): ScriptOutput
  */
 export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExecutor {
   const limits = resolveLimits(options)
+  const childEnv = resolveChildEnv(options.childEnv)
   const tempRoot = options.tempRoot ?? tmpdir()
   const logWarning = options.logWarning ?? (() => {})
   const activeBySession = new Map<string, number>()
@@ -620,7 +699,7 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
     const failLaunch = (command: string, error: unknown): never => {
       if (timedOut) {
         throw new SkillRunError(
-          `company skill "${bundle.name}" script "${script.path}" timed out after ${String(limits.timeoutMs)} ms`,
+          `company skill "${bundle.name}" script "${script.path}" timed out after ${String(timeoutMs)} ms`,
         )
       }
       if (request.signal.aborted) {
@@ -634,18 +713,30 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
 
     // The run's own deadline, fused with the caller's cancellation: whichever
     // fires first aborts the seam's signal and terminates the process tree.
+    // #043 D6: a skill listed in the per-skill override map runs under its own
+    // (longer) deadline — the OCR/VLM skills call external APIs whose queue
+    // latency dwarfs the 120 s default; every other skill keeps the default.
+    const timeoutMs = limits.deadlineBySkill[bundle.name] ?? limits.timeoutMs
     const deadline = new AbortController()
     let timedOut = false
     const timer = setTimeout(() => {
       timedOut = true
       deadline.abort()
-    }, limits.timeoutMs)
+    }, timeoutMs)
     const signal = AbortSignal.any([request.signal, deadline.signal])
 
     let stagedRoot: string | undefined
     try {
       stagedRoot = await stageBundle(bundle, tempRoot)
-      const env: Record<string, string> = { ...interpreter.env, [ASSETS_ENV_VAR]: stagedRoot }
+      // #043 D1: the host-injected fragment (the API skills' ROUTER_URL /
+      // ROUTER_API_KEY) rides beside the staged root through the seam's
+      // explicit env layer; it is never written to this process's own
+      // environment, so agent-side children cannot inherit it.
+      // Merge-order invariant (review P3): childEnv < interpreter.env —
+      // resolveInterpreter must keep returning only fixed literals ({}
+      // or {ELECTRON_RUN_AS_NODE}); any future interpreter family carrying
+      // derived/ambient env would silently shadow the injection here.
+      const env: Record<string, string> = { ...childEnv, ...interpreter.env, [ASSETS_ENV_VAR]: stagedRoot }
       const spec: SubprocessSpawnSpec = {
         argv: [interpreter.command, join(stagedRoot, script.path), ...(request.args ?? [])],
         cwd: stagedRoot,
@@ -676,7 +767,7 @@ export function createScriptExecutor(options: ScriptExecutorOptions): ScriptExec
 
       if (timedOut) {
         throw new SkillRunError(
-          `company skill "${bundle.name}" script "${script.path}" timed out after ${String(limits.timeoutMs)} ms`,
+          `company skill "${bundle.name}" script "${script.path}" timed out after ${String(timeoutMs)} ms`,
         )
       }
       // The caller signal can abort while `done` is awaited; a plain read cannot

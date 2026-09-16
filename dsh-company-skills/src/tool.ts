@@ -36,6 +36,7 @@ import type {
   ReadResourceResult,
   RunScriptResult,
   ScriptExecutor,
+  ScriptExecutorLimits,
 } from './execute.js'
 
 /** Tool name the model sees. */
@@ -302,11 +303,27 @@ export function createCompanySkillListTool(executor: ScriptExecutor): ToolDefini
 }
 
 /**
+ * The longest run deadline that can actually fire for one executor: the
+ * default, or any per-skill override above it (#043 D6). The run tool's
+ * host-side `timeoutMs` backstop sizes itself from this so no legal run is
+ * aborted by the backstop before its own deadline.
+ */
+export function maximumDeadlineMs(limits: ScriptExecutorLimits): number {
+  return Math.max(limits.timeoutMs, ...Object.values(limits.deadlineBySkill))
+}
+
+/**
  * Build the `company_skill_run` definition for one executor.
  * @param executor - the catalog-backed script executor.
  * @returns a registry-ready tool definition.
  */
 export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinition {
+  const overrides = Object.entries(executor.limits.deadlineBySkill)
+  const deadlineSentence = overrides.length === 0
+    ? `A run deadline is ${String(Math.round(executor.limits.timeoutMs / 1000))} s.`
+    : `A run deadline is ${String(Math.round(executor.limits.timeoutMs / 1000))} s, except `
+      + `${overrides.map(([skill, ms]) => `"${skill}" (${String(Math.round(ms / 1000))} s)`).join(', ')}`
+      + '.'
   return defineTool({
     name: COMPANY_SKILL_RUN_TOOL_NAME,
     description:
@@ -322,8 +339,8 @@ export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinit
       + '`reference/pptd.md` that a skill expects the caller to have read first. '
       + 'Returns the exit code plus stdout and stderr, each capped at '
       + `${String(Math.round(executor.limits.maxOutputBytes / 1024))} KiB (overflow keeps the tail and is reported as truncated). `
-      + `A run is limited to ${String(executor.limits.maxConcurrentPerSession)} in flight per session and to a `
-      + `${String(Math.round(executor.limits.timeoutMs / 1000))} s deadline.`,
+      + `A run is limited to ${String(executor.limits.maxConcurrentPerSession)} in flight per session. `
+      + deadlineSentence,
     parameters: {
       skill: {
         type: 'string',
@@ -341,9 +358,11 @@ export function createCompanySkillRunTool(executor: ScriptExecutor): ToolDefinit
         description: 'Extra argv appended after the script path; passed to the interpreter verbatim.',
       },
     },
-    // Our own executor deadline fires first; this host-side budget is the
-    // backstop that aborts `exec.signal` if the timer is wedged.
-    timeoutMs: executor.limits.timeoutMs + executor.limits.graceMs,
+    // Our own executor deadline fires first (the default or, for the skills
+    // in deadlineBySkill, that skill's own override); this host-side budget
+    // is the backstop that aborts `exec.signal` if the timer is wedged, so it
+    // must sit above the LONGEST deadline that can fire (#043 D6).
+    timeoutMs: maximumDeadlineMs(executor.limits) + executor.limits.graceMs,
     output: {
       schema: {
         type: 'object',

@@ -12,7 +12,13 @@
  * stays `reference/`, `LICENSE.txt` stays `LICENSE.txt`). The collected
  * layout therefore reconstructs the original skill root exactly, and the
  * packer keys every bundle entry by that same relative path. `__pycache__`
- * directories are pruned; nothing else is moved, renamed, or rewritten.
+ * directories and `.env` credential files are pruned; nothing else is moved,
+ * renamed, or rewritten. The `.env` prune is the collect half of #043 D1: the
+ * API skills' sources carry a live `ROUTER_URL`/`ROUTER_API_KEY` file next to
+ * their scripts, and those values must never ship inside the bundle — the
+ * managed desktop injects them into the skill executor's spawn environment
+ * at run time, and the skills' `load_dotenv()` falls back to the OS
+ * environment when no `.env` exists, so stripping is behavior-neutral.
  *
  * The source tree is only ever READ — this collector never writes anything
  * under the source root (the batch-4 red line: the skills-hub copy is
@@ -43,8 +49,29 @@ const USAGE = `usage: node scripts/collect-skills.mjs [--source <skills-root>] [
 /** Directory names pruned during collection, mirroring the packer's list. */
 const PRUNED_DIRECTORY_NAMES = ['__pycache__']
 
-/** The collected set this package ships. */
-const DEFAULT_SKILLS = ['ppt-designer', 'skill-creator', 'docx', 'xlsx', 'pdf', 'pptx']
+/**
+ * File names pruned during collection (#043 D1): a skills-hub source carries
+ * a `.env` with the live `ROUTER_URL`/`ROUTER_API_KEY` next to its scripts.
+ * That file is the hub author's local credential layer, never bundle content —
+ * the managed desktop injects both variables into the skill child's spawn
+ * environment, so the collected copy must not carry it.
+ */
+const PRUNED_FILE_NAMES = ['.env']
+
+/** The collected set this package ships (#043: batch A office four + batch B API five). */
+const DEFAULT_SKILLS = [
+  'ppt-designer',
+  'skill-creator',
+  'docx',
+  'xlsx',
+  'pdf',
+  'pptx',
+  'company-info',
+  'ocr',
+  'vlm-image',
+  'scms-financial-api',
+  'smart-pdf-parser',
+]
 
 /** Skill names the collector accepts: the registry's kebab-case grammar. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
@@ -114,6 +141,7 @@ export function collectSkill(sourceDir, targetDir) {
         continue
       }
       if (!entry.isFile()) throw new Error(`collect: not a regular file: ${join(sourceDir, relative)}`)
+      if (PRUNED_FILE_NAMES.includes(entry.name)) continue
       files.push(relative)
       const destination = join(targetDir, relative)
       mkdirSync(dirname(destination), { recursive: true })
@@ -136,7 +164,7 @@ function main() {
     const { files } = collectSkill(join(sourceRoot, name), join(TARGET_ROOT, name))
     process.stdout.write(`collected ${name}: ${String(files)} files → skills/${name} (source layout preserved)\n`)
   }
-  process.stdout.write('remember: re-apply the manual adaptations if SKILL.md was overwritten — ppt-designer description trim; #043 batch A: docx/xlsx/pdf/pptx description trims and flattened frontmatter, docx D3′ dynamic three-stage tool notes + non-empty scripts/office/helpers/__init__.py, xlsx D3′ dynamic note + Content_Types.xml template rename, pdf D3′ dynamic note\n')
+  process.stdout.write('remember: re-apply the manual adaptations if SKILL.md was overwritten — ppt-designer description trim; #043 batch A: docx/xlsx/pdf/pptx description trims and flattened frontmatter, docx D3′ dynamic three-stage tool notes + non-empty scripts/office/helpers/__init__.py, xlsx D3′ dynamic note + Content_Types.xml template rename, pdf D3′ dynamic note; #043 batch B: company-info flattened frontmatter, .env-edit wording replaced with managed-injection wording in the five API skills, smart-pdf-parser vendored scripts/vendor/{call_ocr.py,vlm_ocr.py} + smart_parse.py default-path re-point (D5)\n')
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

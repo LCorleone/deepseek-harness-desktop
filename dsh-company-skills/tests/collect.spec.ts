@@ -45,7 +45,19 @@ describe('collector skill-name guard', () => {
   })
 
   it('defaults to the shipped set and parses an explicit source root', () => {
-    expect(collect.parseArgs([]).names).toEqual(['ppt-designer', 'skill-creator', 'docx', 'xlsx', 'pdf', 'pptx'])
+    expect(collect.parseArgs([]).names).toEqual([
+      'ppt-designer',
+      'skill-creator',
+      'docx',
+      'xlsx',
+      'pdf',
+      'pptx',
+      'company-info',
+      'ocr',
+      'vlm-image',
+      'scms-financial-api',
+      'smart-pdf-parser',
+    ])
     const parsed = collect.parseArgs(['--source', '/tmp/hub', 'one', 'two'])
     expect(parsed.sourceRoot).toBe('/tmp/hub')
     expect(parsed.names).toEqual(['one', 'two'])
@@ -59,6 +71,9 @@ describe('collector layout copy', () => {
     await mkdir(join(source, 'editor', 'neo-ppt'), { recursive: true })
     await mkdir(join(source, 'reference'), { recursive: true })
     await writeFile(join(source, 'SKILL.md'), '---\nname: ppt-designer\ndescription: d\n---\nbody\n')
+    // #043 D1: a skills-hub source carries its live router credentials here;
+    // collection must drop the file (the desktop injects the values instead).
+    await writeFile(join(source, '.env'), 'ROUTER_URL=http://router.internal\nROUTER_API_KEY=secret-value\n')
     await writeFile(join(source, 'scripts', 'export_pptx.py'), 'print("hi")\n')
     await writeFile(join(source, 'scripts', '__pycache__', 'export_pptx.cpython-310.pyc'), 'stale\n')
     await writeFile(join(source, 'editor', 'index.html'), '<p>editor</p>\n')
@@ -90,5 +105,7 @@ describe('collector layout copy', () => {
       'scripts/export_pptx.py',
     ])
     expect(await readFile(join(target, 'editor', 'index.html'), 'utf8')).toBe('<p>editor</p>\n')
+    // The `.env` never rides along — the whole copy is credential-free (#043 D1).
+    expect(await list(target)).not.toContain('.env')
   })
 })

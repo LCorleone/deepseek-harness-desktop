@@ -15,7 +15,8 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
-import { validateSkillBundle } from '../src/bundle.js'
+import { validateSkillBundle, type SkillBundle } from '../src/bundle.js'
+import { loadCatalogFromFile, type CompanySkillCatalog } from '../src/catalog.js'
 import { BUNDLE_BLOB_EXPORT_NAME, OBFUSCATION_KEY, OBFUSCATION_KEY_ID, decodeBundleBlob, decodeCanonicalBase64, extractBundleBlob, xorKeyBytes } from '../src/codec.js'
 import { CONTAINER_VERSION, decodeContainer, parseContainer } from '../src/container.js'
 import {
@@ -36,6 +37,7 @@ const PACKAGE_ROOT_PATH = fileURLToPath(PACKAGE_ROOT)
 const FIXTURES_ROOT_PATH = fileURLToPath(FIXTURES_DIR)
 const SKILLS_ROOT_PATH = fileURLToPath(SKILLS_DIR)
 const ASSET_PATH = join(PACKAGE_ROOT_PATH, 'assets', 'skills.bundle')
+const ASSET_URL = new URL('../assets/skills.bundle', import.meta.url)
 const PACKER = join(REPO_ROOT_PATH, 'tools', 'company-skills', 'pack.mjs')
 
 /** Canary lines that must never appear in a packed artifact: one distinctive
@@ -411,5 +413,110 @@ describe('package release surface', () => {
         expect(matchers.some((matches) => matches(path)), `${path} must not be published`).toBe(false)
       }
     }
+  })
+})
+
+/** The #043 batch-B API skills, sorted. */
+const API_SKILL_NAMES = ['company-info', 'ocr', 'scms-financial-api', 'smart-pdf-parser', 'vlm-image'] as const
+
+describe('#043 batch B: the five API skills ship credential-free and self-contained', () => {
+  /** The shipped container, decoded once through the plugin's own catalog. */
+  const SHIPPED: CompanySkillCatalog = loadCatalogFromFile(ASSET_URL)
+
+  /** One shipped skill's validated bundle, or a hard failure naming the reason. */
+  function shippedBundle(name: string): SkillBundle {
+    const loaded = SHIPPED.skill(name)
+    if (!loaded.ok) throw new Error(loaded.reason)
+    return loaded.bundle
+  }
+
+  /** Decode one entry's bytes. */
+  const entryText = (bundle: SkillBundle, path: string): string => {
+    const entry = [...bundle.scripts, ...bundle.assets].find((candidate) => candidate.path === path)
+    if (entry === undefined) throw new Error(`${bundle.name} carries no ${path}`)
+    return decodeCanonicalBase64(entry.content, entry.content).toString('utf8')
+  }
+
+  it('the shipped asset carries an entry for every API skill', () => {
+    const names = decodeContainer(readFileSync(ASSET_PATH, 'utf8')).map((entry) => entry.name)
+    for (const name of API_SKILL_NAMES) expect(names, name).toContain(name)
+  })
+
+  it('no entry of any shipped skill is a .env file — credentials never ride the bundle (D1)', () => {
+    const offenders: string[] = []
+    for (const name of SHIPPED_SKILL_NAMES) {
+      const bundle = shippedBundle(name)
+      for (const entry of [...bundle.scripts, ...bundle.assets]) {
+        if (entry.path === '.env' || entry.path.endsWith('/.env')) offenders.push(`${name}/${entry.path}`)
+      }
+    }
+    expect(offenders, offenders.join('\n')).toEqual([])
+  })
+
+  it('no decoded bundle byte carries a router secret literal (D1)', () => {
+    // The decoded document is the strongest place to audit: every body,
+    // script, and asset byte is plaintext there. The SKILL.md bodies
+    // legitimately NAME the variables (they tell the agent the values are
+    // injected); what must never appear is an assigned VALUE — a
+    // `ROUTER_URL=…`/`ROUTER_API_KEY=…` assignment or an `sk-` API-key
+    // token.
+    const document = buildAsset.decodeShippedBundle(readFileSync(ASSET_PATH, 'utf8'))
+    expect(/ROUTER_API_KEY\s*=\s*\S/u.test(document)).toBe(false)
+    expect(/ROUTER_URL\s*=\s*\S/u.test(document)).toBe(false)
+    // `sk-` followed by at least 8 token characters: the API-key shape —
+    // minus the known benign PATH/ANCHOR substrings ppt-designer carries
+    // (`…dusk-violet-consulting.md` and the `ask-the-user-before-generating`
+    // anchor, both hyphenated prose paths, not keys; the dusk-violet hit is
+    // the same false positive the batch-A raw-blob audit documented). Every
+    // other `sk-…` token must fail here.
+    const matches = [...document.matchAll(/sk-[A-Za-z0-9_-]{8,}/gu)].map((match) => match[0])
+    const benign = new Set(['sk-violet-consulting', 'sk-the-user-before-generating'])
+    expect(matches.filter((token) => !benign.has(token)), matches.join(', ')).toEqual([])
+  })
+
+  it('smart-pdf-parser vendors the OCR/VLM scripts it drives and points its defaults at them (D5)', () => {
+    const parser = shippedBundle('smart-pdf-parser')
+    const paths = [...parser.scripts, ...parser.assets].map((entry) => entry.path)
+    expect(paths).toContain('scripts/vendor/call_ocr.py')
+    expect(paths).toContain('scripts/vendor/vlm_ocr.py')
+    // The vendored copies are the ocr / vlm-image skills' own scripts plus
+    // ONLY the drift-risk lines inside the module docstring — strip that
+    // block (from the newline before the marker to the closing quotes) and
+    // the remainder must equal the original byte for byte; any other
+    // difference is real drift and must fail here.
+    const ocr = shippedBundle('ocr')
+    const vlm = shippedBundle('vlm-image')
+    const assertVendored = (source: SkillBundle, script: string): void => {
+      const vendored = entryText(parser, `scripts/vendor/${script}.py`)
+      const original = entryText(source, `scripts/${script}.py`)
+      const marker = vendored.indexOf('VENDED COPY (#043 D5, drift risk)')
+      expect(marker, `${script}.py: the drift-risk docstring is missing`).toBeGreaterThan(0)
+      const closing = vendored.indexOf('"""', marker)
+      expect(closing, `${script}.py: the drift-risk docstring never closes`).toBeGreaterThan(marker)
+      expect(vendored.slice(0, marker - 1) + vendored.slice(closing), `${script}.py: the vendored copy drifted beyond the docstring`).toBe(original)
+    }
+    assertVendored(ocr, 'call_ocr')
+    assertVendored(vlm, 'vlm_ocr')
+    // The parser's defaults resolve inside its OWN staged tree — no ../../ocr
+    // or ../../vlm-image sibling lookup remains.
+    const source = entryText(parser, 'scripts/smart_parse.py')
+    expect(source).toContain('SCRIPTS_DIR / "vendor" / "call_ocr.py"')
+    expect(source).toContain('SCRIPTS_DIR / "vendor" / "vlm_ocr.py"')
+    expect(source).not.toContain('parent.parent.parent')
+  })
+
+  it('the staged skills/ trees contain no .env and no __pycache__ (collect-side strip)', () => {
+    const offenders: string[] = []
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const full = join(directory, entry.name)
+        if (entry.isDirectory()) {
+          if (entry.name === '__pycache__') offenders.push(full)
+          else walk(full)
+        } else if (entry.name === '.env') offenders.push(full)
+      }
+    }
+    walk(SKILLS_ROOT_PATH)
+    expect(offenders, offenders.join('\n')).toEqual([])
   })
 })

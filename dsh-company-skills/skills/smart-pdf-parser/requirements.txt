@@ -1,0 +1,4 @@
+PyMuPDF>=1.21.0
+pdfplumber>=0.9.0
+python-dotenv>=1.0.0
+Pillow>=9.0.0
