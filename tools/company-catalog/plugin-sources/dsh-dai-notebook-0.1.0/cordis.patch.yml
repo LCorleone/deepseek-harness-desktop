@@ -1,0 +1,16 @@
+# dsh-dai-notebook bundle patch: mounts the notebook plugin into the host
+# composition of a dsh profile. The plugin registers its `notebook_*` tools
+# into the shared `tools` registry and one usage section into the global
+# system prompt, so any session's model can drive the notebook through
+# natural language ("帮我记一条笔记", "把我今天的任务标完成", ...).
+#
+# Install: `dsh plugin --profile <name> add <this package>` (npm or a local
+# path). The `dsh plugin` command pnpm-installs the package into the profile
+# and reconciles it into the profile's `dsh.profile.bundles` layer list.
+- insert:
+    - id: dai-notebook
+      name: 'dsh-dai-notebook'
+      config:
+        # Notebook state lives under `<session workspace>/<stateDir>/`
+        # (notebook.json + archived.json).
+        stateDir: .dai-notebook
