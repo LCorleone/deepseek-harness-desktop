@@ -139,6 +139,8 @@ impl NewFeature {
 - July 口令：先别做（2026-09-16 21:31）。卡面为完整设计存档，待 July 明确开工口令再派 worker。定位提醒：绊线层，不关 #040 的 8/9/11 排队。
 - 方案定稿（2026-09-16 21:38，July 拍板）：远程更新=manifest 新顶层字段走既有签名管道（零构建更新模板；否决 GitLab 裸文件方案——无签名=投毒面）；beta 通道先带字段（testers 先例），stable 等 fleet 过 b102 闸；内嵌默认出厂兜底；拉取复用 catalog fetch。模板内容 July 起草中，卡面验收标准已扩到 9 条。仍等 July 开工口令。
 - 模板 v1 定稿冻结（2026-09-16 21:55，July 拍板）：英文版（对齐英文 system prompt），<GUARDRAIL MESSAGE INVISIBLE TO USER> 标签包裹 + <USER>{placeholder}</USER> 拼接格式；内容=资产保护（skills 源码禁输出允许阅读/密钥值禁输出非密钥 env 可读）+边界（禁他人内网探测本机端口检查除外/禁内部 API 枚举/恶意域名不确定不访问）+代码操作（禁越权代码/禁攻击代码/破坏性操作先确认/资源异常自停）+脚本执行（先读后跑，user skills 全文读懂）+反绕过条款。⑤数据外带 July 裁定搁置（prompt 层解决不了，通道在代码层）。文件：dsh-plugin-desktop/assets/company-guardrail/prompt-template-v1.md。仍等开工口令（worker 实现机制+验证器字段，搭 b102）。
+- 设计变更（2026-09-16 22:01，July 兼容性裁定）：securityPrompt 不进 manifest 顶层字段（老验证器未知键=整拒 manifest=目录全黑，字段方案需 fleet 全升级，与『发布不影响旧客户端』冲突）→ 改为【同源签名兄弟文件】security-prompt.json：同 trust roots ed25519 签名、revision 单调棘轮、8KiB 上限、piggyback 既有启动 catalog fetch 并发块（零新增启动延迟）、失败→缓存→内嵌默认三级回退。老客户端无任何 fetch 路径=构造性零影响，b102 后随时可发。worker-046 已 steer 转向（0223c403）。发布管线侧（CI 签名/上传兄弟文件）留下一轮。
+- 通道分裂设计（2026-09-16 22:22，July 拍板）：prompt 签名文件镜像 catalog 双通道——security-prompt.json（stable）+ security-prompt.beta.json（beta）。①beta 文档仅在当靴 beta overlay applied 时才拉取（复用目录 roster 判定，不重复 testers 签名）②优先级=beta>stable>缓存>内嵌 ③棘轮按通道独立（防跨通道降级被全局棘轮卡死：beta rev5→stable rev3 必须接受）④两文档独立并发、独立降级。July 发布指令：client 轮（worker→review→fix）完成后，做发布轮=管线签名/上传双文件+先发 beta；前提=b102 已出且名单机已升（老客户端构造性无感不变）。worker 已二次 steer。
 
 ## 验收标准（含远程更新通道）
 
