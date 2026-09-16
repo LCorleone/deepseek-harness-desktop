@@ -3,7 +3,9 @@
  * client events — the closed phase vocabulary the boot chain anchors on and
  * the numeric fields a fleet dashboard subtracts against — plus the
  * recorder mechanics (process-start origin, buffered attach, duration
- * stamping). Headless by construction: no window, no Electron import.
+ * stamping) and the recorder↔collector composition invariant behind the
+ * b97 `process_start` postmortem. Headless by construction: no window, no
+ * Electron import.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -11,9 +13,15 @@ import {
   BOOT_PHASES,
   bootPhaseEvent,
   CLIENT_EVENT_TYPES,
+  createClientEventCollector,
   type BootPhase,
+  type ClientEventConnectionConfig,
+  type ClientEventDbDsn,
+  type ClientEventWriteBoundary,
 } from '../src/client-event-reporter.ts'
 import { createBootPhaseRecorder } from '../src/boot-phase-recorder.ts'
+import { parseDesktopPolicy, type DesktopPolicy } from '../src/desktop-policy.ts'
+import { encodeUsageReportDbBlob } from '../scripts/make-usage-report-blob.mjs'
 
 /** The Phase-1 instrumentation set — every anchor the main boot chain emits. */
 const EXPECTED_PHASES: readonly BootPhase[] = [
@@ -159,5 +167,129 @@ describe('boot phase recorder', () => {
       recorder.emit('process_start')
       recorder.emit('window_ready')
     }).not.toThrow()
+  })
+})
+
+describe('buffered flush and collector attribution (the process_start postmortem)', () => {
+  /** Deterministic clock: an injectable cursor over epoch milliseconds. */
+  function fakeClock(startAt: number) {
+    let at = startAt
+    return {
+      now: () => at,
+      advance: (ms: number) => { at += ms },
+    }
+  }
+
+  function eventPolicy(usageReport: boolean): DesktopPolicy {
+    return parseDesktopPolicy({
+      agentBrowser: { allowOrigins: [], allowPersistLogin: false, enabled: false },
+      allowHomePatch: false,
+      allowManualPluginAdd: false,
+      companyCatalogOrigin: null,
+      companyManifestUrl: 'company-market/catalog-manifest.json',
+      locked: true,
+      managedModels: usageReport,
+      pluginResetOnVersionChange: false,
+      requireSso: false,
+      trustRoots: [],
+      usageReport,
+    })
+  }
+
+  function fakeDsn(): ClientEventDbDsn {
+    return { host: 'db.telemetry.example', port: 3307, user: 'report_writer', password: 'pw', database: 'dsh_usage_test' }
+  }
+
+  /** Rows the reporter wrote, in write order: [userEmail, detail]. */
+  interface RecordedRow { userEmail: unknown, detail: { phase: BootPhase, elapsedMs: number, durMs?: number } }
+  function recordingBoundary(): { boundary: ClientEventWriteBoundary, rows: RecordedRow[] } {
+    const rows: RecordedRow[] = []
+    const boundary: ClientEventWriteBoundary = {
+      async createConnection(_config: ClientEventConnectionConfig) {
+        return {
+          async query(_sql, values) {
+            rows.push({ userEmail: values[1], detail: JSON.parse(values[3] as string) })
+          },
+          async end() {},
+        }
+      },
+    }
+    return { boundary, rows }
+  }
+
+  /** Drain the fire-and-forget trailing write chain. */
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 8; index += 1) {
+      await new Promise<void>(resolve => { setImmediate(resolve) })
+    }
+  }
+
+  it('reproduces the b97 symptom: a flush before the session exists lands process_start unattributed', async () => {
+    // The production shape: the collector stamps user_email from the live SSO
+    // session at emit time, and process_start anchors fire before any session
+    // exists. Flushing at collector creation therefore landed the row with a
+    // NULL identity — present in the table, invisible to every email-keyed
+    // fleet view, which is exactly how "process_start went missing on both
+    // julu boots" looked from the dashboard.
+    let sessionEmail: string | null = null
+    const { boundary, rows } = recordingBoundary()
+    const collector = createClientEventCollector({
+      policy: eventPolicy(true),
+      dsnBlob: encodeUsageReportDbBlob(fakeDsn()),
+      clientVersion: '9.9.9-test',
+      userEmail: () => sessionEmail,
+      createWriteBoundary: () => boundary,
+    })
+    expect(collector).toBeDefined()
+
+    const clock = fakeClock(1_700_000_000_000)
+    const recorder = createBootPhaseRecorder({ now: clock.now, originMs: 1_699_999_999_000 })
+    recorder.emit('process_start')
+    // The sink attaches while no SSO session exists (collector creation).
+    recorder.attach(detail => { collector?.bootPhase(detail) })
+    // The session settles only later in the boot.
+    sessionEmail = 'julu@company.example'
+    clock.advance(5_000)
+    recorder.emit('disclaimer_agreed')
+
+    await settle()
+
+    expect(rows.map(row => row.detail.phase)).toEqual(['process_start', 'disclaimer_agreed'])
+    expect(rows[0]?.userEmail).toBeNull()
+    expect(rows[1]?.userEmail).toBe('julu@company.example')
+  })
+
+  it('stamps the buffered process_start with the boot identity when the sink attaches after the session settles', async () => {
+    // The fixed wiring: the recorder buffers until the boot-phase sink
+    // attaches AFTER the SSO gate, so the flushed anchors carry the same
+    // user_email as every later row of the boot and identity-keyed fleet
+    // views stay whole. elapsedMs still counts from the process-start
+    // origin, not the (later) flush moment.
+    let sessionEmail: string | null = null
+    const { boundary, rows } = recordingBoundary()
+    const collector = createClientEventCollector({
+      policy: eventPolicy(true),
+      dsnBlob: encodeUsageReportDbBlob(fakeDsn()),
+      clientVersion: '9.9.9-test',
+      userEmail: () => sessionEmail,
+      createWriteBoundary: () => boundary,
+    })
+    expect(collector).toBeDefined()
+
+    const clock = fakeClock(1_700_000_000_000)
+    const recorder = createBootPhaseRecorder({ now: clock.now, originMs: 1_699_999_999_000 })
+    recorder.emit('process_start')
+    clock.advance(3_500)
+    // The session settles; only then does the sink attach and the buffer flush.
+    sessionEmail = 'julu@company.example'
+    recorder.attach(detail => { collector?.bootPhase(detail) })
+    clock.advance(1_000)
+    recorder.emit('disclaimer_agreed')
+
+    await settle()
+
+    expect(rows.map(row => row.detail.phase)).toEqual(['process_start', 'disclaimer_agreed'])
+    expect(rows[0]).toEqual({ userEmail: 'julu@company.example', detail: { phase: 'process_start', elapsedMs: 1_000 } })
+    expect(rows[1]?.userEmail).toBe('julu@company.example')
   })
 })

@@ -90,7 +90,6 @@ import {
 import {
   resolveDesktopBetaChannelOverlay,
   type DesktopBetaChannelOptions,
-  type DesktopBetaChannelOverlay,
 } from './beta-channel.ts'
 import {
   browserSsoLogin,
@@ -615,11 +614,15 @@ async function start(): Promise<void> {
     logInfo: message => { electronLogger.error(`${message}`) },
     logError: message => { electronLogger.error(`${message}`) },
   })
-  // Boot-phase telemetry sink (#042): everything anchored before the
-  // collector existed (process_start) flushes through here in order; an
-  // offline policy drops the buffered anchors silently, exactly the
-  // degradation posture of every other event kind.
-  bootPhases.attach(detail => { clientEvents?.bootPhase(detail) })
+  // Boot-phase telemetry sink (#042): NOT wired here. The collector stamps
+  // each row's user_email from the live SSO session at emit time, and the
+  // first anchors (process_start, gate_shown) predate any session — flushing
+  // at collector creation landed process_start with a NULL identity, which
+  // every email-keyed fleet view silently drops (the b97 "missing
+  // process_start" postmortem). The recorder buffers until the sink attaches
+  // after the SSO gate below; an offline policy still drops the buffered
+  // anchors silently, exactly the degradation posture of every other event
+  // kind.
   // P16 sandbox-escalation telemetry: the Windows PowerShell sandbox adapter
   // is constructed by the Cordis loader from composition data, so the
   // collector reaches it through the adapter's module seam instead of a
@@ -885,6 +888,17 @@ async function start(): Promise<void> {
         }
       }
     }
+    // Boot-phase telemetry sink (#042): the earliest point where the boot's
+    // SSO identity exists — the collector reads the session at emit time, so
+    // the buffered anchors (process_start, gate_shown) flush through here
+    // carrying the same user_email as every later row of this boot, keeping
+    // identity-keyed fleet views whole. Buffering until now costs nothing
+    // measurable: the anchors keep their timeOrigin-based elapsedMs and the
+    // rows land seconds later at most. The silent-drop posture is unchanged
+    // (a boot that never gets past this point loses its buffered anchors
+    // exactly like an offline-policy boot always has), and ungated boots
+    // attach at the same seam with no session — uniformly NULL, as today.
+    bootPhases.attach(detail => { clientEvents?.bootPhase(detail) })
     // Beta disclaimer gate (2026-09-07): one prompt per client version AND
     // statement revision — no ack (fresh install), a version change (update),
     // or a text-hash change (revised statement) each ask once, everyday boots
@@ -964,6 +978,90 @@ async function start(): Promise<void> {
       electronLogger.error(
         `${BIN_NAME}: corporate network environment injection failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
+    }
+    // T1 boot overlap (#042): the locked boot-verification network inputs —
+    // the origin-mode stable manifest fetch and the beta overlay — depend on
+    // nothing below this point (the policy is immutable, the SSO session is
+    // adopted, and both fetches ride Chromium's network service, which
+    // progresses while this process's main thread does the CPU-bound boot
+    // work that follows). Both start NOW and run concurrently with the
+    // bundled Node digest, the pnpm/python runtime resolution, Profile
+    // selection, and the recovery claim; both join at the boot-verification
+    // input assembly below, which still completes fully before Profile
+    // composition and Host boot — the verification gate is unchanged, only
+    // its independent network lead time moved earlier. A prefetch that
+    // rejects while waiting for that join cannot surface as an unhandled
+    // rejection (the then/swallow guards mark it handled), and the join
+    // re-awaits the same promise so a failure fails the boot exactly as the
+    // serial fetch did — caught inside the input assembly, fail-closed at
+    // reconciliation.
+    const bootVerifyNetworkLead = policy.locked && policy.companyCatalogOrigin !== null
+    // Catalog-fetch anchors ride the prefetch itself — start at creation,
+    // end at settlement — so durMs keeps measuring the actual network
+    // stretch, the logical phase, wherever the join happens to await it.
+    const catalogFetchStartedAt = bootVerifyNetworkLead
+      ? bootPhases.emit('catalog_fetch_start')
+      : undefined
+    const bootManifestTextPrefetch = bootVerifyNetworkLead
+      ? fetchCompanyManifestTextOverElectronNet(policy)
+      : undefined
+    if (bootManifestTextPrefetch !== undefined && catalogFetchStartedAt !== undefined) {
+      const startedAt = catalogFetchStartedAt
+      void bootManifestTextPrefetch.then(
+        () => { bootPhases.emit('catalog_fetch_end', startedAt) },
+        () => { bootPhases.emit('catalog_fetch_end', startedAt) },
+      )
+    }
+    // Beta catalog channel (P9): the shared host resolver — fetch
+    // `catalog-manifest.beta.json` from the policy-pinned origin beside the
+    // stable manifest, verify it under the same trust roots with the beta
+    // channel's one recognized extension (the signed `testers` roster), and
+    // admit it only when the locally authenticated SSO identity is in that
+    // roster. Origin-mode deployments only (content-mode policies pin no
+    // origin to derive the beta URL from); every failure resolves to
+    // `undefined`, and each consumer — boot verification, the market catalog
+    // provider, the tarball install channel — then keeps the stable
+    // manifest alone, exactly today's behavior. One diagnostic line per
+    // outcome; the roster contents and the identity never appear in it.
+    // The beta catalog resolution options are shared by the boot-time call
+    // (which additionally reports the telemetry outcome) and the capability
+    // closures below — same session lookup, same Chromium network boundary,
+    // same diagnostic sink.
+    const betaCatalogOptions = (): Omit<DesktopBetaChannelOptions, 'onOutcome'> => {
+      const session = getSsoSession()
+      return {
+        policy,
+        request: (url, init) => net.fetch(url, init),
+        ...(session === undefined ? {} : { session }),
+        ...(electronLogger === undefined
+          ? {}
+          : { log: (message: string) => { electronLogger.error(`${message}`) } }),
+      }
+    }
+    const resolveBetaCatalogOverlay = policy.locked && policy.companyCatalogOrigin !== null
+      ? () => resolveDesktopBetaChannelOverlay(betaCatalogOptions())
+      : undefined
+    // The boot-time resolution started above with the stable manifest
+    // prefetch, so a healthy origin hides both round trips under the runtime
+    // digests and Profile work; a hanging one is bounded by the resolver's
+    // own whole-request timeout. This ONE call also reports the beta
+    // channel's `catalog_refresh` event — the shared closure above stays
+    // silent, so later re-resolutions (the market catalog provider, the
+    // tarball channel) keep the event table at one row per boot per channel
+    // instead of one per scan.
+    const bootBetaOverlayPromise = resolveBetaCatalogOverlay === undefined
+      ? undefined
+      : resolveDesktopBetaChannelOverlay({
+        ...betaCatalogOptions(),
+        onOutcome: outcome => {
+          clientEvents?.catalogRefresh(betaCatalogRefreshEvent(outcome))
+        },
+      })
+    if (bootBetaOverlayPromise !== undefined) {
+      // Same swallow guard as the stable prefetch: a contract-violating
+      // rejection must not become an unhandled rejection while the join at
+      // boot verification is still seconds away.
+      void bootBetaOverlayPromise.catch(() => {})
     }
     const homeDir = resolveDshHome()
     // Deferred fresh-Profile rebuild (P14, Windows EBUSY): a previous boot
@@ -1651,50 +1749,9 @@ async function start(): Promise<void> {
     lifecycleRecorder.transitionStartupStage(startupStage)
     const marketUserDataDir = app.getPath('userData')
     const marketSelection = readDesktopMarketStateForUserData(marketUserDataDir, policy)
-    // Beta catalog channel (P9): the shared host resolver — fetch
-    // `catalog-manifest.beta.json` from the policy-pinned origin beside the
-    // stable manifest, verify it under the same trust roots with the beta
-    // channel's one recognized extension (the signed `testers` roster), and
-    // admit it only when the locally authenticated SSO identity is in that
-    // roster. Origin-mode deployments only (content-mode policies pin no
-    // origin to derive the beta URL from); every failure resolves to
-    // `undefined`, and each consumer — boot verification, the market catalog
-    // provider, the tarball install channel — then keeps the stable
-    // manifest alone, exactly today's behavior. One diagnostic line per
-    // outcome; the roster contents and the identity never appear in it.
-    // The beta catalog resolution options are shared by the boot-time call
-    // (which additionally reports the telemetry outcome) and the capability
-    // closures below — same session lookup, same Chromium network boundary,
-    // same diagnostic sink.
-    const betaCatalogOptions = (): Omit<DesktopBetaChannelOptions, 'onOutcome'> => {
-      const session = getSsoSession()
-      return {
-        policy,
-        request: (url, init) => net.fetch(url, init),
-        ...(session === undefined ? {} : { session }),
-        ...(electronLogger === undefined
-          ? {}
-          : { log: (message: string) => { electronLogger.error(`${message}`) } }),
-      }
-    }
-    const resolveBetaCatalogOverlay = policy.locked && policy.companyCatalogOrigin !== null
-      ? () => resolveDesktopBetaChannelOverlay(betaCatalogOptions())
-      : undefined
-    // The boot-time resolution starts concurrently with the stable manifest
-    // fetch below, so a healthy origin adds no boot latency; a hanging one
-    // is bounded by the resolver's own whole-request timeout. This ONE call
-    // also reports the beta channel's `catalog_refresh` event — the shared
-    // closure above stays silent, so later re-resolutions (the market
-    // catalog provider, the tarball channel) keep the event table at one
-    // row per boot per channel instead of one per scan.
-    const bootBetaOverlayPromise = resolveBetaCatalogOverlay === undefined
-      ? undefined
-      : resolveDesktopBetaChannelOverlay({
-        ...betaCatalogOptions(),
-        onOutcome: outcome => {
-          clientEvents?.catalogRefresh(betaCatalogRefreshEvent(outcome))
-        },
-      })
+    // The beta overlay resolver and the boot-time overlay promise live at
+    // the corporate-environment seam above (T1 overlap): the resolver
+    // closure here serves the market capabilities below unchanged.
     // Production wiring for locked boot verification (P2-4 + L2): the
     // receipts and manifest bytes come from the shared market settings
     // document, the embedded catalog asset (content mode), or one restricted
@@ -1713,40 +1770,41 @@ async function start(): Promise<void> {
     // this generation verified, retained for install channel attribution —
     // a market install of an overlay-only `name@version` is a beta-channel
     // delivery. Non-roster and origin-less boots keep it undefined.
-    let bootBetaOverlay: DesktopBetaChannelOverlay | undefined
     // Boot-phase anchors (#042): the locked boot-verification input assembly
-    // (receipts + manifest fetch + tree measurement; the concurrent beta
-    // overlay await resolves inside it, so its tail is part of this stretch).
-    // Unlocked boots skip the assembly but keep both anchors, so the fleet
-    // timeline stays uniform (a ~0 ms stretch). The origin-mode manifest
-    // fetch rides the injected boundary below as its own catalog_fetch pair.
+    // — the receipts read plus the JOIN of the two network branches pre-warmed
+    // at the corporate-environment seam (the stable manifest fetch and the
+    // beta overlay; both usually settle long before this point). Unlocked
+    // boots skip the assembly but keep both anchors, so the fleet timeline
+    // stays uniform (a ~0 ms stretch).
     const bootVerifyStartedAt = bootPhases.emit('boot_verify_start')
+    // Beta overlay join (P9): a rejected promise must never block the boot
+    // (the overlay is best-effort — undefined keeps boot verification
+    // stable-only).
+    // (single assignment from the settled best-effort promise; consumers
+    // read bootBetaOverlaySettled directly)
+    const bootBetaOverlaySettled = bootBetaOverlayPromise === undefined
+      ? undefined
+      : await bootBetaOverlayPromise.catch(() => undefined)
     const bootVerificationInputs = policy.locked
       ? await desktopBootVerificationInputs(
         policy,
         join(homeDir, 'settings.yaml'),
         import.meta.url,
         {
-          fetchManifestText: async manifestPolicy => {
-            const catalogFetchStartedAt = bootPhases.emit('catalog_fetch_start')
-            try {
-              return await fetchCompanyManifestTextOverElectronNet(manifestPolicy)
-            } finally {
-              bootPhases.emit('catalog_fetch_end', catalogFetchStartedAt)
-            }
-          },
+          // Origin-mode fetch seam (T1 overlap): joins the shared prefetch
+          // started at the corporate-environment seam instead of fetching
+          // here. Identical failure semantics — the assembly catches a
+          // rejected fetch and keeps `manifestBytes` undefined, exactly like
+          // the serial fetch did (fail-closed at reconciliation). Content
+          // mode never calls the seam (the embedded asset supplies the
+          // bytes), so the omitted seam keeps today's default unreachable.
+          ...(bootManifestTextPrefetch === undefined
+            ? {}
+            : { fetchManifestText: async () => await bootManifestTextPrefetch }),
           measureTreeRootDigest: createCachedDesktopBootTreeRootDigestMeasure(
             join(marketUserDataDir, DESKTOP_BOOT_TREE_FINGERPRINTS_FILENAME),
           ),
-          // Beta overlay (P9): resolved concurrently with the stable fetch
-          // above; a rejected promise must never block the boot (the overlay
-          // is best-effort — undefined keeps boot verification stable-only).
-          ...(await (async () => {
-            if (bootBetaOverlayPromise === undefined) return {}
-            const overlay = await bootBetaOverlayPromise.catch(() => undefined)
-            bootBetaOverlay = overlay
-            return overlay === undefined ? {} : { betaOverlay: overlay }
-          })()),
+          ...(bootBetaOverlaySettled === undefined ? {} : { betaOverlay: bootBetaOverlaySettled }),
         },
       )
       : undefined
@@ -2209,7 +2267,7 @@ async function start(): Promise<void> {
         // collector (offline policy) keeps the adapter as a silent no-op —
         // the market's behavior never depends on telemetry.
         const installBetaDeliveredKeys = betaDeliveredPackageKeys(
-          bootBetaOverlay?.packages,
+          bootBetaOverlaySettled?.packages,
           bootVerificationInputs?.manifestBytes,
         )
         const clientEventReporterForMarket: MarketInstallEventSink & MarketRestartRequestEventSink = {

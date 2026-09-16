@@ -93,6 +93,7 @@ impl NewFeature {
 
 ### 2026-09-16
 - Phase2 定向更新（2026-09-16）：b97 相位图实证 host 组装=19.5-22s 主菜（60%）→主修=#879 之后的 #829 选择性 ASAR，已立 #044 观察模式卡（July 谨慎重：先盯上游 v2.0.11+ 变动，三步闸门方案冻结待解冻）。本卡剩余活跃项=T1 并行化（python_check 3.7s+渲染 2.8s 可重叠，预期-4~5s，零打包风险）。仪表化遗留小bug：process_start 事件未入库（两靴均缺，缓冲flush待查）随下批修。
+- T1+遥测修复完成（2026-09-16 11:36）：①process_start 真相=归因 bug 非 flush bug——行一直在库（id 1050/1071）但 user_email=NULL（emit 早于 SSO 会话建立，collector 按发射时盖章，邮箱键视图全盲）。修=attach 挪到 SSO 门后（main.ts:902 唯一 attach），缓冲锚点带身份落地；权衡已注释（不过门的靴丢缓冲锚=与 offline 姿态一致）；两新测试（复现 b97 症状端到端/钉住修复不变量）。②T1 并行化：manifest 取+beta overlay 两网络分支在企业环境缝预热并发，join 于未动的装配内；门序不变（校验先于 host 组装）；receipts 仍同步先读；错误传播逐字节等价（then(ok,fail)/catch 守卫，装配内重捕获 fail-closed）；catalog_fetch 锚点改为量真网络段。诚实收益：julu 快网 −0.35~0.45s；慢网机器 fetch 全程藏进 python 3.7s。renderer 重叠属 #044 冻结面未碰。reviewer APPROVED（P3×2 已修：memoized→shared 措辞；死变量 bootBetaOverlay 删除改用 bootBetaOverlaySettled 单赋值+未用 import 清理）。门禁：typecheck 0/2478 全过。待 b98 实机相位图验证（process_start 应带邮箱出现、boot_verify durMs 缩至 join 残量）。
 
 ### 2026-09-15 HH:MM
 - [ ] 完成需求分析
