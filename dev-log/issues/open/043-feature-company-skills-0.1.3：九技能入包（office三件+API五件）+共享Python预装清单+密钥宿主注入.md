@@ -140,6 +140,10 @@ Python 面：dsh-plugin-desktop/src/desktop-shared-python-environment.ts（provi
 【测试】桌面 2528（157 文件）、company-skills 112、tools 43、双侧 tsc 0、bundle 23,458,865B ≤30MB。
 【体积】安装包 +52MB（162→~214MB）；markitdown 链按 July 决定移出预装改按需自装。
 【待办】0.1.3 bump + 受理链（verify/accept/人审/beta 浸泡/stable）；发版管线配 ROUTER_* secret + 打包前跑 blob 生成器并断言非空。
+- 发布顺序铁则 + CI 密钥通道（2026-09-16 17:25）：
+【顺序铁则（July 确认）】0.1.3 技能包走目录分发，但技能依赖的 Python 库来自客户端构建 → 必须【先发 b98（含批A/B/C 客户端面）→ 测试组验证（遥测 python_runtime libs{pinned:48,installed:48} + 抽技能实跑）→ 才 bump/publish 0.1.3】，否则全 fleet 装了跑不动的技能。
+【CI 密钥通道（已完成）】gh secret set ROUTER_URL/ROUTER_API_KEY（不可读回）；windows-package workflow 在 bake build sequence 后新增步骤：导出两个 secret → 跑 make-company-skills-env-blob.mjs → 若摘要含『EMPTY payload』则构建失败（拒绝出厂无凭证包）。本地实证：真值生成非空 blob（65 明文字符），仓库默认仍为空 blob 不落密钥。
+【分发渠道确认】安装包走内部页面（非公开 GitHub）→ 密钥暴露面收敛到员工级，与模型网关 key 同级，接受（软屏障定位不变）。
 
 ## 验收标准
 

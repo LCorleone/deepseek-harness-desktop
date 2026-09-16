@@ -40,6 +40,22 @@ jobs:
         env:
           DSH_BUILD_NUMBER: ${{ github.run_number }}
         run: node dsh-plugin-desktop/scripts/make-build-seq.mjs
+      # Company-skills router credentials (#043 D1): the public repository
+      # commits an EMPTY default blob on purpose. The release build bakes the
+      # real values from repository secrets and REFUSES to package when they
+      # are missing — a credential-less installer would ship five company
+      # skills that fail on first use, and nothing else would notice.
+      - name: Bake company-skills env blob
+        env:
+          ROUTER_URL: ${{ secrets.ROUTER_URL }}
+          ROUTER_API_KEY: ${{ secrets.ROUTER_API_KEY }}
+        shell: pwsh
+        run: |
+          $summary = node dsh-plugin-desktop/scripts/make-company-skills-env-blob.mjs
+          $summary
+          if ($summary -match 'EMPTY payload') {
+            throw 'ROUTER_URL/ROUTER_API_KEY secrets are missing — refusing to package a credential-less build'
+          }
       # dist:win self-runs check:win-package (Windows-relevant gates only).
       # The root `yarn check` is skipped: upstream module-resolution.spec.ts
       # asserts POSIX-style file URLs and cannot pass on Windows runners.
