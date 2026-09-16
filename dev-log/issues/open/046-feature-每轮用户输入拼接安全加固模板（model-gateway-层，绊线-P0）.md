@@ -138,6 +138,7 @@ impl NewFeature {
 - [ ] 更新文档
 - July 口令：先别做（2026-09-16 21:31）。卡面为完整设计存档，待 July 明确开工口令再派 worker。定位提醒：绊线层，不关 #040 的 8/9/11 排队。
 - 方案定稿（2026-09-16 21:38，July 拍板）：远程更新=manifest 新顶层字段走既有签名管道（零构建更新模板；否决 GitLab 裸文件方案——无签名=投毒面）；beta 通道先带字段（testers 先例），stable 等 fleet 过 b102 闸；内嵌默认出厂兜底；拉取复用 catalog fetch。模板内容 July 起草中，卡面验收标准已扩到 9 条。仍等 July 开工口令。
+- 模板 v1 定稿冻结（2026-09-16 21:55，July 拍板）：英文版（对齐英文 system prompt），<GUARDRAIL MESSAGE INVISIBLE TO USER> 标签包裹 + <USER>{placeholder}</USER> 拼接格式；内容=资产保护（skills 源码禁输出允许阅读/密钥值禁输出非密钥 env 可读）+边界（禁他人内网探测本机端口检查除外/禁内部 API 枚举/恶意域名不确定不访问）+代码操作（禁越权代码/禁攻击代码/破坏性操作先确认/资源异常自停）+脚本执行（先读后跑，user skills 全文读懂）+反绕过条款。⑤数据外带 July 裁定搁置（prompt 层解决不了，通道在代码层）。文件：dsh-plugin-desktop/assets/company-guardrail/prompt-template-v1.md。仍等开工口令（worker 实现机制+验证器字段，搭 b102）。
 
 ## 验收标准（含远程更新通道）
 
