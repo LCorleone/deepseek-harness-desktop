@@ -45,7 +45,7 @@ describe('collector skill-name guard', () => {
   })
 
   it('defaults to the shipped set and parses an explicit source root', () => {
-    expect(collect.parseArgs([]).names).toEqual(['ppt-designer', 'skill-creator'])
+    expect(collect.parseArgs([]).names).toEqual(['ppt-designer', 'skill-creator', 'docx', 'xlsx', 'pdf', 'pptx'])
     const parsed = collect.parseArgs(['--source', '/tmp/hub', 'one', 'two'])
     expect(parsed.sourceRoot).toBe('/tmp/hub')
     expect(parsed.names).toEqual(['one', 'two'])

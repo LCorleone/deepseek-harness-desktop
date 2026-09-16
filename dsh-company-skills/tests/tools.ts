@@ -76,8 +76,9 @@ export const PACKAGE_ROOT = new URL('..', import.meta.url)
 /** The two fixture skills, sorted by name. */
 export const FIXTURE_NAMES = ['fixture-hello', 'fixture-notes']
 
-/** The collected real skills, sorted by name — batch 4's shipped set. */
-export const SHIPPED_SKILL_NAMES = ['ppt-designer', 'skill-creator']
+/** The collected real skills, sorted by name — batch 4's shipped set plus the
+ * #043 batch-A office skills (docx, pdf, pptx, xlsx). */
+export const SHIPPED_SKILL_NAMES = ['docx', 'pdf', 'ppt-designer', 'pptx', 'skill-creator', 'xlsx']
 
 /** The packable plaintext root holding the collected real skills. */
 export const SKILLS_DIR = new URL('../skills', import.meta.url)

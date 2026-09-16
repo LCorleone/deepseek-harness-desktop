@@ -132,6 +132,7 @@ Python 面：dsh-plugin-desktop/src/desktop-shared-python-environment.ts（provi
 
 【批次建议】批A=离线四件(docx/xlsx/pdf/pptx)+D4 打包修复；批B=API 五件+D1 注入+D5 vendor+D6 deadline；批C=共享环境预装清单（动 P11 面，独立评审）；0.1.3 一次发版收口。
 - D3 决策修订（2026-09-16 11:21，July）：静态标注不可用【废弃】→ 动态能力探测三段式：①SKILL.md 指导 agent 先检查环境（soffice/pandoc/playwright 在不在 PATH 或已知位置）②缺失则尝试下载安装（pandoc=独立二进制、playwright=npx playwright install chromium 用户级、soffice=便携版/官方安装器，走企业代理+现有审批门）③安装失败才降级为该功能不可用并给替代路径。批A四技能的静态标注需按此返工（docx/pdf/xlsx 三个副本的 SKILL.md；pptx 本无此类依赖）。安全性注记：下载执行走既有沙箱/审批面，不新增通道——与 #040 批准门一致。
+- 批A完成+reviewer APPROVED（2026-09-16 12:00）：四离线技能入包（副本制，skills-hub 只读）。D4 打包修复全落地（desc 474/425/481/499≤500、pdf 折叠YAML展平、metadata块移除、xlsx Content_Types 改名+xlsx_pack.py 双拼写别名【packer 零改动，PATH_PATTERN 原样】、docx 空 __init__.py 1字节）；D3′ 三段式动态标注（docx 中央块+5指针、pdf/xlsx 内联；探测具体/用户级安装/代理+审批提示/失败才降级）；D3′ 后追加修 P3×3：①tools/ 安装后需 prepend PATH（soffice.py 只认 PATH）已写入 docx 块②pdf 降级措辞精确化=交 render_body.py 正文版（merge.py 需 --cover）③bundle sk- 审计注记勘误=命中是 ppt-designer 的 dusk-violet 路径子串非 base64。bundle 22,036,045→23,392,117B（+6.2%，30MB 棘轮余量 6.6MB）。门禁：company-skills 93/93、tools 43/43、pack --check ✓、fidelity diff=仅清单内适配。批B衔接点：DEFAULT_SKILLS/SHIPPED_SKILL_NAMES 再扩 API 五件；make.sh 无解释器族+SKILL_DIR 字面路径=批B功能验证项。
 
 ## 验收标准
 

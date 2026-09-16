@@ -37,14 +37,14 @@ const TARGET_ROOT = join(PACKAGE_ROOT, 'skills')
 const USAGE = `usage: node scripts/collect-skills.mjs [--source <skills-root>] [<name> ...]
 
   --source <skills-root>  read-only source root (default: ${DEFAULT_SOURCE_ROOT})
-  <name> ...              skill directories to collect (default: ppt-designer skill-creator)
+  <name> ...              skill directories to collect (default: the six-skill shipped set below)
 `
 
 /** Directory names pruned during collection, mirroring the packer's list. */
 const PRUNED_DIRECTORY_NAMES = ['__pycache__']
 
 /** The collected set this package ships. */
-const DEFAULT_SKILLS = ['ppt-designer', 'skill-creator']
+const DEFAULT_SKILLS = ['ppt-designer', 'skill-creator', 'docx', 'xlsx', 'pdf', 'pptx']
 
 /** Skill names the collector accepts: the registry's kebab-case grammar. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
@@ -136,7 +136,7 @@ function main() {
     const { files } = collectSkill(join(sourceRoot, name), join(TARGET_ROOT, name))
     process.stdout.write(`collected ${name}: ${String(files)} files → skills/${name} (source layout preserved)\n`)
   }
-  process.stdout.write('remember: re-apply the ppt-designer description trim if SKILL.md was overwritten\n')
+  process.stdout.write('remember: re-apply the manual adaptations if SKILL.md was overwritten — ppt-designer description trim; #043 batch A: docx/xlsx/pdf/pptx description trims and flattened frontmatter, docx D3′ dynamic three-stage tool notes + non-empty scripts/office/helpers/__init__.py, xlsx D3′ dynamic note + Content_Types.xml template rename, pdf D3′ dynamic note\n')
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

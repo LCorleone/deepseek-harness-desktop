@@ -32,6 +32,10 @@ const CANARIES = [
   // One distinctive body line from each collected real skill.
   'Strictly follow the Deloitte template. The deliverable must look like the template',
   'The context window is a public good',
+  'Tables need dual widths',
+  'Never use openpyxl round-trip on existing files',
+  'before any CREATE or REFORMAT work',
+  'stay on rails for how everything looks',
 ]
 
 const packed = (name: string) => toolsBundle.readSkillDirectory(join(FIXTURES_ROOT_PATH, name))
@@ -66,7 +70,7 @@ describe('company-skills provider', () => {
 
     const summaries = await ctx.skills.list()
     expect(summaries.map((summary) => summary.name)).toEqual(SHIPPED_SKILL_NAMES)
-    expect(summaries[0]).toMatchObject({
+    expect(summaries.find((summary) => summary.name === 'ppt-designer')).toMatchObject({
       description: manifestOf('ppt-designer').description,
       invocation: { modelInvocable: true, userInvocable: true },
       provider: 'company-skills',
