@@ -72,6 +72,24 @@
   },
   {
     "packageName": "dsh-company-skills",
+    "version": "0.1.3",
+    "description": "公司技能包：office 四件离线适配 + API 五件（路由凭证宿主注入）+ 共享 Python 预装 48 库。",
+    "bundlePatch": "./cordis.patch.yml",
+    "repository": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills",
+    "revoked": false,
+    "runtime": {
+      "dshRuntimeVersion": "^0.1.2-rc.1"
+    },
+    "treeDigest": "a2a01b7d532b8ca12e053ee21f442a9955be36af7b4d07ea66dbc35c883e3b1d",
+    "bundleDocumentDigest": "826ee8c0879503c6655ed433ee88f94d0a788b0ce56df995edbb26a4c77bfe44",
+    "source": {
+      "kind": "tarball",
+      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-company-skills-0.1.3.tgz",
+      "path": "tools/company-catalog/out/packages/dsh-company-skills-0.1.3.tgz"
+    }
+  },
+  {
+    "packageName": "dsh-company-skills",
     "version": "0.1.2",
     "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
     "bundlePatch": "./cordis.patch.yml",
