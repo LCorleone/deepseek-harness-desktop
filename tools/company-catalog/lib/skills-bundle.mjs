@@ -194,7 +194,15 @@ export function ensureSkillsBundles({
   if (!Array.isArray(entries)) {
     throw new Error('ensureSkillsBundles requires the loaded allowlist entries (entries) — the #028 content pin is asserted against every entry carrying a bundleDocumentDigest; load them with loadAllowlist in the caller (ensure-skills-bundles.mjs does)')
   }
-  const pinned = entries.filter((entry) => entry.bundleDocumentDigest !== undefined)
+  // Revoked entries are exempt from the #028 content assertion in BOTH
+  // paths: a revoked version ships no bytes (the pack step skips it), so
+  // its pin cannot be asserted against the rebuild — which can only ever
+  // match ONE content, the live skills/ tree. Without this exemption the
+  // first digest-pinned multi-version publish (0.1.3 beside 0.1.2) is
+  // deadlocked: the rebuild always decodes to the newest content while
+  // the un-retired old pin still sits in the window (#043, 2026-09-17).
+  // The retire flow remains the only way an entry leaves the window.
+  const pinned = entries.filter((entry) => entry.bundleDocumentDigest !== undefined && entry.revoked !== true)
   // The no-op path's pin check: this run rebuilds nothing, so the bytes it
   // would pack are the staging tree's own (committed or previously
   // provisioned) bundle — digest those, never a rebuild.

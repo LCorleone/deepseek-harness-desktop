@@ -94,7 +94,7 @@
     "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
     "bundlePatch": "./cordis.patch.yml",
     "repository": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills",
-    "revoked": false,
+    "revoked": true,
     "runtime": {
       "dshRuntimeVersion": "^0.1.2-rc.1"
     },

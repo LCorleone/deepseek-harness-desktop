@@ -310,12 +310,13 @@ test('needsTreeDigestMeasurement: digest-pinned entries skip unless their stagin
 })
 
 /** A pinned (#028) dsh-company-skills allowlist entry for the fixture root's trees. */
-const pinnedSkillsEntry = (version, digest) => ({
+const pinnedSkillsEntry = (version, digest, overrides = {}) => ({
   packageName: SKILLS_PACKAGE_NAME,
   version,
   ...(digest === undefined ? {} : { bundleDocumentDigest: digest }),
   treeDigest: 'd'.repeat(64),
   source: { kind: 'tarball', path: `tools/company-catalog/out/packages/${SKILLS_PACKAGE_NAME}-${version}.tgz` },
+  ...overrides,
 })
 
 /** The builder stub: writes the source-tree asset the real builder would. */
@@ -496,5 +497,33 @@ test('the .bundle-rebuilt marker never ships inside the packed tarball', async (
     assert.equal(paths.some((path) => path.endsWith(SKILLS_BUNDLE_REBUILT_MARKER_FILENAME)), false, `the marker is CI bookkeeping and must never ship: ${paths.join(', ')}`)
   } finally {
     rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test('ensureSkillsBundles exempts REVOKED digest pins from the rebuild assertion (the 0.1.3-beside-0.1.2 multi-pin shape, #043)', () => {
+  const { root } = stageSourcesRootFixture()
+  try {
+    const logs = []
+    const freshDigest = 'e'.repeat(64)
+    const result = ensureSkillsBundles({
+      repoRoot: root,
+      pluginSourcesRoot: root,
+      // The OLD version: revoked, its pin frozen at the content that
+      // shipped when it was accepted — which the current skills/ rebuild
+      // can no longer decode to. It must be exempt, or every publish after
+      // the first digest-pinned multi-version promote is deadlocked.
+      entries: [
+        pinnedSkillsEntry('0.9.8', '0'.repeat(64), { revoked: true }),
+        pinnedSkillsEntry('0.9.9', freshDigest),
+      ],
+      buildAsset: buildAssetStub(root),
+      documentDigest: () => freshDigest,
+      log: (line) => logs.push(line),
+    })
+    assert.deepEqual(result.copied.map((copy) => copy.stem), ['dsh-company-skills-0.9.9'])
+    assert.equal(logs.some((line) => line.includes('equals the accepted pin') && line.includes('dsh-company-skills@0.9.9')), true)
+    assert.equal(logs.some((line) => line.includes('dsh-company-skills@0.9.8')), false, 'the revoked pin is never asserted nor logged')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
