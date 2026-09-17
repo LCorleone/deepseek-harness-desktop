@@ -101,6 +101,7 @@ if (无恢复态文件 || provider==community) 才合并托管态禁用
 【门禁】desktop 全绿+tc 0（通知确认）。文件面与 #048 零重叠。
 → reviewer 待派。
 - reviewer APPROVED（922381b5，2026-09-17 12:15）：真值表全组合核验（writer-live⟹reader-merge 单向包含=正确性所需方向；解锁 dshMarket 丢弃行为保留；legacy 路径恒等；恢复态语义未动）。P3×2（注释 containment 措辞/测试隐式 ENOENT 依赖）不修记档。commit 中，随 b104。
+- 整体终审偏差记档（2026-09-17 12:25，reviewer-day 5ecb38a6）：a6b78b458d 意外捎走 #048 staged 的 manual.ts 删除（该 commit 单独 typecheck 不过；HEAD 无影响；bisect 该区间会在无关 commit 断）。不改已推历史。流程规则新增：共享工作树拆分提交日，push 前对每笔 commit 做 git show --stat 文件面核对（或 per-commit typecheck）。其余：main.ts 双流交叉恰一行且范围正确、capability 零悬挂消费者、#046/#049 boot 区语义独立、门禁 535/2601/26/4 全部≥基线、树干净。
 
 ## 验收标准
 
