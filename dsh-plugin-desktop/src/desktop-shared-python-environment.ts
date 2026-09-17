@@ -33,6 +33,19 @@ const SHARED_PYTHON_PROBE_TIMEOUT_MS = 30_000
 const SHARED_PYTHON_DIAGNOSTIC_LIMIT = 160
 
 /**
+ * Longest pip diagnostic kept for the library-install failure log line
+ * (issue #050): pip's stderr is the only evidence a failed wheel batch
+ * leaves, and its error text easily outgrows the 160-char provisioning cap
+ * that strangled the b104 failure line to an undiagnosable `(Processing
+ * ... ERROR: aiohttp-3.14.3-cp312-cp3)`. The desktop log discipline bounds
+ * whole FILES, not individual lines (10 MiB rotation segments per file), so
+ * an 8 KiB single-line diagnostic rides it safely; only the spawn's capture
+ * buffer (4x the kept size, like every capture here) and the slice ever
+ * bound it. The short provisioning and repair legs keep the 160-char cap.
+ */
+const SHARED_PYTHON_LIBRARY_INSTALL_DIAGNOSTIC_LIMIT = 8192
+
+/**
  * How long a second desktop instance waits for the provisioning mutex before
  * degrading to the bundled aliases: the historical worst live holder runs both
  * base tiers under their spawn timeouts plus one probe — two provisions plus
@@ -349,9 +362,33 @@ export function missingSharedPythonDistributions(
  * review P2-a): the sha256 gate above verifies each wheel, and naming the
  * wheel itself leaves pip no directory to scan — a differently-named
  * same-version wheel planted beside the set can never win the resolution.
- * `--no-index` keeps the run strictly on the packaged wheels, `--no-deps`
- * trusts the lock's pre-resolved closure, and `--no-compile` keeps bytecode
- * (whose mtimes embed build noise) out of the fresh tree.
+ * `--no-index` keeps the run strictly on the packaged wheels and
+ * `--no-compile` keeps bytecode (whose mtimes embed build noise) out of the
+ * fresh tree.
+ *
+ * `--no-deps` and `--upgrade` together are the issue #050 fix. The wheel
+ * set is a closed, exactly-pinned, pre-resolved closure that needs NO
+ * dependency resolution, yet pip's resolver still ran over it and
+ * conflicted with the stale dists an older build's lock had left in a
+ * shared pyenv — one conflict failed the whole 48-wheel batch
+ * (`pinned:48, installed:0`, b104/liamzhong). `--no-deps` removes the
+ * resolution entirely; `--upgrade` makes pip REPLACE a same-lib dist it
+ * can still see with the pinned wheel instead of skipping it as "already
+ * satisfied" — without it, a stale version pip alone knows about survives
+ * every repair this leg ever runs.
+ *
+ * #050 invariant — why `--upgrade` can never touch a user's own choice:
+ * this argv is only ever built for names a FRESH in-lock probe (see
+ * {@link installSharedPythonLibraries}) found ABSENT, where ANY installed
+ * version of a pinned name — the user's own newer or older `dsh-pip
+ * install` — counts as present and keeps the name OUT of the missing list
+ * entirely. So the only same-lib dists `--upgrade` can act on are stale
+ * ones of lock-owned names that the probe could not see (pip-visible
+ * leftovers of a partially-failed earlier batch, or a dist landing between
+ * the probe and pip's run inside the same lock hold) — exactly the
+ * dirty-pyenv case the flag exists to heal. A user-installed version that
+ * satisfies the probe is never named in this argv and is never upgraded,
+ * downgraded, or replaced.
  */
 export function sharedPythonLibraryInstallArguments(
   wheelsDirectory: string,
@@ -362,6 +399,7 @@ export function sharedPythonLibraryInstallArguments(
     '--disable-pip-version-check',
     '--no-index',
     '--no-deps',
+    '--upgrade',
     '--no-warn-script-location',
     '--no-compile',
     ...missing.map(entry => join(wheelsDirectory, entry.filename)),
@@ -398,8 +436,11 @@ export function desktopSharedPythonEnvironmentRoot(
 }
 
 /** Bound and sanitize one provisioning diagnostic for a log line. */
-function sanitizeDiagnostic(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, SHARED_PYTHON_DIAGNOSTIC_LIMIT)
+function sanitizeDiagnostic(
+  text: string,
+  limit: number = SHARED_PYTHON_DIAGNOSTIC_LIMIT,
+): string {
+  return text.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, limit)
 }
 
 /**
@@ -422,6 +463,7 @@ async function spawnSharedPythonVirtualenv(
   args: readonly string[],
   options: { readonly environment?: NodeJS.ProcessEnv },
   timeoutMs: number = SHARED_PYTHON_PROVISION_TIMEOUT_MS,
+  diagnosticLimit: number = SHARED_PYTHON_DIAGNOSTIC_LIMIT,
 ): Promise<{ exitCode: number | null, diagnostic: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -434,14 +476,14 @@ async function spawnSharedPythonVirtualenv(
     const capture = (stream: NodeJS.ReadableStream): void => {
       stream.setEncoding('utf8')
       stream.on('data', (chunk: string) => {
-        if (output.length < SHARED_PYTHON_DIAGNOSTIC_LIMIT * 4) output += chunk
+        if (output.length < diagnosticLimit * 4) output += chunk
       })
     }
     capture(child.stdout)
     capture(child.stderr)
     child.once('error', cause => { reject(cause) })
     child.once('close', exitCode => {
-      resolve({ exitCode, diagnostic: sanitizeDiagnostic(output) })
+      resolve({ exitCode, diagnostic: sanitizeDiagnostic(output, diagnosticLimit) })
     })
   })
 }
@@ -644,11 +686,18 @@ async function probeSharedPythonLibraries(
  * bundled tree's digest manifest, and this check is their integrity gate),
  * the pip run names exactly those verified wheel files, and a fresh probe
  * reports the resulting coverage. Ensure-present semantics: a pinned name
- * installed at ANY version counts as present and is never upgraded or
- * downgraded — the shared environment is the user's mutable surface, and
- * whatever they installed into it wins. Every failure degrades with one log
- * line and never throws; the result carries the `libraries` coverage counts
- * when this boot can vouch for them, and omits the field when it cannot.
+ * installed at ANY version counts as present and never enters pip's argv,
+ * so it is never upgraded or downgraded — the shared environment is the
+ * user's mutable surface, and whatever they installed into it wins. The
+ * names that DO enter the argv install as a `--no-deps --upgrade` closed
+ * set (issue #050): zero dependency resolution for the exactly-pinned
+ * closure, and replacement — not an "already satisfied" skip — over any
+ * stale same-lib dist pip alone can see. Every failure degrades with one
+ * log line and never throws; the result carries the `libraries` coverage
+ * counts when this boot can vouch for them, and omits the field when it
+ * cannot. The failure line carries pip's whole (sanitized, single-line)
+ * stderr, not the provisioning legs' 160-char cap — a failed wheel batch
+ * is otherwise undiagnosable from the log alone (#050).
  *
  * The plan is revalidated immediately before pip runs (review P3-1): this leg
  * can start minutes after the boot that planned it (see
@@ -721,17 +770,32 @@ async function installSharedPythonLibraries(
       return withSharedPythonLibraries(environment, pinned, countPinnedSharedPythonDistributions(lock, present))
     }
     const installDistributions = inputs.installDistributions ?? ((command, args, installOptions) =>
-      spawnSharedPythonVirtualenv(command, args, installOptions, SHARED_PYTHON_LIBRARY_INSTALL_TIMEOUT_MS))
+      spawnSharedPythonVirtualenv(
+        command,
+        args,
+        installOptions,
+        SHARED_PYTHON_LIBRARY_INSTALL_TIMEOUT_MS,
+        SHARED_PYTHON_LIBRARY_INSTALL_DIAGNOSTIC_LIMIT,
+      ))
     const outcome = await installDistributions(
       paths.pythonExecutable,
       sharedPythonLibraryInstallArguments(wheelsDirectory, missing),
       { environment: spawnEnvironment },
     )
     if (outcome.exitCode !== 0) {
+      // A b93-era environment running an interpreter older than the cp312
+      // wheel set fails every wheel with "is not a supported wheel on this
+      // platform" — no flag combination heals that; name the palliative in
+      // the same line so the next log read points straight at the fix
+      // (#050 review P2).
+      const platformMismatch = /is not a supported wheel on this platform/iu.test(outcome.diagnostic)
       log(
         `dsh-plugin-desktop: pip could not install the ${String(missing.length)} missing preinstalled python libraries into the shared python environment at ${paths.root}`
           + `${outcome.diagnostic === '' ? '' : ` (${outcome.diagnostic})`}; `
-          + 'they stay missing until the next boot retries them',
+          + 'they stay missing until the next boot retries them'
+          + (platformMismatch
+            ? `; the environment's interpreter predates this build's wheels — delete ${paths.root} and restart to rebuild it`
+            : ''),
       )
     } else {
       log(
@@ -1066,11 +1130,13 @@ export function resolveDesktopSharedPythonEnvironment(inputs: {
  * up, the same locked cycle runs the ensure-present step over the packaged
  * wheel set (`resources/python-wheels` + its lockfile) — one cheap read-only
  * probe names the missing pinned distributions, pip installs exactly those
- * from the local verified wheel files (never the network, never an
- * upgrade/downgrade of a name the user already installed — re-derived from a
- * fresh in-lock probe right before pip runs, so an install that lands while
- * the leg is deferred still wins: review P3-1), and each consumed
- * wheel is verified against the lock's sha256 first. With
+ * from the local verified wheel files as a `--no-deps --upgrade` closed set
+ * (never the network, no dependency resolution against stale tree
+ * contents, and never an upgrade/downgrade of a name the user already
+ * installed — re-derived from a fresh in-lock probe right before pip runs,
+ * so an install that lands while the leg is deferred still wins: review
+ * P3-1), and each consumed wheel is verified against the lock's sha256
+ * first. With
  * `deferLibraryInstall` (the production boot, review P2-b) only the probe
  * rides the boot path; the pip leg (up to its 5-minute deadline) is a
  * fire-and-forget background repair behind the same mutex, so the aliases

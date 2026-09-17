@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DESKTOP_SHARED_PYTHON_DIRECTORY_NAME,
@@ -99,6 +99,55 @@ function probeRecorder(runnable: boolean) {
     return runnable
   }
   return { calls, probe }
+}
+
+/** The packaged wheel directory the install leg consumes (#043, #050). */
+const WHEELS_DIRECTORY = 'C:\\Program Files\\DSH Desktop\\resources\\python-wheels'
+
+/** Answer queue for the installed-distributions probe: one answer per spawn. */
+function distributionsProbeRecorder(answers: ReadonlyArray<Record<string, string> | undefined>) {
+  const calls: Array<{ pythonExecutable: string, environment: NodeJS.ProcessEnv | undefined }> = []
+  let index = 0
+  const probeDistributions: DesktopSharedPythonDistributionsProbe = async (pythonExecutable, options) => {
+    calls.push({ pythonExecutable, environment: options.environment })
+    const answer = answers[Math.min(index, answers.length - 1)]
+    index += 1
+    return answer === undefined ? undefined : { ...answer }
+  }
+  return { calls, probeDistributions }
+}
+
+/** Recording library-install seam answering a fixed outcome. */
+function installRecorder(outcome: { exitCode: number | null, diagnostic?: string } = { exitCode: 0 }) {
+  const calls: Array<{ command: string, args: readonly string[], environment: NodeJS.ProcessEnv | undefined }> = []
+  const installDistributions: DesktopSharedPythonProvision = async (command, args, options) => {
+    calls.push({ command, args, environment: options.environment })
+    return { exitCode: outcome.exitCode, diagnostic: outcome.diagnostic ?? '' }
+  }
+  return { calls, installDistributions }
+}
+
+/** A healthy shared tree plus the full library-repair input set. */
+function libraryFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-libs-'))
+  const paths = desktopSharedPythonEnvironmentPaths(root)
+  const existing = new Set<string>([paths.pythonExecutable, paths.pipExecutable])
+  const { calls: probeCalls, probe } = probeRecorder(true)
+  return {
+    root,
+    paths,
+    existing,
+    probe,
+    probeCalls,
+    baseInputs: () => ({
+      platform: 'win32' as const,
+      localPythonExecutable: LOCAL_PYTHON,
+      bundledPythonExecutable: BUNDLED_PYTHON,
+      rootDirectory: root,
+      probe,
+      exists: (filename: string) => existing.has(filename),
+    }),
+  }
 }
 
 describe('ensureDesktopSharedPythonEnvironment', () => {
@@ -1114,57 +1163,10 @@ describe('shared python environment preinstalled library set (issue #043 batch C
     { name: 'requests', version: '2.34.2', filename: 'requests-2.34.2-py3-none-any.whl', sha256: 'c'.repeat(64) },
   ]
   const LOCK_TEXT = `${JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: LOCK_ENTRIES })}\n`
-  const WHEELS_DIRECTORY = 'C:\\Program Files\\DSH Desktop\\resources\\python-wheels'
 
   /** Digest seam answering each wheel's own pinned sha256. */
   const lockDigest = (filename: string): string =>
     LOCK_ENTRIES.find(entry => join(WHEELS_DIRECTORY, entry.filename) === filename)?.sha256 ?? '0'.repeat(64)
-
-  /** Answer queue for the installed-distributions probe: one answer per spawn. */
-  function distributionsProbeRecorder(answers: ReadonlyArray<Record<string, string> | undefined>) {
-    const calls: Array<{ pythonExecutable: string, environment: NodeJS.ProcessEnv | undefined }> = []
-    let index = 0
-    const probeDistributions: DesktopSharedPythonDistributionsProbe = async (pythonExecutable, options) => {
-      calls.push({ pythonExecutable, environment: options.environment })
-      const answer = answers[Math.min(index, answers.length - 1)]
-      index += 1
-      return answer === undefined ? undefined : { ...answer }
-    }
-    return { calls, probeDistributions }
-  }
-
-  /** Recording library-install seam answering a fixed outcome. */
-  function installRecorder(outcome: { exitCode: number | null, diagnostic?: string } = { exitCode: 0 }) {
-    const calls: Array<{ command: string, args: readonly string[], environment: NodeJS.ProcessEnv | undefined }> = []
-    const installDistributions: DesktopSharedPythonProvision = async (command, args, options) => {
-      calls.push({ command, args, environment: options.environment })
-      return { exitCode: outcome.exitCode, diagnostic: outcome.diagnostic ?? '' }
-    }
-    return { calls, installDistributions }
-  }
-
-  /** A healthy shared tree plus the full library-repair input set. */
-  function libraryFixture() {
-    const root = mkdtempSync(join(tmpdir(), 'dsh-pyenv-libs-'))
-    const paths = desktopSharedPythonEnvironmentPaths(root)
-    const existing = new Set<string>([paths.pythonExecutable, paths.pipExecutable])
-    const { calls: probeCalls, probe } = probeRecorder(true)
-    return {
-      root,
-      paths,
-      existing,
-      probe,
-      probeCalls,
-      baseInputs: () => ({
-        platform: 'win32' as const,
-        localPythonExecutable: LOCAL_PYTHON,
-        bundledPythonExecutable: BUNDLED_PYTHON,
-        rootDirectory: root,
-        probe,
-        exists: (filename: string) => existing.has(filename),
-      }),
-    }
-  }
 
   it('parses a well-formed lock and degrades every malformed input to undefined', () => {
     expect(parseSharedPythonWheelsLock(LOCK_TEXT)?.distributions.map(entry => entry.name))
@@ -1212,6 +1214,7 @@ describe('shared python environment preinstalled library set (issue #043 batch C
       '--disable-pip-version-check',
       '--no-index',
       '--no-deps',
+      '--upgrade',
       '--no-warn-script-location',
       '--no-compile',
       join(WHEELS_DIRECTORY, 'pdfplumber-0.11.10-py3-none-any.whl'),
@@ -1709,6 +1712,168 @@ describe('shared python environment preinstalled library set (issue #043 batch C
       // Without the mutex the pip leg never runs — it must not race a
       // concurrent provisioning — and the missing libraries heal next boot.
       expect(installCalls).toEqual([])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('shared python environment library install over a dirty pyenv (issue #050)', () => {
+  /**
+   * The failing b104 slice of the real 48-entry lock (liamzhong,
+   * 2026-09-17): his shared pyenv was built in the b93 era, so it carried
+   * stale dists while the boot's probe named every pin missing — and pip's
+   * resolver, given the exactly-pinned closed set, conflicted with those
+   * leftovers and failed the WHOLE batch (`pinned:48, installed:0`).
+   */
+  const DIRTY_LOCK_ENTRIES: readonly DesktopSharedPythonWheelsLockEntry[] = [
+    { name: 'aiohttp', version: '3.14.3', filename: 'aiohttp-3.14.3-cp312-cp312-win_amd64.whl', sha256: 'a'.repeat(64) },
+    { name: 'aiohappyeyeballs', version: '2.7.1', filename: 'aiohappyeyeballs-2.7.1-py3-none-any.whl', sha256: 'b'.repeat(64) },
+    { name: 'pdfplumber', version: '0.11.10', filename: 'pdfplumber-0.11.10-py3-none-any.whl', sha256: 'c'.repeat(64) },
+  ]
+  const DIRTY_LOCK_TEXT = `${JSON.stringify({ version: 1, python: '3.12', platform: 'win_amd64', distributions: DIRTY_LOCK_ENTRIES })}\n`
+
+  /** Digest seam answering each dirty-lock wheel's own pinned sha256. */
+  const dirtyDigest = (filename: string): string =>
+    DIRTY_LOCK_ENTRIES.find(entry => join(WHEELS_DIRECTORY, entry.filename) === filename)?.sha256 ?? '0'.repeat(64)
+
+  it('installs the whole pinned set as a --no-deps --upgrade closed batch on a dirty pyenv (#050)', async () => {
+    const fixture = libraryFixture()
+    try {
+      // The liamzhong shape: the b93-era pyenv holds stale dists, the boot
+      // probe (and the install leg's in-lock revalidation) can see NONE of
+      // the pinned names, and the batch must still land every pin — 48/48
+      // in production, 3/3 here — instead of dying in pip's resolver.
+      const { probeDistributions } = distributionsProbeRecorder([
+        {},
+        {},
+        { aiohttp: '3.14.3', aiohappyeyeballs: '2.7.1', pdfplumber: '0.11.10' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => DIRTY_LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: dirtyDigest,
+        log: message => { logs.push(message) },
+      })
+
+      // The batch is a closed set: --no-deps hands pip's resolver nothing
+      // to conflict with the stale dists, and --upgrade makes pip REPLACE
+      // any same-lib stale version it alone can see instead of skipping
+      // the pinned wheel as "already satisfied". Every pin is named.
+      expect(installCalls).toHaveLength(1)
+      const args = installCalls[0]?.args ?? []
+      expect(args).toContain('--no-deps')
+      expect(args).toContain('--upgrade')
+      expect(args.filter(argument => argument.endsWith('.whl'))).toEqual(DIRTY_LOCK_ENTRIES.map(
+        entry => join(WHEELS_DIRECTORY, entry.filename),
+      ))
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 3 })
+      expect(logs).toEqual([
+        `dsh-plugin-desktop: installed 3 missing preinstalled python libraries into the shared python environment at ${fixture.paths.root} from ${WHEELS_DIRECTORY}`,
+      ])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('never names a version the probe can see: a stale old aiohttp and a user-newer pdfplumber stay out of the --upgrade batch (#050)', async () => {
+    const fixture = libraryFixture()
+    try {
+      // A dirty pyenv whose leftovers ARE probe-visible: an old aiohttp a
+      // b93-era build installed, and a pdfplumber the user themselves
+      // installed NEWER than the lock. ANY version counts as present
+      // (issue #043 decision D2), so neither name may enter pip's argv —
+      // --upgrade must only ever reach stale same-lib dists of names the
+      // fresh in-lock re-probe found absent, never a chosen version.
+      const stale = { aiohttp: '3.8.1', pdfplumber: '0.99.0' }
+      const { probeDistributions } = distributionsProbeRecorder([
+        { ...stale },
+        { ...stale },
+        { ...stale, aiohappyeyeballs: '2.7.1' },
+      ])
+      const { calls: installCalls, installDistributions } = installRecorder()
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => DIRTY_LOCK_TEXT,
+        probeDistributions,
+        installDistributions,
+        digestFile: dirtyDigest,
+        log: message => { logs.push(message) },
+      })
+
+      // Only the truly absent name reached pip; the stale old aiohttp and
+      // the user's newer pdfplumber were neither replaced nor downgraded,
+      // and the coverage still completes over the versions that won.
+      expect(installCalls).toHaveLength(1)
+      const args = installCalls[0]?.args ?? []
+      expect(args).toContain('--no-deps')
+      expect(args).toContain('--upgrade')
+      expect(args.filter(argument => argument.endsWith('.whl'))).toEqual([
+        join(WHEELS_DIRECTORY, 'aiohappyeyeballs-2.7.1-py3-none-any.whl'),
+      ])
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 3 })
+      expect(logs).toEqual([
+        `dsh-plugin-desktop: installed 1 missing preinstalled python libraries into the shared python environment at ${fixture.paths.root} from ${WHEELS_DIRECTORY}`,
+      ])
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('logs pip\u2019s whole stderr on a failed batch instead of the 160-char provisioning truncation (#050)', async () => {
+    const fixture = libraryFixture()
+    try {
+      // The REAL default install seam (no installDistributions injected):
+      // the leg spawns the tree's interpreter, and the stand-in below plays
+      // a pip that fails a 3-wheel batch with a multi-screen error — the
+      // b104 shape whose log line was strangled to `(Processing ...
+      // ERROR: aiohttp-3.14.3-cp312-cp3)`. The stand-in is a shell script
+      // because the test host is not Windows; only the spawn's captured
+      // stderr and exit code matter to the leg.
+      const pipStderr = [
+        `Processing ${join(WHEELS_DIRECTORY, 'aiohappyeyeballs-2.7.1-py3-none-any.whl')}`,
+        ...Array.from({ length: 48 }, (_, index) => `pip-stderr-${String(index + 1).padStart(2, '0')} ${'x'.repeat(48)}`),
+        `ERROR: Could not install the 3 missing preinstalled python libraries (aiohttp-3.14.3-cp312-cp312-win_amd64.whl et al.)`,
+      ].join('\n')
+      mkdirSync(dirname(fixture.paths.pythonExecutable), { recursive: true })
+      writeFileSync(
+        fixture.paths.pythonExecutable,
+        `#!/bin/sh\ncat >&2 <<'EOF'\n${pipStderr}\nEOF\nexit 1\n`,
+      )
+      chmodSync(fixture.paths.pythonExecutable, 0o755)
+      const { probeDistributions } = distributionsProbeRecorder([{}, {}, {}])
+      const logs: string[] = []
+
+      const environment = await ensureDesktopSharedPythonEnvironment({
+        ...fixture.baseInputs(),
+        wheelsDirectory: WHEELS_DIRECTORY,
+        readWheelsLock: () => DIRTY_LOCK_TEXT,
+        probeDistributions,
+        digestFile: dirtyDigest,
+        log: message => { logs.push(message) },
+      })
+
+      // The batch failed (nothing landed), and the one degradation line
+      // carries pip's stderr essentially whole: head AND tail survive —
+      // the old 160-char slice kept neither — flattened to one log line.
+      expect(environment.libraries).toEqual({ pinned: 3, installed: 0 })
+      expect(logs).toHaveLength(1)
+      const failure = logs[0] ?? ''
+      expect(failure).toContain('pip could not install the 3 missing')
+      expect(failure).toContain('pip-stderr-01')
+      expect(failure).toContain('pip-stderr-48')
+      expect(failure).toContain('aiohttp-3.14.3-cp312-cp312-win_amd64.whl et al.')
+      expect(failure.length).toBeGreaterThanOrEqual(pipStderr.length)
+      expect(failure).not.toContain('\n')
     } finally {
       rmSync(fixture.root, { recursive: true, force: true })
     }
