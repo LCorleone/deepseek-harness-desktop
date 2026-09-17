@@ -1,0 +1,215 @@
+name: Security prompt publish
+
+# Guardrail security-prompt document signing (#046, publish side), split
+# across the network boundary exactly like the catalog manifest pipeline:
+# the GitHub runner signs and verifies the sibling document
+# (security-prompt.json / security-prompt.beta.json — the per-turn
+# user-input hardening template the managed desktop fetches beside the
+# catalog manifest), then uploads it as a build artifact — it NEVER touches
+# GitLab (the runner cannot reach the intranet origin, verified empirically
+# by the catalog pipeline). Publishing is done on the intranet side by
+# tools/company-guardrail/upload-prompt-document.mjs, which re-verifies the
+# document against the desktop release policy trust roots, ratchet-checks
+# the revision against the deployed file (anti-rollback floor: deployed <
+# new, no replays), pushes the exact canonical bytes through the GitLab
+# commits API, and re-reads the raw URL.
+#
+# Why signing stays on the runner: the canonical bytes must be produced and
+# verified by the same pipeline that signs the catalog manifest — the
+# signing key lives only in repository secrets (COMPANY_CATALOG_SIGNING_KEY
+# + COMPANY_CATALOG_KEY_ID, the SAME deployment trust root the catalog
+# uses; the security-prompt document is exactly as poison-worthy as the
+# catalog manifest, so it shares the key and the discipline), is referenced
+# never echoed, and never reaches any disk the repository controls.
+#
+# Verification is fail-closed twice: the signer itself round-trips the
+# emitted bytes through the desktop client's ACTUAL verifier
+# (dsh-plugin-desktop/scripts/verify-security-prompt-document.ts, executed
+# under node --experimental-transform-types because plain Node cannot load
+# the desktop TypeScript sources from tools/) BEFORE anything is written to
+# --out, and the explicit "Round-trip verify against the fleet trust roots"
+# step below re-verifies the artifact file on disk against the desktop
+# release policy trust roots — the fleet's own trust decision — before any
+# artifact upload. A non-zero exit anywhere blocks everything downstream.
+#
+# dry-run semantics: dry-run=true (the default) runs the exact same
+# sign → verify chain on the runner but uploads NO artifact — the signed
+# bytes die with the runner and nothing can be published from them.
+# dry-run=false adds the security-prompt-signed artifact upload (still
+# nothing is pushed anywhere by this workflow; no GitLab credentials exist
+# in this workflow at all).
+#
+# Revision ratchet: unlike the catalog manifest there is NO in-repo state
+# file — the floor is the deployed document on GitLab, read by the intranet
+# uploader at push time (a stale artifact simply fails closed there), so
+# the workflow input --revision must simply be strictly greater than what
+# is deployed for the channel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Document revision — a positive integer, strictly greater than the deployed revision of the channel (the anti-rollback floor is checked intranet-side against GitLab)'
+        required: true
+        type: string
+      channel:
+        description: 'Document channel — beta publishes security-prompt.beta.json (the signed-roster soak channel, fetched only by machines whose beta catalog overlay applied); stable publishes security-prompt.json'
+        type: choice
+        options:
+          - beta
+          - stable
+        default: beta
+      template-path:
+        description: 'Template file to sign (default: the frozen embedded v1 asset)'
+        type: string
+        default: dsh-plugin-desktop/assets/company-guardrail/prompt-template-v1.md
+      expires-at:
+        description: 'Optional RFC 3339 expiry timestamp (default: now + 90 days)'
+        required: false
+        type: string
+      dry-run:
+        description: 'Dry run — sign and verify only (no artifact upload; publishing is always intranet-side)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  sign-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The document file this run signs: the beta channel writes
+      # security-prompt.beta.json, the stable channel security-prompt.json —
+      # the exact file names the desktop derives from the policy manifest
+      # URL; the artifact, the summary, and the intranet uploader all carry
+      # the same name.
+      DOC_NAME: ${{ inputs.channel == 'stable' && 'security-prompt.json' || 'security-prompt.beta.json' }}
+      # Input copies read only from the environment below (an unset optional
+      # input must never arrive in a script as a poisoned empty string, and
+      # no dispatcher-typed string is ever interpolated into a shell line).
+      INPUT_REVISION: ${{ inputs.revision }}
+      INPUT_CHANNEL: ${{ inputs.channel == 'stable' && 'stable' || 'beta' }}
+      INPUT_TEMPLATE: ${{ inputs.template-path }}
+      INPUT_EXPIRES_AT: ${{ inputs.expires-at }}
+    steps:
+      - name: Validate inputs
+        # Fail fast on a malformed revision before the slow install: the
+        # signer re-validates authoritatively, but a typo should not cost
+        # a full yarn install to discover.
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_REVISION" =~ ^[1-9][0-9]*$ ]]; then
+            echo "revision must be a positive integer (got '$INPUT_REVISION')" >&2
+            exit 1
+          fi
+          if [[ -n "$INPUT_EXPIRES_AT" && ! "$INPUT_EXPIRES_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$ ]]; then
+            echo "expires-at must be an RFC 3339 timestamp (got '$INPUT_EXPIRES_AT')" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.2
+      - run: corepack enable
+      - name: Resolve Yarn cache folder
+        id: yarn-cache
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: yarn-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+      - run: yarn install --immutable
+      - name: Build market signing library
+        # The desktop verification seam imports the desktop sources, which
+        # import the dsh-community-market workspace package — resolvable
+        # only in its built form (lib/index.js).
+        run: yarn workspace dsh-community-market build
+      - name: Sign the security-prompt document (template → canonical JSON → ed25519)
+        # Fail-closed by construction: the signer verifies the emitted bytes
+        # with the desktop client's actual verifier before anything is
+        # written to --out, and reads the file back to prove the verified
+        # bytes landed. No output exists for this step otherwise.
+        env:
+          COMPANY_CATALOG_SIGNING_KEY: ${{ secrets.COMPANY_CATALOG_SIGNING_KEY }}
+          COMPANY_CATALOG_KEY_ID: ${{ secrets.COMPANY_CATALOG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ -n "$INPUT_EXPIRES_AT" ]]; then extra=(--expires-at "$INPUT_EXPIRES_AT"); fi
+          node tools/company-guardrail/sign-prompt-document.mjs \
+            --template "$INPUT_TEMPLATE" \
+            --revision "$INPUT_REVISION" \
+            --channel "$INPUT_CHANNEL" \
+            --out "run/${DOC_NAME}" \
+            --key-from-env \
+            "${extra[@]}"
+      - name: Round-trip verify against the fleet trust roots
+        # The independent gate before any artifact upload: re-verify the
+        # artifact file on disk with the desktop client's actual verifier,
+        # pinned to the desktop RELEASE POLICY trust roots — the fleet's own
+        # trust decision, not just the signing key's self-assertion. A
+        # non-zero exit here blocks everything downstream (the artifact
+        # upload below and nothing else — this workflow never pushes).
+        run: |
+          set -euo pipefail
+          node --experimental-transform-types dsh-plugin-desktop/scripts/verify-security-prompt-document.ts \
+            --file "run/${DOC_NAME}" \
+            --trust-roots dsh-plugin-desktop/src/policy/desktop-policy.release.json
+      - name: Publish summary
+        run: |
+          set -euo pipefail
+          meta="run/${DOC_NAME}.meta.json"
+          revision="$(jq -r '.revision' "$meta")"
+          key_id="$(jq -r '.keyId' "$meta")"
+          fingerprint="$(jq -r '.fingerprint' "$meta")"
+          bytes_sha="$(jq -r '.bytesSha256' "$meta")"
+          template_sha="$(jq -r '.templateSha256' "$meta")"
+          expires="$(jq -r '.expiresAt' "$meta")"
+          {
+            echo '## Guardrail security-prompt document'
+            echo
+            echo "- channel: **${INPUT_CHANNEL}** (${DOC_NAME})"
+            echo "- revision: **${revision}** (the anti-rollback floor — deployed < new — is checked intranet-side against GitLab)"
+            echo "- keyId: ${key_id}"
+            echo "- fingerprint: \`${fingerprint}\`"
+            echo "- document sha256: \`${bytes_sha}\`"
+            echo "- template sha256: \`${template_sha}\`"
+            echo "- expiresAt: ${expires}"
+            echo "- template: \`${INPUT_TEMPLATE}\`"
+            echo
+            if [[ '${{ inputs.dry-run }}' == 'true' ]]; then
+              echo '## DRY RUN — no artifact was uploaded'
+              echo
+              echo "The document at revision ${revision} was signed and verified on this runner only. No artifact exists, nothing can be published from this run, and the signed bytes are gone with the runner. Re-run this workflow with dry-run unchecked to produce the publishable artifact."
+            else
+              echo '## 产物待内网侧发布 · artifact ready for the intranet side'
+              echo
+              echo 'Download the `security-prompt-signed` artifact, then on a machine that can reach the intranet GitLab (GITLAB_TOKEN exported):'
+              echo
+              echo '```sh'
+              echo "node tools/company-guardrail/upload-prompt-document.mjs --file ${DOC_NAME} --channel ${INPUT_CHANNEL}"
+              echo '```'
+              echo
+              echo "The uploader re-verifies the document against the desktop release policy trust roots, requires revision > the deployed revision for the channel, pushes the exact canonical bytes through the GitLab commits API, and re-reads the raw URL."
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.dry-run == false }}
+        with:
+          name: security-prompt-signed
+          # upload-artifact strips the shared run/ prefix: the artifact root
+          # carries the channel's document file plus its .meta.json audit
+          # sidecar — the layout the intranet uploader consumes.
+          path: |
+            run/${{ env.DOC_NAME }}
+            run/${{ env.DOC_NAME }}.meta.json
+          if-no-files-found: error

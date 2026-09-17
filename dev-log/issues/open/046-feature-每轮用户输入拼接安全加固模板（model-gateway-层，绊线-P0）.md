@@ -140,6 +140,7 @@ impl NewFeature {
 【决策】无仓内 revision 状态文件——floor=GitLab 部署文件（推送时读）；通道不进签名字节（只驱动文件名/元数据）；发布侧拒等值重发（内容变=新 revision），客户端等值幂等再确认——镜像 publish-local 语义。
 【门禁】tools 23 绿/layout 绿/desktop tc 0/desktop 2590/market 499（b103 基线零回归）；冻结资产字节不动。
 → reviewer 待派。真发 beta revision 1 前等 July 口令。
+- 发布轮 reviewer APPROVED（b32532a8，2026-09-17 11:10）：签名形状逐字段对账（独立临时钥重签+手写 canonical+ed25519 复验通过）/fail-closed 三段全攻不动（staging→verify→rename、工件上传门、上传器复验）/验证缝零 fork/反回滚 floor 含损坏部署文档 fail-closed/工作流卫生。4 个 P3 全落：①上传器推前重读字节钉死（verify 的就是 push 的）②meta 边车通道+revision 双交叉校验（错配零 POST 拒绝）③push 后确认段 parseable-but-different=硬失败（传输类仍 warn）④（第 4 项为前述确认语义对齐）。tools 测试 23→26 绿。commit 中。下一步：CI dry-run 冒烟→等 July 口令真发 beta revision 1。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
