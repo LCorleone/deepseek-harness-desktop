@@ -1,11 +1,12 @@
 # [Bug] #047 silent SSO 对 @deloitte.com.cn 形态一律拒绝（门户只认 deloittecn，候选缺反向换域）
 
 **Issue ID**: #047
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: bug
 **Created**: 2026-09-17
 **Updated**: 2026-09-17
+**Closed**: 2026-09-17
 **Assignee**: Unassigned
 **Labels**: bug
 
@@ -97,6 +98,7 @@
 - 立卡（2026-09-17 10:42，July 裁定立卡修）。worker 待派——注意 worker-046-publish 仍在跑（#046 发布轮），两个 worker 并行不冲突（不同文件面）。
 - worker 完成（2026-09-17 10:50，a52b903b，30 工具调用，未提交）：新增导出 silentSsoEmailCandidates（canonical 后追加 deloitte→deloittecn 反向换域，大小写不敏感去重，raw 优先）+ silentSsoLogin 候选循环改用之 + 测试 5 形态（deloittecn 行为不变/.com.cn 双候选第二过/双拒语义+两 warn/第三域单候选/大小写去重）共 +166 行。门禁：company-sso 72 绿+1skip、tc 0。→ reviewer 待派。
 - reviewer APPROVED（206eff56，2026-09-17 10:58）：六项全过（deloittecn 字节级不变/.com.cn 双候选+session.email=采纳形/边界形状/预算不变=结构性上限 2 候选/无消费者破坏+遥测语义保持/门禁绿）。P3=corrupt-blob spec 归属 #047 提交（已照办）。全绿：SSO 77+1skip、tc 0、desktop 全套。commit 中，随 b104 出厂。
+- 关闭（2026-09-17 15:22）：b104 实机日志实证两次候选均被门户拒（代码按设计工作），门户无 deloittecn 别名=浏览器回退是全局域用户设计内路径；IT 若补别名静默自动恢复（候选链已就位）。July 口径：体验税接受。
 
 ## 验收标准
 
