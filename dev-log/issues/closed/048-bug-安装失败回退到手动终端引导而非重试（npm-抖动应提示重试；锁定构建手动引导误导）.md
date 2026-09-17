@@ -1,11 +1,12 @@
 # [Bug] #048 安装失败回退到手动终端引导而非重试（npm 抖动应提示重试；锁定构建手动引导误导）
 
 **Issue ID**: #048
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: bug
 **Created**: 2026-09-17
 **Updated**: 2026-09-17
+**Closed**: 2026-09-17
 **Assignee**: Unassigned
 **Labels**: bug
 
@@ -108,6 +109,7 @@ C.（收紧后）市场 UI 的终端引导【无条件移除】：弹窗 footer 
 → reviewer 待派。
 - reviewer APPROVED（f198d947，2026-09-17 12:20）：分类决策表与 host 词汇逐字对齐+对抗边界钉死；加固测试从各方向断言终端引导缺失（含全文无 dsh plugin add）；移除外科式（main.ts 恰一行+capability 断言 in false+路由表级断言）；双语文档+hash 门过。P3×2 记档：①预览腿 npm registry 抖动实际浮现为 verification-failed（npm 验证器吞网络因）——分类器保守判非瞬态→实际 Retry 只对 operation-timeout 生效；执行腿 operation-failed+网络尾无 Retry 横幅（Confirm 即恢复路径）。②分类器头注释过度声明调用面。均不阻塞。→【遗留关注】P3-1 意味着 zhong 的 npm 抖动场景（本卡起点）拿不到重试——需后续在 npm 验证器区分网络失败/校验失败或把 registry-fetch 歧义上调为瞬态。commit 中。
 - July 裁定（2026-09-17 12:14）：P3-1 遗留接受——npm 抖动现状（失败横幅+可手动重点安装+无终端引导）已够用；npm 验证器网络/校验区分不做（记为已知残留，未来有诉求再启）。
+- 关闭（2026-09-17 12:57）：验证完成详见各卡进展记录（#042=b100 实机相位验证+T1 生效；#046=b103 实机+beta rev1 远程发布闭环；#048/#049=b104 July 实测）。
 
 ## 验收标准
 

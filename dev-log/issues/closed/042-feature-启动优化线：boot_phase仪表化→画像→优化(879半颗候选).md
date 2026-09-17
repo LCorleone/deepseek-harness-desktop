@@ -1,11 +1,12 @@
 # [Feature] #042 启动优化线：boot_phase仪表化→画像→优化(#879半颗候选)
 
 **Issue ID**: #042
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-15
-**Updated**: 2026-09-16
+**Updated**: 2026-09-17
+**Closed**: 2026-09-17
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -90,6 +91,10 @@ impl NewFeature {
 
 ## 进展记录
 
+
+
+### 2026-09-17
+- 关闭（2026-09-17 12:57）：验证完成详见各卡进展记录（#042=b100 实机相位验证+T1 生效；#046=b103 实机+beta rev1 远程发布闭环；#048/#049=b104 July 实测）。
 
 ### 2026-09-16
 - Phase2 定向更新（2026-09-16）：b97 相位图实证 host 组装=19.5-22s 主菜（60%）→主修=#879 之后的 #829 选择性 ASAR，已立 #044 观察模式卡（July 谨慎重：先盯上游 v2.0.11+ 变动，三步闸门方案冻结待解冻）。本卡剩余活跃项=T1 并行化（python_check 3.7s+渲染 2.8s 可重叠，预期-4~5s，零打包风险）。仪表化遗留小bug：process_start 事件未入库（两靴均缺，缓冲flush待查）随下批修。
