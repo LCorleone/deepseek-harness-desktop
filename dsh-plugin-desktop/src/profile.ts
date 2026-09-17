@@ -938,22 +938,28 @@ export function prepareDesktopProfile(
   const profileDir = profileName === DESKTOP_PROFILE_NAME
     ? ensureDesktopProfile(home)
     : resolveProfileDir(profileName, home)
-  // `plugin-management` is the community market's user-facing scope. Startup
-  // recovery has its own state file so switching to another provider cannot
-  // reapply a stale community-market disable, while a recovery disable always
-  // remains effective regardless of the selected provider. Keep the legacy
-  // five-argument call compatible for tests/older embedders.
+  // `plugin-management` is the disable scope of the plugin-management UI,
+  // and that UI is live exactly while the community/company provider is the
+  // *effective* provider (main.ts registers the service on the same
+  // predicate), so its user disables merge into the boot filter then — also on
+  // locked builds whose persisted request stays a legacy `dsh-market`
+  // selection or the fail-safe `disabled` default. Keying on the effective
+  // provider rather than the persisted request keeps the boot reader on the
+  // same predicate as the UI writer, so the two state sources cannot diverge
+  // (#049), while switching the effective provider away still drops stale
+  // disables the switched-to market cannot display or undo. Startup recovery
+  // has its own state file and a recovery disable always remains effective
+  // regardless of the selected provider. Keep the legacy five-argument call
+  // compatible for tests/older embedders.
   const managedDisabledBundles = pluginStatePath === undefined
     ? new Set<string>()
     : readDesktopDisabledBundles(pluginStatePath, profileName)
   const recoveryDisabledBundles = recoveryStatePath === undefined
-    ? (marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider
-      ? new Set<string>()
-      : new Set(managedDisabledBundles))
+    ? new Set<string>()
     : readDesktopDisabledBundles(recoveryStatePath, profileName)
   const disabledBundles = new Set(recoveryDisabledBundles)
   if (recoveryStatePath === undefined
-    || marketSelection.requested === DESKTOP_MARKET_IDENTITIES.community.provider) {
+    || marketSelection.effective === DESKTOP_MARKET_IDENTITIES.community.provider) {
     for (const packageName of managedDisabledBundles) disabledBundles.add(packageName)
   }
   // Startup verification (P2-4): a locked build checks every third-party

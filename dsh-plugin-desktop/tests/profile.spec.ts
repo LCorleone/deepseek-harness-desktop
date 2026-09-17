@@ -484,6 +484,47 @@ describe('desktop profile composition', {
     }))
   })
 
+  it('applies plugin-management disables when the locked company provider pins the market over any persisted request', () => {
+    // #049: production boots always pass a startup-recovery state path while
+    // the locked policy pins the effective provider to the company market,
+    // so the market UI's user disables must reach the boot filter no matter
+    // which request the persisted state records — a legacy `dsh-market`
+    // selection or the fail-safe `disabled` default of a fresh install
+    // (locked builds hide the Market settings row, so nothing ever writes an
+    // explicit `community-market` request there).
+    for (const requested of ['dsh-market', 'disabled'] as const) {
+      const home = temporaryHome()
+      const packageName = 'third-party-plugin'
+      installBundle(home, packageName, '- insert:\n    - id: third-party-marker\n      name: cordis:example\n')
+      const profileManifestPath = join(ensureDesktopProfile(home), 'package.json')
+      const profileManifest = JSON.parse(readFileSync(profileManifestPath, 'utf8')) as {
+        dsh: { profile: { bundles: string[] } }
+      }
+      profileManifest.dsh.profile.bundles.push(packageName)
+      writeFileSync(profileManifestPath, JSON.stringify(profileManifest) + '\n')
+      const managementStatePath = join(home, 'user-data', 'plugin-management', 'state.json')
+      const recoveryStatePath = join(home, 'user-data', 'startup-recovery', 'state.json')
+      mkdirSync(dirname(managementStatePath), { recursive: true })
+      writeFileSync(managementStatePath, JSON.stringify({
+        version: 1,
+        profiles: [{ profileName: 'desktop', disabledBundles: [packageName] }],
+      }) + '\n')
+
+      const prepared = prepareDesktopProfile(
+        undefined,
+        home,
+        'darwin',
+        'desktop',
+        managementStatePath,
+        { requested, effective: 'community-market', legacyDefaulted: false },
+        recoveryStatePath,
+      )
+      expect(composeEntries([prepared.patches])).not.toContainEqual(expect.objectContaining({
+        id: 'third-party-marker',
+      }))
+    }
+  })
+
   it('keeps a startup-recovery disable effective for every market provider', () => {
     const home = temporaryHome()
     const packageName = 'third-party-plugin'

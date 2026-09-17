@@ -401,6 +401,42 @@ describe('desktop direct bundle management', () => {
     await harness.dispose()
   })
 
+  it('round-trips a market-UI disable through boot composition under the locked company provider', async () => {
+    // #049 full chain: the production wiring passes both the plugin-management
+    // state and the startup-recovery state while the locked policy pins the
+    // effective provider, so a UI disable must filter the next generation and
+    // a UI enable must restore it.
+    const root = temporaryRoot()
+    const options = bootstrapWithRecovery(root)
+    installBundle(options.homeDir, 'third-party-plugin')
+    addBundle(options.homeDir, 'third-party-plugin')
+    const harness = await createHarness(options)
+    const compose = () => prepareDesktopProfile(
+      undefined,
+      options.homeDir,
+      'darwin',
+      'desktop',
+      options.statePath,
+      { requested: 'dsh-market', effective: 'community-market', legacyDefaulted: false },
+      options.recoveryStatePath,
+    )
+    const insertedRows = () => compose().patches
+      .flatMap(patch => Array.isArray(patch.insert) ? patch.insert : [])
+
+    expect(insertedRows().some(row => row.id === 'external-marker')).toBe(true)
+
+    const target = harness.service.list().find(item => item.packageName === 'third-party-plugin')
+    if (target === undefined) throw new Error('missing target')
+    await harness.service.executeDisable(harness.service.previewDisable(target.bundleId).previewId)
+    expect(insertedRows().some(row => row.id === 'external-marker')).toBe(false)
+
+    const disabled = harness.service.list().find(item => item.packageName === 'third-party-plugin')
+    if (disabled === undefined) throw new Error('missing disabled target')
+    await harness.service.executeEnable(harness.service.previewEnable(disabled.bundleId).previewId)
+    expect(insertedRows().some(row => row.id === 'external-marker')).toBe(true)
+    await harness.dispose()
+  })
+
   it('preserves stale names while canonicalizing duplicate and unordered state on the next write', async () => {
     const root = temporaryRoot()
     const options = bootstrap(root)
