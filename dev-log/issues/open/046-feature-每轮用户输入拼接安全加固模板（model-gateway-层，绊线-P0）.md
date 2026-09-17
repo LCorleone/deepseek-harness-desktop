@@ -141,6 +141,7 @@ impl NewFeature {
 【门禁】tools 23 绿/layout 绿/desktop tc 0/desktop 2590/market 499（b103 基线零回归）；冻结资产字节不动。
 → reviewer 待派。真发 beta revision 1 前等 July 口令。
 - 发布轮 reviewer APPROVED（b32532a8，2026-09-17 11:10）：签名形状逐字段对账（独立临时钥重签+手写 canonical+ed25519 复验通过）/fail-closed 三段全攻不动（staging→verify→rename、工件上传门、上传器复验）/验证缝零 fork/反回滚 floor 含损坏部署文档 fail-closed/工作流卫生。4 个 P3 全落：①上传器推前重读字节钉死（verify 的就是 push 的）②meta 边车通道+revision 双交叉校验（错配零 POST 拒绝）③push 后确认段 parseable-but-different=硬失败（传输类仍 warn）④（第 4 项为前述确认语义对齐）。tools 测试 23→26 绿。commit 中。下一步：CI dry-run 冒烟→等 July 口令真发 beta revision 1。
+- 【发布完成】beta prompt revision 1 上线（2026-09-17 11:22，July 口令）：CI 真签（2923B，sha256 53c43d4b…，desktop 验证器往返 ok，fleet 信任根 c469…9af6）→ 工件下载 → 上传器推 GitLab julu/dsh-desktop-config master（commit f3877d83）→ 部署确认（raw URL 服出精确字节）。注意：上传器直连需 NODE_EXTRA_CA_CERTS=.deloitte-ca-bundle.pem（corporate CA），首次裸跑因 floor 未知拒推=设计内 fail-closed。生效面：beta 名单机（julu/sebtang/lizywu）下次启动拉取验签后覆盖内嵌 v1（内容同=v1，行为中性，验证远程通道端到端）；非名单机维持内嵌。#046 全链路（设计→client b103→发布管线→首个远程发布）闭环。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
