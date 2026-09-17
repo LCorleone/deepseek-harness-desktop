@@ -117,9 +117,12 @@ describe('sso app key corrupt-blob degradation', () => {
         'dsh-plugin-desktop: invalid sso app key blob: the decoded payload is not valid JSON',
       )
     }
-    // Exactly one line per email candidate (here: one, the UPN needs no
-    // canonicalization) — the launcher logs each masked at the boundary.
+    // Exactly one line per email candidate (here: two — a
+    // @deloitte.com.cn UPN also probes the reverse deloittecn rewrite,
+    // issue #047) — the launcher logs each masked at the boundary.
     expect(warnings).toEqual([
+      'dsh-plugin-desktop: sso silent token request failed: '
+      + 'dsh-plugin-desktop: invalid sso app key blob: the decoded payload is not valid JSON',
       'dsh-plugin-desktop: sso silent token request failed: '
       + 'dsh-plugin-desktop: invalid sso app key blob: the decoded payload is not valid JSON',
     ])

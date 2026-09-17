@@ -24,6 +24,7 @@ import {
   getSsoEncodeStr,
   probeSsoOsUser,
   setSsoSession,
+  silentSsoEmailCandidates,
   silentSsoLogin,
   SsoPortalTokenError,
   describeSsoTokenFailure,
@@ -67,6 +68,25 @@ function boundary(body: string, status = 200): SsoRequestBoundary & { calls: Bou
     return {
       ok: status >= 200 && status < 300,
       status,
+      text: async () => body,
+    }
+  }
+  return Object.assign(request, { calls })
+}
+
+/**
+ * Response stub factory answering one queued body per call (recorded like
+ * {@link boundary}; the last body repeats once the queue drains) — for the
+ * per-candidate portal answers of the silent path.
+ */
+function boundaryQueue(bodies: string[]): SsoRequestBoundary & { calls: BoundaryCall[] } {
+  const calls: BoundaryCall[] = []
+  const request = async (url: string, init: Parameters<SsoRequestBoundary>[1]) => {
+    calls.push({ url, headers: init.headers, body: init.body, signal: init.signal })
+    const body = bodies[Math.min(calls.length - 1, bodies.length - 1)] ?? ''
+    return {
+      ok: true,
+      status: 200,
       text: async () => body,
     }
   }
@@ -1005,6 +1025,36 @@ describe('os identity probe', () => {
   })
 })
 
+describe('silent email candidates', () => {
+  it('keeps the nova order for a deloittecn probe and adds no reverse rewrite', () => {
+    expect(silentSsoEmailCandidates('jane.doe@deloittecn.com.cn'))
+      .toEqual(['jane.doe@deloittecn.com.cn', 'jane.doe@deloitte.com.cn'])
+    expect(silentSsoEmailCandidates('JANE.DOE@DELOITTECN.COM.CN'))
+      .toEqual(['JANE.DOE@DELOITTECN.COM.CN', 'JANE.DOE@deloitte.com.cn'])
+  })
+
+  it('appends the reverse deloittecn rewrite for a deloitte.com.cn probe', () => {
+    expect(silentSsoEmailCandidates('jane.doe@deloitte.com.cn'))
+      .toEqual(['jane.doe@deloitte.com.cn', 'jane.doe@deloittecn.com.cn'])
+  })
+
+  it('leaves domains without a rewrite as a single candidate', () => {
+    expect(silentSsoEmailCandidates('jane.doe@example.com')).toEqual(['jane.doe@example.com'])
+    expect(silentSsoEmailCandidates('not-an-email')).toEqual(['not-an-email'])
+    expect(silentSsoEmailCandidates('  jane.doe@example.com  ')).toEqual(['jane.doe@example.com'])
+  })
+
+  it('collapses rewrites that equal the raw UPN modulo case', () => {
+    // A mixed-case alias spelling makes the canonical rewrite the identity;
+    // it must not resurface as a third candidate — the deloittecn swap is
+    // the only second entry.
+    expect(silentSsoEmailCandidates('Jane.Doe@DELOITTE.COM.CN'))
+      .toEqual(['Jane.Doe@DELOITTE.COM.CN', 'Jane.Doe@deloittecn.com.cn'])
+    expect(silentSsoEmailCandidates('Jane.Doe@Deloitte.com.cn'))
+      .toEqual(['Jane.Doe@Deloitte.com.cn', 'Jane.Doe@deloittecn.com.cn'])
+  })
+})
+
 describe('silent login orchestration', () => {
   const os: SsoOsUser = {
     username: 'jdoe',
@@ -1060,6 +1110,122 @@ describe('silent login orchestration', () => {
       .toBe('{"userName":"Jane Doe","email":"jane.doe@deloittecn.com.cn"}')
     expect(JSON.parse(request.calls[1]!.body).jsonData)
       .toBe('{"userName":"Jane Doe","email":"jane.doe@deloitte.com.cn"}')
+  })
+
+  it('accepts the raw deloittecn UPN on the first POST and never tries the alias', async () => {
+    const request = boundary('{"code":"200","token":"silent-token"}')
+    const result = await silentSsoLogin({
+      request,
+      appId: '1007',
+      appKey: APP_KEY,
+      probe: async () => ({ ...os, email: 'jane.doe@deloittecn.com.cn' }),
+    })
+    expect(result).toEqual({
+      ok: true,
+      session: {
+        email: 'jane.doe@deloittecn.com.cn',
+        username: 'jdoe',
+        fullName: 'Jane Doe',
+        domain: 'CORP',
+        token: 'silent-token',
+        source: 'silent',
+      },
+    })
+    expect(request.calls).toHaveLength(1)
+    expect(JSON.parse(request.calls[0]!.body).jsonData)
+      .toBe('{"userName":"Jane Doe","email":"jane.doe@deloittecn.com.cn"}')
+  })
+
+  it('falls back to the reverse deloittecn rewrite when the portal refuses the alias form', async () => {
+    // The #047 shape: the probe reports the @deloitte.com.cn UPN, the
+    // portal answers `Invalid username! (code 1000)` for it, and only the
+    // deloittecn spelling authenticates.
+    const request = boundaryQueue([
+      '{"code":"1000","message":"Invalid username!"}',
+      '{"code":"200","token":"silent-token"}',
+    ])
+    const result = await silentSsoLogin({
+      request,
+      appId: '1007',
+      appKey: APP_KEY,
+      probe: async () => os,
+    })
+    expect(result).toEqual({
+      ok: true,
+      session: {
+        email: 'jane.doe@deloittecn.com.cn',
+        username: 'jdoe',
+        fullName: 'Jane Doe',
+        domain: 'CORP',
+        token: 'silent-token',
+        source: 'silent',
+      },
+    })
+    expect(request.calls).toHaveLength(2)
+    expect(JSON.parse(request.calls[0]!.body).jsonData)
+      .toBe('{"userName":"Jane Doe","email":"jane.doe@deloitte.com.cn"}')
+    expect(JSON.parse(request.calls[1]!.body).jsonData)
+      .toBe('{"userName":"Jane Doe","email":"jane.doe@deloittecn.com.cn"}')
+  })
+
+  it('fails with the last candidate reason and one warn line per candidate when both are refused', async () => {
+    const request = boundaryQueue([
+      '{"code":"1000","message":"Invalid username!"}',
+      '{"code":"1000","message":"User does not exist"}',
+    ])
+    const warnings: string[] = []
+    const result = await silentSsoLogin({
+      request,
+      appId: '1007',
+      appKey: APP_KEY,
+      probe: async () => os,
+      onWarn: message => { warnings.push(message) },
+    })
+    // The reason is the last failure; the browser fallback consumes this
+    // same {ok:false} union, so its decision surface is unchanged.
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('User does not exist (code 1000)')
+    expect(warnings).toEqual([
+      'dsh-plugin-desktop: sso silent token request failed: Invalid username! (code 1000)',
+      'dsh-plugin-desktop: sso silent token request failed: User does not exist (code 1000)',
+    ])
+    expect(request.calls).toHaveLength(2)
+  })
+
+  it('posts exactly once for a probe whose domain has no rewrite', async () => {
+    const request = boundary('{"code":"1000","message":"Invalid username!"}')
+    const result = await silentSsoLogin({
+      request,
+      appId: '1007',
+      appKey: APP_KEY,
+      probe: async () => ({ ...os, email: 'jane.doe@example.com' }),
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('Invalid username! (code 1000)')
+    expect(request.calls).toHaveLength(1)
+    expect(JSON.parse(request.calls[0]!.body).jsonData)
+      .toBe('{"userName":"Jane Doe","email":"jane.doe@example.com"}')
+  })
+
+  it('never posts the same candidate twice for a mixed-case alias spelling', async () => {
+    const request = boundary('{"code":"1000","message":"Invalid username!"}')
+    const warnings: string[] = []
+    const result = await silentSsoLogin({
+      request,
+      appId: '1007',
+      appKey: APP_KEY,
+      probe: async () => ({ ...os, email: 'Jane.Doe@DELOITTE.COM.CN' }),
+      onWarn: message => { warnings.push(message) },
+    })
+    expect(result.ok).toBe(false)
+    expect(request.calls).toHaveLength(2)
+    const emails = request.calls.map(call =>
+      (JSON.parse(call.body) as Record<string, string>).jsonData)
+    expect(emails).toEqual([
+      '{"userName":"Jane Doe","email":"Jane.Doe@DELOITTE.COM.CN"}',
+      '{"userName":"Jane Doe","email":"Jane.Doe@deloittecn.com.cn"}',
+    ])
+    expect(warnings).toHaveLength(2)
   })
 
   it('fails with a reason when no identity or email resolves', async () => {

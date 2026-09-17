@@ -719,6 +719,36 @@ export function canonicalizeSsoEmail(email: string): string {
   return trimmed
 }
 
+/**
+ * Silent-path email candidates for one probed UPN, in probe order: the raw
+ * UPN first, then the domain rewrite when it differs — the forward nova
+ * alias (`@deloittecn.com.cn` → `@deloitte.com.cn`, i.e.
+ * {@link canonicalizeSsoEmail}) or, for a probe that already saw the
+ * `@deloitte.com.cn` spelling, the reverse rewrite to
+ * `@deloittecn.com.cn`: the portal's SignEntity lookup only knows some
+ * accounts in their `deloittecn` form, so the one-directional alias left
+ * those boots with a single doomed candidate and a browser popup every
+ * boot (issue #047). A rewrite that equals an earlier candidate modulo
+ * case collapses into it, so every entry costs at most one POST and the
+ * first spelling wins. The browser path never consults this list — its
+ * session canonicalization stays on {@link canonicalizeSsoEmail}.
+ */
+export function silentSsoEmailCandidates(rawEmail: string): string[] {
+  const trimmed = rawEmail.trim()
+  const rewrites = [canonicalizeSsoEmail(trimmed)]
+  const at = trimmed.lastIndexOf('@')
+  if (at >= 0 && trimmed.slice(at + 1).toLowerCase() === 'deloitte.com.cn') {
+    rewrites.push(`${trimmed.slice(0, at)}@deloittecn.com.cn`)
+  }
+  const candidates: string[] = []
+  for (const candidate of [trimmed, ...rewrites]) {
+    if (!candidates.some(seen => seen.toLowerCase() === candidate.toLowerCase())) {
+      candidates.push(candidate)
+    }
+  }
+  return candidates
+}
+
 /** Session username: the email's local part, else the payload username, else `user`. */
 export function ssoUsernameFromPayload(payload: Pick<SsoCallbackPayload, 'email' | 'username'>): string {
   const local = payload.email.split('@')[0]?.trim() ?? ''
@@ -1132,10 +1162,12 @@ export interface SilentSsoLoginOptions {
 
 /**
  * Run the silent path: probe the OS user, then POST one SignEntity per email
- * candidate (raw UPN first, the canonicalized `@deloitte.com.cn` alias only
- * when it differs — nova's candidate order; the alias rewrite is identity
- * bookkeeping, and the token endpoint expects the raw UPN). The SignEntity
- * `userName` is the display name, never the login id.
+ * candidate (see {@link silentSsoEmailCandidates}: the raw UPN first, then
+ * the domain rewrite in whichever direction differs — the nova
+ * `@deloitte.com.cn` alias for a `@deloittecn.com.cn` probe, or the reverse
+ * `@deloittecn.com.cn` form for a probe that already saw the alias, whose
+ * accounts the portal only knows in that spelling, issue #047). The
+ * SignEntity `userName` is the display name, never the login id.
  */
 export async function silentSsoLogin(options: SilentSsoLoginOptions): Promise<SsoLoginResult> {
   const probe = options.probe ?? (async () => await probeSsoOsUser({
@@ -1161,8 +1193,7 @@ export async function silentSsoLogin(options: SilentSsoLoginOptions): Promise<Ss
       `${BIN_NAME}: silent sso uses a weak display name (${JSON.stringify(userName)}); the portal may reject it`,
     )
   }
-  const canonical = canonicalizeSsoEmail(rawEmail)
-  const candidates = rawEmail.toLowerCase() === canonical.toLowerCase() ? [rawEmail] : [rawEmail, canonical]
+  const candidates = silentSsoEmailCandidates(rawEmail)
   let lastReason = 'no email candidate was attempted'
   for (const candidate of candidates) {
     try {

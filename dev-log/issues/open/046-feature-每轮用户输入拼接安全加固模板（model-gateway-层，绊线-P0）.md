@@ -135,6 +135,11 @@ impl NewFeature {
 - v2 计划修订（2026-09-16 08:18）：July 拍板吸收提前——首次 beta 双文件发布即带 preset 自我修改禁令+禁绕闸条款（草案已入卡），与 system prompt 重复可接受。内嵌 v1 冻结不动；富化文本=beta 文件 revision 1。发布轮=July 验完 b102 后：管线签名脚本+上传+发 beta。
 - 占位符填充修复+模板富化（2026-09-17 08:25，July 指出装配偏差）：①assembly 改 FILL 语义——{user_input_placeholder} 由用户原文替换（输入落进 <USER> 块内），不再字面量随行+尾部 append；幂等标记=占位符前模板前缀；无 token 模板保留 legacy append；multipart 前置 part=去 token 模板+分隔符。②内嵌模板资产加 Desktop integrity 两条款（吸收 preset 自我修改禁令，preset 不动，重复=July 已裁可接受；b102 未被任何用户安装故就地改 v1）。③测试改填充分义断言+新增 legacy append 用例。门禁：desktop 2585 绿/tc 0/layout 一致。reviewer-046-fill（f5580eb2）跑中；【不构建，等 July 口令】。
 - 占位符修复评审 APPROVED（f5580eb2）+ P2×2/P3×3 全落（2026-09-17 08:40）：①assertAssemblableGuardrailTemplate——模板必须恰含一个 {user_input_placeholder} 且非首字节（文档解析/缓存解析/内嵌加载三处同款校验；token 首字节=空标记会静默废掉重写，多 token=字面量随行）②网关测试补 token 模板二趟幂等+multipart（剥离 part+无字面量+二趟跳过）③多 token 字符串/不一致性被源头校验消解 ④过时 append 注释更新为 fill 语义 ⑤资产段落位置（Script execution 前）评审判可接受。夹具全线补 token。门禁：desktop 2590 绿/tc 0。【未构建，等 July 口令】b103=fill 语义+Desktop integrity 模板+assemblability 校验。
+- 发布轮 worker 完成（2026-09-17 10:45，fb6ccffe，110 工具调用，未提交）：
+【交付】①sign-prompt-document.mjs（386 行 CLI：模板校验复制客户端规则+canonical 签名+元数据）②verify-security-prompt-document.ts（234 行验证缝——纯 node 无法 import 桌面 src 图[parameter properties]，实证 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX 后选 node --experimental-transform-types 子进程跑真 verifyDesktopSecurityPromptDocument，永不 fork 验证逻辑）③security-prompt-publish.yml（215 行：dispatch、毒化输入纪律、签名→fleet 信任根验证门→非 dry-run 才传工件、零 GitLab 凭据、catalog 式注释）④upload-prompt-document.mjs（intranet 上传：文件名↔通道配对+信任根复验+部署文件反回滚 floor+commits API）⑤tools 测试 23 个入 check 链。
+【决策】无仓内 revision 状态文件——floor=GitLab 部署文件（推送时读）；通道不进签名字节（只驱动文件名/元数据）；发布侧拒等值重发（内容变=新 revision），客户端等值幂等再确认——镜像 publish-local 语义。
+【门禁】tools 23 绿/layout 绿/desktop tc 0/desktop 2590/market 499（b103 基线零回归）；冻结资产字节不动。
+→ reviewer 待派。真发 beta revision 1 前等 July 口令。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
