@@ -495,7 +495,11 @@ async function commandPackTarball(flags) {
       : resolve(REPO_ROOT, ...DEFAULT_PLUGIN_SOURCES_DIR_RELATIVE.split('/'))
     const { allowlistPath } = defaultPaths(flags)
     const entries = loadAllowlist(allowlistPath, { companyCatalogOrigin: resolveCatalogOrigin(flags) })
-    const packEntries = entries.filter((entry) => entry.source?.kind === 'tarball' && entry.source.path !== undefined)
+    // Revoked entries ship no bytes: they are signed as revoked records in
+    // the manifest (packed from the verified bytes already measured at
+    // accept time), never re-packed — and their gitignored skills-bundle
+    // asset must not turn a revocation into a pack failure (#043).
+    const packEntries = entries.filter((entry) => entry.revoked !== true && entry.source?.kind === 'tarball' && entry.source.path !== undefined)
     if (packEntries.length === 0) {
       console.log(`pack-tarball: no allowlist entry pins a source.path artifact — nothing to pack (the tarball channel's pack-artifact form is the only one that packs here)`)
     }

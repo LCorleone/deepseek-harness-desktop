@@ -96,16 +96,22 @@ export function assertSkillsBundlePresent(sourceDir, at = SKILLS_PACKAGE_NAME) {
  * @param pluginSourcesRoot - the `plugin-sources/` directory to scan.
  * @returns `{ missing: [{stem, dir}], present: [stem] }`.
  */
-export function skillsBundleStagingTrees(pluginSourcesRoot) {
+export function skillsBundleStagingTrees(pluginSourcesRoot, revokedStems) {
   const missing = []
   const present = []
-  if (!existsSync(pluginSourcesRoot)) return { missing, present }
-  for (const dirent of readdirSync(pluginSourcesRoot, { withFileTypes: true })) {
-    if (!dirent.isDirectory()) continue
-    if (packageNameOf(join(pluginSourcesRoot, dirent.name)) !== SKILLS_PACKAGE_NAME) continue
-    const hasBundle = existsSync(join(pluginSourcesRoot, dirent.name, ...SKILLS_BUNDLE_RELATIVE_PATH.split('/')))
-    if (hasBundle) present.push(dirent.name)
-    else missing.push({ stem: dirent.name, dir: join(pluginSourcesRoot, dirent.name) })
+  if (existsSync(pluginSourcesRoot)) {
+    for (const dirent of readdirSync(pluginSourcesRoot, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue
+      if (packageNameOf(join(pluginSourcesRoot, dirent.name)) !== SKILLS_PACKAGE_NAME) continue
+      // A REVOKED version's staging tree is left exactly as committed: the
+      // fresh bundle must not be copied into it (it ships no bytes, and
+      // overwriting its content would flip every downstream digest
+      // measurement against its frozen pins) — #043, 2026-09-17.
+      if (revokedStems !== undefined && revokedStems.has(dirent.name)) continue
+      const hasBundle = existsSync(join(pluginSourcesRoot, dirent.name, ...SKILLS_BUNDLE_RELATIVE_PATH.split('/')))
+      if (hasBundle) present.push(dirent.name)
+      else missing.push({ stem: dirent.name, dir: join(pluginSourcesRoot, dirent.name) })
+    }
   }
   return { missing, present }
 }
@@ -225,7 +231,15 @@ export function ensureSkillsBundles({
     }
     log(`skills-bundle: ${entry.packageName}@${entry.version} staging bundle document digest ${digest.slice(0, 16)}… equals the accepted pin (nothing rebuilt this run — the shipping bytes are the staging tree's own)`)
   }
-  const { missing, present } = skillsBundleStagingTrees(pluginSourcesRoot)
+  // The staging-tree stems of REVOKED skills entries (see the exemption
+  // note at `pinned`): their trees are frozen — no rebuild copy, no
+  // re-measure (a revoked version ships no bytes and keeps its pins).
+  const revokedStems = new Set(
+    entries
+      .filter((entry) => entry.revoked === true && entry.packageName === SKILLS_PACKAGE_NAME)
+      .map((entry) => `${SKILLS_PACKAGE_NAME}-${entry.version}`),
+  )
+  const { missing, present } = skillsBundleStagingTrees(pluginSourcesRoot, revokedStems)
   if (missing.length === 0) {
     log(
       `skills-bundle: no ${SKILLS_PACKAGE_NAME} staging tree lacks ${SKILLS_BUNDLE_RELATIVE_PATH} `
