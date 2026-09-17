@@ -153,6 +153,11 @@ export function stagingBundleWasProvisioned(stagingDir) {
  * @param pluginSourcesRoot - the plugin-sources root the pack step uses.
  */
 export function needsTreeDigestMeasurement(entry, pluginSourcesRoot) {
+  // Revoked entries never re-measure: their staging tree is frozen and
+  // unpacked, and a stale pre-revoke marker on a dev machine must not
+  // select them against an artifact that no longer gets packed (aligns
+  // all four revoked skip points on the same field; review P2).
+  if (entry.revoked === true) return false
   if (entry.treeDigest === undefined) return true
   if (entry.source?.kind !== 'tarball' || entry.source.path === undefined) return false
   return stagingBundleWasProvisioned(stagingTreeForTarballSourcePath(entry.source.path, pluginSourcesRoot))
