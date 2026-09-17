@@ -93,6 +93,7 @@ impl NewFeature {
 
 ### 2026-09-17
 - 0.1.3 仓库侧链完成（2026-09-17 13:18，July 口令「走」）：bump 0.1.3+build+verify:bundle 绿 → corepack yarn pack（npm pack 拉全局 yarn v1 失败，教训）tgz 17,765,184B sha256 0f13a95f… → staging 提交目录+handoff.json（v2，146 字 desc）→ 十步闸门 PASS（treeDigest a2a01b7d…）→ accept-handoff（catalog-origin 补参）入 allowlist（bundleDocumentDigest=826ee8c0… ←P1 解除：CI 重建 bundle 将与 0.1.3 钉值一致）commit 619bbd092e → plugin-sources 快照 18 文件（bundle 23.46MB）→ 待提交+bump commit。下一步=publish（beta seq38，带 notebook 同批）——等 July 口令。
+- 【seq38 beta 已上线】（2026-09-17 14:33，July 口令「先推beta 只我们几个先测试」+ --confirm-fleet-upgraded 证据=stable35 自 09-14 带字段在线、b90/b93 全程无黑）：skills 0.1.3（九技能，23.46MB bundle）+ notebook 0.1.0 同批首发；0.1.2 以 revoked 记录留窗（tgz 字节从线上取回补工件，integrity 与冻结签名值 MATCH）；9 tarball 全托管+复读验证。发布路上六层一次性硬化（评审 NEEDS-FIX 三项已修入库 49035e0/5bd24cd/1232b52，P3 测试债记档）：断言豁免/树冻结/包跳过/测量跳过/inline-integrity 形态/工件补字节。后续：0.1.2 无钥 retire（手摘窗，发布吊销已在线=凭证）；stable promote 等 beta 浸泡+口令。测试锚点：名单机重启→市场 skills 0.1.3（11 技能）→装→抽跑 office/API 技能。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
