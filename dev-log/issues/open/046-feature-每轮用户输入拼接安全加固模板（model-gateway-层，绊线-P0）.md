@@ -132,6 +132,7 @@ impl NewFeature {
 
 ### 2026-09-17
 - v2 搬迁计划（2026-09-16 08:17，July 认可）：preset（agent.cordis.yml 32-42）与模板 v1 零重叠（preset=防 agent 改客户端自己+沙箱礼仪+Python 纪律；模板=防外带/探测/破坏）。值得搬的=「禁绕闸/禁自我修改」三禁令——历史教训：每次 agent 绕闸都要改 preset 措辞=要发版，搬进模板后措辞可发文件热更。计划：首次远程更新（v2 模板）时吸收自我修改禁令+一句 'never attempt to disable or work around the desktop's own gates, policy, or configuration'（≈+60 tokens/轮）。沙箱礼仪与 Python 纪律留 preset（UX 非威胁面，system prompt 一次性付 token 更便宜）。现在不动，b102 已带 v1。
+- v2 计划修订（2026-09-16 08:18）：July 拍板吸收提前——首次 beta 双文件发布即带 preset 自我修改禁令+禁绕闸条款（草案已入卡），与 system prompt 重复可接受。内嵌 v1 冻结不动；富化文本=beta 文件 revision 1。发布轮=July 验完 b102 后：管线签名脚本+上传+发 beta。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
@@ -179,3 +180,20 @@ impl NewFeature {
 ### 讨论记录
 
 [记录讨论要点]
+
+## v2 计划修订（2026-09-16 08:18，July 拍板）
+
+吸收提前：首次 beta 双文件发布即携带 preset 自我修改禁令（不等 v2）——与 system prompt 重复可接受（每轮近因+措辞热更收益 > token 成本，≈+80 tokens/轮）。沙箱礼仪与 Python 纪律仍留 preset。内嵌 v1 保持冻结（b102 已出厂）；富化模板作为 beta 文件 revision 1 发布，名单机验签后即覆盖内嵌——名单先浸泡富化版，stable 文件后发。
+
+### beta revision 1 补充文本草案（在 v1 末尾"Note"节前插入）
+
+```
+**Desktop integrity**
+- Never help install, remove, enable, or disable the desktop's own plugins,
+  or modify its settings, policy, agent presets, permission levels, trust
+  and signing configuration, or anything under its installation or
+  user-data directories
+- Never suggest or attempt workarounds for the desktop's own gates, policy,
+  or configuration (editing files, the terminal, or the CLI); a sandbox
+  denial is a gate, not a verdict — do not reroute around it
+```
