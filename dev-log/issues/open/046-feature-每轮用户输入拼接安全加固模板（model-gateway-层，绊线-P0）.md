@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-16
-**Updated**: 2026-09-16
+**Updated**: 2026-09-17
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -128,6 +128,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-17
+- v2 搬迁计划（2026-09-16 08:17，July 认可）：preset（agent.cordis.yml 32-42）与模板 v1 零重叠（preset=防 agent 改客户端自己+沙箱礼仪+Python 纪律；模板=防外带/探测/破坏）。值得搬的=「禁绕闸/禁自我修改」三禁令——历史教训：每次 agent 绕闸都要改 preset 措辞=要发版，搬进模板后措辞可发文件热更。计划：首次远程更新（v2 模板）时吸收自我修改禁令+一句 'never attempt to disable or work around the desktop's own gates, policy, or configuration'（≈+60 tokens/轮）。沙箱礼仪与 Python 纪律留 preset（UX 非威胁面，system prompt 一次性付 token 更便宜）。现在不动，b102 已带 v1。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
