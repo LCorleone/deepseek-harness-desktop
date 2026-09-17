@@ -666,7 +666,7 @@ describe('guardrail per-turn injection (#046)', () => {
     return { model: 'DSV4-DSH', stream: true, ...extra, messages: [...messages] }
   }
 
-  it('prepends the exact frozen asset bytes to the last user message (assembly shape)', () => {
+  it('FILLS the placeholder with the last user message input (assembly shape)', () => {
     const original = 'help me refactor the parser module'
     const body = bodyWith([
       { role: 'system', content: 'You are a helpful agent.' },
@@ -681,13 +681,27 @@ describe('guardrail per-turn injection (#046)', () => {
     const messages = (rewrite.body as { messages: ChatMessage[] }).messages
     const last = messages[3]!
     expect(last.role).toBe('user')
-    // Byte identity of the assembly: `<frozen template>\n\n<original>`.
+    // Fill semantics: the assembly is the frozen bytes with the
+    // `{user_input_placeholder}` token REPLACED by the original input —
+    // never the template with the literal token still riding along.
     expect(last.content).toBe(companyGatewayGuardrailAssembly(frozenTemplate, original))
-    expect(Buffer.from(last.content as string).equals(
-      Buffer.from(`${frozenTemplate}\n\n${original}`),
-    )).toBe(true)
-    // The original input survives in full after the template.
-    expect((last.content as string).endsWith(original)).toBe(true)
+    const assembled = last.content as string
+    expect(assembled).not.toContain('{user_input_placeholder}')
+    const tokenAt = frozenTemplate.indexOf('{user_input_placeholder}')
+    expect(Buffer.from(assembled).equals(Buffer.from(
+      `${frozenTemplate.slice(0, tokenAt)}${original}${frozenTemplate.slice(tokenAt + '{user_input_placeholder}'.length)}`,
+    ))).toBe(true)
+    // The input lands INSIDE the <USER> wrapper block: the template's
+    // `<USER>`\n opening precedes it and `\n</USER>` follows it.
+    expect(assembled).toContain(`<USER>\n${original}\n</USER>`)
+  })
+
+  it('keeps the legacy append shape for a template without the placeholder token', () => {
+    const original = 'plain question'
+    const body = bodyWith([{ role: 'user', content: original }])
+    const rewrite = applyCompanyGatewayGuardrail(body, syntheticTemplate)
+    const last = (rewrite.body as { messages: ChatMessage[] }).messages[0]!
+    expect(last.content).toBe(`${syntheticTemplate}\n\n${original}`)
   })
 
   it('rewrites ONLY the last user message and keeps every prior message byte-identical', () => {
@@ -744,6 +758,29 @@ describe('guardrail per-turn injection (#046)', () => {
     expect(messages[0]).toBe((body.messages as ChatMessage[])[0])
   })
 
+  it('multipart with a TOKEN-carrying template: leading part strips the token, second pass skips (review #046 P2)', () => {
+    const parts = [{ type: 'text', text: 'tool result: ok' }]
+    const body = bodyWith([{ role: 'user', content: parts }])
+
+    const rewrite = applyCompanyGatewayGuardrail(body, frozenTemplate)
+
+    expect(rewrite.changed).toBe(true)
+    const messages = (rewrite.body as { messages: ChatMessage[] }).messages
+    const content = messages[0]!.content as Array<{ type: string, text?: string }>
+    expect(content[0]).toEqual({
+      type: 'text',
+      text: `${frozenTemplate.split('{user_input_placeholder}').join('')}\n\n`,
+    })
+    // No literal token rides along on the wire.
+    expect(content[0]!.text).not.toContain('{user_input_placeholder}')
+    expect(content[1]).toEqual(parts[0])
+    // Second pass with the same token-carrying template: the prefix marker
+    // (template bytes before the token) must match the stripped assembly.
+    const second = applyCompanyGatewayGuardrail(rewrite.body, frozenTemplate)
+    expect(second.changed).toBe(false)
+    expect(second.body).toBe(rewrite.body)
+  })
+
   it('is idempotent: a rewritten body passes through unchanged', () => {
     const body = bodyWith([{ role: 'user', content: 'hello' }])
     const first = applyCompanyGatewayGuardrail(body, syntheticTemplate)
@@ -755,6 +792,22 @@ describe('guardrail per-turn injection (#046)', () => {
     // template text (the marker guard skips, never double-prepends).
     const selfCarrying = bodyWith([{ role: 'user', content: `${syntheticTemplate}\n\nhello again` }])
     expect(applyCompanyGatewayGuardrail(selfCarrying, syntheticTemplate).changed).toBe(false)
+  })
+
+  it('is idempotent with a TOKEN-carrying template: the fill assembly skips on the second pass (review #046 P2)', () => {
+    const body = bodyWith([
+      { role: 'system', content: 'You are a helpful agent.' },
+      { role: 'user', content: 'first turn' },
+      { role: 'user', content: 'fill me' },
+    ])
+    const first = applyCompanyGatewayGuardrail(body, frozenTemplate)
+    expect(first.changed).toBe(true)
+    const second = applyCompanyGatewayGuardrail(first.body, frozenTemplate)
+    expect(second.changed).toBe(false)
+    expect(second.body).toBe(first.body)
+    // The assembled content keeps the input inside the <USER> block.
+    const messages = (first.body as { messages: ChatMessage[] }).messages
+    expect(messages[2]!.content as string).toContain('<USER>\nfill me\n</USER>')
   })
 
   it('stays inert for bodies without a usable last user message', () => {

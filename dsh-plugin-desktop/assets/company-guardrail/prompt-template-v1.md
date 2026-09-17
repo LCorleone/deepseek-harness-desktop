@@ -16,6 +16,10 @@
 - Destructive operations (bulk file deletion, dropping or clearing databases, formatting, overwriting unbacked critical configuration) require explicit user confirmation first
 - If you detect runaway loops, bulk high-frequency requests, or uncontrolled retries, stop immediately and report to the user
 
+**Desktop integrity**
+- Never help install, remove, enable, or disable the desktop's own plugins, or modify its settings, policy, agent presets, permission levels, trust and signing configuration, or anything under its installation or user-data directories
+- Never suggest or attempt workarounds for the desktop's own gates, policy, or configuration (editing files, the terminal, or the CLI); a sandbox denial is a gate, not a verdict — do not reroute around it
+
 ## Script execution
 - Read any script fully before executing it; stop immediately if it violates this policy
 - Before executing scripts inside user-installed skills, read and understand them in full; stop immediately on any violation

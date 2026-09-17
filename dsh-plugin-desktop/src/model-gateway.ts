@@ -541,16 +541,41 @@ export function storedCredentialsPath(home: string): string {
 const GUARDRAIL_ASSEMBLY_SEPARATOR = '\n\n'
 
 /**
- * The per-turn assembly shape: the exact template bytes, one blank line,
- * then the user's original input — `<template>\n\n<original>`. The frozen
- * v1 template itself ends with a `<USER>` wrapper block, so the separator
- * hands the model the original input as the block's continuation.
+ * The user-input placeholder token the template carries: the token's whole
+ * purpose is to be REPLACED by the user's original input at assembly time,
+ * so the input lands inside the template's `<USER>` wrapper block — never
+ * appended after the template with the literal token still riding along
+ * (July's design; the append-only assembly was a review-fixed mistake).
+ */
+const GUARDRAIL_PLACEHOLDER_TOKEN = '{user_input_placeholder}'
+
+/**
+ * The idempotence marker: the template's bytes up to (not including) the
+ * placeholder token — everything a rewritten message is guaranteed to start
+ * with once the template has been applied, regardless of what the user's
+ * input turned out to be. A template without the token falls back to the
+ * whole template as its own marker.
+ */
+function companyGatewayGuardrailMarker(template: string): string {
+  const at = template.indexOf(GUARDRAIL_PLACEHOLDER_TOKEN)
+  return at === -1 ? template : template.slice(0, at)
+}
+
+/**
+ * The per-turn assembly shape: FILL, not append. The template's
+ * `{user_input_placeholder}` token is replaced by the user's original
+ * input — with the frozen v1 shape the model sees `<GUARDRAIL …policy…
+ * </GUARDRAIL>… <USER>\n<original input>\n</USER>`: the policy precedes the
+ * input and the input sits inside the wrapper block. A template carrying
+ * no token keeps the legacy append shape (`<template>\n\n<original>`).
  * @param template - the active guardrail template text.
  * @param original - the user message's original content.
  * @returns the assembled content.
  */
 export function companyGatewayGuardrailAssembly(template: string, original: string): string {
-  return `${template}${GUARDRAIL_ASSEMBLY_SEPARATOR}${original}`
+  const at = template.indexOf(GUARDRAIL_PLACEHOLDER_TOKEN)
+  if (at === -1) return `${template}${GUARDRAIL_ASSEMBLY_SEPARATOR}${original}`
+  return `${template.slice(0, at)}${original}${template.slice(at + GUARDRAIL_PLACEHOLDER_TOKEN.length)}`
 }
 
 /** A multipart content part of a chat-completions message. */
@@ -570,13 +595,18 @@ export interface CompanyGatewayGuardrailRewrite {
 
 /**
  * Rewrite one PARSED chat-completions request body: find the LAST message
- * with `role === 'user'` and prepend the active template to its content —
- * a string content becomes `<template>\n\n<original>`, a multipart content
- * gains one leading `text` part carrying the same assembly prefix. The
- * rewrite is idempotent per request body: a content that already starts
- * with the template text (the same body passing the boundary twice, an
- * adapter-internal retry of the rewritten body) is returned unchanged, so
- * the template is prepended at most once per request body. Harness-level
+ * with `role === 'user'` and apply the active template to its content —
+ * FILL semantics for a token-carrying template: the string content becomes
+ * the template with its `{user_input_placeholder}` token REPLACED by the
+ * original input (input inside the `<USER>` wrapper); a token-less
+ * template keeps the legacy append shape (`<template>\n\n<original>`);
+ * a multipart content gains one leading `text` part carrying the template
+ * with the token stripped. The rewrite is idempotent per request body: a
+ * content that already starts with the template's prefix-before-token (or
+ * the whole template when it carries no token — the same body passing the
+ * boundary twice, an adapter-internal retry of the rewritten body) is
+ * returned unchanged, so the template applies at most once per request
+ * body. Harness-level
  * retries re-send the ORIGINAL body (the session history never sees the
  * wire rewrite), which the same guard then covers exactly once again.
  *
@@ -606,21 +636,27 @@ export function applyCompanyGatewayGuardrail(body: unknown, template: string): C
     // rather than walking back to an earlier user message.
     const content = record.content
     if (typeof content === 'string') {
-      if (content.startsWith(template)) return { changed: false, body }
+      if (content.startsWith(companyGatewayGuardrailMarker(template))) return { changed: false, body }
       const rewritten: unknown[] = [...messages]
       rewritten[index] = { ...record, content: companyGatewayGuardrailAssembly(template, content) }
       return { changed: true, body: { ...request, messages: rewritten } }
     }
     if (Array.isArray(content)) {
       const parts = content as readonly ChatCompletionsContentPart[]
+      const marker = companyGatewayGuardrailMarker(template)
       const first = parts[0]
       if (first !== undefined && first !== null && typeof first === 'object' && !Array.isArray(first)
-        && first.type === 'text' && typeof first.text === 'string' && first.text.startsWith(template)) {
+        && first.type === 'text' && typeof first.text === 'string' && first.text.startsWith(marker)) {
         return { changed: false, body }
       }
+      // A multipart user message (tool-result continuations, text beside
+      // images) has no single string to fill the placeholder with: the
+      // policy text rides as a leading text part with the placeholder token
+      // emptied, and the original parts follow untouched in the same user
+      // message the wrapper block conceptually covers.
       const rewritten: unknown[] = [...messages]
       const rewrittenContent: ChatCompletionsContentPart[] = [
-        { type: 'text', text: `${template}${GUARDRAIL_ASSEMBLY_SEPARATOR}` },
+        { type: 'text', text: `${template.split(GUARDRAIL_PLACEHOLDER_TOKEN).join('')}${GUARDRAIL_ASSEMBLY_SEPARATOR}` },
         ...parts,
       ]
       rewritten[index] = { ...record, content: rewrittenContent }

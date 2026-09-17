@@ -133,6 +133,8 @@ impl NewFeature {
 ### 2026-09-17
 - v2 搬迁计划（2026-09-16 08:17，July 认可）：preset（agent.cordis.yml 32-42）与模板 v1 零重叠（preset=防 agent 改客户端自己+沙箱礼仪+Python 纪律；模板=防外带/探测/破坏）。值得搬的=「禁绕闸/禁自我修改」三禁令——历史教训：每次 agent 绕闸都要改 preset 措辞=要发版，搬进模板后措辞可发文件热更。计划：首次远程更新（v2 模板）时吸收自我修改禁令+一句 'never attempt to disable or work around the desktop's own gates, policy, or configuration'（≈+60 tokens/轮）。沙箱礼仪与 Python 纪律留 preset（UX 非威胁面，system prompt 一次性付 token 更便宜）。现在不动，b102 已带 v1。
 - v2 计划修订（2026-09-16 08:18）：July 拍板吸收提前——首次 beta 双文件发布即带 preset 自我修改禁令+禁绕闸条款（草案已入卡），与 system prompt 重复可接受。内嵌 v1 冻结不动；富化文本=beta 文件 revision 1。发布轮=July 验完 b102 后：管线签名脚本+上传+发 beta。
+- 占位符填充修复+模板富化（2026-09-17 08:25，July 指出装配偏差）：①assembly 改 FILL 语义——{user_input_placeholder} 由用户原文替换（输入落进 <USER> 块内），不再字面量随行+尾部 append；幂等标记=占位符前模板前缀；无 token 模板保留 legacy append；multipart 前置 part=去 token 模板+分隔符。②内嵌模板资产加 Desktop integrity 两条款（吸收 preset 自我修改禁令，preset 不动，重复=July 已裁可接受；b102 未被任何用户安装故就地改 v1）。③测试改填充分义断言+新增 legacy append 用例。门禁：desktop 2585 绿/tc 0/layout 一致。reviewer-046-fill（f5580eb2）跑中；【不构建，等 July 口令】。
+- 占位符修复评审 APPROVED（f5580eb2）+ P2×2/P3×3 全落（2026-09-17 08:40）：①assertAssemblableGuardrailTemplate——模板必须恰含一个 {user_input_placeholder} 且非首字节（文档解析/缓存解析/内嵌加载三处同款校验；token 首字节=空标记会静默废掉重写，多 token=字面量随行）②网关测试补 token 模板二趟幂等+multipart（剥离 part+无字面量+二趟跳过）③多 token 字符串/不一致性被源头校验消解 ④过时 append 注释更新为 fill 语义 ⑤资产段落位置（Script execution 前）评审判可接受。夹具全线补 token。门禁：desktop 2590 绿/tc 0。【未构建，等 July 口令】b103=fill 语义+Desktop integrity 模板+assemblability 校验。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析

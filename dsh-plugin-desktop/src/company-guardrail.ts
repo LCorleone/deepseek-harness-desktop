@@ -39,8 +39,12 @@
  *    against its own channel's cached revision;
  * 3. the embedded frozen default v1, the committed asset
  *    `assets/company-guardrail/prompt-template-v1.md` bundled into the
- *    package at build time (byte-frozen; the assembly shape is
- *    `<template>\n\n<original>`).
+ *    package at build time (byte-frozen; the assembly FILLS the template's
+ *    `{user_input_placeholder}` token with the user's original input).
+ *    Every active template — verified document or embedded default —
+ *    carries the token exactly once and not as its first byte (validated
+ *    at the document verifier and the embedded loader), so the gateway's
+ *    prefix-marker idempotence stays total.
  *
  * Resolution NEVER blocks boot: the sibling fetches ride the boot-time
  * catalog fetch concurrency block with their own bounded timeouts, and
@@ -93,6 +97,33 @@ export const COMPANY_SECURITY_PROMPT_MAX_BYTES = 64 * 1024
 export const MAX_COMPANY_GUARDRAIL_TEMPLATE_BYTES = 8 * 1024
 /** Highest revision a document may carry, mirroring the manifest sequence ceiling. */
 const MAX_REVISION = 9_007_199_254_740_991
+
+/** The user-input placeholder token every active template must carry (see the gateway's fill assembly). */
+const GUARDRAIL_PLACEHOLDER_TOKEN = '{user_input_placeholder}'
+
+/**
+ * Assert a template is ASSEMBLABLE (#046 fill semantics): it must carry the
+ * `{user_input_placeholder}` token EXACTLY ONCE and not as its first byte.
+ * A token at index 0 would make the gateway's prefix-before-token marker
+ * the empty string (`startsWith('')` always true) and silently disable the
+ * rewrite; a second occurrence would ride along literally in the string
+ * fill. A template failing this is a publish/packaging fault and is
+ * refused at the layer that produced it (review #046 P2).
+ * @param template - the candidate template text.
+ * @param what - what the caller is validating, for the error message.
+ * @throws describing the fault.
+ */
+function assertAssemblableGuardrailTemplate(template: string, what: string): void {
+  const first = template.indexOf(GUARDRAIL_PLACEHOLDER_TOKEN)
+  if (first <= 0) {
+    throw new Error(
+      `${what} must carry the ${GUARDRAIL_PLACEHOLDER_TOKEN} token exactly once, after its policy text (found at offset ${String(first)})`,
+    )
+  }
+  if (template.indexOf(GUARDRAIL_PLACEHOLDER_TOKEN, first + GUARDRAIL_PLACEHOLDER_TOKEN.length) !== -1) {
+    throw new Error(`${what} must carry the ${GUARDRAIL_PLACEHOLDER_TOKEN} token exactly once`)
+  }
+}
 
 const STATE_VERSION = 1
 const STATE_DIRECTORY_NAME = 'company-guardrail'
@@ -219,6 +250,7 @@ function parseDesktopSecurityPromptValue(value: unknown): DesktopSecurityPromptD
       `the security prompt document template must be a non-empty string of at most ${String(MAX_COMPANY_GUARDRAIL_TEMPLATE_BYTES)} bytes`,
     )
   }
+  assertAssemblableGuardrailTemplate(value.template, 'the security prompt document template')
   if (typeof value.expiresAt !== 'string' || value.expiresAt.length < 20 || value.expiresAt.length > 64
     || !isMarketDateTimeFormat(value.expiresAt)
     || Number.isNaN(Date.parse(value.expiresAt))) {
@@ -414,6 +446,11 @@ function parseCachedChannel(value: unknown, channel: CompanyGuardrailChannel): C
       `${channel}.template must be a non-empty string of at most ${String(MAX_COMPANY_GUARDRAIL_TEMPLATE_BYTES)} bytes`,
     )
   }
+  try {
+    assertAssemblableGuardrailTemplate(value.template, `${channel}.template`)
+  } catch (cause) {
+    throw invalidState(cause instanceof Error ? cause.message : String(cause))
+  }
   return Object.freeze({ revision: value.revision as number, template: value.template })
 }
 
@@ -570,7 +607,13 @@ export function readEmbeddedCompanyGuardrailTemplate(moduleUrl: string = import.
   for (const candidate of candidates) {
     try {
       const text = readFileSync(candidate, 'utf8')
-      if (text.length > 0) return text
+      if (text.length > 0) {
+        // The same assemblability contract the document verifier enforces:
+        // a malformed frozen asset is a packaging defect, surfaced loudly
+        // (the caller keeps the guardrail inert, never broken).
+        assertAssemblableGuardrailTemplate(text, 'the embedded guardrail template asset')
+        return text
+      }
     } catch {
       // try the next candidate
     }
