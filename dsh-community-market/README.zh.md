@@ -10,12 +10,12 @@ DSH Community Market 是 [DSH Desktop](../README.md) 内置的开放插件市场
 
 当前界面分为四个视图：
 
-1. **发现**展示当前来源已经加载并标准化的全部条目。点击任一卡片都会立即打开同一个操作弹窗：Desktop 先检查能否受管安装，不能时再显示详情或安全的只展示手动提示。
+1. **发现**展示当前来源已经加载并标准化的全部条目。点击任一卡片都会立即打开同一个操作弹窗：Desktop 先检查能否受管安装，不能时再显示详情页。
 2. **可安装**是从已选来源完整索引中以 fail-closed 方式生成的结构候选列表。条目必须具有经过审核的 provider 验证与 `repository_backlink`、精确稳定的 npm 版本和规范仓库，同时排除产品 blocklist 中的 package。目录成员资格与 package 是否已安装、已有 receipt、处于禁用状态或后来已在本地卸载无关，这些状态都不会移除卡片。生成列表时不会逐包请求 npm；preview 与执行阶段会另行判断本地操作是否允许，这里的卡片与发现页共用同一个操作弹窗。
 3. **已安装**会把有效 Market receipt 与 Desktop 当前 profile 的 direct bundle 清单进行核对。Receipt 持有的 bundle 可以卸载；可变 bundle 可以禁用并重新启用。已禁用且由 receipt 持有的 bundle 会同时保留“启用”和“卸载”。
 4. **来源**用于选择和管理目录来源；同一时间只浏览一个来源。
 
-点击插件卡片会同步打开弹窗，并由 Host 判断这个精确的来源/条目能否使用受管安装。Preview 成功时，Host 才会针对它访问官方 npm registry，完整复核身份、仓库、integrity、runtime、lifecycle script、DSH bundle 证据和当前 profile，然后把同一个弹窗切换成精确确认；真正执行前还会再次检查可变状态。（嵌入方 Host 还可以注入 tarball 条目验证缝——通过 `desktopMarketTarballEntryVerifier` context capability 提供的 `MarketTarballEntryVerifier`：被它认领的条目改用 Host 签名目录事实验证而不访问 registry，其安装可运行在 Host 的受控 tarball 目标上，安装留下的 `file:` 依赖 pin 也按精确版本 pin 同等复核；未被认领的条目逐字节保持 registry 验证不变，未注入的部署亦然。）如果受管 preview 不可用，弹窗会保留为详情页，并可能展示 Host 根据规范化身份重建的精确 npm 命令。它不是 provider 命令，不会发送给 Desktop action，也不会自动执行；“打开 DSH 终端”只负责打开 Desktop 内置终端，由用户自行检查、复制和执行命令。通过这个内置终端运行的 `dsh plugin add` 会进入 Desktop 的受保护安装恢复边界；在其中直接执行 `pnpm`、`npm`，或在外部系统终端运行命令，都不受该边界保护。受管 profile 修改成功后，用户可以使用一次性 Desktop action 立即重启，也可以选择稍后重启。市场只是现有 DSH 能力之上的产品壳，不会再发明一套插件格式、包管理器、profile 存储或高权限安装器。
+点击插件卡片会同步打开弹窗，并由 Host 判断这个精确的来源/条目能否使用受管安装。Preview 成功时，Host 才会针对它访问官方 npm registry，完整复核身份、仓库、integrity、runtime、lifecycle script、DSH bundle 证据和当前 profile，然后把同一个弹窗切换成精确确认；真正执行前还会再次检查可变状态。（嵌入方 Host 还可以注入 tarball 条目验证缝——通过 `desktopMarketTarballEntryVerifier` context capability 提供的 `MarketTarballEntryVerifier`：被它认领的条目改用 Host 签名目录事实验证而不访问 registry，其安装可运行在 Host 的受控 tarball 目标上，安装留下的 `file:` 依赖 pin 也按精确版本 pin 同等复核；未被认领的条目逐字节保持 registry 验证不变，未注入的部署亦然。）如果受管 preview 失败，弹窗会切换为详情页并说明失败原因：瞬态失败（npm registry 抖动、连接重置、超时）提供原地【重试】重新发起同一 preview，确定性拒绝则只展示失败本身。市场 UI 不会展示任何手动命令，也不会打开终端——任何构建、任何 posture 下都没有 `dsh plugin add` 文本和【打开 DSH 终端】按钮；之后通过 Desktop 内置终端（在市场之外打开）运行的 `dsh plugin add` 仍会进入 Desktop 的受保护安装恢复边界，而在其中直接执行 `pnpm`、`npm`，或在外部系统终端运行命令，都不受该边界保护。受管 profile 修改成功后，用户可以使用一次性 Desktop action 立即重启，也可以选择稍后重启。市场只是现有 DSH 能力之上的产品壳，不会再发明一套插件格式、包管理器、profile 存储或高权限安装器。
 
 ## 目录来源
 
@@ -41,8 +41,8 @@ dshfind 可以提供包含精确稳定版本和 `repository_backlink` 证据、�
 - 只有用户明确点击并确认后，安装才会开始。
 - **可安装**是 Host 从已选目录以 fail-closed 方式生成的结构候选集合，不是 renderer 猜测，也不表示 npm 已经复核。候选必须具有经过审核的 provider 验证与 `repository_backlink`、精确稳定的 npm 目标和规范仓库，而且不能位于产品 blocklist。安装状态、receipt、卸载历史和启用/禁用状态都不会授予或移除目录成员资格。Preview 才会针对这个 package 首次执行官方 registry 与本地操作权威复核；执行前会再检查可变状态。
 - 受管安装器只接受精确、稳定的 npm 版本。GitHub URL、可变版本范围或 tag、deprecated package、目标 manifest 中定义了 `preinstall`、`install`、`postinstall` 或 `prepare` 的 package，以及不兼容内置 DSH rc.2 或 Node.js runtime 的 package，都会被拒绝。
-- 目录提供方返回的命令字符串、安装片段和仓库安装指令都会被丢弃，既不会作为 Host 手动提示展示，也绝不会执行。可用时，Host 会根据规范化身份单独重建一条精确 npm 手动提示；它会明确标为未完成全部验证，只供用户自行决定是否执行。对于符合条件的 dshfind 条目，该规范化身份只能来自受审的结构化 npm method，绝不会来自 `install.cmd`。
-- 受管操作中，renderer 只提交来源/条目或 receipt 标识。“打开 DSH 终端”提交的是空请求，不会接收、复制或执行界面展示的手动命令。
+- 目录提供方返回的命令字符串、安装片段和仓库安装指令都会被丢弃，既不会展示，也绝不会执行；市场 UI 不会自行重建任何手动命令。对于符合条件的 dshfind 条目，受审的结构化 npm method 只用于候选验证、绝不用于展示，`install.cmd` 会被直接丢弃。
+- 受管操作中，renderer 只提交来源/条目或 receipt 标识。请求一次性重启许可是市场 client 唯一可以调用的桌面操作。
 - 确认框会展示精确 npm package 与版本，以及当前 profile。插件变更使用 Desktop 已有的受管 DSH 插件服务，并且一次只执行一个操作；成功后可以选择**稍后重启**或**立即重启**。
 - Market 安装或内置终端中的 `dsh plugin add` 开始前，Desktop 只会为当前 profile 的 `package.json`、`pnpm-lock.yaml` 和 `pnpm-workspace.yaml` 创建私有恢复快照。它不会备份或主动回滚 `node_modules`，也不会读取环境变量或另行收集凭据存储；这三个白名单文件会按原内容复制，因此其中不应写入凭据。
 - 受保护安装成功后，要等下一次 Desktop generation 成功启动 Host，并在 30 秒期限内收到 Renderer 的健康报告，才算验证完成；此前会拒绝下一次受保护的插件添加。如果启动失败，Desktop 会先在本地保存诊断证据，再仅对已识别的前后配置状态执行恢复，并且最多自动重启一次。出现未知文件漂移时不会覆盖用户数据，而会要求手动修复。

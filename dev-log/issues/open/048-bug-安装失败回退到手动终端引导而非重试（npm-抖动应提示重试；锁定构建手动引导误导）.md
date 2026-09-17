@@ -99,6 +99,14 @@ C.（收紧后）市场 UI 的终端引导【无条件移除】：弹窗 footer 
 - [ ] 更新文档
 - 立卡（2026-09-17 11:16，July 裁定：npm 抖动应提示重试非回退手动引导）。worker 待派。
 - July 收紧（2026-09-17 11:17）：终端引导【一定不能出现】——无条件移除（原方案C的锁定门控升级为全量删除）。首个 worker 因模型 503 死亡（0f368328，无产出），重派中。
+- 范围回调（2026-09-17 11:39，July）：【撤回】无条件全删终端引导——正常详情页按钮+manualInstall 提示保留；只改【失败回退落点】：安装/预览失败落到详情表单时不得出现终端引导（无 open-terminal 按钮无 dsh plugin add 展示），改为瞬态=失败横幅+重试+关闭、非瞬态=现有失败展示（同样无终端引导）。实现=落点门控（记录详情视图是否因失败到达，失败到达则抑制手动引导 footer）。worker-048b 已 steer（若已按旧简报删除则恢复+改门控）。启动恢复缝仍不可动。
+- 最终范围（2026-09-17 11:41，July 复裁）：【维持无条件全删】——worker 已按原简报删除 manual.ts/路由/桌面注入/模态框按钮，11:39 的范围回调撤回，不做失败落点门控。交付=瞬态分类器+重试横幅+全量终端引导移除+测试+门禁。worker-048b 已二次 steer 确认原范围。
+- 完工（2026-09-17 12:02，048c 接管审计；真相：048b 未死，持续产出至 11:48——大部分代码/测试/文档为 048b 产物，048c 补 3 处文档缺口+i18n hash 刷新（教训⑲流程）+全门禁认证）。
+【交付】①分类器 install-failure.ts（66 行纯函数，13+12+4+5 例边界测试，UNKNOWN 保守非瞬态，网络邻接不重试类专测）②重试横幅：瞬态→横幅+Retry（重发同 preview 幂等+重入 pending 隐藏门，测试断言）+Close ③终端引导全量移除：manual.ts 删除、manualInstall 全链拔除（api-types/service/routes/client）、open-terminal 路由+客户端函数+DesktopActionsService.openTerminal+main.ts 注入全删、capability 收窄为 requestRestart ④恢复缝 main.ts:735 原样（diff 恰一行）⑤文档双语+3 个 i18n.yaml hash。
+【门禁】market 535 绿/tc 0；desktop 2601 绿（含并行 #049 在途改动）/tc 0；layout 4/4。
+【提交注意】与 #049 共享工作树——提交时按文件面切分；manual.ts 删除已 staged。
+→ reviewer 待派。
+- reviewer APPROVED（f198d947，2026-09-17 12:20）：分类决策表与 host 词汇逐字对齐+对抗边界钉死；加固测试从各方向断言终端引导缺失（含全文无 dsh plugin add）；移除外科式（main.ts 恰一行+capability 断言 in false+路由表级断言）；双语文档+hash 门过。P3×2 记档：①预览腿 npm registry 抖动实际浮现为 verification-failed（npm 验证器吞网络因）——分类器保守判非瞬态→实际 Retry 只对 operation-timeout 生效；执行腿 operation-failed+网络尾无 Retry 横幅（Confirm 即恢复路径）。②分类器头注释过度声明调用面。均不阻塞。→【遗留关注】P3-1 意味着 zhong 的 npm 抖动场景（本卡起点）拿不到重试——需后续在 npm 验证器区分网络失败/校验失败或把 registry-fetch 歧义上调为瞬态。commit 中。
 
 ## 验收标准
 

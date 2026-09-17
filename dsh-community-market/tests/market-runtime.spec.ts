@@ -1717,59 +1717,6 @@ describe('source mutation boundary', () => {
     }
   })
 
-  it('answers a cancellation when the generation ends before the terminal opens', async () => {
-    type RouteHandler = (req: EventEmitter & Record<string, any>, res: EventEmitter & Record<string, any>) => Promise<void>
-    const handlers = new Map<string, RouteHandler>()
-    const ctx = {
-      webServer: {
-        port: 43_120,
-        register: vi.fn((route: { path: string; handler: RouteHandler }) => {
-          handlers.set(route.path, route.handler)
-          return vi.fn()
-        }),
-      },
-    }
-    const scope = {
-      get: () => ({ sources: [] }),
-      update: vi.fn(),
-    } as unknown as SettingsScope<MarketSettingsDocument>
-    const openTerminal = vi.fn()
-    const actions = { openTerminal, requestRestart: vi.fn(async () => {}) }
-    const dispose = registerMarketRoutes(ctx as never, scope, undefined, { get: () => actions })
-    const request = Object.assign(new EventEmitter(), {
-      method: 'POST',
-      url: marketRoutes.openTerminal,
-      headers: { host: '127.0.0.1:43120', origin: 'http://127.0.0.1:43120' },
-      socket: { remoteAddress: '127.0.0.1' },
-    })
-    let bodyText = ''
-    const response = Object.assign(new EventEmitter(), {
-      destroyed: false,
-      writableEnded: false,
-      statusCode: 0,
-      setHeader: vi.fn(),
-      removeHeader: vi.fn(),
-      end: vi.fn((body?: string) => {
-        bodyText = body ?? ''
-        response.writableEnded = true
-      }),
-    })
-
-    const pending = handlers.get(marketRoutes.openTerminal)!(request, response)
-    await vi.waitFor(() => expect(request.listenerCount('data')).toBe(1))
-
-    // The generation ended before the request body (let alone the terminal)
-    // arrived: the still-connected Client hears the cancellation.
-    dispose()
-    await pending
-
-    expect(openTerminal).not.toHaveBeenCalled()
-    expect(response.statusCode).toBe(502)
-    expect(JSON.parse(bodyText)).toMatchObject({ code: 'operation-failed' })
-    expect(JSON.parse(bodyText).error).toContain('cancelled')
-    dispose()
-  })
-
   it.each([
     ['127.0.0.1'],
     ['::ffff:7f00:1'],

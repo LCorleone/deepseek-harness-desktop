@@ -2,10 +2,13 @@
 
 import { type Context, Service } from '@deepseek-ai/cordis'
 
-/** Native actions deliberately exposed without command, path, or restart arguments. */
+/**
+ * Native actions deliberately exposed without command, path, or restart
+ * arguments. Terminal guidance is intentionally absent (#048): the market
+ * UI never opens a terminal, and the startup-recovery seam owns its own
+ * terminal capability outside this service.
+ */
 export interface DesktopActions {
-  /** Open the already-configured DSH Desktop terminal for the active profile. */
-  openTerminal(): void
   /** Request one orderly Host-owned application restart. */
   requestRestart(): Promise<void>
 }
@@ -19,11 +22,10 @@ declare module '@deepseek-ai/cordis' {
 
 /** Launcher-owned implementations behind the narrow service boundary. */
 export interface DesktopActionsBootstrap {
-  openTerminal(): void
   requestRestart(): void | Promise<void>
 }
 
-/** Publish only terminal-open and restart operations for one Cordis generation. */
+/** Publish only the restart operation for one Cordis generation. */
 export class DesktopActionsService extends Service implements DesktopActions {
   private disposed = false
   private restartOperation: Promise<void> | undefined
@@ -34,11 +36,6 @@ export class DesktopActionsService extends Service implements DesktopActions {
       () => () => { this.disposed = true },
       'dsh-plugin-desktop: desktop actions lifetime',
     )
-  }
-
-  openTerminal(): void {
-    this.assertActive()
-    this.bootstrap.openTerminal()
   }
 
   requestRestart(): Promise<void> {

@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record. Both languages carry equal authority.
 # Update both files and record their Git blob hashes after editing either side.
-install-and-uninstall.md: 3bb393e9b3bd86f082a2fb203f3a1e62cf3e3895
-install-and-uninstall.zh.md: 05b36f0c87824704e5c8c53b015127f0fc664031
+install-and-uninstall.md: c5de1dc6cd777354763fc49f5c2b08338f9f04c1
+install-and-uninstall.zh.md: ded3a5de4ae1651f81e08ae79fc0e82891d9f5d5

@@ -129,15 +129,14 @@ describe('community market Host capability lifecycle', () => {
     await expect(harness.request(marketRoutes.installable)).resolves.toMatchObject({ status: 503 })
     await expect(harness.request(marketRoutes.state)).resolves.toMatchObject({
       status: 200,
-      body: { desktopActions: { openTerminal: false, requestRestart: false } },
+      body: { desktopActions: { requestRestart: false } },
     })
 
     harness.provide('desktopActions', {
-      openTerminal: vi.fn(),
       requestRestart: vi.fn(async () => {}),
     })
     await expect(harness.request(marketRoutes.state)).resolves.toMatchObject({
-      body: { desktopActions: { openTerminal: true, requestRestart: false } },
+      body: { desktopActions: { requestRestart: false } },
     })
 
     harness.provide('desktopProfiles', { current: { name: 'web', dir: 'C:/fixture-profile' } })

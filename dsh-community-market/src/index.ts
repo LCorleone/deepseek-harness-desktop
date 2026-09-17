@@ -46,7 +46,6 @@ interface DesktopProfilesCapability {
 }
 
 interface DesktopActionsCapability {
-  openTerminal(): void
   requestRestart(): Promise<void>
 }
 

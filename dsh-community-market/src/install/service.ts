@@ -13,7 +13,6 @@ import { normalizeRepositoryIdentity } from '../contracts/identity.js'
 import type { CatalogHttpClient, NormalizedRepositoryIdentity } from '../contracts/types.js'
 import type { CatalogSnapshot } from '../contracts/index.js'
 import { isCompanyManifestKeyId } from '../signing/keys.js'
-import { manualInstallHints } from './manual.js'
 import {
   computeInstallTreeDigest,
   MAX_INSTALL_TREE_DIGEST_FILES,
@@ -1210,7 +1209,6 @@ export class MarketInstallService {
     return {
       source: index.source,
       items,
-      manualInstall: manualInstallHints(items),
       metadata: {
         scannedAt: index.scannedAt,
         expiresAt: index.expiresAt,

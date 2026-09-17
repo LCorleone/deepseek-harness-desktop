@@ -29,7 +29,7 @@
 6. 选择**立即重启**或**稍后重启**。安装成功会修改磁盘上的 profile，但当前运行的进程不会自动加载新插件。立即重启会消费一份短时、一次性重启许可，系统不会静默重启。下一次 Desktop generation 完成健康启动验证前，会拒绝另一次受保护的插件添加。
 7. 下一次启动时，Desktop 会在准备 profile 前认领待验证的恢复记录。只有 Host 成功启动，并且 Renderer 在 30 秒期限内报告健康，安装才会正式提交。如果启动失败或一直未确认，Desktop 会先在本地保存诊断归档，再恢复一份已识别的前后配置状态，并且最多自动重启一次。
 
-如果受管 preview 不可用，弹窗会保留为详情。对于精确稳定的 npm 身份，Host 可以展示一条根据规范化身份重建的、有界且只用于展示的命令。它可能与仓库中描述的命令不同，不是 provider 返回的原始命令，也没有通过受管安装器的全部验证。**打开 DSH 终端**不会提交命令、路径或 profile，只负责打开 Desktop 内置终端；用户需要先检查源码，再自行决定是否复制并运行文本。通过该内置终端运行的 `dsh plugin add` 会使用与 Market 安装相同的配置恢复记录；在其中直接执行 `pnpm`、`npm`，或在外部系统终端中运行命令，都不在这个恢复边界内。手动安装不会生成 Market receipt，因此也不会授予 Market 卸载权限。
+如果受管 preview 失败，弹窗会切换为详情页并说明失败原因。瞬态失败（npm registry 抖动、连接重置、超时）会提供原地【重试】，重新发起完全相同的 preview 请求；确定性拒绝（目标不存在、完整性或策略拒绝）只展示失败本身，不提供重试。市场 UI 在任何构建、任何 posture 下都不提供手动终端路径：没有【打开 DSH 终端】按钮，也不展示 `dsh plugin add` 命令。通过 Desktop 内置终端（在市场之外打开，例如从设置或启动恢复）运行的 `dsh plugin add` 会使用与 Market 安装相同的配置恢复记录；在其中直接执行 `pnpm`、`npm`，或在外部系统终端中运行命令，都不在这个恢复边界内。手动安装不会生成 Market receipt，因此也不会授予 Market 卸载权限。
 
 **可安装**只表示“这个条目是已选目录中的结构候选”。它不表示已经联系 npm、当前 profile 允许安装、兼容性已经证明，或代码已经获批、安全。只要目录仍然包含该条目，已经安装、已有 receipt、处于禁用状态或后来已卸载的 package 都会继续显示。Preview 仍可能拒绝本地操作；即使 preview 成功，如果 registry、目录或 profile 状态发生变化，也不承诺执行一定成功。
 
@@ -122,11 +122,11 @@ flowchart LR
 - 安装 preview 只接受 `sourceRecordId` 和 `itemId`。Host 从自己此前观察到的候选中选择目标，针对该 package 完整执行官方 registry、runtime、lifecycle、integrity、仓库、DSH bundle 和当前 profile 复核，只有成功后才返回不透明 `previewId` 与精确确认摘要。
 - 执行阶段只接受该 `previewId`。一次性 token 会绑定候选、registry 证据、当前 profile 和过期时间；Host 需要重新校验所有可变状态。Desktop 必须在受管 add 开始前发布白名单文件的前镜像，并在报告操作结果前封存已知的部分或成功后镜像。
 - 已安装状态读取会核对当前 profile 的 direct-bundle 清单与合法 receipt。卸载 preview 只接受 `receiptId`；禁用和启用 preview 只接受 generation-scoped 不透明 `bundleId`。每次执行都只接受各自的一次性不透明 `previewId`，启用时还会重验禁用状态和 receipt 所有权。
-- renderer 不会获得文件系统、进程、环境变量或 package manager 权限。package 修改通过 `desktopPnpm.runPlugin()` 完成，参数由 Host 固定构造，并使用当前 profile 的绝对目录。它唯一可以收到的命令形文本是有界、只展示的手动提示；终端操作不能接收或执行该文本。
+- renderer 不会获得文件系统、进程、环境变量或 package manager 权限。package 修改通过 `desktopPnpm.runPlugin()` 完成，参数由 Host 固定构造，并使用当前 profile 的绝对目录。renderer 完全不会收到任何命令形文本。
 
 Receipt 会记录 profile、精确 npm 身份、integrity、DSH bundle patch、目录 provenance、展示名称和安装时间。它只是“本 Market 已完成并验证一次受管安装”的本地证据，不是 provider 凭据，也不能依赖来源继续存在。在通过签名 company catalog 安装的部署中，receipt 为 version 2，额外记录允许本次安装的签名 manifest sequence 与 trust-root key、安装完成后立即测得的包目录 SHA-256 摘要，以及采用 dsh-community-fabric RFC 0004 证据词汇的 `resolved`/`decided` 证据字段。任何版本的 receipt 都只是缓存提示与卸载对账凭证：安装权限永远由签名 company manifest、registry 元数据和安装后实测重新判定，绝不来自已存储的 receipt。存量 version-1 receipt 仍可读取并用于卸载对账，但不携带任何签名证据。
 
-如果 Desktop package 能力不可用，目录浏览仍然可以工作，而安装、卸载、禁用和启用会返回不可用状态。受管路径不会退回 ambient `pnpm`、shell、猜测的 executable、repository 命令或未激活 profile。打开 DSH 终端是另一项明确的用户操作，本身绝不会启动 package 操作；只有之后通过内置终端运行的 `dsh plugin add` 会获得 Desktop 恢复 handoff，其他终端命令不会。
+如果 Desktop package 能力不可用，目录浏览仍然可以工作，而安装、卸载、禁用和启用会返回不可用状态。受管路径不会退回 ambient `pnpm`、shell、猜测的 executable、repository 命令或未激活 profile；市场 UI 也不会打开终端或展示手动命令——瞬态 preview 失败以【重试】回应，而不是引导绕开受管路径。只有之后通过 Desktop 内置终端运行的 `dsh plugin add` 会获得 Desktop 恢复 handoff，其他终端命令不会。
 
 ## 失败与恢复
 

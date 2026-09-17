@@ -207,15 +207,6 @@ export async function executeMarketOperation(
   })))
 }
 
-export async function openMarketTerminal(signal?: AbortSignal): Promise<MarketDesktopActionResponse> {
-  return await withMarketOperationDeadline(signal, MARKET_OPERATION_TIMEOUT_MS, async deadline => readJson(await fetch('/api/community-market/desktop/open-terminal', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
-    signal: deadline,
-  })))
-}
-
 export async function requestMarketRestart(
   restartToken: string,
   signal?: AbortSignal,

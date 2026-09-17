@@ -38,10 +38,10 @@ import type {
 } from '../api-types.js'
 import { marketMediaAssetUrl } from '../media/ref.js'
 import { compareStableVersions } from './stable-version.js'
+import { isTransientInstallFailure } from './install-failure.js'
 import {
   executeMarketOperation,
   mutateMarketSource,
-  openMarketTerminal,
   previewMarketOperation,
   readMarketCatalog,
   readMarketInstallable,
@@ -95,8 +95,6 @@ interface CompletedOperation {
   readonly preview: MarketOperationPreviewResponse
   readonly restartToken: string
 }
-
-type ManualInstallHint = MarketCatalogResponse['manualInstall'][number]
 
 type InstallationLoadOutcome =
   | { readonly installations: readonly MarketInstallationView[] }
@@ -317,7 +315,6 @@ function matchesInstallableQuery(item: MarketItem, query: string): boolean {
 function mergeCatalogPages(
   catalog: MarketCatalogResponse | undefined,
   pages: readonly MarketCatalogSourceResult[],
-  manualInstall: readonly ManualInstallHint[],
 ): MarketCatalogResponse | undefined {
   if (catalog === undefined || pages.length === 0) return catalog
   const updates = new Map(pages.map(page => [page.source.sourceRecordId, page]))
@@ -336,11 +333,7 @@ function mergeCatalogPages(
       snapshot: { ...next.snapshot, items, page: next.snapshot.page },
     }
   })
-  const hints = new Map([...catalog.manualInstall, ...manualInstall].map(hint => [
-    `${hint.sourceRecordId}:${hint.itemId}`,
-    hint,
-  ]))
-  return { ...catalog, results, manualInstall: [...hints.values()], fetchedAt: new Date().toISOString() }
+  return { ...catalog, results, fetchedAt: new Date().toISOString() }
 }
 
 export function MarketSurface({ initialView = 'installable', readLocale, t, showHeader = true }: MarketSurfaceProps) {
@@ -380,6 +373,11 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
   const [operationPreview, setOperationPreview] = useState<MarketOperationPreviewResponse>()
   const [operationSuccess, setOperationSuccess] = useState<CompletedOperation>()
   const [operationError, setOperationError] = useState<string>()
+  // #048: whether the current operationError came from a transient install
+  // preview failure (npm/registry jitter class). Only then does the item
+  // modal offer the retry affordance; every deterministic refusal keeps the
+  // existing failure presentation.
+  const [installPreviewRetryable, setInstallPreviewRetryable] = useState(false)
   const [operationPending, setOperationPending] = useState(false)
   const [desktopActionError, setDesktopActionError] = useState<string>()
   const [desktopActionPending, setDesktopActionPending] = useState(false)
@@ -676,17 +674,6 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
   const currentSourceHref = currentSource === undefined
     ? undefined
     : safeHttpsExternalHref(currentSource.homepage) ?? safeHttpsExternalHref(currentSource.attribution?.url)
-  const selectedManualInstall = useMemo(() => {
-    if (selected === undefined) return undefined
-    const hints = view === 'installable'
-      ? installableIndex?.manualInstall ?? []
-      : catalog?.manualInstall ?? []
-    return hints.find(hint => (
-      hint.sourceRecordId === selected.source.sourceRecordId
-      && hint.providerId === selected.source.providerId
-      && hint.itemId === selected.item.id
-    ))
-  }, [catalog, installableIndex, selected, view])
 
   const mutate = async (mutation: MarketSourceMutation): Promise<boolean> => {
     if (mutationRequest.current !== undefined) return false
@@ -709,7 +696,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       const next: MarketStateResponse = {
         sources,
         builtIns: state?.builtIns ?? [],
-        desktopActions: state?.desktopActions ?? { openTerminal: false, requestRestart: false },
+        desktopActions: state?.desktopActions ?? { requestRestart: false },
       }
       const sourceChanged = selectedSource(state?.sources ?? [])?.sourceRecordId
         !== selectedSource(sources)?.sourceRecordId
@@ -781,7 +768,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         return
       }
       rememberCategories(next)
-      setCatalog(current => mergeCatalogPages(current, [page], next.manualInstall))
+      setCatalog(current => mergeCatalogPages(current, [page]))
     } catch {
       if (!request.signal.aborted && pageRequest.current === request) setLoadMoreError(t('loadMoreError'))
     } finally {
@@ -799,6 +786,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     selectedKeyRef.current = undefined
     setSelected(undefined)
     setOperationError(undefined)
+    setInstallPreviewRetryable(false)
     if (next === 'installable') {
       installationsRequest.current?.abort()
       installationsRequest.current = undefined
@@ -837,6 +825,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     operationBundleId.current = undefined
     setOperationPending(true)
     setOperationError(undefined)
+    setInstallPreviewRetryable(false)
     setDesktopActionError(undefined)
     setDesktopRestartRequested(false)
     setOperationSuccess(undefined)
@@ -857,12 +846,19 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
         setOperationError(t('desktopUnavailable'))
       } else if (isMarketOperationTimeout(cause)) {
         setOperationError(t('previewTimeoutError'))
+        // The deadline class is transient (#048): an install preview that
+        // never heard back can simply be re-issued. Other actions keep their
+        // confirm-modal error presentation.
+        setInstallPreviewRetryable(requestValue.action === 'install')
       } else {
         setOperationError(operationErrorMessage(cause, t(requestValue.action === 'install'
           ? 'previewError'
           : requestValue.action === 'uninstall'
             ? 'uninstallPreviewError'
             : requestValue.action === 'disable' ? 'disablePreviewError' : 'enablePreviewError')))
+        // Transient install-preview failures (npm/registry jitter class)
+        // offer the retry affordance; deterministic refusals never do.
+        setInstallPreviewRetryable(requestValue.action === 'install' && isTransientInstallFailure(cause))
       }
     } finally {
       if (operationRequest.current === request) {
@@ -890,6 +886,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setOperationPreview(undefined)
     setOperationSuccess(undefined)
     setOperationError(undefined)
+    setInstallPreviewRetryable(false)
     setDesktopActionError(undefined)
     setDesktopRestartRequested(false)
     const beginInstallPreview = () => {
@@ -937,6 +934,20 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     })
   }
 
+  // #048: a transient install-preview failure (npm registry jitter, a reset
+  // connection, the deadline) recovers through one click — re-issuing the
+  // exact same preview request. The preview leg never mutates, so the retry
+  // is idempotent, and it re-enters the hidden-while-pending modal gate from
+  // 70bd6d5ee0 (no detail-form flash before the confirm form returns).
+  const retryInstallPreview = () => {
+    if (selected === undefined || operationRequest.current !== undefined) return
+    void beginOperationPreview({
+      action: 'install',
+      sourceRecordId: selected.source.sourceRecordId,
+      itemId: selected.item.id,
+    })
+  }
+
   const closeItem = () => {
     if (operationPending && operationPreview !== undefined) return
     operationRequest.current?.abort()
@@ -954,6 +965,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     setSelectedInventoryError(undefined)
     setOperationPreview(undefined)
     setOperationError(undefined)
+    setInstallPreviewRetryable(false)
     setDesktopActionError(undefined)
   }
 
@@ -966,6 +978,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     operationStage.current = 'execute'
     setOperationPending(true)
     setOperationError(undefined)
+    setInstallPreviewRetryable(false)
     setDesktopActionError(undefined)
     try {
       const result = await executeMarketOperation(preview.previewId, request.signal)
@@ -1074,28 +1087,24 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
     }
   }
 
-  const runDesktopAction = async (action: 'open-terminal' | 'request-restart', restartToken?: string) => {
+  // #048: the market's only desktop action left is the one-shot restart
+  // request — the openTerminal path is gone from the market UI entirely.
+  const requestDesktopRestart = async (restartToken: string) => {
     if (desktopActionRequest.current !== undefined) return
     const request = new AbortController()
     desktopActionRequest.current = request
     setDesktopActionPending(true)
     setDesktopActionError(undefined)
     try {
-      if (action === 'open-terminal') await openMarketTerminal(request.signal)
-      else if (restartToken !== undefined) {
-        await requestMarketRestart(restartToken, request.signal)
-        // Accepted (or already in progress): latch the "restarting" state so
-        // the button cannot fire a second, contradictory request.
-        setDesktopRestartRequested(true)
-      }
-      else throw new Error('restart token missing')
+      await requestMarketRestart(restartToken, request.signal)
+      // Accepted (or already in progress): latch the "restarting" state so
+      // the button cannot fire a second, contradictory request.
+      setDesktopRestartRequested(true)
     } catch (cause) {
       if (request.signal.aborted || desktopActionRequest.current !== request) return
       setDesktopActionError(t(isDesktopUnavailable(cause)
         ? 'desktopActionUnavailable'
-        : action === 'open-terminal'
-          ? 'terminalError'
-          : isRestartGrantExpired(cause) ? 'restartExpired' : 'restartError'))
+        : isRestartGrantExpired(cause) ? 'restartExpired' : 'restartError'))
     } finally {
       if (desktopActionRequest.current === request) {
         desktopActionRequest.current = undefined
@@ -1268,26 +1277,24 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
       {selected !== undefined && !(operationPending && operationPreview === undefined && operationError === undefined) && (
         // While the auto-begun install preview for an uninstalled item is in
         // flight, hold the modal back: rendering the detail form (repository /
-        // terminal / close footer) for the host round-trip read as a foreign
-        // window flashing before the confirm form. The modal reappears with
-        // the confirm form on success or the detail form on preview failure
-        // (manual-install fallback), so nothing is lost.
+        // close footer) for the host round-trip read as a foreign window
+        // flashing before the confirm form. The modal reappears with the
+        // confirm form on success or the detail form on failure (transient
+        // failures re-enter this same hidden window on retry), so nothing is
+        // lost.
         <ItemActionModal
           value={selected}
           installation={selectedInstallation}
           inventoryLoading={selectedInventoryLoading}
           inventoryError={selectedInventoryError}
-          manualInstall={selectedManualInstall}
           preview={operationPreview?.action === 'install' ? operationPreview : undefined}
           pending={operationPending}
           operationError={operationError}
-          desktopActionError={desktopActionError}
-          desktopActionPending={desktopActionPending}
-          canOpenTerminal={state?.desktopActions.openTerminal === true}
+          installRetryable={installPreviewRetryable}
           verificationHelpHref={installRequirementsUrl()}
           onClose={closeItem}
           onConfirm={() => { void executePreview() }}
-          onOpenTerminal={() => { void runDesktopAction('open-terminal') }}
+          onRetryInstall={retryInstallPreview}
           onUninstall={receipt => {
             selectedKeyRef.current = undefined
             setSelected(undefined)
@@ -1319,6 +1326,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
             operationBundleId.current = undefined
             setOperationPreview(undefined)
             setOperationError(undefined)
+            setInstallPreviewRetryable(false)
           }}
           onConfirm={() => { void executePreview() }}
           t={t}
@@ -1332,7 +1340,7 @@ export function MarketSurface({ initialView = 'installable', readLocale, t, show
           restartRequested={desktopRestartRequested}
           error={desktopActionError}
           onClose={() => setOperationSuccess(undefined)}
-          onRestart={() => { void runDesktopAction('request-restart', operationSuccess.restartToken) }}
+          onRestart={() => { void requestDesktopRestart(operationSuccess.restartToken) }}
           t={t}
         />
       )}
@@ -2237,17 +2245,14 @@ function ItemActionModal({
   installation,
   inventoryLoading,
   inventoryError,
-  manualInstall,
   preview,
   pending,
   operationError,
-  desktopActionError,
-  desktopActionPending,
-  canOpenTerminal,
+  installRetryable,
   verificationHelpHref,
   onClose,
   onConfirm,
-  onOpenTerminal,
+  onRetryInstall,
   onUninstall,
   onDisable,
   onEnable,
@@ -2257,17 +2262,15 @@ function ItemActionModal({
   installation: MarketInstallationView | undefined
   inventoryLoading: boolean
   inventoryError?: string | undefined
-  manualInstall: ManualInstallHint | undefined
   preview: MarketOperationPreviewResponse | undefined
   pending: boolean
   operationError?: string | undefined
-  desktopActionError?: string | undefined
-  desktopActionPending: boolean
-  canOpenTerminal: boolean
+  /** Whether operationError is a transient install-preview failure that the retry button re-issues (#048). */
+  installRetryable: boolean
   verificationHelpHref: string
   onClose: () => void
   onConfirm: () => void
-  onOpenTerminal: () => void
+  onRetryInstall: () => void
   onUninstall: (receipt: Extract<MarketInstallationView, { kind: 'managed' }>['receipt']) => void
   onDisable: (bundleId: string) => void
   onEnable: (bundleId: string) => void
@@ -2279,6 +2282,16 @@ function ItemActionModal({
   // modal without the gate.
   const checking = preview === undefined && pending && operationError === undefined
   const updating = preview?.action === 'install' && preview.replaces !== undefined
+  // #048: a transient install-preview failure (network jitter class) keeps
+  // the item open with a retry affordance beside Close; every deterministic
+  // refusal keeps the plain failure presentation. The market UI never
+  // offers terminal guidance or a manual `dsh plugin add` command — for any
+  // build, posture, or item.
+  const retryInstallPreview = installRetryable
+    && preview === undefined
+    && installation === undefined
+    && !inventoryLoading
+    && operationError !== undefined
   const footer = installation === undefined && preview !== undefined ? <>
     <Button variant="ghost" disabled={pending} onClick={onClose}>{t('cancel')}</Button>
     <Button
@@ -2288,18 +2301,15 @@ function ItemActionModal({
       onClick={onConfirm}
     >{pending ? (updating ? t('updating') : t('installing')) : (updating ? t('confirmUpdate') : t('confirmInstall'))}</Button>
   </> : <>
-    {installation === undefined
-      && !inventoryLoading
-      && inventoryError === undefined
-      && manualInstall !== undefined
-      && canOpenTerminal && (
+    {retryInstallPreview && (
       <Button
         variant="primary"
-        disabled={desktopActionPending}
-        onClick={onOpenTerminal}
-      >{desktopActionPending ? t('openingTerminal') : t('openTerminal')}</Button>
+        icon={<IconRefreshOutline16 />}
+        disabled={pending}
+        onClick={onRetryInstall}
+      >{t('retry')}</Button>
     )}
-    <Button variant="ghost" disabled={desktopActionPending} onClick={onClose}>{t('close')}</Button>
+    <Button variant="ghost" onClick={onClose}>{t('close')}</Button>
   </>
   return (
     <Modal
@@ -2361,37 +2371,27 @@ function ItemActionModal({
               </div>
             )}
             {installation === undefined && !inventoryLoading && !checking && operationError !== undefined && (
-              <div className="dshMarketBanner" role="alert">
-                <StateDot state="warning" />
-                <span>{operationError}</span>
-                <a href={verificationHelpHref} target="_blank" rel="noopener noreferrer">
-                  {t('verificationDetails')} <IconRightUpOutline16 size={12} />
-                </a>
-              </div>
+              retryInstallPreview ? (
+                <div className="dshMarketBanner" role="alert">
+                  <StateDot state="warning" />
+                  <span>{operationError}</span>
+                  <span>{t('transientInstallHint')}</span>
+                </div>
+              ) : (
+                <div className="dshMarketBanner" role="alert">
+                  <StateDot state="warning" />
+                  <span>{operationError}</span>
+                  <a href={verificationHelpHref} target="_blank" rel="noopener noreferrer">
+                    {t('verificationDetails')} <IconRightUpOutline16 size={12} />
+                  </a>
+                </div>
+              )
             )}
-            {installation === undefined && !inventoryLoading && inventoryError === undefined && !checking && manualInstall !== undefined ? (
-              <div className="dshMarketManualInstall">
-                <div><h3>{t('manualInstallTitle')}</h3><p>{t('manualInstallBody')}</p></div>
-                <div className="dshMarketCommand">
-                  <span>{t('installCommand')}</span>
-                  <code>{manualInstall.displayCommand}</code>
-                </div>
-                <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('manualNotVerified')}</span></div>
-                {manualInstall.mutable && (
-                  <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('mutableGithubWarning')}</span></div>
-                )}
-                <div className="dshMarketOperationWarning"><StateDot state="warning" size={12} /><span>{t('operationWarning')}</span></div>
-                <div className="dshMarketOperationWarning">
-                  <StateDot state="warning" size={12} />
-                  <span>{t('operationRisk')}</span>
-                </div>
-              </div>
-            ) : installation === undefined
+            {installation === undefined
               && !inventoryLoading
               && inventoryError === undefined
               && !checking
               && operationError === undefined ? <div>{t('readOnly')}</div> : null}
-            {desktopActionError !== undefined && <div className="dshMarketError" role="alert">{desktopActionError}</div>}
           </div>
         )}
       </>

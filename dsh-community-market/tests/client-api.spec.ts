@@ -7,7 +7,6 @@ import {
   MARKET_EXECUTE_TIMEOUT_MS,
   MARKET_OPERATION_TIMEOUT_MS,
   mutateMarketSource,
-  openMarketTerminal,
   previewMarketOperation,
   readMarketCatalog,
   readMarketInstallable,
@@ -252,15 +251,10 @@ describe('community market client API', () => {
       }))
       vi.stubGlobal('fetch', fetch)
 
-      // A lost Host answer must never leave a source change, the terminal
-      // action, or the one-shot restart grant pending forever.
+      // A lost Host answer must never leave a source change or the one-shot
+      // restart grant pending forever.
       const outcomes = [
         expect(mutateMarketSource({ action: 'add-builtin', key: 'dsh-1024store' })).rejects.toMatchObject({
-          name: 'MarketOperationTimeoutError',
-          status: 408,
-          code: 'operation-timeout',
-        }),
-        expect(openMarketTerminal()).rejects.toMatchObject({
           name: 'MarketOperationTimeoutError',
           status: 408,
           code: 'operation-timeout',
@@ -314,23 +308,21 @@ describe('community market client API', () => {
     }
   })
 
-  it('opens the terminal without a command and sends only the one-shot token when restarting', async () => {
+  it('sends only the one-shot token when restarting', async () => {
     const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
       { ok: true, json: async () => ({ ok: true }) } as Response
     ))
     vi.stubGlobal('fetch', fetch)
 
-    await openMarketTerminal()
     await requestMarketRestart('opaque-restart-token')
 
     expect(fetch.mock.calls[0]).toEqual([
-      '/api/community-market/desktop/open-terminal',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
-    ])
-    expect(fetch.mock.calls[1]).toEqual([
       '/api/community-market/desktop/request-restart',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ restartToken: 'opaque-restart-token' }) }),
     ])
+    // #048: the open-terminal desktop action is gone from the market API
+    // surface — request-restart is the only desktop action route left.
+    expect(fetch.mock.calls).toHaveLength(1)
   })
 
   it('preserves an unavailable status so the Client can explain the Desktop-only capability', async () => {
@@ -351,7 +343,7 @@ describe('community market client API', () => {
     const body = {
       sources: [],
       builtIns: [],
-      desktopActions: { openTerminal: false, requestRestart: false },
+      desktopActions: { requestRestart: false },
     }
     const request = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), {
       headers: { 'content-type': 'application/json' },

@@ -110,7 +110,7 @@ Market 界面包含四个视图：
 - 短时确认的过期时间；以及
 - 插件会以用户权限作为本地代码运行、而且该复核不等于代码审计的提示。
 
-目录中的 `install` 字段、文档命令、provider 命令和任意字符串都会失去执行授权，绝不会被执行，也不会作为 Host 手动提示展示。当标准化条目具有精确稳定的 npm 身份时，Host 可以另行重建一条有界、只用于展示的命令。该文本可能与仓库文档中的命令不同，会明确标为未完成全部验证，而且绝不会发送给 package manager 或 Desktop action。dshfind adapter 会明确丢弃 `install.cmd`，绝不解析或转发它。内置受管安装器会拒绝 GitHub 与其他仓库安装目标、range、tag、prerelease、deprecated 版本、目标 manifest 中包含 `preinstall`、`install`、`postinstall` 或 `prepare` 的 package、与内置 DSH `0.1.2-rc.1`/Cordis/Node.js runtime 不兼容的 package、仓库身份不匹配的 package，以及缺少官方 npm SHA-512/tarball 或有效 DSH bundle 证据的 package。
+目录中的 `install` 字段、文档命令、provider 命令和任意字符串都会失去执行授权，绝不会被执行，也不会被展示。市场 UI 不会自行重建任何手动命令：瞬态 preview 失败以原地【重试】同一 preview 回应，绝不提供终端引导。dshfind adapter 会明确丢弃 `install.cmd`，绝不解析或转发它。内置受管安装器会拒绝 GitHub 与其他仓库安装目标、range、tag、prerelease、deprecated 版本、目标 manifest 中包含 `preinstall`、`install`、`postinstall` 或 `prepare` 的 package、与内置 DSH `0.1.2-rc.1`/Cordis/Node.js runtime 不兼容的 package、仓库身份不匹配的 package，以及缺少官方 npm SHA-512/tarball 或有效 DSH bundle 证据的 package。
 
 Preview 会针对这一个 package 完整检查 npm registry、规范仓库、deprecated 状态、lifecycle script、runtime、integrity、tarball、DSH bundle 和当前 profile，并用一次性不透明 preview 绑定已验证事实。用户确认后、真正修改前，执行阶段会立即重新获取或检查可变的 registry、候选和 profile 证据；候选、当前 profile、tarball、integrity 或 bundle 路径发生变化时会拒绝执行。受管操作中，renderer 只提交不透明身份，绝不会提交 package-manager spec 或命令。
 
@@ -118,12 +118,12 @@ Preview 会针对这一个 package 完整检查 npm registry、规范仓库、de
 
 1. 从 `desktopProfiles.current` 读取当前身份。
 2. 调用 Desktop 的可恢复安装能力，使用固定构造的 `add --save-exact` 参数、官方 npm registry、明确的绝对 profile 目录和 `AbortSignal`。Child 启动前只为 `package.json`、`pnpm-lock.yaml` 和 `pnpm-workspace.yaml` 创建快照；操作报告完成前会封存成功结果或已识别的部分结果。
-3. 不把 stdout、stderr、环境变量、本地路径或命令内部细节交给 renderer；唯一允许交付的命令文本，是上面定义的有界、只展示指引。
+3. 不把 stdout、stderr、环境变量、本地路径或命令内部细节交给 renderer；renderer 不会收到任何命令文本。
 4. 同一时间只允许一个修改操作，并拒绝已变化的 profile。
 5. 保存 receipt 前验证 profile dependency 和没有越出 package 的 DSH bundle；安装结果非法或无法记录，并且文件状态可识别时，恢复白名单配置快照。
 6. 成功后签发短时、一次性重启许可，让用户选择**立即重启**或**稍后重启**；绝不静默重启。恢复记录继续保持 pending，直到下一次 Desktop generation 验证启动健康或完成回滚 reconcile；此前拒绝另一次受保护的插件添加。
 
-没有 Desktop 服务时，目录浏览仍可使用，package 操作则会说明需要 DSH Desktop。受管安装不会退回 ambient `pnpm`、shell 命令、猜测的 `dsh` executable 或未激活 profile。**打开 DSH 终端**是独立的用户控制入口：请求不携带命令、路径或 profile，只负责打开 Desktop 内置终端；是否复制并运行展示文本完全由用户决定。之后通过该内置终端运行的 `dsh plugin add` 会获得相同的配置恢复 handoff；在其中直接执行 `pnpm`、`npm`，或在外部系统终端运行命令，都不会获得这项保护。
+没有 Desktop 服务时，目录浏览仍可使用，package 操作则会说明需要 DSH Desktop。受管安装不会退回 ambient `pnpm`、shell 命令、猜测的 `dsh` executable 或未激活 profile；市场 UI 也不包含任何终端逃生口：不再向市场 client 提供 open-terminal 桌面操作，也不展示任何手动命令文本。之后通过 Desktop 内置终端（在市场之外打开）运行的 `dsh plugin add` 会获得相同的配置恢复 handoff；在其中直接执行 `pnpm`、`npm`，或在外部系统终端运行命令，都不会获得这项保护。
 
 ## 安装恢复边界
 
@@ -159,6 +159,7 @@ Add 成功后，系统会在开放重启许可前封存白名单文件的结果 
 | --- | --- | --- |
 | 离线、超时、非 200、响应过大或格式非法 | 目录暂不可用，并提供重试 | 无 |
 | 安装 preview 无法验证 npm metadata，或发现 package deprecated、带安装脚本、不兼容、身份不匹配或缺少证据 | 不生成确认；在本地输入变化前，该结构候选仍可能可见 | 无 |
+| 安装 preview 因瞬态网络抖动失败（连接重置、连接超时、操作 deadline） | 有界失败横幅，提供原地【重试】重新发起同一 preview；【关闭】始终可用 | 无 |
 | Preview 成功后 registry、候选或当前 profile 发生变化 | Host 拒绝已经确认的执行 | 无 |
 | 缺少 Desktop package 能力 | 可以浏览，但安装和卸载不可用 | 无 |
 | 用户取消确认 | 返回详情页 | 无 |

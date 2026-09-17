@@ -19,7 +19,6 @@ import { createMarketViewStore } from '../src/client/market-view-store.js'
 import {
   executeMarketOperation,
   mutateMarketSource,
-  openMarketTerminal,
   previewMarketOperation,
   readMarketCatalog,
   readMarketInstallable,
@@ -33,7 +32,6 @@ import { en, zh, type MarketLocaleKey } from '../src/client/locales.js'
 vi.mock('../src/client/api.js', () => ({
   executeMarketOperation: vi.fn(),
   mutateMarketSource: vi.fn(),
-  openMarketTerminal: vi.fn(),
   previewMarketOperation: vi.fn(),
   readMarketCatalog: vi.fn(),
   readMarketInstallable: vi.fn(),
@@ -50,7 +48,7 @@ afterEach(() => {
 
 const t = ((key: MarketLocaleKey): string => en[key]) as MarketSettingsTabProps['t']
 const props = { initialView: 'discover', t, readLocale: () => 'en' } as MarketSettingsTabProps
-const desktopActions = { openTerminal: true, requestRestart: true } as const
+const desktopActions = { requestRestart: true } as const
 const emptyState: MarketStateResponse = { sources: [], builtIns: [], desktopActions }
 
 function expectMarketModal(dialog: HTMLElement, sizeClass: string): void {
@@ -196,7 +194,6 @@ function installableResponse(
   return {
     source,
     items: [...items],
-    manualInstall: [],
     metadata: {
       scannedAt: '2026-08-18T01:00:00.000Z',
       expiresAt: '2026-08-18T01:05:00.000Z',
@@ -215,7 +212,6 @@ function catalogForSource(
   return {
     query: {},
     categories: [...new Set(items.flatMap(item => item.categories ?? []))],
-    manualInstall: [],
     fetchedAt: '2026-08-17T00:00:00Z',
     results: [{
       source,
@@ -387,43 +383,130 @@ describe('MarketSettingsTab', () => {
     expect(plugin.querySelector('[aria-hidden="true"]')).not.toBeNull()
   })
 
-  it('falls back in the same dialog to a Host-derived manual command and opens DSH Terminal', async () => {
+  it('never offers terminal guidance or a manual command, whatever the item and however the preview fails (#048 hardening)', async () => {
+    // July's 2026-09-17 ruling is unconditional: the market UI must not
+    // contain an "Open DSH Terminal" button nor a `dsh plugin add` command
+    // display — not for locked builds, not for any item source, not even as
+    // a failure fallback. The manualInstall channel is gone from the API, so
+    // this pins the absence against regression from every direction.
     const item = makeItem(firstSource, 'manual-github-plugin', 'Manual GitHub Plugin', ['tools'])
-    const manualCatalog: MarketCatalogResponse = {
-      ...catalogForSource(firstSource, [item]),
-      manualInstall: [{
-        sourceRecordId: firstSource.sourceRecordId,
-        providerId: firstSource.providerId,
-        itemId: item.id,
-        kind: 'github',
-        mutable: true,
-        desktopVerification: 'not-verified',
-        displayCommand: 'dsh plugin add github:example/manual-github-plugin',
-      }],
-    }
     vi.mocked(readMarketState).mockResolvedValue(enabledState)
-    vi.mocked(readMarketCatalog).mockResolvedValue(manualCatalog)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
     vi.mocked(previewMarketOperation).mockRejectedValue(new Error('managed install unavailable'))
-    vi.mocked(openMarketTerminal).mockResolvedValue({ ok: true })
     render(<MarketSettingsTab {...props} />)
 
     const card = await screen.findByRole('button', { name: /Manual GitHub Plugin/u })
     expect(card.getAttribute('aria-haspopup')).toBe('dialog')
     fireEvent.click(card)
 
-    expect(await screen.findByText('dsh plugin add github:example/manual-github-plugin')).toBeTruthy()
-    const dialog = screen.getByRole('dialog', { name: item.displayName })
+    const dialog = await screen.findByRole('dialog', { name: item.displayName })
     expectMarketModal(dialog, 'dshMarketWideModal')
     const sourceLink = within(dialog).getByRole('link', { name: `${en.source}: Fixture catalog · Fixture provider` }) as HTMLAnchorElement
     expect(sourceLink.href).toBe('https://catalog.example/')
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
-    expect(screen.getByText(en.manualNotVerified)).toBeTruthy()
-    expect(screen.getByText(en.mutableGithubWarning)).toBeTruthy()
-    expect(screen.getByText(en.operationWarning)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: en.openTerminal }))
-    await waitFor(() => {
-      expect(openMarketTerminal).toHaveBeenCalledWith(expect.any(AbortSignal))
+    // No terminal button, no manual command text, anywhere in the document.
+    expect(screen.queryByRole('button', { name: 'Open DSH Terminal' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '打开 DSH 终端' })).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('dsh plugin add')
+    // The deterministic failure keeps the plain failure presentation.
+    expect(within(dialog).getByText('managed install unavailable')).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: en.retry })).toBeNull()
+    expect(within(dialog).getByRole('button', { name: en.close })).toBeTruthy()
+  })
+
+  it('offers a retry that re-issues the same install preview after a transient failure', async () => {
+    const item = makeInstallableItem(firstSource)
+    const installCatalog = catalogForSource(firstSource, [item])
+    const receipt = makeReceipt({
+      packageName: item.package!.name,
+      version: item.latestVersion!,
+      itemId: item.id,
+      displayName: item.displayName,
     })
+    const preview = {
+      action: 'install',
+      profileName: 'web',
+      packageName: receipt.packageName,
+      version: receipt.version,
+      displayName: receipt.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-install-preview',
+    } as const
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(installCatalog)
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({ installations: [] })
+    // npm registry jitter as the Host surfaces it: operation-failed with the
+    // package manager's network stderr tail.
+    vi.mocked(previewMarketOperation).mockRejectedValueOnce(Object.assign(
+      new Error('The desktop package manager did not complete successfully: ERR_PNPM_META_FETCH_FAIL GET https://registry.npmjs.org/x failed, reason: read ECONNRESET'),
+      { status: 502, code: 'operation-failed' },
+    )).mockResolvedValue(preview)
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('button', { name: /Installable Plugin/u })
+    fireEvent.click(screen.getByRole('button', { name: en.installable }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` }))
+
+    const failed = await screen.findByRole('dialog', { name: item.displayName })
+    const banner = within(failed).getByRole('alert')
+    expect(banner.textContent).toContain('ECONNRESET')
+    expect(banner.textContent).toContain(en.transientInstallHint)
+    // Transient failure: retry + close, and no verification link detour.
+    expect(within(failed).queryByRole('link', { name: en.verificationDetails })).toBeNull()
+    fireEvent.click(within(failed).getByRole('button', { name: en.retry }))
+
+    // The retry re-enters the hidden-while-pending window (70bd6d5ee0): no
+    // detail-form flash before the confirm form returns.
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenNthCalledWith(2, {
+        action: 'install',
+        sourceRecordId: firstSource.sourceRecordId,
+        itemId: item.id,
+      }, expect.any(AbortSignal))
+    })
+    // Retry succeeded: the normal confirm flow takes over.
+    const previewDialog = await screen.findByRole('dialog', { name: en.confirmInstallTitle })
+    expect(within(previewDialog).getByRole('button', { name: en.confirmInstall })).toBeTruthy()
+  })
+
+  it('keeps the retry idempotent while a retried preview is still pending', async () => {
+    const item = makeInstallableItem(firstSource)
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({ installations: [] })
+    let resolveRetry: ((value: typeof preview) => void) | undefined
+    const preview = {
+      action: 'install',
+      profileName: 'web',
+      packageName: item.package!.name,
+      version: item.latestVersion!,
+      displayName: item.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-install-preview',
+    } as const
+    vi.mocked(previewMarketOperation)
+      .mockRejectedValueOnce(Object.assign(
+        new Error('The desktop package manager did not complete successfully: GET https://registry.npmjs.org/x timed out'),
+        { status: 502, code: 'operation-failed' },
+      ))
+      .mockReturnValue(new Promise(resolve => { resolveRetry = resolve }))
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('button', { name: /Installable Plugin/u })
+    fireEvent.click(screen.getByRole('button', { name: en.installable }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: item.displayName })).getByRole('button', { name: en.retry }))
+
+    // While the retried preview is in flight the modal is held back and no
+    // second request can be issued: the retry is idempotent.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await waitFor(() => { expect(previewMarketOperation).toHaveBeenCalledTimes(2) })
+    await act(async () => { resolveRetry?.(preview) })
+    expect(await screen.findByRole('dialog', { name: en.confirmInstallTitle })).toBeTruthy()
+    expect(previewMarketOperation).toHaveBeenCalledTimes(2)
   })
 
   it('uses a complete verified index with local OR filters, local pages of 50, metadata, and explicit rescans', async () => {
@@ -704,6 +787,13 @@ describe('MarketSettingsTab', () => {
     expect(details.href).toBe('https://plugin-market.s.dai.deloitte.cn/')
     expect(details.target).toBe('_blank')
     expect(details.rel).toContain('noopener')
+    // Non-transient failure (#048): the existing failure presentation stays,
+    // with Close visible and no retry affordance — a deterministic refusal
+    // must not invite a retry that cannot change the answer.
+    const failedDialog = screen.getByRole('dialog', { name: item.displayName })
+    expect(within(failedDialog).queryByRole('button', { name: en.retry })).toBeNull()
+    expect(within(failedDialog).queryByText(en.transientInstallHint)).toBeNull()
+    expect(within(failedDialog).getByRole('button', { name: en.close })).toBeTruthy()
   })
 
   it('opens an exact managed catalog item with local controls without issuing an install preview', async () => {
@@ -915,6 +1005,50 @@ describe('MarketSettingsTab', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('alert').some(node => node.textContent === en.previewTimeoutError)).toBe(true)
     })
+  })
+
+  it('treats an install preview deadline as transient and retries into the confirm flow', async () => {
+    const item = makeInstallableItem(firstSource)
+    const preview = {
+      action: 'install',
+      profileName: 'web',
+      packageName: item.package!.name,
+      version: item.latestVersion!,
+      displayName: item.displayName,
+      expiresAt: '2026-08-18T00:05:00.000Z',
+      previewId: 'opaque-install-preview',
+    } as const
+    vi.mocked(readMarketState).mockResolvedValue(enabledState)
+    vi.mocked(readMarketCatalog).mockResolvedValue(catalogForSource(firstSource, [item]))
+    vi.mocked(readMarketInstallable).mockResolvedValue(installableResponse([item]))
+    vi.mocked(readMarketInstallations).mockResolvedValue({ installations: [] })
+    // The Client-side deadline fired (operation-timeout): the timeout class
+    // is transient, so the item modal offers the retry.
+    vi.mocked(previewMarketOperation)
+      .mockRejectedValueOnce(Object.assign(
+        new Error('The market operation timed out before the Host answered.'),
+        { status: 408, code: 'operation-timeout' },
+      ))
+      .mockResolvedValue(preview)
+    render(<MarketSettingsTab {...props} />)
+
+    await screen.findByRole('button', { name: /Installable Plugin/u })
+    fireEvent.click(screen.getByRole('button', { name: en.installable }))
+    fireEvent.click(await screen.findByRole('button', { name: `${en.install}: ${item.displayName}` }))
+
+    const failed = await screen.findByRole('dialog', { name: item.displayName })
+    expect(within(failed).getByText(en.previewTimeoutError)).toBeTruthy()
+    expect(within(failed).queryByRole('link', { name: en.verificationDetails })).toBeNull()
+    fireEvent.click(within(failed).getByRole('button', { name: en.retry }))
+
+    await waitFor(() => {
+      expect(previewMarketOperation).toHaveBeenNthCalledWith(2, {
+        action: 'install',
+        sourceRecordId: firstSource.sourceRecordId,
+        itemId: item.id,
+      }, expect.any(AbortSignal))
+    })
+    expect(await screen.findByRole('dialog', { name: en.confirmInstallTitle })).toBeTruthy()
   })
 
   it('keeps the restart button latched while the Host reports a restart already in progress', async () => {

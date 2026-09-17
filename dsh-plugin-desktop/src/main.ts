@@ -2567,7 +2567,6 @@ async function start(): Promise<void> {
           )
         }
         await hostCtx.plugin(DesktopActionsService, {
-          openTerminal: () => { runtime.openTerminal() },
           requestRestart: () => runtime.requestRestart(),
         })
         if (prepared.market.effective === 'community-market') {

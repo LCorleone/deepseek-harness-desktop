@@ -14,23 +14,23 @@ async function mount(bootstrap: DesktopActionsBootstrap): Promise<{
 }
 
 describe('desktop actions Host service', () => {
-  it('exposes only no-argument terminal and restart operations', async () => {
-    const openTerminal = vi.fn<() => void>()
+  it('exposes only the no-argument restart operation', async () => {
     const requestRestart = vi.fn<() => Promise<void>>(async () => {})
-    const mounted = await mount({ openTerminal, requestRestart })
+    const mounted = await mount({ requestRestart })
 
-    mounted.service.openTerminal()
     await expect(mounted.service.requestRestart()).resolves.toBeUndefined()
 
-    expect(openTerminal).toHaveBeenCalledWith()
     expect(requestRestart).toHaveBeenCalledWith()
     expect(Object.keys(mounted.service).sort()).not.toContain('runCommand')
+    // #048: the market-facing openTerminal capability is removed from the
+    // desktopActions service — restart is the only published action.
+    expect('openTerminal' in mounted.service).toBe(false)
   })
 
   it('re-enters the bootstrap on a repeat request and rejects retained references after disposal', async () => {
     const resolvers: Array<() => void> = []
     const requestRestart = vi.fn(() => new Promise<void>(resolve => { resolvers.push(resolve) }))
-    const mounted = await mount({ openTerminal: vi.fn(), requestRestart })
+    const mounted = await mount({ requestRestart })
 
     const first = mounted.service.requestRestart()
     const second = mounted.service.requestRestart()
@@ -40,7 +40,6 @@ describe('desktop actions Host service', () => {
     expect(second).not.toBe(first)
     expect(requestRestart).toHaveBeenCalledTimes(2)
     await mounted.dispose()
-    expect(() => mounted.service.openTerminal()).toThrow(/service disposed/u)
     await expect(mounted.service.requestRestart()).rejects.toThrow(/service disposed/u)
 
     for (const resolve of resolvers) resolve()

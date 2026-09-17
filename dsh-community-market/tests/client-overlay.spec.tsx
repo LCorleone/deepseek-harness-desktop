@@ -118,13 +118,12 @@ const source: MarketSourceView = {
 const stateWithSource: MarketStateResponse = {
   sources: [source],
   builtIns: [],
-  desktopActions: { openTerminal: true, requestRestart: true },
+  desktopActions: { requestRestart: true },
 }
 
 const catalogWithItem: MarketCatalogResponse = {
   query: {},
   categories: [],
-  manualInstall: [],
   fetchedAt: '2026-08-18T04:00:00.000Z',
   results: [{
     source,
@@ -161,7 +160,7 @@ describe('community market overlay', () => {
     const state: MarketStateResponse = {
       sources: [],
       builtIns: [],
-      desktopActions: { openTerminal: true, requestRestart: true },
+      desktopActions: { requestRestart: true },
     }
     const request = vi.fn<typeof fetch>(async () => response(state))
     vi.stubGlobal('fetch', request)

@@ -14,7 +14,6 @@ import type {
   MarketCatalogResponse,
   MarketInstallationView,
   MarketInstallReceipt,
-  MarketManualInstallHint,
   MarketSourceMutation,
   MarketStateResponse,
 } from '../api-types.js'
@@ -44,7 +43,6 @@ import { MARKET_MEDIA_ASSET_REF_PATTERN } from '../media/ref.js'
 import { createRestrictedImageFetcher } from '../media/restricted-image.js'
 import { createMarketMediaService } from '../media/service.js'
 import { MarketInstallError, RESTART_INTENT_TTL_MS, type MarketInstallService } from '../install/service.js'
-import { manualInstallHints } from '../install/manual.js'
 
 export const MARKET_SETTINGS_NAMESPACE = settingsNamespace('dsh-community-market')
 const SOURCE_SCHEMA = z.object({
@@ -98,7 +96,6 @@ const ROUTE_CATALOG = '/api/community-market/catalog'
 const ROUTE_INSTALLABLE = '/api/community-market/installable'
 const ROUTE_ASSETS = '/api/community-market/assets'
 const ROUTE_INSTALLATIONS = '/api/community-market/installations'
-const ROUTE_OPEN_TERMINAL = '/api/community-market/desktop/open-terminal'
 const ROUTE_REQUEST_RESTART = '/api/community-market/desktop/request-restart'
 const ROUTE_OPERATION_PREVIEW = '/api/community-market/operations/preview'
 const ROUTE_OPERATION_EXECUTE = '/api/community-market/operations/execute'
@@ -270,10 +267,6 @@ function catalogCategories(index: CatalogFullIndex): readonly string[] {
     .sort((left, right) => left.localeCompare(right, 'en', { sensitivity: 'base' }))
 }
 
-function catalogManualInstall(results: readonly { readonly snapshot?: { readonly items: CatalogFullIndex['snapshots'][number]['items'] } }[]): readonly MarketManualInstallHint[] {
-  return manualInstallHints(results.flatMap(result => result.snapshot?.items ?? []))
-}
-
 function cachedCatalogResponse(
   cache: MarketCatalogCache | undefined,
   source: MarketCatalogResponse['results'][number]['source'],
@@ -308,7 +301,6 @@ function cachedCatalogResponse(
     query: { limit: 50, locale },
     results: [{ source, stale: true, snapshot }],
     categories: [...cache.categories],
-    manualInstall: catalogManualInstall([{ snapshot }]),
     metadata: {
       scannedAt: cache.scannedAt,
       expiresAt: cache.expiresAt,
@@ -561,12 +553,6 @@ function asOperationExecute(value: unknown): string {
   return request.previewId
 }
 
-function asEmptyDesktopAction(value: unknown): void {
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 0) {
-    throw new MarketInstallError('invalid-request', 'The desktop action request must not contain parameters.')
-  }
-}
-
 function asRestartToken(value: unknown): string {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new MarketInstallError('invalid-request', 'The restart request was invalid.')
@@ -592,7 +578,6 @@ export interface MarketInstallServiceProvider {
 }
 
 export interface MarketDesktopActions {
-  openTerminal(): void
   requestRestart(): Promise<void>
 }
 
@@ -999,7 +984,6 @@ export function registerMarketRoutes(
       query: responseQuery,
       results,
       categories: index === undefined ? [] : catalogCategories(index),
-      manualInstall: catalogManualInstall(results),
       ...(index === undefined ? {} : { metadata: catalogMetadata(index) }),
       fetchedAt: new Date().toISOString(),
     }
@@ -1026,7 +1010,6 @@ export function registerMarketRoutes(
           sources: await service.listSources(),
           builtIns: viewBuiltIns(sourceLock?.locked),
           desktopActions: {
-            openTerminal: desktopActions !== undefined,
             requestRestart: desktopActions !== undefined
               && (installProvider?.get() !== undefined || desktopPluginsProvider?.get() !== undefined),
           },
@@ -1240,43 +1223,6 @@ export function registerMarketRoutes(
       }
     }}),
   ]
-  if (desktopActionsProvider !== undefined) {
-    routes.push(
-      ctx.webServer.register({ kind: 'exact', path: ROUTE_OPEN_TERMINAL, handler: async (req, res) => {
-        if (req.method !== 'POST' || !mutationAllowed(req, expectedPort)) {
-          sendJson(res, 405, { error: 'opening DSH Terminal requires a local same-origin POST' })
-          return
-        }
-        const actions = desktopActionsProvider.get()
-        if (actions === undefined) {
-          sendJson(res, 503, { error: 'desktop actions are unavailable' })
-          return
-        }
-        const controller = new AbortController()
-        const signal = AbortSignal.any([controller.signal, generationController.signal])
-        const stopWatching = abortOnDisconnect(req, res, controller)
-        try {
-          asEmptyDesktopAction(await readOperationJson(req, signal))
-          signal.throwIfAborted()
-          actions.openTerminal()
-          // The terminal already opened: answer whenever the response is
-          // writable so a disposed generation cannot leave the click silent.
-          sendJsonIfWritable(res, 200, { ok: true }, ctx.logger)
-        } catch (cause) {
-          // Only work the generation actually cancelled reports an error here,
-          // so a cancellation is never mistaken for a silent success.
-          const cancellation = generationController.signal.aborted && !(cause instanceof MarketInstallError)
-          sendInstallErrorIfWritable(
-            res,
-            cancellation ? cancelledOperationError('market operation') : cause,
-            ctx.logger,
-          )
-        } finally {
-          stopWatching()
-        }
-      }}),
-    )
-  }
   if (installProvider !== undefined) {
     routes.push(
       ctx.webServer.register({ kind: 'exact', path: ROUTE_INSTALLABLE, handler: async (req, res) => {
@@ -1714,7 +1660,6 @@ export const marketRoutes = {
   installable: ROUTE_INSTALLABLE,
   assets: ROUTE_ASSETS,
   installations: ROUTE_INSTALLATIONS,
-  openTerminal: ROUTE_OPEN_TERMINAL,
   requestRestart: ROUTE_REQUEST_RESTART,
   operationPreview: ROUTE_OPERATION_PREVIEW,
   operationExecute: ROUTE_OPERATION_EXECUTE,

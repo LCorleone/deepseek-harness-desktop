@@ -712,7 +712,7 @@ describe('community market Host routes', () => {
     }
     const server = await startMarketServer([], undefined, undefined, {
       install: { get: () => install },
-      desktopActions: { get: () => ({ openTerminal: vi.fn(), requestRestart }) },
+      desktopActions: { get: () => ({ requestRestart }) },
       desktopPlugins: { get: () => desktopPlugins },
     })
     return { server, requestRestart, consumeRestartToken }

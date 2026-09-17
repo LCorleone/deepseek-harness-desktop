@@ -24,7 +24,6 @@ import {
   type MarketInstallReceipt,
 } from '../src/install/service.js'
 import { marketRoutes, registerMarketRoutes, registerMarketSettings, type MarketRestartRequestEvent } from '../src/host/routes.js'
-import { manualInstallHint } from '../src/install/manual.js'
 
 const packageName = 'dsh-plugin-safe'
 const version = '1.2.3'
@@ -488,28 +487,6 @@ describe('install target whitelist and registry origin injection', () => {
         { allowedRegistryOrigin },
       )).toThrow(TypeError)
     }
-  })
-})
-
-describe('manual install display instructions', () => {
-  it('reconstructs only safe exact npm commands and never guesses from a repository', () => {
-    const npm = manualInstallHint(snapshot().items[0]!)
-    expect(npm).toMatchObject({
-      kind: 'npm',
-      mutable: false,
-      desktopVerification: 'not-verified',
-      displayCommand: `dsh plugin add --save-exact ${packageName}@${version}`,
-    })
-
-    const githubItem = structuredClone(snapshot().items[0]!) as Record<string, unknown>
-    delete githubItem.package
-    delete githubItem.latestVersion
-    githubItem.repository = {
-      url: 'https://github.com/tianxia--/safe-repo',
-      subdirectory: 'packages/plugin',
-    }
-    githubItem.command = 'dsh plugin add attacker; rm -rf /'
-    expect(manualInstallHint(githubItem as CatalogSnapshot['items'][number])).toBeUndefined()
   })
 })
 
@@ -1628,7 +1605,6 @@ describe('market install Host routes', () => {
     } as unknown as MarketInstallService
     const desktopEvents: string[] = []
     const actions = {
-      openTerminal: vi.fn(),
       requestRestart: vi.fn(async () => { desktopEvents.push('restart') }),
     }
     let bundleStatus: 'active' | 'disabled' = 'active'
@@ -1673,8 +1649,10 @@ describe('market install Host routes', () => {
     expect(handlers.has(marketRoutes.installable)).toBe(true)
     expect(handlers.has(marketRoutes.operationPreview)).toBe(true)
     expect(handlers.has(marketRoutes.operationExecute)).toBe(true)
-    expect(handlers.has(marketRoutes.openTerminal)).toBe(true)
     expect(handlers.has(marketRoutes.requestRestart)).toBe(true)
+    // #048: the market-facing open-terminal route is gone — request-restart
+    // is the only desktop action the market host still serves.
+    expect([...handlers.keys()]).not.toContain('/api/community-market/desktop/open-terminal')
 
     const request = async (path: string, method: string, body?: unknown) => {
       const req = Object.assign(new EventEmitter(), {
@@ -1791,12 +1769,6 @@ describe('market install Host routes', () => {
       body: { action: 'disable', packageName: bundle.packageName },
     })
     expect(desktopPlugins.executeDisable).toHaveBeenCalledWith('disable_opaque_preview')
-
-    await expect(request(marketRoutes.openTerminal, 'POST', {})).resolves.toEqual({ status: 200, body: { ok: true } })
-    expect(actions.openTerminal).toHaveBeenCalledWith()
-    const invalidTerminal = await request(marketRoutes.openTerminal, 'POST', { command: 'must not run' })
-    expect(invalidTerminal).toMatchObject({ status: 400, body: { code: 'invalid-request' } })
-    expect(actions.openTerminal).toHaveBeenCalledOnce()
 
     desktopEvents.length = 0
     await expect(request(marketRoutes.requestRestart, 'POST', { restartToken: 'restart-token' }))
@@ -1957,7 +1929,7 @@ describe('market install Host routes', () => {
       }),
     } as unknown as MarketInstallService
     const requestRestart = vi.fn(async () => {})
-    const actions = { openTerminal: vi.fn(), requestRestart }
+    const actions = { requestRestart }
     const restartEvents: MarketRestartRequestEvent[] = []
     const restartEventSink = {
       reportRestartRequest: vi.fn((event: MarketRestartRequestEvent) => { restartEvents.push(event) }),
