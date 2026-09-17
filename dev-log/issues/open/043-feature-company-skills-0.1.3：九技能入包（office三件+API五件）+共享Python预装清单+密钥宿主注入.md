@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-16
-**Updated**: 2026-09-16
+**Updated**: 2026-09-17
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -89,6 +89,10 @@ impl NewFeature {
 - Related: #XXX
 
 ## 进展记录
+
+
+### 2026-09-17
+- 0.1.3 仓库侧链完成（2026-09-17 13:18，July 口令「走」）：bump 0.1.3+build+verify:bundle 绿 → corepack yarn pack（npm pack 拉全局 yarn v1 失败，教训）tgz 17,765,184B sha256 0f13a95f… → staging 提交目录+handoff.json（v2，146 字 desc）→ 十步闸门 PASS（treeDigest a2a01b7d…）→ accept-handoff（catalog-origin 补参）入 allowlist（bundleDocumentDigest=826ee8c0… ←P1 解除：CI 重建 bundle 将与 0.1.3 钉值一致）commit 619bbd092e → plugin-sources 快照 18 文件（bundle 23.46MB）→ 待提交+bump commit。下一步=publish（beta seq38，带 notebook 同批）——等 July 口令。
 
 ### 2026-09-16 HH:MM
 - [ ] 完成需求分析
