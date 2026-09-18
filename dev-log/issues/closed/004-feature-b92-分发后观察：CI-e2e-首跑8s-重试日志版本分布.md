@@ -1,11 +1,12 @@
 # [Feature] #004 b92 分发后观察：CI e2e 首跑/8s 重试日志/版本分布
 
 **Issue ID**: #004
-**Status**: Open
+**Status**: Closed ✅
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-12
-**Updated**: 2026-09-14
+**Updated**: 2026-09-18
+**Closed**: 2026-09-18
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -90,6 +91,10 @@ impl NewFeature {
 
 ## 进展记录
 
+
+
+### 2026-09-18
+- 关闭（2026-09-18 11:33）：b92 分发后观察卡（占位模板正文从未填充）。观察职责（版本分布/CI e2e/首跑重试）早已被日常遥测查询（dsh_client_events 按人聚合）与每日 daily 替代，无遗留动作。
 
 ### 2026-09-14
 - 版本分布✓全员b93（09-14）。CI e2e 首跑绿（run 34747131652 前 yarn check 含 e2e 6/6）。剩：deferredUpdates 真机观察 + 持续盯 8s 重试日志。
