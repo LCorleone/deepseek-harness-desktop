@@ -5,7 +5,7 @@
 **Priority**: Medium
 **Type**: feature
 **Created**: 2026-09-16
-**Updated**: 2026-09-17
+**Updated**: 2026-09-19
 **Assignee**: Unassigned
 **Labels**: feature
 
@@ -90,6 +90,10 @@ impl NewFeature {
 
 ## 进展记录
 
+
+
+### 2026-09-19
+- 0.1.2 无钥 retire 完成（2026-09-19 13:20）：allowlist 11→10 条目。合规链=publish-local.mjs:816 设计内「revoke→publish→retire」三段流（seq38 已发布 revoked:true 记录=凭证）；planTarballPushes 纯增量永不删文件→已托管 0.1.2.tgz 与老 manifest URL 永不受影响；本地干跑=measure-and-publish 过全部前置断言（结构/装配/origin，签名钥在 CI 故止步于 sign 属预期）；目录测试 203/203 绿。下次 seq 构建起树不再含 0.1.2 特判路径。#043 剩余：浸泡→stable promote（口令）。
 
 ### 2026-09-17
 - 0.1.3 仓库侧链完成（2026-09-17 13:18，July 口令「走」）：bump 0.1.3+build+verify:bundle 绿 → corepack yarn pack（npm pack 拉全局 yarn v1 失败，教训）tgz 17,765,184B sha256 0f13a95f… → staging 提交目录+handoff.json（v2，146 字 desc）→ 十步闸门 PASS（treeDigest a2a01b7d…）→ accept-handoff（catalog-origin 补参）入 allowlist（bundleDocumentDigest=826ee8c0… ←P1 解除：CI 重建 bundle 将与 0.1.3 钉值一致）commit 619bbd092e → plugin-sources 快照 18 文件（bundle 23.46MB）→ 待提交+bump commit。下一步=publish（beta seq38，带 notebook 同批）——等 July 口令。

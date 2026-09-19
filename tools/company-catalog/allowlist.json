@@ -89,24 +89,6 @@
     }
   },
   {
-    "packageName": "dsh-company-skills",
-    "version": "0.1.2",
-    "description": "公司技能包：skill 创建指南与 PPT 设计器（PPTD）",
-    "bundlePatch": "./cordis.patch.yml",
-    "repository": "https://plugin-market.s.dai.deloitte.cn/packages/dsh-company-skills",
-    "revoked": true,
-    "runtime": {
-      "dshRuntimeVersion": "^0.1.2-rc.1"
-    },
-    "treeDigest": "2564a943593c2cafbaa5d6e96a1fd306ad8ac0d413bc4a37afbd35207e154d7b",
-    "bundleDocumentDigest": "5492f379dba720cc1af25102bff37584cdaa933b932baa741e5d8779e03b502a",
-    "source": {
-      "kind": "tarball",
-      "url": "https://gitlab.s.dai.deloitte.cn/julu/dsh-desktop-config/-/raw/master/packages/dsh-company-skills-0.1.2.tgz",
-      "integrity": "sha512-v7/LQSxf7jnMptat9pKpByrut9Py0NxpinVT0/RooBuFGGQ9NA6ZXOMgcyZwuTkePYOYdqrmf4qJHH5x3agLdQ=="
-    }
-  },
-  {
     "packageName": "dsh-dai-office-tools",
     "version": "1.0.3",
     "description": "在工作区内创建、读取和更新 Word/Excel/PowerPoint 文件，支持在 PPT 中内嵌图片",
